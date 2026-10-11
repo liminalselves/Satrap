@@ -344,7 +344,8 @@ async def test_full_model_source_change_or_corruption_preserves_runtime(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_full_application_plugin_resources_use_captured_model_source(tmp_path: Path, monkeypatch: Any, asynchronous: bool) -> None:
+@pytest.mark.parametrize("application", ["full", "plugins", "direct"])
+async def test_application_plugin_resources_use_captured_model_source(tmp_path: Path, monkeypatch: Any, asynchronous: bool, application: str) -> None:
     """
     实际插件安装读取同代四类模型资源, 运行期仍恢复原管理器且重试无重复安装
 
@@ -352,8 +353,9 @@ async def test_full_application_plugin_resources_use_captured_model_source(tmp_p
     - tmp_path: 隔离来源与插件目录
     - monkeypatch: 真实实例夹具
     - asynchronous: 同步或异步实例
+    - application: 完整, 仅插件或直接平台管理器入口
     """
-    backend, configs, _globals, managers, _providers, _sessions, builds = await _setup(tmp_path, monkeypatch, asynchronous)
+    backend, configs, _globals, managers, providers, sessions, builds = await _setup(tmp_path, monkeypatch, asynchronous)
     models = managers[0].model_config_manager
     try:
         writer = ModelConfigManager(models.storage_path)
@@ -377,8 +379,18 @@ async def test_full_application_plugin_resources_use_captured_model_source(tmp_p
         )
         configs.plugin_catalog.user_dir = plugin.parent
         configs.update("assistant", {"plugins": ["session_commands", "model_probe"]})
-        result = await backend.reconcile_edictum_runtime_async(config_name="assistant")
-        assert len(result) == 3 and all(item["ok"] and item["action"] == "reconcile_plugins" for item in result)
+        async def apply():
+            """通过实际入口更新模型资源, 不重建主模型"""
+            if application == "full":
+                return await backend.reconcile_edictum_runtime_async(config_name="assistant")
+            if application == "plugins":
+                return await backend.reconcile_edictum_plugins_async(config_name="assistant")
+            return [item for manager in managers for item in await manager.reconcile_edictum_plugins_async(config_name="assistant")]
+
+        result = await apply()
+        assert len(result) == 3 and all(item["ok"] for item in result)
+        if application == "full":
+            assert all(item["action"] == "reconcile_plugins" for item in result)
         handles = []
         for manager in managers:
             for entry in manager.pool.list_entries().values():
@@ -390,9 +402,56 @@ async def test_full_application_plugin_resources_use_captured_model_source(tmp_p
                 }
                 assert resources._clients == {}
                 handles.append(session.list_plugins()[-1])
-        repeated = await backend.reconcile_edictum_runtime_async(config_name="assistant")
-        assert all(item["ok"] and item["action"] == "noop" for item in repeated) and len(builds) == 3
+        repeated = await apply()
+        assert all(item["ok"] for item in repeated) and len(builds) == 3
+        if application == "full":
+            assert all(item["action"] == "noop" for item in repeated)
         assert [entry.session.list_plugins()[-1] for manager in managers for entry in manager.pool.list_entries().values()] == handles
+        writer.set_embedding_config(EmbeddingConfig(model="embedding-latest", api_key="test", dimensions=7), "resource")
+        updated = await apply()
+        assert all(item["ok"] for item in updated) and len(builds) == 3
+        for manager in managers:
+            for entry in manager.pool.list_entries().values():
+                assert entry.session._probe_resources._configs["embed"][1].model == "embedding-latest"
+                assert entry.session._probe_resources._configs["embed"][1].dimensions == 7
+                assert entry.session.plugin_model_manager is models
+        if application != "full":
+            old_handle = sessions[0].list_plugins()[-1]
+            ready = asyncio.Event()
+            reconcile = providers[0].reconcile_session_plugins_async
+
+            async def observed(session, **kwargs):
+                """其它实例进入真实协调后再改写来源, 明确区分排队变化与捕获重试"""
+                if session is sessions[1]:
+                    ready.set()
+                return await reconcile(session, **kwargs)
+
+            monkeypatch.setattr(providers[0], "reconcile_session_plugins_async", observed)
+            entry = managers[0].pool.get("one-0")
+            await entry.async_operation_lock.acquire()
+            task = asyncio.create_task(apply())
+            try:
+                await asyncio.wait_for(ready.wait(), 2)
+                writer.set_embedding_config(EmbeddingConfig(model="embedding-final", api_key="test"), "resource")
+            finally:
+                entry.async_operation_lock.release()
+            stale = await asyncio.wait_for(task, 2)
+            assert not stale[0]["ok"] and "等待期间已变化" in stale[0]["error"]
+            assert sessions[0].list_plugins()[-1] is old_handle
+            assert sessions[0].plugin_model_manager is models
+            retried = await apply()
+            assert all(item["ok"] for item in retried) and len(builds) == 3
+            assert sessions[0]._probe_resources._configs["embed"][1].model == "embedding-final"
+            writer.storage_path.write_text("broken", encoding="utf-8")
+            handles = [session.list_plugins()[-1] for session in sessions]
+            with pytest.raises(ValueError):
+                await apply()
+            assert [session.list_plugins()[-1] for session in sessions] == handles
+            configs.update("assistant", {"plugins": ["session_commands"]})
+            removed = await apply()
+            assert all(item["ok"] for item in removed)
+            assert all([handle.name for handle in session.list_plugins()] == ["session_commands"] for session in sessions)
+            assert writer.storage_path.read_text(encoding="utf-8") == "broken"
     finally:
         await _close(managers)
 

@@ -134,13 +134,13 @@ async def test_chat_bound_concurrency_preserves_lock_and_isolates_failure(monkey
     """
     service = cast(Any, ChatService.__new__(ChatService))
     spec = PluginSpec(name="target")
-    service._plugins = SimpleNamespace(resolve_specs=lambda manager, **kwargs: [spec], catalog=object(), state_path=tmp_path / "chat.json", refresh=lambda **kwargs: None)
-    monkeypatch.setattr(service_module.PluginApplySnapshot, "capture", lambda catalog, manager, **kwargs: SimpleNamespace(catalog=catalog, is_current=lambda: True))
+    service._plugins = SimpleNamespace(resolve_specs=lambda manager, **kwargs: [spec], catalog=SimpleNamespace(scan=lambda: []), state_path=tmp_path / "chat.json", refresh=lambda **kwargs: None)
+    monkeypatch.setattr(service_module.PluginApplySnapshot, "capture", lambda catalog, manager, **kwargs: SimpleNamespace(catalog=catalog, is_current=lambda: True, has_model_sources=False))
     service._coordinate_sandbox = lambda session: None
     sessions = []
     for index in range(5):
         sessions.append(SimpleNamespace(conversation_id=str(index), persisted=True, plugin_states=[], plugin_lock=asyncio.Lock(),
-                                        session=SimpleNamespace(install_plugin=str(index), uninstall_plugin=object())))
+                                        session=SimpleNamespace(install_plugin=str(index), uninstall_plugin=object(), plugin_model_manager=None)))
     service._conversations = {conv.conversation_id: conv for conv in sessions}
     await sessions[0].plugin_lock.acquire()
     started = []
@@ -205,11 +205,11 @@ async def test_chat_filter_skips_unrelated_and_keeps_old_enabled_reference(monke
     - tmp_path: 隔离状态文件目录
     """
     service = cast(Any, ChatService.__new__(ChatService))
-    service._plugins = SimpleNamespace(resolve_specs=lambda manager, **kwargs: [PluginSpec(name="target", enabled=False)], catalog=object(), state_path=tmp_path / "chat.json", refresh=lambda **kwargs: None)
-    monkeypatch.setattr(service_module.PluginApplySnapshot, "capture", lambda catalog, manager, **kwargs: SimpleNamespace(catalog=catalog, is_current=lambda: True))
+    service._plugins = SimpleNamespace(resolve_specs=lambda manager, **kwargs: [PluginSpec(name="target", enabled=False)], catalog=SimpleNamespace(scan=lambda: []), state_path=tmp_path / "chat.json", refresh=lambda **kwargs: None)
+    monkeypatch.setattr(service_module.PluginApplySnapshot, "capture", lambda catalog, manager, **kwargs: SimpleNamespace(catalog=catalog, is_current=lambda: True, has_model_sources=False))
     service._coordinate_sandbox = lambda session: None
     old = SimpleNamespace(conversation_id="old", persisted=True, plugin_states=[SimpleNamespace(name="target", enabled=True, handle=object())],
-                          plugin_lock=asyncio.Lock(), session=SimpleNamespace(install_plugin="old", uninstall_plugin=None))
+                          plugin_lock=asyncio.Lock(), session=SimpleNamespace(install_plugin="old", uninstall_plugin=None, plugin_model_manager=None))
     unrelated = SimpleNamespace(conversation_id="preload", persisted=False, plugin_states=[], build_fingerprint="unchanged", session=object())
     service._conversations = {"old": old, "preload": unrelated}
     applied = []

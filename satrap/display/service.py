@@ -2341,7 +2341,12 @@ class ChatService:
                 for _attempt in range(3):
                     state_before = plugin_source_version(self._plugins.state_path)
                     self._plugins.refresh(strict=True)
-                    snapshot = PluginApplySnapshot.capture(self._plugins.catalog, manager, additional_sources=(self._plugins.state_path,))
+                    model_managers = tuple(cast(ModelConfigManager, session.plugin_model_manager) for _conv, session, persisted, _old_reference in targets
+                                           if persisted and session.plugin_model_manager is not None)
+                    snapshot = PluginApplySnapshot.capture(
+                        self._plugins.catalog, manager, additional_sources=(self._plugins.state_path,), model_managers=model_managers,
+                        model_plugin_filter=lambda entry: self._plugins.is_enabled(entry.name) and entry.check_environment(PluginEnvironment("chat")).allowed,
+                    )
                     specs = self._plugins.resolve_specs(manager, snapshot=snapshot)
                     if state_before == plugin_source_version(self._plugins.state_path) and snapshot.is_current():
                         return snapshot, specs
@@ -2380,12 +2385,18 @@ class ChatService:
                                 "timings_ms": {**timings.to_payload(), "lock_wait_ms": round(lock_wait_ms, 3), "config_read_ms": round(config_read_ms, 3)}}
                     if self._conversations.get(conv.conversation_id) is not conv or conv.session is not planned_session or not conv.persisted:
                         return {"conversation_id": conv.conversation_id, "ok": False, "status": "error", "error": "会话运行时已变化"}
-                    result = await reconcile_plugin_states_async(
-                        conv.plugin_states,
-                        resolve_runtime_specs(conv.session, desired_specs, snapshot.catalog, snapshot=snapshot),
-                        conv.session.install_plugin,
-                        conv.session.uninstall_plugin,
-                    )
+                    original_models = conv.session.plugin_model_manager
+                    if snapshot.has_model_sources:
+                        conv.session.plugin_model_manager = snapshot.models_for(cast(ModelConfigManager | None, original_models))
+                    try:
+                        result = await reconcile_plugin_states_async(
+                            conv.plugin_states,
+                            resolve_runtime_specs(conv.session, desired_specs, snapshot.catalog, snapshot=snapshot),
+                            conv.session.install_plugin,
+                            conv.session.uninstall_plugin,
+                        )
+                    finally:
+                        conv.session.plugin_model_manager = original_models
                     self._coordinate_sandbox(conv.session)
                 result['timings_ms'] = {**result.get('timings_ms', {}), **timings.to_payload(),
                                         'lock_wait_ms': round(lock_wait_ms, 3), 'config_read_ms': round(config_read_ms, 3)}

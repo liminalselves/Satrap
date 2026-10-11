@@ -2648,9 +2648,17 @@ class BackendManager:
             ).items():
                 scope[name] = scope.get(name, False) or old
         manager = self.edictum_config_manager
+        model_config_scopes: dict[Path, set[str]] = {}
+        for platform_id, session_manager in selected_managers:
+            models = session_manager.model_config_manager
+            if models is not None and targets_by_platform[platform_id]:
+                model_config_scopes.setdefault(models.storage_path.absolute(), set()).update(name for _sid, _entry, name, _generation in targets_by_platform[platform_id])
         apply_snapshot = None if manager is None else await asyncio.to_thread(
             EdictumPluginApplySnapshot.capture, manager, set(scope), desired_plugins=desired_plugins, plugin_name=plugin_name,
             retained_config_names={name for name, old in scope.items() if old},
+            model_managers=tuple(item.model_config_manager for pid, item in selected_managers if targets_by_platform[pid] and item.model_config_manager is not None),
+            include_main_models=False,
+            model_config_scopes=model_config_scopes,
         )
         pending: list[Awaitable[list[dict[str, Any]]]] = []
         apply_args: dict[str, Any] = {}

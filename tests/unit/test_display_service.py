@@ -13,6 +13,7 @@ import yaml
 import threading
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.memory.store import MemoryStore
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
@@ -25,7 +26,7 @@ from satrap.edictum.plugin import load_plugin_meta
 from satrap.edictum.plugin_apply import PluginApplySnapshot
 from satrap.core.storage import StorageLayout
 from satrap.core.memory import store as ms_mod
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig
 from satrap.display import service as service_mod
 
 
@@ -1144,6 +1145,133 @@ def test_chat_apply_snapshot_shared_by_instances_and_keeps_unchanged_handle(tmp_
             await svc.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.asyncio
+async def test_chat_model_resources_share_capture_reject_stale_source_and_rollback(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    三个真实 Chat 实例共享四类模型来源, 排队变化拒绝且失败回滚旧资源
+
+    参数:
+    - tmp_path: 隔离配置目录
+    - monkeypatch: 模型构造与来源记录夹具
+    """
+    globals_ = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: globals_)
+    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: globals_)
+    _write_chat_commands(tmp_path, monkeypatch)
+    plugin = tmp_path / "chat_plugins" / "model_probe"
+    plugin.mkdir()
+    (plugin / "meta.yaml").write_text(
+        "name: model_probe\nversion: 0.1.0\nconfig_schema:\n"
+        "  fail:\n    type: bool\n    default: false\n"
+        "  llm:\n    type: llm\n    default: default\n"
+        "  embed:\n    type: embed\n    default: resource\n"
+        "  rerank:\n    type: rerank\n    default: resource\n"
+        "  asr:\n    type: asr\n    default: resource\n", encoding="utf-8",
+    )
+    (plugin / "tools.py").write_text(
+        "def get_tools(session, config, *, resources):\n"
+        "    session._model_probe = resources\n"
+        "    if config['fail']:\n        raise ValueError('model probe failed')\n"
+        "    return []\n", encoding="utf-8",
+    )
+    svc = _make_service(tmp_path, monkeypatch)
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.update_llm_config("default", model="old", api_key="test")
+    models.set_embedding_config(EmbeddingConfig(model="embedding-old", api_key="test"), "resource")
+    models.set_rerank_config(ReRankConfig(model="rerank-old", api_key="test", base_url="http://localhost:1"), "resource")
+    models.set_asr_config(ASRConfig(model="asr-old", api_key="test"), "resource")
+    svc._model_cfg = models
+    svc._plugins.set_enabled("model_probe", True)
+    writer = ModelConfigManager(models.storage_path)
+    reads = []
+    read = ModelConfigSnapshot.read
+    captured = threading.Event()
+    capture = PluginApplySnapshot.capture
+
+    def counted(source):
+        """
+        记录实际模型文件解析, 不刷新运行期管理器
+
+        参数:
+        - source: 实际来源管理器
+
+        返回:
+        - 独立快照
+        """
+        reads.append(source.storage_path)
+        return read(source)
+
+    def record(*args, **kwargs):
+        """通知真实来源捕获完成, 不改变快照内容"""
+        snapshot = capture(*args, **kwargs)
+        captured.set()
+        return snapshot
+
+    try:
+        ids = [await svc.create_conversation(model="default") for _ in range(3)]
+        convs = [_must_conversation(svc, cid) for cid in ids]
+        sessions = [cast(Any, conv.session) for conv in convs]
+        main_models = [session.llm for session in sessions]
+        writer.set_embedding_config(EmbeddingConfig(model="embedding-new", api_key="test", dimensions=7), "resource")
+        writer.set_rerank_config(ReRankConfig(model="rerank-new", api_key="test", base_url="http://localhost:2"), "resource")
+        writer.set_asr_config(ASRConfig(model="asr-new", api_key="test"), "resource")
+        monkeypatch.setattr(ModelConfigSnapshot, "read", counted)
+        applied = await svc.reconcile_plugins(plugin_name="model_probe")
+        assert applied["applied"] and reads == [models.storage_path]
+        old_handles = [session.list_plugins()[0] for session in sessions]
+        for session in sessions:
+            assert {key: value[1].model for key, value in session._model_probe._configs.items()} == {
+                "llm": "old", "embed": "embedding-new", "rerank": "rerank-new", "asr": "asr-new",
+            }
+            assert session._model_probe._clients == {} and session.plugin_model_manager is models
+        assert models.get_embedding_config("resource").model == "embedding-old"
+        repeated = await svc.reconcile_plugins(plugin_name="model_probe")
+        assert repeated["applied"] and all(not item["plugins"] for item in repeated["sessions"])
+        assert [session.list_plugins()[0] for session in sessions] == old_handles
+        monkeypatch.setattr(PluginApplySnapshot, "capture", record)
+        ready = asyncio.Event()
+        reconcile = service_mod.reconcile_plugin_states_async
+
+        async def observed_reconcile(*args, **kwargs):
+            """其它目标进入真实安装阶段后再改写, 避免将捕获重试误当排队变化"""
+            ready.set()
+            return await reconcile(*args, **kwargs)
+
+        monkeypatch.setattr(service_mod, "reconcile_plugin_states_async", observed_reconcile)
+        await convs[0].plugin_lock.acquire()
+        task = asyncio.create_task(svc.reconcile_plugins(plugin_name="model_probe"))
+        try:
+            assert await asyncio.to_thread(captured.wait, 2)
+            await asyncio.wait_for(ready.wait(), 2)
+            writer.set_embedding_config(EmbeddingConfig(model="embedding-latest", api_key="test", dimensions=9), "resource")
+        finally:
+            convs[0].plugin_lock.release()
+        stale = await asyncio.wait_for(task, 2)
+        assert not stale["sessions"][0]["ok"] and "等待期间已变化" in stale["sessions"][0]["error"]
+        assert sessions[0].list_plugins()[0] is old_handles[0]
+        entry = svc._plugins.catalog.get("model_probe")
+        if entry is None:
+            raise AssertionError("测试插件不存在")
+        globals_.save_global("model_probe", entry.config_schema, {"fail": True})
+        failed = await svc.reconcile_plugins(plugin_name="model_probe")
+        assert not failed["applied"] and failed["failed"] == 3
+        assert all(item["plugins"][0]["status"] == "rolled_back" for item in failed["sessions"])
+        assert all(session._model_probe._configs["embed"][1].model == "embedding-new" for session in sessions)
+        assert [conv.session for conv in convs] == sessions and [session.llm for session in sessions] == main_models
+        assert all(session.plugin_model_manager is models for session in sessions)
+        models.storage_path.write_text("broken", encoding="utf-8")
+        handles = [session.list_plugins()[0] for session in sessions]
+        with pytest.raises(ValueError):
+            await svc.reconcile_plugins(plugin_name="model_probe")
+        assert [session.list_plugins()[0] for session in sessions] == handles
+        svc._plugins.set_enabled("model_probe", False)
+        disabled = await svc.reconcile_plugins(plugin_name="model_probe")
+        assert disabled["applied"] and all(not session.list_plugins() for session in sessions)
+        assert models.storage_path.read_text(encoding="utf-8") == "broken"
+    finally:
+        await svc.close()
 
 
 @pytest.mark.parametrize("source", ["global", "chat_state"])

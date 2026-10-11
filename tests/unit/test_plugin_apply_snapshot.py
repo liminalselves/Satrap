@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from satrap.core.config.session_overrides import SessionOverrideStore
+from satrap.core.config.model_snapshot import ModelConfigSnapshot
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.edictum.plugin_apply import PluginApplySnapshot, logger
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager
@@ -31,6 +33,82 @@ def _sources(tmp_path):
     path = manager._dir / "probe.json"
     path.write_text('{"note":"before"}', encoding="utf-8")
     return PluginCatalog(tmp_path / "builtin", tmp_path / "plugins"), manager, path
+
+
+def test_model_sources_deduplicate_retry_and_reject_queue_changes(tmp_path, monkeypatch):
+    """模型文件跨实例只读一次, 捕获中变化整体重读且排队变化使来源失效"""
+    catalog, manager, _path = _sources(tmp_path)
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.update_llm_config("resource", model="old", api_key="test")
+    writer = ModelConfigManager(models.storage_path)
+    reads = []
+    read = ModelConfigSnapshot.read
+
+    def changing(source):
+        """
+        首次读取结束后改写来源以验证整次重试
+
+        参数:
+        - source: 实际模型管理器
+
+        返回:
+        - 改写前的独立来源
+        """
+        result = read(source)
+        reads.append(source.storage_path)
+        if len(reads) == 1:
+            writer.update_llm_config("resource", model="new")
+        return result
+
+    monkeypatch.setattr(ModelConfigSnapshot, "read", changing)
+    snapshot = PluginApplySnapshot.capture(catalog, manager, model_managers=(models, writer, models))
+    assert reads == [models.storage_path, models.storage_path]
+    captured = snapshot.models_for(models)
+    if captured is None:
+        raise AssertionError("模型来源未捕获")
+    assert captured is snapshot.models_for(writer)
+    assert captured.get_llm_config("resource").model == "new"
+    assert models.get_llm_config("resource").model == "old"
+    assert snapshot.is_current()
+    writer.update_llm_config("resource", model="latest")
+    assert not snapshot.is_current()
+    assert captured.get_llm_config("resource").model == "new"
+
+
+def test_model_reference_added_during_capture_is_detected_from_fixed_catalog(tmp_path, monkeypatch):
+    """捕获期间元数据新增模型字段时重新决定来源, 不沿用旧目录的无引用判断"""
+    catalog, manager, _path = _sources(tmp_path)
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.update_llm_config("resource", model="expected", api_key="test")
+    meta = tmp_path / "plugins" / "probe" / "meta.yaml"
+    load = manager.load_global_explicit
+    calls = []
+
+    def changing(name, schema):
+        """
+        首次读取字段后新增模型引用, 触发完整来源重试
+
+        参数:
+        - name: 插件名
+        - schema: 字段定义
+
+        返回:
+        - 本次字段参数
+        """
+        result = load(name, schema)
+        calls.append(name)
+        if len(calls) == 1:
+            meta.write_text(meta.read_text(encoding="utf-8") + "\n  model:\n    type: llm\n    default: resource\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(manager, "load_global_explicit", changing)
+    snapshot = PluginApplySnapshot.capture(catalog, manager, model_managers=(models,), model_plugin_filter=lambda entry: True)
+    captured = snapshot.models_for(models)
+    if captured is None:
+        raise AssertionError("新增模型引用未捕获来源")
+    assert len(calls) == 2 and snapshot.has_model_sources
+    assert snapshot.global_config("probe")["model"] == "resource"
+    assert captured.get_llm_config("resource").model == "expected"
 
 
 def test_snapshot_reads_globals_once_and_returns_private_copies(tmp_path, monkeypatch):

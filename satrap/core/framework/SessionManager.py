@@ -1749,7 +1749,8 @@ class SessionManager:
         capture = safe_getattr_callable(provider, "capture_plugin_application")
         if apply_snapshot is None and capture is not None:
             scope = self.edictum_plugin_apply_scope(plugin_name=plugin_name, apply_targets=targets)
-            apply_snapshot = await asyncio.to_thread(capture, scope, desired_plugins=desired_plugins, plugin_name=plugin_name)
+            apply_snapshot = await asyncio.to_thread(capture, scope, desired_plugins=desired_plugins, plugin_name=plugin_name,
+                                                     model_managers=(self._model_cfg_mgr,) if targets and self._model_cfg_mgr is not None else (), include_main_models=False)
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
         async def reconcile_one(session_id: str, entry: SessionEntry, planned_name: str, generation: str) -> dict[str, Any]:

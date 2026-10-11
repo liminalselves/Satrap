@@ -13,6 +13,7 @@ from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 from satrap.core.framework.providers.edictum import EdictumProvider
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.type import SessionConfig
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
@@ -61,6 +62,7 @@ async def _platforms(tmp_path: Path, monkeypatch: Any) -> tuple[Any, EdictumConf
             records[sid] = record
             sessions.append(session)
         manager = cast(Any, SessionManager.__new__(SessionManager))
+        manager._model_cfg_mgr = None
         manager.provider_registry = SimpleNamespace(get=lambda _name, provider=provider: provider)
         manager.pool = SimpleNamespace(list_entries=lambda entries=entries: entries)
         manager.store = SimpleNamespace(get=lambda sid, records=records: records.get(sid))
@@ -79,6 +81,37 @@ async def _release(sessions: list[Any], providers: list[EdictumProvider]) -> Non
     """
     for session, provider in zip(sessions, [providers[0], providers[0], providers[1]]):
         await provider.release_session_async(session)
+
+
+def test_plugin_models_exclude_unrelated_platform_file(tmp_path: Path) -> None:
+    """按插件引用过滤后, 不读取其它 Agent 所属平台的无关损坏模型文件"""
+    plugin = tmp_path / "plugins" / "resource_probe"
+    plugin.mkdir(parents=True)
+    (plugin / "meta.yaml").write_text(
+        "name: resource_probe\nconfig_schema:\n  model:\n    type: llm\n    default: resource\n", encoding="utf-8",
+    )
+    registry = create_default_edictum_type_registry()
+    configs = EdictumConfigManager(registry, tmp_path / "named.json")
+    configs.plugin_catalog.user_dir = plugin.parent
+    configs.create("related", {"edictum_type": "async_simple", "plugins": ["resource_probe"]})
+    configs.create("other", {"edictum_type": "async_simple", "plugins": ["session_commands"]})
+    related = ModelConfigManager(tmp_path / "related-models.json")
+    related.update_llm_config("resource", model="expected", api_key="test")
+    other = ModelConfigManager(tmp_path / "other-models.json")
+    other.storage_path.write_text("broken", encoding="utf-8")
+    snapshot = EdictumPluginApplySnapshot.capture(
+        configs, {"related", "other"}, plugin_name="resource_probe", global_manager=PluginConfigManager(tmp_path / "globals"),
+        model_managers=(related, other), include_main_models=False,
+        model_config_scopes={related.storage_path.absolute(): {"related"}, other.storage_path.absolute(): {"other"}},
+    )
+    assert snapshot.includes_config("related") and not snapshot.includes_config("other")
+    captured = snapshot.models_for(related)
+    if captured is None:
+        raise AssertionError("相关平台模型未捕获")
+    assert captured.get_llm_config("resource").model == "expected"
+    with pytest.raises(KeyError):
+        snapshot.models_for(other)
+    assert other.storage_path.read_text(encoding="utf-8") == "broken"
 
 
 @pytest.mark.asyncio

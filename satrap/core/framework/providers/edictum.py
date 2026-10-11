@@ -855,7 +855,7 @@ class EdictumProvider:
 
     def capture_plugin_application(self, scope: dict[str, bool], *, desired_plugins: object | None = None,
                                    plugin_name: str | None = None, desired_config: dict[str, Any] | None = None,
-                                   model_managers: tuple[ModelConfigManager, ...] = ()) -> EdictumPluginApplySnapshot:
+                                   model_managers: tuple[ModelConfigManager, ...] = (), include_main_models: bool = True) -> EdictumPluginApplySnapshot:
         """
         准备当前平台直接应用的共享来源, 后端跨平台入口可提供同一快照
 
@@ -864,14 +864,15 @@ class EdictumProvider:
         - desired_plugins: 可选临时目标规格
         - plugin_name: 可选引用过滤
         - desired_config: 可选完整临时运行目标
-        - model_managers: 可选完整应用的只读模型来源
+        - model_managers: 可选应用的只读模型来源
+        - include_main_models: 完整应用捕获主模型, 仅插件应用按引用 schema 判断
 
         返回:
         - 命名配置与全局参数的同代快照
         """
         return EdictumPluginApplySnapshot.capture(self.config_manager, set(scope), desired_plugins=desired_plugins,
                                                 plugin_name=plugin_name, retained_config_names={name for name, old in scope.items() if old}, desired_config=desired_config,
-                                                model_managers=model_managers)
+                                                model_managers=model_managers, include_main_models=include_main_models)
 
     def references_plugin(self, session: Session | AsyncSession, plugin_name: str, *, desired_plugins: object | None = None) -> bool:
         """
