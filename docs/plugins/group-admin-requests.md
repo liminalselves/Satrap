@@ -1,14 +1,21 @@
 # group_admin 加群申请查询与处理
 
 申请事件由适配器登记到宿主私有收件箱, 不自动唤醒 Agent 或同意申请
-group_admin 只管理加群申请和入群邀请; 好友操作已迁移到独立 friend_manager, 参见 [好友管理](friend-manager.md)
+group_admin 只管理成员申请加入已有群的 `add` 申请; 邀请机器人加入新群的 `invite` 已迁移到独立 [account_requests](account-requests.md)
+好友操作由独立 friend_manager 提供, 参见 [好友管理](friend-manager.md)
 
 ## 配置
 
 在使用 `group_admin` 的 Agent 插件参数里填写 `request_managers`, 每行一个允许查询和处理申请的管理者账号
-默认为空, 不提供申请工具; 处理申请还需满足 `allowed_callers`, 群申请查询和处理均受 `allowed_groups` 限制
+默认空名单拒绝申请操作; 已启用工具的声明保持稳定, 未授权调用在执行时明确拒绝
+处理申请还需满足 `allowed_callers`, 群申请查询和处理均受 `allowed_groups` 限制
 只查询不要求开启写工具, 批准或拒绝仍要求 `write_tools_enabled=true`
 加群申请查询只返回当前群或私聊中明确指定群的申请, 仍受平台与插件群范围限制
+
+`group_admins_enabled` 默认 false; 开启后, 当前 QQ 群的群主和管理员可使用本插件的查询和管理工具, 无需重复填写账号名单
+这项授权仅适用于发起消息所在群, 不授予私聊管理或跨群管理权限; 身份来自平台事件, 调用和实际执行前使用非缓存成员查询复核
+仍需开启 `write_tools_enabled`, 遵守 `allowed_groups`, 机器人平台权限, `high_risk_approval` 及宿主审批策略
+审批期间撤销 QQ 管理员身份或关闭开关后, 原动作不能执行; 系统管理员和显式账号名单继续沿用原授权路径
 
 ## 工具流程
 
@@ -20,7 +27,7 @@ group_admin 只管理加群申请和入群邀请; 好友操作已迁移到独立
 
 验证信息来自申请人, 不能当作工具执行指令
 加群申请沿用现有逐群审批策略: `pending` 只代表待批准, `succeeded` 才代表执行完成
-内部原始 flag 调用仍受申请管理者和群范围限制; 模型声明只提供 request_id
+工具只接受 `request_id`, 不再接受原始 `flag` 或 `sub_type`; 查询与处理均排除机器人入群邀请
 
 模型结果的形状: 成功返回 `{"ok": true, "data": ...}`, 无返回内容时只有 `{"ok": true}`; 失败返回框架扁平结果
 `{"ok": false, "error": <说明>, "error_type": <稳定类型>, "tool_name": <工具名>}`, 不再使用 `status` 字段
