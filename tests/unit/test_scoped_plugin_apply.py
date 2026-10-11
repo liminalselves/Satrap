@@ -81,7 +81,12 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
     assert isinstance(snapshot, EdictumPluginApplySnapshot)
     expected["apply_snapshot"] = snapshot
     expected["apply_targets"] = [("one", None, "assistant", "generation")]
+    guard = applied[0]["runtime_is_current"]
+    assert callable(guard) and guard()
+    expected["runtime_is_current"] = guard
     assert applied == [expected]
+    backend._platform_runtimes.pop("ob")
+    assert not guard()
 
 
 @pytest.mark.asyncio

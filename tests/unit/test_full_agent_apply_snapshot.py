@@ -105,6 +105,87 @@ async def _close(managers: list[Any]) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["capture", "lock", "source_check", "candidate"])
+async def test_full_batch_rejects_platform_manager_replacement(tmp_path: Path, monkeypatch: Any, phase: str) -> None:
+    """来源准备/等待锁/来源复核/候选准备期间平台管理器变化, 不提交旧批次"""
+    backend, configs, _globals, managers, providers, sessions, builds = await _setup(tmp_path, monkeypatch)
+    original_runtime = backend._platform_runtimes["one"]
+    entered = threading.Event()
+    resume = threading.Event()
+    candidate_entered = asyncio.Event()
+    candidate_resume = asyncio.Event()
+    candidates: list[Any] = []
+    capture = EdictumPluginApplySnapshot.capture
+    prepare = providers[0].prepare_session_async
+
+    def paused_capture(*args, **kwargs):
+        """保留真实捕获结果, 指定阶段用有界屏障暂停"""
+        snapshot = capture(*args, **kwargs)
+        if phase == "source_check":
+            original_check = type(snapshot.sources).is_current
+
+            def paused_check(sources):
+                """来源读取后尚未返回到事件循环时暂停"""
+                entered.set()
+                if not resume.wait(3):
+                    raise RuntimeError("测试未恢复来源检查")
+                return original_check(sources)
+
+            monkeypatch.setattr(type(snapshot.sources), "is_current", paused_check)
+        else:
+            entered.set()
+            if phase == "capture" and not resume.wait(3):
+                raise RuntimeError("测试未恢复捕获")
+        return snapshot
+
+    async def paused_prepare(session, **kwargs):
+        """完成实际插件安装后暂停候选, 确认失效时会清理候选资源"""
+        await prepare(session, **kwargs)
+        candidates.append(session)
+        candidate_entered.set()
+        await candidate_resume.wait()
+
+    try:
+        entry = managers[0].pool.get("one-0")
+        old_handle = sessions[0].list_plugins()[0]
+        await sessions[0].ctx.add_user_message("原运行时上下文保留")
+        old_context = sessions[0].ctx.get_context()
+        configs.update("assistant", {"params": {"system_prompt": "after"}})
+        monkeypatch.setattr(EdictumPluginApplySnapshot, "capture", paused_capture)
+        if phase == "lock":
+            await entry.async_operation_lock.acquire()
+        if phase == "candidate":
+            monkeypatch.setattr(providers[0], "prepare_session_async", paused_prepare)
+        task = asyncio.create_task(backend.reconcile_edictum_runtime_async(session_refs=[{"platform_id": "one", "session_id": "one-0"}]))
+        try:
+            if phase == "candidate":
+                await asyncio.wait_for(candidate_entered.wait(), 4)
+            else:
+                assert await asyncio.to_thread(entered.wait, 2)
+            backend._platform_runtimes["one"] = backend._platform_runtimes["two"]
+        finally:
+            resume.set()
+            candidate_resume.set()
+            if phase == "lock":
+                entry.async_operation_lock.release()
+        result = await asyncio.wait_for(task, 5)
+        assert len(result) == 1 and not result[0]["ok"] and "平台运行管理器已变化" in result[0]["error"]
+        assert managers[0].pool.get("one-0").session is sessions[0]
+        assert sessions[0].list_plugins()[0] is old_handle and sessions[0].ctx.get_context() == old_context
+        assert managers[1].pool.get("two-0").session is sessions[2]
+        assert len(builds) == (4 if phase == "candidate" else 3)
+        if candidates:
+            assert candidates[0].list_plugins() == []
+        backend._platform_runtimes["one"] = original_runtime
+        retry = await backend.reconcile_edictum_runtime_async(session_refs=[{"platform_id": "one", "session_id": "one-0"}])
+        assert retry[0]["ok"] and managers[0].pool.get("one-0").session is not sessions[0]
+    finally:
+        resume.set()
+        candidate_resume.set()
+        await _close(managers)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_full_batch_uses_one_source_and_preserves_effective_override(tmp_path: Path, monkeypatch: Any, asynchronous: bool) -> None:
     """

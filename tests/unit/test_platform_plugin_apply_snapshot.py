@@ -83,6 +83,70 @@ async def _release(sessions: list[Any], providers: list[EdictumProvider]) -> Non
         await provider.release_session_async(session)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["capture", "lock", "source_check"])
+@pytest.mark.parametrize("removed", [False, True])
+async def test_plugin_batch_rejects_platform_manager_replacement(tmp_path: Path, monkeypatch: Any, phase: str, removed: bool) -> None:
+    """来源捕获/等待锁/线程核验期间所属平台被替换或移除, 旧管理器不执行插件生命周期"""
+    backend, configs, globals_, sessions, providers = await _platforms(tmp_path, monkeypatch)
+    original_runtime = backend._platform_runtimes["one"]
+    replacement = backend._platform_runtimes["two"]
+    entry = original_runtime[0].pool.list_entries()["one-0"]
+    old = sessions[0].list_plugins()[0]
+    entered = threading.Event()
+    resume = threading.Event()
+    capture = EdictumPluginApplySnapshot.capture
+
+    def blocked_capture(*args, **kwargs):
+        """以实际快照作为测试来源, 只在指定交界暂停工作线程"""
+        snapshot = capture(*args, **kwargs)
+        if phase == "source_check":
+            original_check = type(snapshot.sources).is_current
+
+            def blocked_check(sources):
+                """来源核验返回前允许所属平台变化"""
+                entered.set()
+                if not resume.wait(3):
+                    raise RuntimeError("测试未恢复来源核验")
+                return original_check(sources)
+
+            monkeypatch.setattr(type(snapshot.sources), "is_current", blocked_check)
+        else:
+            entered.set()
+            if phase == "capture" and not resume.wait(3):
+                raise RuntimeError("测试未恢复捕获")
+        return snapshot
+
+    try:
+        plugin = configs.plugin_catalog.get("session_commands")
+        if plugin is None:
+            raise AssertionError("测试插件不存在")
+        globals_.save_global("session_commands", plugin.config_schema, {"about_text": "替换后才允许应用"})
+        monkeypatch.setattr(EdictumPluginApplySnapshot, "capture", blocked_capture)
+        if phase == "lock":
+            await entry.async_operation_lock.acquire()
+        task = asyncio.create_task(backend.reconcile_edictum_plugins_async(session_refs=[{"platform_id": "one", "session_id": "one-0"}]))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            if removed:
+                backend._platform_runtimes.pop("one")
+            else:
+                backend._platform_runtimes["one"] = replacement
+        finally:
+            resume.set()
+            if phase == "lock":
+                entry.async_operation_lock.release()
+        results = await asyncio.wait_for(task, 4)
+        assert len(results) == 1 and not results[0]["ok"] and "平台运行管理器已变化" in results[0]["error"]
+        assert sessions[0].list_plugins()[0] is old
+        backend._platform_runtimes["one"] = original_runtime
+        retry = await backend.reconcile_edictum_plugins_async(session_refs=[{"platform_id": "one", "session_id": "one-0"}])
+        assert retry[0]["ok"] and await sessions[0].run("/about") == "替换后才允许应用"
+    finally:
+        resume.set()
+        await _release(sessions, providers)
+
+
 def test_plugin_models_exclude_unrelated_platform_file(tmp_path: Path) -> None:
     """按插件引用过滤后, 不读取其它 Agent 所属平台的无关损坏模型文件"""
     plugin = tmp_path / "plugins" / "resource_probe"
@@ -112,6 +176,35 @@ def test_plugin_models_exclude_unrelated_platform_file(tmp_path: Path) -> None:
     with pytest.raises(KeyError):
         snapshot.models_for(other)
     assert other.storage_path.read_text(encoding="utf-8") == "broken"
+
+
+@pytest.mark.asyncio
+async def test_replaced_platform_failure_does_not_stop_other_platform(tmp_path: Path, monkeypatch: Any) -> None:
+    """同批一个平台变化只拒绝其两个旧实例, 其它平台仍按自己的身份应用"""
+    backend, configs, globals_, sessions, providers = await _platforms(tmp_path, monkeypatch)
+    capture = EdictumPluginApplySnapshot.capture
+
+    def replaced_after_capture(*args, **kwargs):
+        """取得同批真实来源后模拟平台移除"""
+        result = capture(*args, **kwargs)
+        backend._platform_runtimes.pop("one")
+        return result
+
+    try:
+        plugin = configs.plugin_catalog.get("session_commands")
+        if plugin is None:
+            raise AssertionError("测试插件不存在")
+        old_handles = [session.list_plugins()[0] for session in sessions]
+        globals_.save_global("session_commands", plugin.config_schema, {"about_text": "其它平台正常应用"})
+        monkeypatch.setattr(EdictumPluginApplySnapshot, "capture", replaced_after_capture)
+        results = await backend.reconcile_edictum_plugins_async()
+        assert len(results) == 3
+        assert all(not row["ok"] and "平台运行管理器已变化" in row["error"] for row in results[:2])
+        assert results[2]["ok"] and results[2]["platform_id"] == "two"
+        assert sessions[0].list_plugins()[0] is old_handles[0] and sessions[1].list_plugins()[0] is old_handles[1]
+        assert await sessions[2].run("/about") == "其它平台正常应用"
+    finally:
+        await _release(sessions, providers)
 
 
 @pytest.mark.asyncio

@@ -2563,6 +2563,7 @@ class BackendManager:
                 concurrency=concurrency,
                 **({"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}),
                 apply_targets=targets_by_platform[platform_id],
+                runtime_is_current=lambda pid=platform_id, expected=session_manager: self._platform_manager_current(pid, expected),
             ))
         grouped = await asyncio.gather(*pending) if pending else []
         return [item for group in grouped for item in group]
@@ -2673,10 +2674,16 @@ class BackendManager:
                 desired_plugins=desired_plugins,
                 concurrency=concurrency,
                 apply_targets=targets_by_platform[platform_id],
+                runtime_is_current=lambda pid=platform_id, expected=session_manager: self._platform_manager_current(pid, expected),
                 **apply_args,
             ))
         grouped = await asyncio.gather(*pending) if pending else []
         return [item for group in grouped for item in group]
+
+    def _platform_manager_current(self, platform_id: str, expected: SessionManager) -> bool:
+        """复核本批固定的平台管理器, 不把同名平台重建后的新管理器视为原对象"""
+        current = self._platform_runtimes.get(platform_id)
+        return current is not None and current[0] is expected
 
     async def stop(self):
         """优雅关闭: 逆序停止"""

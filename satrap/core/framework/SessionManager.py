@@ -1120,7 +1120,8 @@ class SessionManager:
                 return await self._restart_entry_locked(session_id, entry)
 
     async def _restart_entry_locked(self, session_id: str, entry: SessionEntry, *,
-                                    apply_snapshot: EdictumPluginApplySnapshot | None = None) -> dict[str, Any]:
+                                    apply_snapshot: EdictumPluginApplySnapshot | None = None,
+                                    runtime_is_current: Callable[[], bool] | None = None) -> dict[str, Any]:
         """
         在已取得会话操作锁后构建并切换候选实例, 保留失败兜底
 
@@ -1128,6 +1129,7 @@ class SessionManager:
         - session_id: 活跃会话 ID
         - entry: 调用者已锁定的当前条目
         - apply_snapshot: 可选本次固定来源, 默认保持手动重启行为
+        - runtime_is_current: 可选平台管理器复核, 候选准备后提交前再次检查
 
         返回:
         - 热重启结果, 来源变化或候选失败时保留旧实例
@@ -1175,6 +1177,7 @@ class SessionManager:
                 await self._prepare_session_async(candidate.session, **snapshot_args)
             if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
                 raise RuntimeError("配置在候选准备期间已变化, 请重试应用")
+            self._check_apply_runtime(runtime_is_current)
         except Exception as error:
             logger.error(f"[SessionManager] 候选会话准备失败: {session_id}, {error}\n{traceback.format_exc()}")
             await self._release_session_memory_async(candidate.session)
@@ -1724,6 +1727,7 @@ class SessionManager:
         concurrency: int = 4,
         apply_snapshot: EdictumPluginApplySnapshot | None = None,
         apply_targets: list[tuple[str, SessionEntry, str, str]] | None = None,
+        runtime_is_current: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         """
         对当前平台选定的活跃 Edictum 会话应用完整插件差量
@@ -1736,6 +1740,7 @@ class SessionManager:
         - concurrency: 最大并发协调数
         - apply_snapshot: 可选后端跨平台共享快照, 默认由 Provider 准备
         - apply_targets: 可选来源准备前固定的实例范围与运行代次
+        - runtime_is_current: 可选后端平台管理器身份复核, 不缓存结果
 
         返回:
         - list[dict[str, Any]]: 逐会话应用结果
@@ -1762,10 +1767,12 @@ class SessionManager:
 
             async def apply_locked() -> object:
                 """取得原操作锁后复核实例, 来源及绑定, 不沿用捕获前状态"""
+                self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
                     raise RuntimeError("会话运行时已变化")
                 if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
                     raise RuntimeError("插件配置在等待期间已变化, 请重试应用")
+                self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
                     raise RuntimeError("会话运行时已变化")
                 stored = self.store.get(session_id)
@@ -1776,7 +1783,9 @@ class SessionManager:
                     raise RuntimeError("运行时 Agent 绑定与目标不一致, 请应用完整 Agent 配置")
                 snapshot_args = {"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}
                 result = reconcile(entry.session, desired_plugins=desired_plugins, **snapshot_args)
-                return await result if inspect.isawaitable(result) else result
+                result = await result if inspect.isawaitable(result) else result
+                self._check_apply_runtime(runtime_is_current)
+                return result
 
             try:
                 async with semaphore, entry.async_operation_lock:
@@ -1923,6 +1932,7 @@ class SessionManager:
         concurrency: int = 4,
         apply_snapshot: EdictumPluginApplySnapshot | None = None,
         apply_targets: list[tuple[str, SessionEntry, str, str]] | None = None,
+        runtime_is_current: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         """
         对活跃 Edictum 会话应用插件差量、热重启或卸载
@@ -1934,6 +1944,7 @@ class SessionManager:
         - concurrency: 最大并发会话数
         - apply_snapshot: 可选后端跨平台共享目标, 默认由 Provider 捕获
         - apply_targets: 可选准备前固定的实例范围, 默认在本入口捕获
+        - runtime_is_current: 可选后端平台管理器身份复核, 不缓存结果
 
         返回:
         - list[dict[str, Any]]: 逐会话协调结果
@@ -1963,10 +1974,12 @@ class SessionManager:
                 返回:
                 - 重启, 卸载, 插件协调或无变化结果
                 """
+                self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
                     raise RuntimeError("会话运行时已变化")
                 if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
                     raise RuntimeError("配置在等待期间已变化, 请重试应用")
+                self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
                     raise RuntimeError("会话运行时已变化")
                 stored = self.store.get(session_id)
@@ -1997,11 +2010,12 @@ class SessionManager:
                         plan["changed_fields"] = [*plan.get("changed_fields", []), "model_config"]
                 if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
                     raise RuntimeError("配置在目标核验期间已变化, 请重试应用")
+                self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
                     raise RuntimeError("会话运行时已变化")
                 action = str(plan.get("action", "noop"))
                 if action == "restart":
-                    return await self._restart_entry_locked(session_id, entry, apply_snapshot=apply_snapshot)
+                    return await self._restart_entry_locked(session_id, entry, apply_snapshot=apply_snapshot, runtime_is_current=runtime_is_current)
                 if action == "unload":
                     return await self._unload_entry_locked(session_id, entry)
                 if action == "reconcile_plugins" and reconcile_plugins is not None:
@@ -2012,6 +2026,7 @@ class SessionManager:
                                                **({"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}))
                     if inspect.isawaitable(result):
                         result = await result
+                    self._check_apply_runtime(runtime_is_current)
                     payload: dict[str, Any] = (
                         cast(dict[str, Any], result).copy()
                         if isinstance(result, dict)
@@ -2049,6 +2064,12 @@ class SessionManager:
         for session_id, entry, name, generation in targets:
             pending.append(reconcile_one(session_id, entry, name, generation))
         return list(await asyncio.gather(*pending)) if pending else []
+
+    @staticmethod
+    def _check_apply_runtime(runtime_is_current: Callable[[], bool] | None) -> None:
+        """每次应用边界实时检查所属平台, 已失效批次交给原错误封装记录并返回"""
+        if runtime_is_current is not None and not runtime_is_current():
+            raise RuntimeError("平台运行管理器已变化, 请重试应用")
 
     # ---------- 查询/清理 ----------
     def list_sessions(self) -> List[SessionMetadata]:
