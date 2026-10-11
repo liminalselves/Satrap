@@ -692,3 +692,73 @@ async def test_edictum_full_config_change_hot_restarts_with_latest_defaults(
     assert preserved is not None
     assert isinstance(preserved.session, _CapturingAsyncSession)
     assert preserved.session.marker == "after"
+
+
+@pytest.mark.asyncio
+async def test_full_agent_apply_does_not_build_models_for_unchanged_effective_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    完整保存只重建有效参数变化实例, 实例覆盖和无关 Agent 保留原模型及会话
+
+    参数:
+    - tmp_path: 隔离配置与数据库
+    - monkeypatch: 模型构建计数夹具
+    """
+    registry = EdictumTypeRegistry()
+    registry.register(EdictumTypeDefinition(name="capturing_async", factory=_CapturingAsyncSession, is_async=True))
+    configs = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    for name in ("target", "unrelated"):
+        configs.create(name, {"edictum_type": "capturing_async", "model_name": "demo", "params": {"marker": "before"}})
+    manager = SessionManager(db_path=tmp_path / "platform.db", platform_id="test")
+    manager.register_provider(EdictumProvider(configs, registry))
+    models = ModelConfigManager(storage_path=tmp_path / "models.json")
+    models.update_llm_config("demo", api_key="test-key", model="demo")
+    manager.model_config_manager = models
+    builds: list[object] = []
+
+    def build(*args: object, **kwargs: object) -> object:
+        """
+        计数实际经过模型构建入口的调用
+
+        参数:
+        - args: 模型配置位置参数
+        - kwargs: 模型异步选项
+
+        返回:
+        - 无需网络的独立模型占位
+        """
+        model = object()
+        builds.append(model)
+        return model
+
+    monkeypatch.setattr(importlib.import_module("satrap.core.framework.SessionManager"), "build_llm_from_config", build)
+    for sid, name, params in (("inherited", "target", {}), ("overridden", "target", {"marker": "local"}), ("other", "unrelated", {})):
+        manager.register_session_from_provider_config("edictum", name, session_id=sid, extra_params=params)
+        assert await manager.activate_session_async(sid)
+    old_entries = {sid: manager.pool.get(sid) for sid in ("inherited", "overridden", "other")}
+    if any(entry is None for entry in old_entries.values()):
+        raise AssertionError("测试实例未激活")
+    old_sessions = {sid: entry.session for sid, entry in old_entries.items() if entry is not None}
+    assert len(builds) == 3
+    backend = cast(Any, BackendManager.__new__(BackendManager))
+    backend._edictum_cfg = configs
+    backend._platform_runtimes = {"test": (manager, None)}
+    writer = EdictumConfigManager(registry, configs.storage_path)
+    writer.update("target", {"params": {"marker": "after"}})
+    result = await backend.reconcile_edictum_runtime_async(config_name="target")
+    assert {item["session_id"]: item["action"] for item in result} == {"inherited": "restart", "overridden": "noop"}
+    assert all(item["ok"] for item in result) and len(builds) == 4
+    current = {sid: manager.pool.get(sid) for sid in old_sessions}
+    if any(entry is None for entry in current.values()):
+        raise AssertionError("应用后测试实例丢失")
+    active = {sid: entry.session for sid, entry in current.items() if entry is not None}
+    assert active["inherited"] is not old_sessions["inherited"]
+    assert active["overridden"] is old_sessions["overridden"]
+    assert active["other"] is old_sessions["other"]
+    if not isinstance(active["inherited"], _CapturingAsyncSession) or not isinstance(active["overridden"], _CapturingAsyncSession):
+        raise AssertionError("测试会话类型发生变化")
+    assert active["inherited"].marker == "after" and active["overridden"].marker == "local"
+    repeated = await backend.reconcile_edictum_runtime_async(config_name="target")
+    assert all(item["ok"] and item["action"] == "noop" for item in repeated)
+    assert len(builds) == 4
