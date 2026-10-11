@@ -13,21 +13,25 @@ from satrap.edictum.plugin_config import ConfigField, PluginConfigManager, schem
 from satrap.edictum.plugin_spec import parse_plugin_specs
 from satrap.edictum.plugin_apply import PluginApplySnapshot
 from satrap.core.log import logger
+from satrap.core.config.model_snapshot import ModelConfigReader
 
 
 class PluginInstallConfig(dict[str, Any]):
     """安装参数携带首次技能状态, 不混入插件业务配置字段"""
 
-    def __init__(self, values: dict[str, Any], *, initial_skills: dict[str, bool] | None = None):
+    def __init__(self, values: dict[str, Any], *, initial_skills: dict[str, bool] | None = None,
+                 model_snapshot: ModelConfigReader | None = None):
         """
         构建兼容字典的安装参数
 
         参数:
         - values: 插件业务配置
         - initial_skills: 首次安装的技能独立开关, 默认 None 使用启用状态
+        - model_snapshot: 可选旧资源来源, 仅用于生命周期回滚且不作为业务参数传给插件
         """
         super().__init__(values)
         self.initial_skills = dict(initial_skills or {})
+        self.model_snapshot = model_snapshot
 
 
 class EffectivePluginConfig(PluginInstallConfig):

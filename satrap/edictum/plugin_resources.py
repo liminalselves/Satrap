@@ -8,7 +8,7 @@ from typing import Any
 import json
 
 from satrap.core.framework.BackGroundManager import ConfigTarget
-from satrap.core.config.model_snapshot import ModelConfigReader
+from satrap.core.config.model_snapshot import ModelConfigReader, ModelConfigSnapshot
 from satrap.core.APICall.ReRankCall import AsyncReRank, ReRank
 from satrap.core.APICall.EmbedCall import AsyncEmbedding, Embedding
 from satrap.core.APICall.ASRCall import build_asr_from_config
@@ -61,6 +61,7 @@ class PluginResources:
     ) -> None:
         self.async_ = async_
         self._configs: dict[str, tuple[str, Any]] = {}
+        self._model_names: dict[str, str] = {}
         self._clients: dict[str, Any] = {}
         for key, definition in schema.items():
             value = config.get(key)
@@ -70,6 +71,19 @@ class PluginResources:
                 if manager is None:
                     raise ValueError("插件模型依赖需要后端模型配置服务")
                 self._configs[key] = (definition.type, named_model_config(manager, definition.type, value))
+                self._model_names[key] = value
+
+    def snapshot_models(self) -> ModelConfigSnapshot:
+        """
+        保留实际安装时的模型参数, 回滚不能重新读取已变化的文件
+
+        返回:
+        - 独立只读模型来源, 不复制客户端或授权状态
+        """
+        values: dict[str, dict[str, Any]] = {target: {} for target in MODEL_TYPES.values()}
+        for key, (kind, config) in self._configs.items():
+            values[MODEL_TYPES[kind]][self._model_names[key]] = config
+        return ModelConfigSnapshot(None, values)
 
     def get(self, key: str, default: Any = None) -> Any:
         """首次使用才构造客户端, 安装预校验不发送网络请求"""

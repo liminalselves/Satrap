@@ -41,16 +41,17 @@ def llm_config_fingerprint(config: LLMConfig) -> str:
 class ModelConfigSnapshot:
     """同一次应用中独立持有的模型配置, 只有读取接口"""
 
-    def __init__(self, storage_path: Path, values: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, storage_path: Path | None, values: dict[str, dict[str, Any]]) -> None:
         """
         保存已解析的独立配置
 
         参数:
-        - storage_path: 原模型文件, 仅用于选择本次来源
+        - storage_path: 原模型文件, 已安装资源的内存快照为 None
         - values: 各类型的命名模型对象
         """
         self.storage_path = storage_path
-        self._values = deepcopy(values)
+        self._values = {target: {ModelConfigManager._normalize_name(name): deepcopy(value) for name, value in configs.items()}
+                        for target, configs in values.items()}
 
     @classmethod
     def read(cls, manager: ModelConfigManager) -> ModelConfigSnapshot:

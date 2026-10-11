@@ -16,6 +16,8 @@ from satrap.edictum.plugin import CAPABILITY_KINDS, Plugin
 from satrap.core.utils.performance import PhaseTimings
 
 from satrap.core.log import logger
+from satrap.core.config.model_snapshot import ModelConfigReader
+from satrap.edictum.plugin_resources import PluginResources
 
 
 _CAPABILITY_SINGULAR = {
@@ -274,6 +276,7 @@ def install_plugin_spec(installer: PluginInstaller, spec: PluginSpec) -> tuple[o
 async def install_plugin_spec_async(
     installer: AsyncPluginInstaller,
     spec: PluginSpec,
+    *, model_snapshot: ModelConfigReader | None = None,
 ) -> tuple[object, list[str]]:
     """
     异步安装插件并应用全部子能力状态
@@ -281,6 +284,7 @@ async def install_plugin_spec_async(
     参数:
     - installer: 插件安装器
     - spec: 插件运行规格
+    - model_snapshot: 回滚时捕获的实际旧模型资源, 默认使用安装环境来源
 
     返回:
     - tuple[object, list[str]]: 插件句柄和能力变更
@@ -288,7 +292,7 @@ async def install_plugin_spec_async(
     if not spec.path:
         raise ValueError(f"插件不存在: {spec.name}")
     config_type = EffectivePluginConfig if spec.config_resolved else PluginInstallConfig
-    plugin = installer(spec.path, config_type(spec.config, initial_skills=spec.capabilities.get("skills")))
+    plugin = installer(spec.path, config_type(spec.config, initial_skills=spec.capabilities.get("skills"), model_snapshot=model_snapshot))
     if inspect.isawaitable(plugin):
         plugin = await plugin
     try:
@@ -376,6 +380,7 @@ async def _uninstall_plugin_async(
 async def _rollback_install_async(
     installer: AsyncPluginInstaller,
     previous: PluginSpec,
+    model_snapshot: ModelConfigReader | None,
 ) -> tuple[object, list[str]]:
     """
     重新安装旧规格完成生命周期回滚
@@ -383,11 +388,12 @@ async def _rollback_install_async(
     参数:
     - installer: 插件安装器
     - previous: 旧插件规格
+    - model_snapshot: 旧句柄实际资源, 不重新查最新模型文件
 
     返回:
     - tuple[object, list[str]]: 恢复后的句柄和能力变更
     """
-    return await install_plugin_spec_async(installer, previous)
+    return await install_plugin_spec_async(installer, previous, model_snapshot=model_snapshot)
 
 
 async def reconcile_plugin_states_async(
@@ -504,6 +510,8 @@ async def reconcile_plugin_states_async(
             elif operation == "reinstall":
                 if previous is None or desired is None:
                     raise RuntimeError(f"插件重装缺少规格: {name}")
+                resources = getattr(state.handle, "resources", None)
+                previous_models = resources.snapshot_models() if isinstance(resources, PluginResources) else None
                 await _uninstall_plugin_async(uninstaller, name)
                 state.handle = None
                 try:
@@ -522,7 +530,7 @@ async def reconcile_plugin_states_async(
                             results.append(result)
                             continue
                     try:
-                        rollback_handle, _ = await _rollback_install_async(installer, previous)
+                        rollback_handle, _ = await _rollback_install_async(installer, previous, previous_models)
                         state.handle = rollback_handle
                         state.applied_spec = previous
                         state.mark("rolled_back", status="loaded", error=str(install_error))

@@ -100,6 +100,8 @@ def install_plugin(
                 self, name, config_schema, plugin_config
             )
         model_manager = getattr(self, "plugin_model_manager", None)
+        if isinstance(config, PluginInstallConfig) and config.model_snapshot is not None:
+            model_manager = config.model_snapshot
         if model_manager is None and any(
             item.type in MODEL_TYPES for item in config_schema.values()
         ):

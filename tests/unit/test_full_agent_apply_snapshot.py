@@ -398,6 +398,76 @@ async def test_full_application_plugin_resources_use_captured_model_source(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_plugin_reinstall_rollback_restores_installed_model_resources(tmp_path: Path, monkeypatch: Any, asynchronous: bool) -> None:
+    """
+    真正安装失败后恢复四类旧资源, 不以最新模型来源冒充旧资源版本
+
+    参数:
+    - tmp_path: 隔离配置与插件目录
+    - monkeypatch: 真实实例夹具
+    - asynchronous: 同步或异步插件生命周期
+    """
+    backend, configs, _globals, managers, providers, sessions, builds = await _setup(tmp_path, monkeypatch, asynchronous)
+    models = managers[0].model_config_manager
+    try:
+        models.set_embedding_config(EmbeddingConfig(model="embedding-old", api_key="test", dimensions=3), "resource")
+        models.set_rerank_config(ReRankConfig(model="rerank-old", api_key="test", base_url="http://localhost:1"), "resource")
+        models.set_asr_config(ASRConfig(model="asr-old", api_key="test"), "resource")
+        plugin = tmp_path / "plugins" / "rollback_probe"
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(
+            "name: rollback_probe\nversion: 0.1.0\nconfig_schema:\n"
+            "  fail:\n    type: bool\n    default: false\n"
+            "  llm:\n    type: llm\n    default: demo\n"
+            "  embed:\n    type: embed\n    default: resource\n"
+            "  rerank:\n    type: rerank\n    default: resource\n"
+            "  asr:\n    type: asr\n    default: resource\n", encoding="utf-8",
+        )
+        (plugin / "tools.py").write_text(
+            "def get_tools(session, config, *, resources):\n"
+            "    session._rollback_resources = resources\n"
+            "    if config['fail']:\n"
+            "        raise ValueError('candidate install failed')\n"
+            "    return []\n", encoding="utf-8",
+        )
+        configs.plugin_catalog.user_dir = plugin.parent
+        configs.update("assistant", {"plugins": ["session_commands", "rollback_probe"]})
+        initial = await backend.reconcile_edictum_plugins_async(config_name="assistant")
+        assert all(item["ok"] for item in initial)
+        old_handles = [next(handle for handle in session.list_plugins() if handle.name == "rollback_probe") for session in sessions]
+        old_specs = [next(state.applied_spec for state in provider._get_runtime_state(session).plugins if state.name == "rollback_probe")
+                     for provider, session in ((providers[0], sessions[0]), (providers[0], sessions[1]), (providers[1], sessions[2]))]
+        old_values = {key: value[1] for key, value in sessions[0]._rollback_resources._configs.items()}
+        models.update_llm_config("demo", model="llm-new")
+        models.set_embedding_config(EmbeddingConfig(model="embedding-new", api_key="test", dimensions=9), "resource")
+        models.set_rerank_config(ReRankConfig(model="rerank-new", api_key="test", base_url="http://localhost:2"), "resource")
+        models.set_asr_config(ASRConfig(model="asr-new", api_key="test"), "resource")
+        configs.update("assistant", {"plugins": ["session_commands", {"name": "rollback_probe", "config": {"fail": True}}]})
+        failed = await backend.reconcile_edictum_plugins_async(config_name="assistant")
+        assert len(failed) == 3 and all(not item["ok"] for item in failed)
+        for index, (provider, session) in enumerate(((providers[0], sessions[0]), (providers[0], sessions[1]), (providers[1], sessions[2]))):
+            result = next(item for item in failed[index]["plugins"] if item["plugin"] == "rollback_probe")
+            assert result["status"] == "rolled_back"
+            state = next(state for state in provider._get_runtime_state(session).plugins if state.name == "rollback_probe")
+            assert state.applied_spec == old_specs[index] and state.drift
+            assert state.handle is not old_handles[index]
+            assert {key: value[1] for key, value in session._rollback_resources._configs.items()} == old_values
+            assert session._rollback_resources._clients == {} and session.plugin_model_manager is models
+        configs.update("assistant", {"plugins": ["session_commands", "rollback_probe"]})
+        recovered = await backend.reconcile_edictum_plugins_async(config_name="assistant")
+        assert all(item["ok"] for item in recovered)
+        for session in sessions:
+            assert {key: value[1].model for key, value in session._rollback_resources._configs.items()} == {
+                "llm": "llm-new", "embed": "embedding-new", "rerank": "rerank-new", "asr": "asr-new",
+            }
+            assert session.plugin_model_manager is models
+        assert len(builds) == 3
+    finally:
+        await _close(managers)
+
+
+@pytest.mark.asyncio
 async def test_model_change_during_capture_retries_all_sources(tmp_path: Path, monkeypatch: Any) -> None:
     """
     捕获模型中途变化时整体重读, 不把旧参数标成新来源版本

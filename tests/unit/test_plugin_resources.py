@@ -62,6 +62,46 @@ def test_lazy_resources_share_within_plugin_and_close(tmp_path, monkeypatch):
     client.client.close.assert_called_once()
 
 
+@pytest.mark.parametrize("configured_name", ["selected", " selected "])
+def test_installed_model_snapshot_survives_source_deletion_and_client_close(tmp_path, monkeypatch, configured_name):
+    """旧资源参数独立持有, 关闭旧客户端后回滚创建新客户端且不读取已删除引用"""
+    manager = ModelConfigManager(tmp_path / "models.json", auto_create=False)
+    manager.set_embedding_config(EmbeddingConfig(model="old", api_key="test", dimensions=3), "selected")
+    schema = parse_config_schema({"config_schema": {"embed": {"type": "embed"}}})
+    built = []
+
+    def build(kind, config, **kwargs):
+        """
+        模拟独立客户端并记录实际参数, 不发送网络请求
+
+        参数:
+        - kind: 模型资源类型
+        - config: 安装参数
+        - kwargs: 同步或异步选项
+
+        返回:
+        - 独立客户端
+        """
+        client = Mock()
+        built.append((kind, config, client))
+        return client
+
+    monkeypatch.setattr("satrap.edictum.plugin_resources.build_model_client", build)
+    original = PluginResources(manager, schema, {"embed": configured_name}, async_=False)
+    old_client = original["embed"]
+    snapshot = original.snapshot_models()
+    original.close()
+    assert manager.remove_embedding_config("selected")
+    restored = PluginResources(snapshot, schema, {"embed": configured_name}, async_=False)
+    assert restored._clients == {}
+    snapshot.get_embedding_config("selected").dimensions = 99
+    assert restored["embed"] is not old_client
+    assert [(kind, config.model, config.dimensions) for kind, config, _ in built] == [("embed", "old", 3), ("embed", "old", 3)]
+    old_client.client.close.assert_called_once()
+    restored.close()
+    built[1][2].client.close.assert_called_once()
+
+
 @pytest.mark.parametrize("payload", [{}, {"results": {}}, {"results": [None]}, {"results": [{"index": 0, "relevance_score": float("nan")}]}, {"results": [{"index": True, "relevance_score": 1}]}])
 def test_strict_rerank_rejects_malformed_responses(payload):
     with pytest.raises(ValueError):
