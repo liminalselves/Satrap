@@ -2324,6 +2324,9 @@ class ChatService:
         返回:
         - list[dict[str, Any]]: 逐会话同步结果
         """
+        targets = [(conv, conv.session, conv.persisted,
+                    plugin_name is None or any(state.name == plugin_name and (state.enabled or state.handle is not None) for state in conv.plugin_states))
+                   for conv in list(self._conversations.values())]
         read_started = time.perf_counter()
 
         def prepare() -> tuple[PluginApplySnapshot, list[Any]]:
@@ -2351,12 +2354,13 @@ class ChatService:
         config_read_ms = (time.perf_counter() - read_started) * 1000
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
-        async def reconcile_one(conv: _Conversation) -> dict[str, Any]:
+        async def reconcile_one(conv: _Conversation, planned_session: AsyncSimpleSession) -> dict[str, Any]:
             """
             在原会话操作锁内协调一个 Chat 实例
 
             参数:
             - conv: 已选中的正式会话
+            - planned_session: 来源准备前固定的运行实例
 
             返回:
             - 成功或失败的独立应用结果
@@ -2367,13 +2371,15 @@ class ChatService:
             try:
                 async with semaphore, conv.plugin_lock:
                     lock_wait_ms = (time.perf_counter() - lock_started) * 1000
-                    if self._conversations.get(conv.conversation_id) is not conv:
+                    if self._conversations.get(conv.conversation_id) is not conv or conv.session is not planned_session or not conv.persisted:
                         return {"conversation_id": conv.conversation_id, "ok": False, "status": "error", "error": "会话运行时已变化"}
                     if not await asyncio.to_thread(snapshot.is_current):
                         logger.warning(f"[聊天] 会话 {conv.conversation_id} 插件应用快照已过期, 请重试应用")
                         return {"conversation_id": conv.conversation_id, "ok": False, "status": "error",
                                 "error": "插件配置在等待期间已变化, 请重试应用",
                                 "timings_ms": {**timings.to_payload(), "lock_wait_ms": round(lock_wait_ms, 3), "config_read_ms": round(config_read_ms, 3)}}
+                    if self._conversations.get(conv.conversation_id) is not conv or conv.session is not planned_session or not conv.persisted:
+                        return {"conversation_id": conv.conversation_id, "ok": False, "status": "error", "error": "会话运行时已变化"}
                     result = await reconcile_plugin_states_async(
                         conv.plugin_states,
                         resolve_runtime_specs(conv.session, desired_specs, snapshot.catalog, snapshot=snapshot),
@@ -2401,16 +2407,17 @@ class ChatService:
                 }
 
         pending = []
-        for conv in list(self._conversations.values()):
+        for conv, planned_session, persisted, old_reference in targets:
             if plugin_name is not None and not (
                 any(spec.name == plugin_name and spec.enabled for spec in desired_specs)
-                or any(state.name == plugin_name and (state.enabled or state.handle is not None) for state in conv.plugin_states)
+                or old_reference
             ):
                 continue
-            if not conv.persisted:
-                conv.build_fingerprint = ""
+            if not persisted:
+                if self._conversations.get(conv.conversation_id) is conv and conv.session is planned_session and not conv.persisted:
+                    conv.build_fingerprint = ""
                 continue
-            pending.append(reconcile_one(conv))
+            pending.append(reconcile_one(conv, planned_session))
         return list(await asyncio.gather(*pending)) if pending else []
 
     async def reconcile_plugins(self, *, plugin_name: str | None = None) -> dict[str, Any]:

@@ -210,7 +210,7 @@ async def test_chat_filter_skips_unrelated_and_keeps_old_enabled_reference(monke
     service._coordinate_sandbox = lambda session: None
     old = SimpleNamespace(conversation_id="old", persisted=True, plugin_states=[SimpleNamespace(name="target", enabled=True, handle=object())],
                           plugin_lock=asyncio.Lock(), session=SimpleNamespace(install_plugin="old", uninstall_plugin=None))
-    unrelated = SimpleNamespace(conversation_id="preload", persisted=False, plugin_states=[], build_fingerprint="unchanged")
+    unrelated = SimpleNamespace(conversation_id="preload", persisted=False, plugin_states=[], build_fingerprint="unchanged", session=object())
     service._conversations = {"old": old, "preload": unrelated}
     applied = []
 

@@ -1221,6 +1221,101 @@ def test_chat_queued_apply_rejects_changed_source_and_retries_latest(tmp_path: P
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("change", ["session", "entry", "source_check", "new_conversation"])
+def test_chat_application_freezes_instances_before_capture_and_rechecks_after_source(tmp_path: Path, monkeypatch: Any, change: str) -> None:
+    """
+    Chat 在捕获前固定实例, 同对象替换及来源核验期间变化均保留旧插件
+
+    参数:
+    - tmp_path: 隔离目录
+    - monkeypatch: 来源捕获和核验通知夹具
+    - change: 排队实例, 条目, 来源核验期间实例或新增会话
+    """
+    manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
+    _write_chat_commands(tmp_path, monkeypatch)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("chat_commands", True)
+    captured = threading.Event()
+    capture = PluginApplySnapshot.capture
+
+    async def run() -> None:
+        conv = None
+        original = None
+        cid = ""
+        try:
+            cid = await svc.create_conversation(model="default")
+            conv = _must_conversation(svc, cid)
+            other_id = await svc.create_conversation(model="default")
+            other = _must_conversation(svc, other_id)
+            original = conv.session
+            handle = original.list_plugins()[0]
+            other_handle = other.session.list_plugins()[0]
+            entry = svc._plugins.catalog.get("chat_commands")
+            if entry is None:
+                raise AssertionError("测试插件未加载")
+            manager.save_global("chat_commands", entry.config_schema, {"about_text": "changed"})
+
+            def record(catalog, manager, **kwargs):
+                """
+                捕获真实来源, 在第二次核验让出循环期间替换实例
+
+                参数:
+                - catalog: 目录来源
+                - manager: 全局配置来源
+                - kwargs: 状态文件等捕获选项
+
+                返回:
+                - 已捕获快照
+                """
+                snapshot = capture(catalog, manager, **kwargs)
+                if change == "source_check":
+                    check = snapshot.is_current
+                    checks = []
+
+                    def checked():
+                        """首次核验属于准备阶段, 随后锁内核验时替换实例"""
+                        valid = check()
+                        checks.append(True)
+                        if len(checks) == 2:
+                            conv.session = other.session
+                        return valid
+
+                    monkeypatch.setattr(snapshot, "is_current", checked)
+                captured.set()
+                return snapshot
+
+            monkeypatch.setattr(PluginApplySnapshot, "capture", record)
+            await conv.plugin_lock.acquire()
+            task = asyncio.create_task(svc.reconcile_plugins(plugin_name="chat_commands"))
+            try:
+                assert await asyncio.to_thread(captured.wait, 2)
+                if change == "session":
+                    conv.session = other.session
+                elif change == "entry":
+                    svc._conversations[cid] = other
+                elif change == "new_conversation":
+                    await svc.create_conversation(model="default")
+            finally:
+                conv.plugin_lock.release()
+            result = await asyncio.wait_for(task, 5)
+            assert len(result["sessions"]) == 2
+            item = next(item for item in result["sessions"] if item["conversation_id"] == cid)
+            if change == "new_conversation":
+                assert result["applied"] and item["ok"] and result["failed"] == 0
+            else:
+                assert not item["ok"] and item["error"] == "会话运行时已变化" and result["failed"] == 1
+                assert original.list_plugins()[0] is handle
+            assert other.session.list_plugins()[0] is not other_handle
+        finally:
+            if conv is not None and original is not None:
+                conv.session = original
+                svc._conversations[cid] = conv
+            await svc.close()
+
+    asyncio.run(run())
+
+
 def test_chat_corrupt_state_does_not_disable_existing_runtime(tmp_path: Path, monkeypatch: Any) -> None:
     """
     损坏启用状态使应用明确失败, 不把空状态当成应卸载全部插件
