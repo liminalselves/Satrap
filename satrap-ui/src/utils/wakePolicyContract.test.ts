@@ -87,6 +87,7 @@ describe('策略字段契约加载', () => {
     expect(OVERRIDE_FIELDS.find((field) => field.key === 'wake_mode')?.options).toEqual([
       { value: 'frequency', label: '按消息数量触发' },
       { value: 'necessity', label: '按必要性评分' },
+      { value: 'all', label: '每条消息触发' },
     ]);
   });
 

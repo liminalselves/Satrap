@@ -61,9 +61,10 @@ export interface WakeDryRunDecision {
 }
 
 export interface WakeThresholdPreview {
+  applicable?: boolean;
   // 关闭时为 null: 有效来源是 wake_talk_value=0
   value: number | null;
-  source: 'explicit' | 'talk_value' | 'default';
+  source: 'explicit' | 'talk_value' | 'default' | 'not_applicable';
   label: string;
   talk_value: number | null;
   // talk_value 是否真的生效; false 且设置了 talk_value 表示被显式阈值覆盖

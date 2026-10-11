@@ -192,6 +192,33 @@
     {
       "context": "platform",
       "field": "wake_mode",
+      "id": "platform-mode-all",
+      "valid": true,
+      "value": {
+        "wake_mode": "all"
+      }
+    },
+    {
+      "context": "group",
+      "field": "wake_mode",
+      "id": "group-mode-all",
+      "valid": true,
+      "value": {
+        "wake_mode": "all"
+      }
+    },
+    {
+      "context": "time",
+      "field": "wake_mode",
+      "id": "time-mode-all",
+      "valid": true,
+      "value": {
+        "wake_mode": "all"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_mode",
       "id": "platform-mode-unknown",
       "valid": false,
       "value": {

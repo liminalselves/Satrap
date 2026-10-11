@@ -75,7 +75,7 @@ POLICY_FIELD_CONTRACT: dict[str, PolicyField] = {
     },
     "wake_mode": {
         "kind": "enum", "scope": "time", "hot_reload": True, "display_in_preview": True,
-        "enum": ("explicit", "frequency", "necessity"), "off_value": "explicit", "default": "explicit",
+        "enum": ("explicit", "frequency", "necessity", "all"), "off_value": "explicit", "default": "explicit",
     },
     "wake_message_threshold": {
         "kind": "int", "scope": "time", "hot_reload": True, "display_in_preview": True,

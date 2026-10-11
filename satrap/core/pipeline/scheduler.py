@@ -360,9 +360,10 @@ class PipelineScheduler:
         for label, status in (("quote", quote_status), ("forward", forward_status)):
             if status not in {"none", "resolved", ""}:
                 codes.append(f"{label}:{status}")
+        overflow = event.get_extra("wake_window_overflow")
         if failed and not resolved:
             verdict = "failed"
-        elif failed or any(code.endswith(":skipped:none") for code in codes):
+        elif failed or overflow or any(code.endswith(":skipped:none") for code in codes):
             verdict = "partial"
         elif codes:
             verdict = "skipped"
@@ -372,7 +373,7 @@ class PipelineScheduler:
             event, "projection", verdict,
             reason_code=str(safe_getattr_str(projected, "attachment_status")) or "none",
             reason=f"附件已解析 {resolved} 项, 未完成 {len(codes)} 项",
-            attachments=",".join(codes[:8]), notes="|".join(getattr(projected, "notes", ()) or ()),
+            attachments=",".join(codes[:8]), notes="|".join([*(getattr(projected, "notes", ()) or ()), *([f"wake_window_budget:{overflow}"] if overflow else [])]),
             turn_id=self._request_turn_ids(event),
         )
 
@@ -493,7 +494,15 @@ class PipelineScheduler:
                     return
 
             # Step.2 评估独立唤醒规则并记录命中原因
+            if deadline_ticket is not None and not self._automatic_policy_current(event):
+                deadline_ticket.cancelled = True
+                self._record_rejection(event, "wake_decision", "旧补偿事件的策略已失效", reason_code="stale_wake_policy")
+                return
             self._apply_wake_policy(event)
+            wake_decision = event.get_extra("wake_decision")
+            all_wake = isinstance(wake_decision, WakeDecision) and wake_decision.rule == "all" and manual_ticket is None and deadline_ticket is None
+            if not self._validate_wake_decision(event, wake_decision, all_wake):
+                return
             if not event.is_private_chat() and not event.is_wake_up() and event.policy_settings.get("wake_on_quote_self") is True:
                 await self._apply_quote_wake(event)
             # Step.2.1 平台命令入口: 在唤醒窗口与输入投影之前冻结纯命令正文, 合成事件不参与判定
@@ -513,6 +522,10 @@ class PipelineScheduler:
                 event.is_wake = True
             elif not event.is_private_chat() and command_text is None:
                 pending = deadline_ticket.snapshot if deadline_ticket is not None else self.wake_window.observe(event)
+                overflow = event.get_extra("wake_window_overflow")
+                if all_wake and overflow:
+                    self._record_diagnostic(event, "projection", "partial", reason_code="wake_window_budget",
+                                            reason=f"待处理窗口容量限制: {overflow}")
                 if automatic_eligible and not event.is_wake_up():
                     decision = self.wake_window.decide(event, pending, deadline=deadline_ticket is not None)
                     event.set_extra("wake_decision", decision)
@@ -544,7 +557,10 @@ class PipelineScheduler:
                 for c in top_components
             )
             # 命令候选的正文由组件渲染得到, 不依赖平台侧渲染文本, 因此不受该空值判定约束
-            if command_text is None and not pending and not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
+            if command_text is None and (all_wake or not pending) and not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
+                if all_wake:
+                    self.wake_window.discard(event)
+                    self._record_rejection(event, "projection", "当前消息没有可处理的正文或附件", reason_code="empty_input")
                 return
 
             # Step.3 只有已唤醒且允许处理的请求消耗模型额度
@@ -552,6 +568,8 @@ class PipelineScheduler:
                 rate_key = f"{source_platform_id}:{event.session_id}"
                 allowed, wait = await self.rate_limiter.check(rate_key)
                 if not allowed:
+                    if all_wake:
+                        self.wake_window.discard(event)
                     logger.debug(
                         f"[PipelineScheduler] 限流丢弃事件: session={event.session_id}, "
                         f"需等待 {wait:.1f}s"
@@ -616,14 +634,25 @@ class PipelineScheduler:
             async with self._session_turn(session_manager, session_id):
                 if not event.agent_route_is_current():
                     logger.debug(f"[PipelineScheduler] 丢弃旧 Agent 路由事件: {event.session_id}")
+                    if all_wake:
+                        self.wake_window.discard(event)
+                        self._record_rejection(event, "wake_decision", "等待期间 Agent 路由已变化", reason_code="binding_changed")
                     return
 
                 if (not event.is_private_chat() and isinstance(event.adapter, OneBotAdapter)
                         and event.adapter.group_route(event.get_group_id())[1] != event.group_route_generation):
+                    if all_wake:
+                        self.wake_window.discard(event)
+                        self._record_rejection(event, "wake_decision", "等待期间群路由已变化", reason_code="binding_changed")
                     return
                 if event.is_stopped() or not event.call_llm or not self._allows_source(event) or not await self._check_permission(event):
+                    if all_wake:
+                        self.wake_window.discard(event)
+                        self._record_rejection(event, "wake_decision", "排队期间来源或权限已失效", reason_code="source_or_permission_revoked")
                     return
                 if automatic and not self._automatic_policy_current(event):
+                    return
+                if all_wake and not self._all_submission_current(event, session_manager):
                     return
                 if deadline_ticket is not None and deadline_ticket.cancelled:
                     return
@@ -631,7 +660,10 @@ class PipelineScheduler:
                     return
                 batch: tuple[PendingMessage, ...] = ()
                 if pending:
-                    batch = self.wake_window.claim(event, pending, automatic, deadline=deadline_ticket is not None)
+                    claimed = self._claim_wake_batch(event, pending, automatic, all_wake, deadline=deadline_ticket is not None)
+                    if claimed is None:
+                        return
+                    batch = claimed
                     if automatic and not batch:
                         return
                     if manual_ticket is not None and manual_ticket.snapshot and not batch:
@@ -816,6 +848,67 @@ class PipelineScheduler:
         groups = normalize_group_whitelist(settings.get("group_whitelist", []))
         return bool(settings.get("enable_group", True)) and (not groups or event.get_group_id() in groups)
 
+    def _validate_wake_decision(self, event: MessageEvent, decision: object, all_wake: bool) -> bool:
+        """拒绝全触发的不合格来源, 当前普通请求撤销旧自动参与计时及补偿事件"""
+        if isinstance(decision, WakeDecision) and decision.rule == "all_ineligible":
+            self._record_rejection(event, "wake_decision", decision.reason, reason_code=decision.rule)
+            return False
+        if all_wake:
+            if not self._all_policy_current(event):
+                self._record_rejection(event, "wake_decision", "每条消息触发策略已变化", reason_code="stale_wake_policy")
+                return False
+            self.wake_timers.cancel_route(event, invalidate_tickets=True)
+        return True
+
+    def _all_submission_current(self, event: MessageEvent, manager: SessionManager) -> bool:
+        """在会话执行权内复核全触发有效策略和绑定, 拒绝时撤销当前窗口内容"""
+        if not self._all_policy_current(event):
+            self.wake_window.discard(event)
+            self._record_rejection(event, "wake_decision", "等待期间每条消息触发策略已变化", reason_code="stale_wake_policy")
+            return False
+        if event.session_type:
+            binding = manager.provider_registry.binding_status(event.session_type, event.session_provider)
+            if binding.state is not BindingState.RUNNABLE:
+                self.wake_window.discard(event)
+                self._record_rejection(event, "projection", binding.reason, reason_code="binding_changed")
+                return False
+        return True
+
+    def _claim_wake_batch(self, event: MessageEvent, pending: tuple[PendingMessage, ...], automatic: bool,
+                         all_wake: bool, *, deadline: bool) -> tuple[PendingMessage, ...] | None:
+        """原子消费候选, 全触发纯文本已被竞争提交消费时拒绝重放, 附件原事件仍可继续"""
+        required = event.call_origin.request_id if all_wake and any(
+            item.request_id == event.call_origin.request_id and item.window_complete for item in pending
+        ) else None
+        batch = self.wake_window.claim(event, pending, automatic, deadline=deadline,
+                                       required_request_id=required, preserve_rich_events=all_wake)
+        if required is not None and not batch:
+            self._record_rejection(event, "wake_decision", "当前消息已被其它提交消费, 已过期或不再位于窗口中", reason_code="window_unavailable")
+            return None
+        return batch
+
+    @staticmethod
+    def _current_wake_policy(event: MessageEvent) -> dict[str, Any] | None:
+        """读取当前路由有效策略, 不使用接收时的旧快照或缓存授权"""
+        if not isinstance(event.adapter, PlatformAdapter):
+            return None
+        current = (
+            event.adapter.resolve_policy_settings(event.call_origin.chat_id)
+            if isinstance(event.adapter, OneBotAdapter) and not event.is_private_chat()
+            else resolve_wake_settings(event.adapter.config.settings, event.call_origin.chat_id if not event.is_private_chat() else "")
+        )
+        if event.agent_route_generation:
+            if not event.agent_route_is_current():
+                return None
+            current["context_scope"] = event.agent_context_scope
+        return current
+
+    @staticmethod
+    def _all_policy_current(event: MessageEvent) -> bool:
+        """全触发提交前复核有效模式与范围, 无效的阈值和冷却参数不影响此模式"""
+        current = PipelineScheduler._current_wake_policy(event)
+        return current is not None and current.get("wake_mode", policy_default("wake_mode")) == "all" and current.get("context_scope", "legacy_user") == event.policy_settings.get("context_scope", "legacy_user")
+
     @staticmethod
     def _automatic_policy_current(event: MessageEvent) -> bool:
         """
@@ -827,19 +920,10 @@ class PipelineScheduler:
         返回:
         - bool: 自动参与相关配置是否仍与当前实例一致
         """
-        if not isinstance(event.adapter, PlatformAdapter):
+        current = PipelineScheduler._current_wake_policy(event)
+        if current is None:
             return False
-
-        current = (
-            event.adapter.resolve_policy_settings(event.call_origin.chat_id)
-            if isinstance(event.adapter, OneBotAdapter) and not event.is_private_chat()
-            else resolve_wake_settings(event.adapter.config.settings, event.call_origin.chat_id if not event.is_private_chat() else "")
-        )
         keys = {key for key in set(current) | set(event.policy_settings) if key.startswith("wake_") or key == "context_scope"}
-        if event.agent_route_generation:
-            if not event.agent_route_is_current():
-                return False
-            current["context_scope"] = event.agent_context_scope
         return all(current.get(key) == event.policy_settings.get(key) for key in keys)
 
     @staticmethod

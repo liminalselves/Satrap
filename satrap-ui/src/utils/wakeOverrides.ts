@@ -81,6 +81,7 @@ const OVERRIDE_OFF_LABELS: Record<string, string> = {
 };
 
 const MODE_OPTION_LABELS: Record<string, string> = {
+  all: '每条消息触发',
   frequency: '按消息数量触发',
   necessity: '按必要性评分',
 };

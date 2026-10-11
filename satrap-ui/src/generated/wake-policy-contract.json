@@ -245,7 +245,8 @@
       "enum": [
         "explicit",
         "frequency",
-        "necessity"
+        "necessity",
+        "all"
       ],
       "hot_reload": true,
       "key": "wake_mode",

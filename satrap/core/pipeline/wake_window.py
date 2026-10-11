@@ -7,7 +7,7 @@ from typing import Any
 from satrap.core.platform.event import MessageEvent
 from satrap.core.config.platform_policy import policy_default
 from satrap.core.pipeline.wake_policy import WakeDecision, resolve_message_threshold
-from satrap.core.components import Image, Plain
+from satrap.core.components import Image, Plain, PlatformComponentType
 from satrap.core.type import safe_getattr_str
 
 
@@ -67,6 +67,8 @@ class PendingMessage:
     nickname: str = ""
     parts: tuple[str | PendingImage, ...] = ()
     omitted_images: int = 0
+    window_complete: bool = True
+    """快照是否足以代表完整事件, 语音/文件等必须留给原事件处理"""
 
     @property
     def image_count(self) -> int:
@@ -169,15 +171,22 @@ class WakeWindow:
         origin = event.call_origin
         rows = self._pending.setdefault(key, [])
         if not any(item.request_id == origin.request_id or (origin.source_message_id and item.message_id == origin.source_message_id) for item in rows):
+            complete = all(item.type in {PlatformComponentType.Plain, PlatformComponentType.Image, PlatformComponentType.At} for item in event.get_messages())
             rows.append(PendingMessage(origin.request_id, origin.actor_id, origin.source_message_id, text, now,
-                                       display_label(event.get_sender_name()), tuple(parts), omitted_images))
+                                       display_label(event.get_sender_name()), tuple(parts), omitted_images, complete))
             self._record_activity(key, now, False)
+        evicted = 0
         while (len(rows) > self.max_messages or sum(item.text_size for item in rows) > self.max_chars
                or sum(item.image_count for item in rows) > self.max_images):
             rows.pop(0)
+            evicted += 1
         self._pending.move_to_end(key)
         while len(self._pending) > self.max_routes:
-            self._pending.popitem(last=False)
+            _removed_key, removed = self._pending.popitem(last=False)
+            evicted += len(removed)
+        truncated = max(0, sum(len(item.text) for item in event.get_messages() if isinstance(item, Plain)) - self.max_chars)
+        if evicted or truncated or omitted_images:
+            event.set_extra("wake_window_overflow", {"messages": evicted, "characters": truncated, "images": omitted_images})
         return tuple(rows)
 
     def _expire_route(self, key: tuple[str, ...], now: float) -> list[PendingMessage]:
@@ -278,7 +287,8 @@ class WakeWindow:
         return WakeDecision(score >= threshold, "necessity", reason, score=score)
 
 
-    def claim(self, event: MessageEvent, snapshot: tuple[PendingMessage, ...], automatic: bool, now: float | None = None, *, deadline: bool = False) -> tuple[PendingMessage, ...]:
+    def claim(self, event: MessageEvent, snapshot: tuple[PendingMessage, ...], automatic: bool, now: float | None = None, *, deadline: bool = False,
+              required_request_id: str | None = None, preserve_rich_events: bool = False) -> tuple[PendingMessage, ...]:
         """
         提交前原子消费尚未提交且未过期的快照, 不自动重试已提交调用
 
@@ -288,6 +298,8 @@ class WakeWindow:
         - automatic: 是否重新核对自动阈值和冷却
         - now: 单调时钟, 默认读取当前时间
         - deadline: 是否按最长等待时间重新判断
+        - required_request_id: 全触发的当前快照必须仍在窗口中, 否则不消费任何其它消息
+        - preserve_rich_events: 不提前消费其它事件的语音/文件等不完整快照
 
         返回:
         - tuple[PendingMessage, ...]: 本轮可消费内容, 竞争失败时为空
@@ -296,7 +308,10 @@ class WakeWindow:
         key = self.key(event)
         ids = {item.request_id for item in snapshot}
         current = self._pending.get(key, [])
-        selected = tuple(item for item in current if item.request_id in ids and now - item.received_at < self.ttl)
+        selected = tuple(item for item in current if item.request_id in ids and now - item.received_at < self.ttl
+                         and (not preserve_rich_events or item.window_complete or item.request_id == event.call_origin.request_id))
+        if required_request_id is not None and not any(item.request_id == required_request_id for item in selected):
+            return ()
         if automatic and not self.decide(event, selected, now, deadline=deadline).triggered:
             return ()
         if selected:
@@ -309,6 +324,16 @@ class WakeWindow:
             while len(self._submitted) > self.max_routes:
                 self._submitted.popitem(last=False)
         return selected
+
+    def discard(self, event: MessageEvent) -> None:
+        """撤销排队期间失效的当前请求, 不让下一轮合并已拒绝的内容"""
+        key = self.key(event)
+        rows = self._pending.get(key, [])
+        retained = [item for item in rows if item.request_id != event.call_origin.request_id]
+        if retained:
+            self._pending[key] = retained
+        else:
+            self._pending.pop(key, None)
 
     def cooldown_remaining(self, event: MessageEvent, now: float | None = None) -> float:
         """

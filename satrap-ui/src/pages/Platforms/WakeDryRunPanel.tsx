@@ -182,7 +182,7 @@ export function WakeDryRunPanel({ settings, blockedReason }: WakeDryRunPanelProp
             <div className="flex items-start gap-2 py-0.5 text-xs" data-testid="wake-threshold-preview">
               <span className="w-24 shrink-0 text-text-secondary">有效条数阈值</span>
               <span className="text-text-primary break-all">
-                {automatic.threshold.value === null ? '不触发' : automatic.threshold.value}
+                {automatic.threshold.applicable === false ? '不适用' : automatic.threshold.value === null ? '不触发' : automatic.threshold.value}
                 {` · ${automatic.threshold.label}`}
               </span>
               {automatic.threshold.overridden && <Badge variant="warning">被显式阈值覆盖</Badge>}
@@ -196,9 +196,9 @@ export function WakeDryRunPanel({ settings, blockedReason }: WakeDryRunPanelProp
           {automatic && (
             <>
               <DecisionLine label="自动参与" decision={automatic.decision} />
-              <DecisionLine label="到期复查" decision={automatic.deadline_decision} />
+              <DecisionLine label={automatic.mode === 'all' ? '最长等待' : '到期复查'} decision={automatic.deadline_decision} />
               <div className="text-xs text-text-secondary">
-                窗口有效正文 {automatic.observed} 条 · 冷却剩余 {automatic.cooldown_remaining.toFixed(0)} 秒
+                窗口有效正文 {automatic.observed} 条 · {automatic.mode === 'all' ? '不使用自动参与冷却' : `冷却剩余 ${automatic.cooldown_remaining.toFixed(0)} 秒`}
               </div>
             </>
           )}

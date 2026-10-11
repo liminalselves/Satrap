@@ -6,6 +6,7 @@ import sys
 from satrap.core.config.platform_policy import normalize_wake_words, policy_default_int, policy_default
 from satrap.core.components import Plain, is_self_mention
 from satrap.core.platform.event import MessageEvent
+from satrap.core.type import PlatformMessageType
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,11 @@ def evaluate_wake(event: MessageEvent) -> WakeDecision:
     """
     if event.is_private_chat():
         return WakeDecision(True, "private", "私聊")
+    if event.policy_settings.get("wake_mode", policy_default("wake_mode")) == "all":
+        origin = event.call_origin
+        if event.get_message_type() != PlatformMessageType.GROUP_MESSAGE.value or not origin.actor_id or origin.actor_id == origin.self_id:
+            return WakeDecision(False, "all_ineligible", "每条消息触发仅处理正常成员入站消息")
+        return WakeDecision(True, "all", "每条消息触发, 不使用自动参与阈值或冷却")
     if event.is_wake_up():
         return WakeDecision(True, "upstream", "上游明确唤醒")
     self_id = event.call_origin.self_id

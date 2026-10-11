@@ -89,16 +89,22 @@ class WakeTimers:
 
         self.tasks[key] = asyncio.create_task(enqueue())
 
-    def cancel_route(self, event: MessageEvent) -> None:
+    def cancel_route(self, event: MessageEvent, *, invalidate_tickets: bool = False) -> None:
         """
         已提交窗口后取消同路由计时
 
         参数:
         - event: 已消费消息的事件
+        - invalidate_tickets: 切换全触发时同时撤销该路由已排队的旧补偿事件
         """
         task = self.tasks.pop(self.window.key(event), None)
         if task is not None:
             task.cancel()
+        if invalidate_tickets:
+            key = self.window.key(event)
+            for queued, ticket in list(self.tickets.items()):
+                if self.window.key(queued) == key:
+                    ticket.cancelled = True
 
     def clear_adapter(self, adapter_id: str) -> None:
         """

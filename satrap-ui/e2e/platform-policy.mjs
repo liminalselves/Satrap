@@ -54,6 +54,7 @@ try {
     const pathname = new URL(request.url()).pathname;
     const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS' };
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+    if (pathname === '/config/versions') return route.fulfill({ status: 404, headers, json: { error: '此夹具模拟无版本接口的旧服务' } });
     if (pathname.startsWith('/config/platforms') && ['POST', 'PUT'].includes(request.method())) {
       if (new URL(request.url()).searchParams.get("expected_revision") !== String(revision)) {
         return route.fulfill({ status: 409, json: { ok: false, error: "配置已被其他操作修改" }, headers });
@@ -69,6 +70,20 @@ try {
     if (pathname === '/config/wake-dry-run') {
       const payload = request.postDataJSON();
       dryRunCalls.push(payload);
+      if (payload.settings.wake_mode === 'all') {
+        return route.fulfill({ headers, json: {
+          ok: true, resolved: payload.settings, sources: {}, defaults: {},
+          explicit: { triggered: true, rule: 'all', reason: '每条消息触发, 不使用自动参与阈值或冷却', score: null },
+          automatic: {
+            mode: 'all', observed: 1, steps: [],
+            decision: { triggered: true, rule: 'all', reason: '每条消息触发', score: null },
+            deadline_decision: { triggered: false, rule: 'no_timer', reason: '每条消息触发不使用最长等待计时器', score: null },
+            cooldown_remaining: 0,
+            threshold: { applicable: false, value: null, source: 'not_applicable', label: '每条消息触发无需条数阈值',
+              talk_value_effective: false, closed: false, overridden: false, hint: '阈值, 冷却和最长等待在此模式下不生效' },
+          },
+        } });
+      }
       const explicit = payload.probe
         ? { triggered: false, rule: 'no_match', reason: '未命中唤醒词或 @', score: null }
         : { triggered: null, rule: 'undetermined', reason: '未提供探测消息, 无法评估显式唤醒', score: null };
@@ -625,6 +640,35 @@ try {
   await page.goto(`${origin}/platforms`);
   await page.getByRole('link', { name: 'Agent 配置' }).waitFor();
   await page.getByRole('heading', { name: '请求阶段诊断' }).waitFor();
+
+  // 全触发由用户明确选择, 平台/群/时段选项中文展示且保存后往返一致
+  await legacyRow.getByTitle('编辑', { exact: true }).click();
+  await dialog.getByLabel('自动参与模式', { exact: true }).selectOption('all');
+  await dialog.getByText(/无需 @ 或唤醒词/).waitFor();
+  const allGroup = dialog.getByTestId('wake-group-editor');
+  await allGroup.getByLabel('自动参与模式值').selectOption('all');
+  const allTime = dialog.getByTestId('wake-time-editor');
+  await allTime.getByLabel('自动参与模式状态').selectOption('value');
+  await allTime.getByLabel('自动参与模式值').selectOption('all');
+  const allPreview = dialog.getByTestId('wake-dry-run-panel');
+  await allPreview.getByLabel('样例消息').fill('没有提及机器人的正文');
+  await allPreview.getByLabel('探测消息').fill('你好');
+  await allPreview.getByRole('button', { name: '运行试算' }).click();
+  await allPreview.getByText('wake_mode=all', { exact: true }).waitFor();
+  assert.match(await allPreview.getByTestId('wake-threshold-preview').innerText(), /不适用/);
+  await allPreview.getByText(/不使用自动参与冷却/).waitFor();
+  await allPreview.getByText(/每条消息触发不使用最长等待计时器/).waitFor();
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal(writes.at(-1).settings.wake_mode, 'all');
+  assert.equal(writes.at(-1).settings.wake_group_overrides['20'].wake_mode, 'all');
+  assert.equal(writes.at(-1).settings.wake_time_rules[0].settings.wake_mode, 'all');
+  await legacyRow.getByTitle('编辑', { exact: true }).click();
+  assert.equal(await dialog.getByLabel('自动参与模式', { exact: true }).inputValue(), 'all');
+  assert.equal(await dialog.getByTestId('wake-group-editor').getByLabel('自动参与模式值').inputValue(), 'all');
+  assert.equal(await dialog.getByTestId('wake-time-editor').getByLabel('自动参与模式值').inputValue(), 'all');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
 
   assert.deepEqual(errors, []);
   console.log('PASS: 旧配置/别名, 新配置默认隔离, 列表往返, 空白名单, 错误保留草稿, 键盘与窄屏, 行编辑器, 平台级输入预算与 talk_value 往返及静态提示, 契约边界 (排他上界/冷却非负) 与行内校验, 试算预览与来源明细, 脏保护, 草稿行保留与校验, 请求阶段诊断, 数据路由离开拦截');

@@ -116,6 +116,7 @@ function FieldList({
       {fields.map((def) => (
         <FieldRow key={def.key} def={def} override={override} onApply={onApply} />
       ))}
+      {override.wake_mode === 'all' && <p className="py-2 text-xs text-text-secondary">每条消息触发无需 @ 或唤醒词; 数量/必要性阈值、冷却和最长等待不生效, 平台准入、限流和队列上限仍生效</p>}
     </div>
   );
 }
