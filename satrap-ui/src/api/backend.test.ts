@@ -6,6 +6,18 @@ vi.mock('./client', () => ({ apiClient: { post: vi.fn() } }));
 beforeEach(() => vi.resetAllMocks());
 
 describe('平台通信探测', () => {
+  it('长时间插件及完整运行时应用保留定向范围, 使用独立截止且传播超时', async () => {
+    const scoped = { config_name: 'assistant' };
+    const refs = { session_refs: [{ platform_id: 'ob', session_id: 'one' }] };
+    vi.mocked(apiClient.post).mockResolvedValue({ ok: true, edictum_sessions: [] });
+    await backendApi.reconcileEdictumPlugins(scoped);
+    await backendApi.reconcileEdictumRuntime(refs);
+    expect(apiClient.post).toHaveBeenNthCalledWith(1, '/api/edictum/plugins/reconcile', scoped, 120000);
+    expect(apiClient.post).toHaveBeenNthCalledWith(2, '/api/edictum/runtime/apply', refs, 120000);
+    vi.mocked(apiClient.post).mockRejectedValue(new Error('deadline exceeded'));
+    await expect(backendApi.reconcileEdictumPlugins(scoped)).rejects.toThrow('deadline exceeded');
+  });
+
   it('只提交平台 ID, 不要求群号或凭据', async () => {
     const result = { ok: true, detail: '通信正常, 对端已响应', elapsed_ms: 12 };
     vi.mocked(apiClient.post).mockResolvedValue(result);

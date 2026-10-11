@@ -34,6 +34,7 @@ interface EdictumPluginManagerProps {
   availablePlugins: EdictumAvailablePlugin[];
   configuredPlugins: EdictumSessionConfig['plugins'] | undefined;
   saving: boolean;
+  progress?: string;
   onClose: () => void;
   onSave: (plugins: EdictumSessionConfig['plugins']) => void | Promise<void>;
 }
@@ -71,6 +72,7 @@ export function EdictumPluginManager({
   availablePlugins,
   configuredPlugins,
   saving,
+  progress,
   onClose,
   onSave,
 }: EdictumPluginManagerProps) {
@@ -354,6 +356,7 @@ export function EdictumPluginManager({
         </div>
       </div>
 
+      {saving && progress && <p role="status" className="text-sm text-text-secondary">{progress}</p>}
       <div className="flex justify-end gap-2 pt-3">
         <Button variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
         <Button variant="primary" onClick={() => void submit()} disabled={saving}>

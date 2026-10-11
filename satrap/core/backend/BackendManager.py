@@ -2610,7 +2610,11 @@ class BackendManager:
         """
         manager = self.edictum_config_manager
         if manager is not None:
-            manager.reload()
+            try:
+                await asyncio.to_thread(manager.reload)
+            except Exception as error:
+                logger.error(f"[BackendManager] 插件协调读取冷配置失败: {error}\n{traceback.format_exc()}")
+                raise
         refs_by_platform: dict[str, set[str]] | None = None
         if session_refs is not None:
             refs_by_platform = {}

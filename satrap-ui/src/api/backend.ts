@@ -155,7 +155,7 @@ export const backendApi = {
     config_name?: string;
     session_refs?: Array<{ platform_id: string; session_id: string }>;
     concurrency?: number;
-  }) => apiClient.post<ConfigReloadResult>('/api/edictum/plugins/reconcile', data),
+  }) => apiClient.post<ConfigReloadResult>('/api/edictum/plugins/reconcile', data, 120000),
 
   // 预览 Edictum 完整配置变更
   previewEdictumRuntime: (data: {
@@ -169,7 +169,7 @@ export const backendApi = {
     config_name?: string;
     session_refs?: Array<{ platform_id: string; session_id: string }>;
     concurrency?: number;
-  }) => apiClient.post<ConfigReloadResult>('/api/edictum/runtime/apply', data),
+  }) => apiClient.post<ConfigReloadResult>('/api/edictum/runtime/apply', data, 120000),
 
   // 关闭后端
   shutdown: () => apiClient.post<{ ok: boolean }>('/api/shutdown'),

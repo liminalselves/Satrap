@@ -23,6 +23,7 @@ interface ConfigState {
   fetchAllModels: () => Promise<void>;
   fetchSessionClasses: (options?: ConfigReadOptions) => Promise<void>;
   fetchEdictumConfigs: (options?: ConfigReadOptions) => Promise<void>;
+  acceptEdictumConfig: (name: string, config: EdictumSessionConfig, previousName?: string) => void;
   watchConfigs: (names: readonly WatchedConfig[]) => () => void;
   refreshWatchedConfigs: (signal?: AbortSignal) => Promise<void>;
   createModel: (type: ModelType, name: string, config: Partial<ModelConfig>) => Promise<boolean>;
@@ -79,6 +80,15 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     const request = ++edictumRequest;
     const edictumConfigs = await edictumRead.read(options);
     if (request === edictumRequest) set({ edictumConfigs });
+  },
+
+  acceptEdictumConfig: (name, config, previousName) => {
+    edictumRequest++; edictumRead.invalidate();
+    set((state) => {
+      const edictumConfigs = { ...state.edictumConfigs, [name]: structuredClone(config) };
+      if (previousName && previousName !== name) delete edictumConfigs[previousName];
+      return { edictumConfigs };
+    });
   },
 
   watchConfigs: (names) => {
