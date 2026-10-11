@@ -351,7 +351,9 @@ def create_platform_message(raw_event: dict[str, Any], self_id: str) -> Platform
     sender = cast(dict[str, Any], raw_sender) if isinstance(raw_sender, dict) else {}
     user_id = str(raw_event.get("user_id") or sender.get("user_id") or "")
     nickname = str(sender.get("nickname") or sender.get("card") or user_id)
-    message.sender = MessageMember(user_id=user_id, nickname=nickname, card=str(sender.get("card") or ""))
+    role = sender.get("role")
+    message.sender = MessageMember(user_id=user_id, nickname=nickname, card=str(sender.get("card") or ""),
+                                   role=role if role in ("owner", "admin", "member") and str(sender.get("user_id")) == user_id else "")
 
     segments = normalize_segments(raw_event.get("message"))
     message.message, message.message_str = onebot_segments_to_components(segments)

@@ -9,6 +9,7 @@ from satrap.core.pipeline.input_projection import FORWARD_TEXT_LIMIT, project_in
 from satrap.core.platform.onebot.onebot_utils import FORWARD_NODE_LIMIT, onebot_segments_to_components, parse_forward_nodes
 from satrap.core.platform.onebot.outbound import flatten_forward_nodes, split_forward_turns
 from satrap.core.config.platform_policy import validate_wake_policy
+from satrap.core.config.group_action_origin import bind_group_action_preflight
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.components import Forward, Image, Node, Nodes, Plain, Reply
@@ -263,6 +264,20 @@ class TestOutboundForward:
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings=settings))
         adapter._bot = AsyncMock()
         return adapter
+
+    @pytest.mark.asyncio
+    async def test_forward_waits_for_async_authorization_and_does_not_send_after_rejection(self):
+        adapter = self._adapter()
+        checked = []
+
+        async def preflight():
+            checked.append(True)
+            raise PermissionError("管理员权限已撤销")
+
+        with bind_group_action_preflight(preflight):
+            receipt = await adapter.send_message("group%456", MessageChain([Nodes([Node([Plain("甲")])])]))
+        assert checked == [True] and receipt.status == "failed" and receipt.reason == "preflight_rejected"
+        adapter._bot.send_group_forward_msg.assert_not_awaited()
 
     def test_split_turns_merges_adjacent_and_preserves_order(self):
         node_a, node_b = Node([Plain("一")]), Node([Plain("二")])

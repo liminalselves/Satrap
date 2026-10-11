@@ -6,6 +6,7 @@ from typing import Any
 
 from satrap.core.config.model_tool_authorization import config_ids
 from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.account_request_migration import migrate_account_request_specs
 
 
 QUERY_MOVES = {
@@ -29,7 +30,9 @@ def migrate_group_tool_specs(value: list[Any], catalog: Any, migration_manager: 
     返回:
     - 只含新工具名称的配置副本, 权限冲突时拒绝迁移
     """
-    result = migrate_friend_tool_specs(migrate_forward_tool_specs(value, catalog), catalog, migration_manager)
+    result = migrate_account_request_specs(
+        migrate_friend_tool_specs(migrate_forward_tool_specs(value, catalog), catalog, migration_manager), catalog, migration_manager,
+    )
     admin = next((item for item in result if isinstance(item, dict) and item.get("name") == "group_admin"), None)
     if admin is None or not isinstance(admin.get("capabilities"), dict):
         return result

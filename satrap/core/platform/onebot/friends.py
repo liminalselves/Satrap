@@ -5,6 +5,7 @@ from typing import Any, TYPE_CHECKING
 from collections.abc import Awaitable
 import json
 import asyncio
+import inspect
 
 from satrap.core.friends import FriendError
 from satrap.core.platform.onebot.group_chat import _numeric_id
@@ -271,10 +272,12 @@ class OneBotFriends:
                 raise FriendError("request_not_confirmed", "本次平台查询未确认这条可疑申请仍待处理, 未执行")
         previous = current_group_action_preflight()
 
-        def verify_record() -> None:
+        async def verify_record() -> None:
             """发送前复核申请路由和修订号, 变更后拒绝旧审批"""
             if previous is not None:
-                previous()
+                checked = previous()
+                if inspect.isawaitable(checked):
+                    await checked
             self.check(account, generation)
             try:
                 self.adapter.request_flags.inbox.resolve(self.adapter.config.id, account, "friend", request_id, request_registry.time(), row["revision"])

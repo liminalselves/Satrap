@@ -3,7 +3,7 @@
 群请求与好友请求分域登记; 审批占用在持久事务中原子完成, 落盘成功才允许发网络动作;
 已消费与未知身份不因重复入站, 容量轮转或进程重启回到可审批状态;
 本地到期身份只可在归档确认路径直接占用, 不恢复为近期可审批状态;
-好友请求按原始事件时间区分同一处理凭据的新申请, 旧申请不能处理新一轮请求;
+好友和群请求按原始事件时间区分同一处理凭据的新申请, 旧申请不能处理新一轮请求;
 近期缓存仅用于诊断, 不作为审批资格依据
 """
 from __future__ import annotations
@@ -118,13 +118,13 @@ def _entry_key(adapter_id: str, self_id: str, kind: str, digest: str) -> str:
 
 def request_digest(kind: str, self_id: str, flag: str, event_time: int | None = None) -> str:
     """
-    将好友申请事件身份与可复用的平台处理凭据分开
+    将好友和群申请事件身份与可复用的平台处理凭据分开
 
     参数:
     - kind: friend 或 group
     - self_id: 已绑定机器人账号
     - flag: 平台处理凭据, 不记录原值
-    - event_time: 平台原始好友申请时间, None 保留旧版身份规则
+    - event_time: 平台原始申请时间, None 保留旧版身份规则
 
     返回:
     - 一次申请的稳定摘要, 同一事件重放仍得到同一身份
@@ -132,9 +132,9 @@ def request_digest(kind: str, self_id: str, flag: str, event_time: int | None = 
     credential = flag_digest(kind, self_id, flag)
     if event_time is None:
         return credential
-    if kind != "friend" or type(event_time) is not int or event_time <= 0:
-        raise ValueError("好友申请原始事件时间必须为正整数")
-    return hashlib.sha256(f"friend-event\x00{credential}\x00{event_time}".encode("utf-8")).hexdigest()[:32]
+    if kind not in {"friend", "group"} or type(event_time) is not int or event_time <= 0:
+        raise ValueError("申请原始事件时间必须为正整数")
+    return hashlib.sha256(f"{kind}-event\x00{credential}\x00{event_time}".encode("utf-8")).hexdigest()[:32]
 
 
 def _validate_entry(item: object, key: str, source: str) -> LedgerEntry:
@@ -159,13 +159,13 @@ def _validate_entry(item: object, key: str, source: str) -> LedgerEntry:
         "received_at": float(raw["received_at"]), "updated_at": float(raw["updated_at"]), "state": raw["state"],
     }
     if "event_time" in raw or "credential_digest" in raw:
-        if (raw["kind"] != "friend" or type(raw.get("event_time")) is not int or raw["event_time"] <= 0
+        if (type(raw.get("event_time")) is not int or raw["event_time"] <= 0
                 or not isinstance(raw.get("credential_digest"), str) or len(raw["credential_digest"]) != 32
                 or any(ch not in "0123456789abcdef" for ch in raw["credential_digest"])):
             raise ValueError(f"{source} 申请事件身份非法")
         entry["event_time"] = raw["event_time"]
         entry["credential_digest"] = raw["credential_digest"]
-        expected_digest = hashlib.sha256(f"friend-event\x00{entry['credential_digest']}\x00{entry['event_time']}".encode("utf-8")).hexdigest()[:32]
+        expected_digest = hashlib.sha256(f"{entry['kind']}-event\x00{entry['credential_digest']}\x00{entry['event_time']}".encode("utf-8")).hexdigest()[:32]
         if entry["digest"] != expected_digest:
             raise ValueError(f"{source} 申请事件摘要不一致")
     if key != _entry_key(entry["adapter_id"], entry["self_id"], entry["kind"], entry["digest"]):
@@ -639,10 +639,10 @@ class RequestApprovalLedger:
         - sub_type: 群请求的 add/invite
         - user_id: 请求来源用户
         - now: 墙钟时间, 默认读取当前时间
-        - event_time: 好友请求原始事件时间, None 沿用旧标识规则
+        - event_time: 好友或群请求原始事件时间, None 沿用旧标识规则
 
         返回:
-        - str: 登记, 重复或明确拒绝原因, 新一轮好友申请不会复活旧身份
+        - str: 登记, 重复或明确拒绝原因, 新一轮申请不会复活旧身份
         """
         moment = time() if now is None else now
         return await asyncio.to_thread(
@@ -708,29 +708,30 @@ class RequestApprovalLedger:
             entry = self._entries.get(key)
             return cast(LedgerEntry, dict(entry)) if entry is not None else None
 
-    def verify_occupied_friend(self, adapter_id: str, self_id: str, flag: str, identity_digest: str) -> None:
+    def verify_occupied_request(self, adapter_id: str, self_id: str, kind: str, flag: str, identity_digest: str) -> None:
         """
         在实际协议发送前拒绝已被新申请替代的旧占用
 
         参数:
         - adapter_id: 固定平台实例
         - self_id: 固定机器人账号
+        - kind: friend 或 group
         - flag: 平台处理凭据
         - identity_digest: 当前动作已占用的申请身份
         """
         with self._mutex, self._transaction():
             self._reload_locked()
-            entry = self._entries.get(_entry_key(adapter_id, self_id, "friend", identity_digest))
+            entry = self._entries.get(_entry_key(adapter_id, self_id, kind, identity_digest))
             if self.degraded or entry is None or entry["state"] != "executing":
-                raise PermissionError("好友申请占用已失效")
-            credential = flag_digest("friend", self_id, flag)
+                raise PermissionError("申请占用已失效")
+            credential = flag_digest(kind, self_id, flag)
             if entry.get("credential_digest", entry["digest"]) != credential:
-                raise PermissionError("好友申请处理凭据不匹配")
-            if any(other["adapter_id"] == adapter_id and other["self_id"] == self_id and other["kind"] == "friend"
+                raise PermissionError("申请处理凭据不匹配")
+            if any(other["adapter_id"] == adapter_id and other["self_id"] == self_id and other["kind"] == kind
                    and other.get("credential_digest", other["digest"]) == credential
                    and other.get("event_time", other["received_at"]) > entry.get("event_time", entry["received_at"])
                    for other in self._entries.values()):
-                raise PermissionError("该好友申请已有更新记录, 请处理新申请")
+                raise PermissionError("该申请已有更新记录, 请处理新申请")
 
     def available_entries(self, adapter_id: str, self_id: str, kind: str, now: float,
                           *, include_history: bool = False) -> dict[str, LedgerEntry]:
@@ -825,7 +826,7 @@ class RequestFlagRegistry:
         - user_id: 请求来源用户
         - now: 墙钟时间, 默认读取当前时间
         - comment: 平台申请验证信息, 保存在私有收件箱
-        - event_time: 平台好友申请原始事件时间, 不使用本地接收时间代替
+        - event_time: 平台申请原始事件时间, 不使用本地接收时间代替
         - details: 平台提供的申请类别和展示详情
 
         返回:
@@ -876,7 +877,8 @@ class RequestFlagRegistry:
         return item
 
     async def list_requests(self, kind: str, *, self_id: str, group_id: str = "", limit: int = 20,
-                            cursor: str | None = None, view: str = "active", owner_user_id: str = "", request_category: str = "all") -> dict[str, Any]:
+                            cursor: str | None = None, view: str = "active", owner_user_id: str = "", request_category: str = "all",
+                            sub_type: str = "", group_ids: tuple[str, ...] = ()) -> dict[str, Any]:
         """
         返回当前账号近期或归档申请, 执行资格单独声明, 原始 flag 不进入结果
 
@@ -889,12 +891,16 @@ class RequestFlagRegistry:
         - view: active, archived 或 all, 默认 active
         - owner_user_id: 宿主指定的本人范围, 默认空值为管理范围
         - request_category: all, normal 或 suspicious, 默认 all
+        - sub_type: 群申请限定 add 或 invite, 默认不限制; 好友申请不能指定
+        - group_ids: 可选的账号级邀请目标群范围, 空元组不额外限制
 
         返回:
         - 不透明 ID, 申请人, 验证信息和期限, 没有下一页时 has_more 为 False
         """
         if kind not in {"friend", "group"} or type(limit) is not int or not 1 <= limit <= 100 or view not in {"active", "archived", "all"} or request_category not in {"all", "normal", "suspicious"}:
             raise ValueError("申请类别或查询条数无效")
+        if sub_type not in {"", "add", "invite"} or kind != "group" and (sub_type or group_ids):
+            raise ValueError("群申请类型或范围无效")
         def read() -> dict[str, Any]:
             """
             从账本复核后返回有限公开字段
@@ -908,6 +914,8 @@ class RequestFlagRegistry:
             items = []
             for row in rows:
                 if group_id and row["group_id"] != group_id:
+                    continue
+                if sub_type and row["sub_type"] != sub_type or group_ids and row["group_id"] not in group_ids:
                     continue
                 if owner_user_id and row["user_id"] != owner_user_id:
                     continue
@@ -924,6 +932,8 @@ class RequestFlagRegistry:
             present = {row["digest"] for row in rows}
             missing = sum(1 for digest, entry in entries.items() if digest not in present and entry["state"] in {"available", "expired"}
                           and (not group_id or entry["group_id"] == group_id)
+                          and (not sub_type or entry["sub_type"] == sub_type)
+                          and (not group_ids or entry["group_id"] in group_ids)
                           and (not owner_user_id or entry["user_id"] == owner_user_id)
                           and (view == "all" or (entry["state"] == "available" and now < entry["received_at"] + self.ledger.ttl) == (view == "active")))
             total = len(items)

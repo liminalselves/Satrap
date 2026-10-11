@@ -250,6 +250,7 @@ class OneBotAdapter(PlatformAdapter):
         self._group_access_lock = asyncio.Lock()
         self._group_sync_handler: Callable[[], Awaitable[object]] | None = None
         self.group_action_handler: Callable[[str, str, dict[str, object]], Awaitable[dict[str, Any]]] | None = None
+        self.account_request_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
 
     def set_group_access_store(self, store: GroupConfigStore) -> None:
         """
@@ -1409,18 +1410,32 @@ class OneBotAdapter(PlatformAdapter):
                     return
                 await self.request_flags.register(
                     "group", flag, self_id=incoming_self, group_id=group_id, sub_type=sub_type, user_id=user_id,
-                    comment=str(event.get("comment") or "")[:2000],
+                    comment=str(event.get("comment") or "")[:2000], event_time=self._request_event_time(event, request_type, user_id),
                 )
             elif request_type == "friend":
-                event_time = event.get("time")
-                if type(event_time) is not int or event_time <= 0:
-                    event_time = None
-                    logger.warning(f"[OneBotAdapter] 好友申请缺少有效原始时间, 沿用保守去重 adapter={self.config.id} user_id={user_id}")
                 await self.request_flags.register("friend", flag, self_id=incoming_self, user_id=user_id,
-                                                  comment=str(event.get("comment") or "")[:2000], event_time=event_time)
+                    comment=str(event.get("comment") or "")[:2000], event_time=self._request_event_time(event, request_type, user_id))
         except Exception:
             # 登记失败的 flag 无法被审批, 保守行为是拒绝执行而不是放行
             logger.error(f"[OneBotAdapter] request 登记失败: {traceback.format_exc()}")
+
+    def _request_event_time(self, event: dict[str, Any], kind: str, user_id: str) -> int | None:
+        """
+        提取平台原始申请时间, 缺失时保守去重并记录告警
+
+        参数:
+        - event: 平台原始 request 事件
+        - kind: friend 或 group
+        - user_id: 来源账号, 供日志定位
+
+        返回:
+        - 正整数原始时间, 无法证明事件身份时返回 None
+        """
+        value = event.get("time")
+        if type(value) is int and value > 0:
+            return value
+        logger.warning(f"[OneBotAdapter] 申请缺少有效原始时间, 沿用保守去重 adapter={self.config.id} kind={kind} user_id={user_id}")
+        return None
 
     async def _emit_notice(self, raw: dict[str, Any]) -> None:
         """
@@ -1810,7 +1825,9 @@ class OneBotAdapter(PlatformAdapter):
         preflight = current_group_action_preflight()
         if preflight is not None:
             try:
-                preflight()
+                checked = preflight()
+                if inspect.isawaitable(checked):
+                    await checked
             except Exception as error:
                 return self._failed_receipt(session_id, "forward", "preflight_rejected", error)
         try:

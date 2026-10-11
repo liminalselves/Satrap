@@ -7,18 +7,21 @@ management_permissions:
     caller_list: allowed_read_callers
     empty_policy: allow
     system_admin: true
+    platform_group_admin: group_admins_enabled
   write:
     description: 请求群管理修改和发送操作
     requirements: [需开启管理写操作, 需机器人具备相应平台权限, 需要审批的动作仍须批准]
     caller_list: allowed_callers
     empty_policy: deny
     system_admin: true
+    platform_group_admin: group_admins_enabled
   requests:
-    description: 查询和处理入群申请与邀请
+    description: 查询和处理成员加入本群的申请
     requirements: [查询还需读取授权, 处理还需写授权及管理写操作开关, 仍核验申请归属与有效期]
     caller_list: request_managers
     empty_policy: deny
     system_admin: true
+    platform_group_admin: group_admins_enabled
 tool_permissions:
   group_admin_get_honors: [read]
   group_admin_list_group_requests: [read, requests]
@@ -34,11 +37,15 @@ tool_permissions:
   group_admin_set_title: [write]
   group_admin_leave: [write]
   group_admin_handle_group_request: [write, requests]
-version: 0.4.0
+version: 0.5.0
 author: Satrap Team
 description: "管理 OneBot 群的禁言, 群昵称, 群名和入群请求, 查询荣誉与合并转发; 修改和发送操作默认关闭"
 
 config_schema:
+  group_admins_enabled:
+    type: bool
+    default: false
+    description: "允许当前 QQ 群的群主和管理员调用本插件, 无需重复填写账号名单; 仅授予本群权限, 执行前核验平台角色, 仍需开启管理写操作并遵守审批设置"
   write_tools_enabled:
     type: bool
     default: false
@@ -62,7 +69,7 @@ config_schema:
   request_managers:
     type: textarea
     default: ""
-    description: "允许查看和处理入群申请与邀请的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 查询还需读取授权, 处理还需写授权和管理写操作开关"
+    description: "允许查看和处理成员加入本群申请的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 查询还需读取授权, 处理还需写授权和管理写操作开关. 邀请机器人进群由 account_requests 管理"
 
 tools:
   group_admin_get_honors: "查看群荣誉信息"
@@ -77,8 +84,8 @@ tools:
   group_admin_set_name: "修改群名"
   group_admin_set_title: "设置或清除成员的专属头衔"
   group_admin_leave: "退出或解散群"
-  group_admin_handle_group_request: "批准或拒绝加群请求或邀请"
-  group_admin_list_group_requests: "查询指定群待处理的加群申请和邀请"
+  group_admin_handle_group_request: "批准或拒绝成员入群申请"
+  group_admin_list_group_requests: "查询指定群待处理的成员入群申请"
 
 compatibility:
   satrap: ">=0.1,<0.2"

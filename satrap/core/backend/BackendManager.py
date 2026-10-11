@@ -1192,9 +1192,21 @@ class BackendManager:
             return store
 
     async def _group_action_context(
-        self, adapter_id: str, self_id: str, group_id: str, action_type: str,
+        self, adapter_id: str, self_id: str, group_id: str, action_type: str, *, request_sub_type: str = "add",
     ) -> tuple[Any, GroupActionStore, str, int]:
-        """确认群目标、账号代次和有效审批模式并生成策略指纹"""
+        """
+        确认账号代次和审批模式, 邀请只使用账号级策略
+
+        参数:
+        - adapter_id: 来源平台实例
+        - self_id: 固定机器人账号
+        - group_id: 固定目标群
+        - action_type: 共享执行账本支持的动作
+        - request_sub_type: add 成员申请或 invite 账号邀请, 默认 add
+
+        返回:
+        - 当前适配器, 动作存储, 审批模式和策略指纹; 归属或连接无效时拒绝
+        """
         from satrap.core.config.group_approval import effective_approval
 
         if action_type not in GROUP_APPROVAL_ACTIONS:
@@ -1207,6 +1219,12 @@ class BackendManager:
         if action_type != "handle_group_request" and not adapter.allows_management_target(group_id):
             raise PermissionError("机器人当前成员关系未确认或已离开目标群")
         store = await self._group_action_store(adapter_id)
+        if action_type == "handle_group_request" and request_sub_type == "invite":
+            self._invitation_adapter(adapter_id, self_id)
+            version = int(hashlib.sha256(json.dumps(
+                [adapter_id, self_id, adapter.connection_generation(), 'account_group_invite'],
+            ).encode('utf-8')).hexdigest()[:15], 16)
+            return adapter, store, "auto_execute", version   # 邀请审批由账号插件决定, 不继承目标群的审批策略
         account, group = await asyncio.gather(
             asyncio.to_thread(store.read_account, self_id),
             asyncio.to_thread(store.read_group, self_id, group_id),
@@ -1421,7 +1439,7 @@ class BackendManager:
     ) -> dict[str, Any]:
         """读取固定群的有界审批和执行记录"""
         store = await self._group_action_store(adapter_id)
-        return await asyncio.to_thread(store.list, self_id, group_id, state=state, page=page, page_size=page_size)
+        return await asyncio.to_thread(store.list, self_id, group_id, state=state, page=page, page_size=page_size, request_sub_type="add")
 
     async def group_action(self, adapter_id: str, self_id: str, group_id: str, action_id: str) -> dict[str, Any]:
         """按固定群身份查询单个动作, 供响应丢失后按原 ID 恢复"""
@@ -1431,12 +1449,169 @@ class BackendManager:
             raise LookupError("管理动作不存在")
         return result
 
+    def _invitation_adapter(self, adapter_id: str, self_id: str) -> OneBotAdapter:
+        """
+        确认邀请属于当前机器人账号, 不检查目标群成员关系
+
+        参数:
+        - adapter_id: 来源平台实例
+        - self_id: 已绑定机器人账号
+
+        返回:
+        - 当前支持邀请能力的适配器
+        """
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or not self_id or adapter.bot_self_id != self_id:
+            raise PermissionError("邀请所属机器人账号已变化或平台不支持")
+        if not adapter.config.enable or adapter.get_client() is None:
+            raise RuntimeError("入群邀请所属平台未连接")
+        return adapter
+
+    async def account_group_invites(self, adapter_id: str, self_id: str, *, view: str = "active",
+                                   limit: int = 20, cursor: str | None = None) -> dict[str, Any]:
+        """
+        后台按账号查询所有群邀请, 不混入成员入群申请
+
+        参数:
+        - adapter_id: 来源平台实例
+        - self_id: 当前机器人账号
+        - view: active, archived 或 all
+        - limit: 每页最多 1 到 100 条, 默认 20
+        - cursor: 同范围上次返回的位置, 默认从头查询
+
+        返回:
+        - 有界邀请页和覆盖信息
+        """
+        adapter = self._invitation_adapter(adapter_id, self_id)
+        generation = adapter.connection_generation()
+        result = await adapter.request_flags.list_requests("group", self_id=self_id, sub_type="invite",
+            view=view, limit=limit, cursor=cursor)
+        if self._invitation_adapter(adapter_id, self_id) is not adapter or adapter.connection_generation() != generation:
+            raise PermissionError("邀请来源平台实例已变化")
+        return result
+
+    async def submit_account_group_invite(self, adapter_id: str, self_id: str, params: dict[str, Any], *,
+                                          actor_kind: str, action_id: str | None = None) -> dict[str, Any]:
+        """
+        从原邀请解析目标与凭据, 复用宿主原子占用和执行账本
+
+        参数:
+        - adapter_id: 来源平台实例
+        - self_id: 当前机器人账号
+        - params: request_id, approve, 可选 expected_revision 和 reason
+        - actor_kind: model 或 panel
+        - action_id: 后台幂等标识, 模型调用默认由宿主生成
+
+        返回:
+        - 待审批或已执行的账号邀请动作记录
+        """
+        if set(params) - {"request_id", "approve", "expected_revision", "reason"} or not {"request_id", "approve"} <= params.keys():
+            raise ValueError("入群邀请参数缺失或含未知字段")
+        if type(params["approve"]) is not bool:
+            raise ValueError("approve 必须为布尔值")
+        if not isinstance(params["request_id"], str) or not params["request_id"]:
+            raise ValueError("request_id 必须为非空文本")
+        if not isinstance(params.get("reason", ""), str) or len(params.get("reason", "")) > 120:
+            raise ValueError("reason 必须为最多 120 字符的文本")
+        if "expected_revision" in params and (type(params["expected_revision"]) is not int or params["expected_revision"] < 1):
+            raise ValueError("expected_revision 必须为正整数")
+        adapter = self._invitation_adapter(adapter_id, self_id)
+        generation = adapter.connection_generation()
+        if action_id is not None and actor_kind == "panel":
+            store = await self._group_action_store(adapter_id)
+            try:
+                existing = await asyncio.to_thread(store.invitation, self_id, action_id)
+            except LookupError:
+                existing = None
+            if existing is not None:
+                previous = existing["params"]
+                if (existing["actor_kind"] != actor_kind or previous.get("request_id") != params["request_id"]
+                        or previous.get("approve") != params["approve"] or previous.get("reason", "") != params.get("reason", "")
+                        or previous.get("expected_revision") != params.get("expected_revision", previous.get("expected_revision"))):
+                    raise GroupConfigConflict("相同 action_id 已用于不同邀请操作")
+                if self._invitation_adapter(adapter_id, self_id) is not adapter or adapter.connection_generation() != generation:
+                    raise PermissionError("邀请所属平台已变化")
+                return existing   # 原申请已处理时仍可读取同一人工操作的结果, 不再次使用凭据
+        revision = params.get("expected_revision")
+        row = await adapter.request_flags.resolve_request("group", params["request_id"], self_id=self_id,
+            allow_archived=revision is not None, expected_revision=revision)
+        if row["sub_type"] != "invite":
+            raise PermissionError("账号请求插件只能处理邀请机器人进群的邀请")
+        if self._invitation_adapter(adapter_id, self_id) is not adapter or adapter.connection_generation() != generation:
+            raise PermissionError("邀请所属平台已变化")
+        values = {"flag": row["flag"], "sub_type": "invite", "approve": params["approve"], "reason": params.get("reason", ""),
+                  "request_id": params["request_id"], "expected_revision": row["revision"]}
+        return await self.submit_group_action(adapter_id, self_id, row["group_id"], action_id or secrets.token_hex(16),
+            "handle_group_request", values, actor_kind=actor_kind)
+
+    async def account_invite_actions(self, adapter_id: str, self_id: str, *, state: str = "pending",
+                                     page: int = 1) -> dict[str, Any]:
+        """
+        账号层查询邀请审批, 不要求预先选定目标群
+
+        参数:
+        - adapter_id: 来源平台实例
+        - self_id: 当前机器人账号
+        - state: 审批状态, 默认 pending
+        - page: 页码, 默认 1
+
+        返回:
+        - 仅含邀请动作的有界审批页
+        """
+        adapter = self._invitation_adapter(adapter_id, self_id)
+        generation = adapter.connection_generation()
+        store = await self._group_action_store(adapter_id)
+        result = await asyncio.to_thread(store.list, self_id, None, state=state, page=page, request_sub_type="invite")
+        if self._invitation_adapter(adapter_id, self_id) is not adapter or adapter.connection_generation() != generation:
+            raise PermissionError("邀请所属平台已变化")
+        return result
+
+    async def decide_account_invite(self, adapter_id: str, self_id: str, action_id: str, *, approve: bool) -> dict[str, Any]:
+        """
+        后台在账号层批准或拒绝固定邀请动作
+
+        参数:
+        - adapter_id: 来源平台实例
+        - self_id: 当前机器人账号
+        - action_id: 账号邀请审批返回的动作 ID
+        - approve: True 批准执行, False 拒绝执行
+
+        返回:
+        - 复核原模型权限和请求归属后的动作结果
+        """
+        self._invitation_adapter(adapter_id, self_id)
+        store = await self._group_action_store(adapter_id)
+        record = await asyncio.to_thread(store.invitation, self_id, action_id)
+        return await self.decide_group_action(adapter_id, self_id, record["group_id"], action_id, approve=approve)
+
+    def _administrator_invitation_allowed(self, adapter_id: str, self_id: str, inviter: str) -> bool:
+        """
+        核验原邀请人在当前平台上的系统管理员授权
+
+        参数:
+        - adapter_id: 原邀请所属平台
+        - self_id: 收到邀请的机器人账号
+        - inviter: 原邀请记录中的真实邀请人
+
+        返回:
+        - 邀请人当前是否获 account_requests 系统管理授权
+        """
+        administrators = getattr(self, "administrator_service", None)
+        return bool(inviter and administrators is not None and administrators.resolve(
+            CallOrigin(adapter_id, self_id, "FriendMessage", inviter, inviter, "", ""), "account_requests",
+        ).allowed)
+
     def _model_source_permission_fingerprint(
         self, authorization: ModelActionAuthorization, target_group: str,
     ) -> str:
         """从来源群最新配置计算与本次写授权相关的指纹"""
 
         authorization.verify(target_group)
+        if authorization.approval_exempt_inviter and not (
+                authorization.administrator_invites_auto_approve and time.time() < authorization.approval_exempt_until
+                and self._administrator_invitation_allowed(
+                    authorization.identity["adapter_id"], authorization.identity["self_id"], authorization.approval_exempt_inviter)):
+            raise PermissionError("邀请已移入归档或邀请人的系统管理授权已撤销, 不能免除人工审批")
         source_ref = authorization.source_session
         if source_ref is None:
             return ""
@@ -1446,6 +1621,7 @@ class BackendManager:
         runtime = self.get_platform_runtime(adapter_id)
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         friend_action = identity["tool_name"].startswith("friend_manager_")
+        account_action = identity["tool_name"].startswith("account_requests_")
         if (not session_id or runtime is None or adapter is None
                 or (adapter.friend_account() if friend_action else getattr(adapter, "bot_self_id", "")) != self_id):
             raise PermissionError("模型动作来源会话或平台已失效")
@@ -1494,7 +1670,7 @@ class BackendManager:
         specs = resolve_runtime_specs(session, parse_plugin_specs(plugins, provider.plugin_catalog), provider.plugin_catalog)
         tool_name = identity["tool_name"]
         self_nickname = tool_name == "group_chat_set_group_nickname"
-        plugin_name = "friend_manager" if friend_action else "group_chat" if self_nickname else "group_admin"
+        plugin_name = "account_requests" if account_action else "friend_manager" if friend_action else "group_chat" if self_nickname else "group_admin"
         spec = next((item for item in specs if item.name == plugin_name), None)
         if (spec is None or not spec.enabled or not spec.capabilities.get("tools", {}).get(tool_name, False)):
             raise PermissionError("模型动作来源管理插件或工具已停用")
@@ -1507,11 +1683,34 @@ class BackendManager:
             permission_spec = replace(permission_spec, tools={**permission_spec.tools, tool_name: ("access", "write")})
         decision = evaluate_plugin_permissions(
             plugin_name, permission_spec, "tools", tool_name, config,
-            CallOrigin(adapter_id, self_id, identity["chat_type"], identity["chat_id"], identity["actor_id"], "", ""),
+            CallOrigin(adapter_id, self_id, identity["chat_type"], identity["chat_id"], identity["actor_id"], "", "",
+                       group_role=authorization.platform_group_role),
             getattr(self, "administrator_service", None),
         )
         if decision.status != "allowed" and not (friend_action and decision.status == "not_applicable" and identity.get("friend_scope") == "self"):
             raise PluginPermissionDenied(decision)
+        if any(grant.source == "platform_group_admin" for grant in decision.grants) and target_group != identity["chat_id"]:
+            raise PermissionError("平台群管理员授权只能用于原来源群")
+        if account_action:
+            platform = next((item for item in self.config.platforms if item.get("id") == adapter_id), None)
+            if platform is None or not platform.get("enable", True) or not platform.get("settings", {}).get(
+                    "enable_group" if identity["chat_type"] == "GroupMessage" else "enable_private", True):
+                raise PermissionError("账号邀请来源对话已停用")
+            if identity["chat_type"] != "GroupMessage":
+                binding = resolve_agent_binding(platform, "private")[0]
+                if binding.get("provider") != "edictum" or binding.get("config_name") != session_cfg.session_type_name:
+                    raise PermissionError("账号邀请来源 Agent 路由已变化")
+                route.append(binding)
+            groups = sorted(set(_lines(config.get("allowed_invitation_groups"))))
+            approval = config.get("approval_required", True) is not False
+            administrator_auto_approve = config.get("administrator_invites_auto_approve") is True
+            if (tool_name != "account_requests_handle_group_invite" or groups and target_group not in groups
+                    or approval != authorization.approval_required
+                    or administrator_auto_approve != authorization.administrator_invites_auto_approve):
+                raise PermissionError("账号邀请来源权限或审批要求已变化")
+            payload = [session_id, tool_name, identity["actor_id"], decision.permission_fingerprint, route, target_group, groups,
+                       approval, administrator_auto_approve]
+            return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
         if friend_action:
             platform = next((item for item in self.config.platforms if item.get("id") == adapter_id), None)
             if (platform is None or not platform.get("enable", True)
@@ -1556,16 +1755,17 @@ class BackendManager:
 
         normalized, secret_flag = normalize_action_params(action_type, params, self_id)
         authorization = current_model_action_authorization() if actor_kind == "model" else None
+        if action_type == "handle_group_request" and authorization is not None:
+            invite = normalized.get("sub_type") == "invite"
+            if invite != (authorization.identity["tool_name"] == "account_requests_handle_group_invite"):
+                raise PermissionError("成员入群申请与机器人入群邀请必须使用各自的插件")
         source_fingerprint = ""
         if actor_kind == "model":
             if authorization is None or authorization.identity["adapter_id"] != adapter_id or authorization.identity["self_id"] != self_id:
                 raise PermissionError("模型群动作缺少可信来源")
             source_fingerprint = self._model_source_permission_fingerprint(authorization, group_id)
             if authorization.source_session is not None:
-                authorization = ModelActionAuthorization(
-                    {**authorization.identity, "auth_fingerprint": source_fingerprint},
-                    authorization.verify, authorization.source_session, authorization.approval_required,
-                )
+                authorization = replace(authorization, identity={**authorization.identity, "auth_fingerprint": source_fingerprint})
         model_origin = authorization.identity if authorization is not None else None
         store = await self._group_action_store(adapter_id)
         existing = await asyncio.to_thread(store.get, self_id, group_id, action_id)
@@ -1575,7 +1775,7 @@ class BackendManager:
                 raise GroupConfigConflict("相同 action_id 已用于不同动作")
             return existing
         adapter, store, mode, version = await self._group_action_context(
-            adapter_id, self_id, group_id, action_type,
+            adapter_id, self_id, group_id, action_type, request_sub_type=str(normalized.get("sub_type", "add")),
         )
         request_deadline = None
         archived_request = False
@@ -1589,7 +1789,11 @@ class BackendManager:
                 if row["flag"] != secret_flag or row["group_id"] != group_id or row["sub_type"] != normalized["sub_type"]:
                     raise PermissionError("群请求与固定申请身份不符")
                 archived_request = row["expires_at"] <= time.time()
-                request_deadline = row["credential_expires_at"]
+                request_deadline = row["credential_expires_at"] if archived_request else row["expires_at"]
+                if (authorization is not None and authorization.administrator_invites_auto_approve
+                        and normalized["sub_type"] == "invite" and normalized["approve"] is True and not archived_request
+                        and self._administrator_invitation_allowed(adapter_id, self_id, str(row["user_id"]))):
+                    authorization = replace(authorization, approval_exempt_inviter=str(row["user_id"]), approval_exempt_until=row["expires_at"])
             elif (entry is None or entry["state"] != "available" or entry["group_id"] != group_id
                     or entry["sub_type"] != normalized["sub_type"]
                     or time.time() - entry["received_at"] >= adapter.request_flags.ledger.ttl):
@@ -1598,7 +1802,8 @@ class BackendManager:
                 request_deadline = entry["received_at"] + adapter.request_flags.ledger.ttl
         if authorization is not None and self._model_source_permission_fingerprint(authorization, group_id) != source_fingerprint:
             raise PermissionError("模型动作来源授权已变化")
-        requires_approval = mode == "approval_required" or (authorization is not None and (authorization.approval_required or archived_request))
+        requires_approval = mode == "approval_required" or (authorization is not None and (
+            archived_request or authorization.approval_required and not authorization.approval_exempt_inviter))
         record, created = await asyncio.to_thread(
             store.submit, action_id, self_id, group_id, action_type, normalized,
             actor_kind, version, approval_required=requires_approval, model_origin=model_origin, deadline=request_deadline,
@@ -1621,7 +1826,7 @@ class BackendManager:
         current = await self.group_action(adapter_id, self_id, group_id, action_id)
         if approve:
             _, store, _, version = await self._group_action_context(
-                adapter_id, self_id, group_id, current["action_type"],
+                adapter_id, self_id, group_id, current["action_type"], request_sub_type=str(current["params"].get("sub_type", "add")),
             )
         else:
 
@@ -1663,10 +1868,11 @@ class BackendManager:
         details: dict[str, object] | None = None
         unexpected = False
         try:
-            adapter, _, _, version = await self._group_action_context(adapter_id, self_id, group_id, action)
+            adapter, _, _, version = await self._group_action_context(adapter_id, self_id, group_id, action,
+                request_sub_type=str(record["params"].get("sub_type", "add")))
             if version != record["policy_revision"]:
                 raise AdminActionRejected("审批策略或连接代次已变化")
-            preflight: Callable[[], None] | None = None
+            preflight: Callable[[], Awaitable[None]] | None = None
             if record["actor_kind"] == "model":
                 persisted_origin = await asyncio.to_thread(store.model_origin, self_id, group_id, action_id)
                 authorization = self._group_action_authorizers.get(action_id)
@@ -1674,16 +1880,18 @@ class BackendManager:
                     raise ModelActionAuthorizationError("model_source_unavailable")
                 expected_fingerprint = persisted_origin.get("auth_fingerprint", "")
 
-                def verify_preflight() -> None:
+                async def verify_preflight() -> None:
                     """在平台写调用前复核来源群最新授权及目标群资格"""
                     try:
+                        if authorization.refresh is not None:
+                            await authorization.refresh(group_id)
                         target_allowed = adapter.allows_management_target(group_id)
                         if action == "handle_group_request" and flag is not None:
                             sub_type = str(params["sub_type"])
-                            digest = flag_digest("group", self_id, flag)
                             occupied = current_group_request_occupancy()
+                            digest = occupied[4] if occupied is not None else flag_digest("group", self_id, flag)
                             ledger_entry = adapter.request_flags.ledger.lookup(
-                                adapter_id, self_id, "group", flag,
+                                adapter_id, self_id, "group", flag, identity_digest=digest,
                             )
                             target_allowed = (
                                 occupied == (adapter_id, self_id, group_id, sub_type, digest)
@@ -2409,6 +2617,9 @@ class BackendManager:
                 replacement.group_action_handler = lambda group_id, action_type, params: self.submit_group_action(
                     platform_id, replacement.bot_self_id, group_id, secrets.token_hex(16),
                     action_type, params, actor_kind="model",
+                )
+                replacement.account_request_handler = lambda params: self.submit_account_group_invite(
+                    platform_id, replacement.bot_self_id, params, actor_kind="model",
                 )
             self._attach_send_attempt_recorder(replacement)
             replacement.friend_host = self.friend_service(platform_id)
@@ -3171,6 +3382,9 @@ class BackendManager:
             adapter.group_action_handler = lambda group_id, action_type, params: self.submit_group_action(
                 pid, adapter.bot_self_id, group_id, secrets.token_hex(16),
                 action_type, params, actor_kind="model",
+            )
+            adapter.account_request_handler = lambda params: self.submit_account_group_invite(
+                pid, adapter.bot_self_id, params, actor_kind="model",
             )
         self._attach_send_attempt_recorder(adapter)
         adapter.friend_host = self.friend_service(pid)

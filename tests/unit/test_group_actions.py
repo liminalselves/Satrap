@@ -295,7 +295,8 @@ async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path) -> None:
+@pytest.mark.parametrize("chat_type", ["GroupMessage", "FriendMessage"])
+async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path, chat_type: str) -> None:
     """未入群邀请由请求账本证明归属, 同一 flag 的第二个模型动作不能调用平台"""
     settings = {"group_management_version": 1}
     backend = BackendManager(BackendConfig(data_root=str(tmp_path), platforms=[
@@ -321,8 +322,8 @@ async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path
     config_manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
     config_manager.create("assistant", {
         "edictum_type": "async_simple", "model_name": "base",
-        "plugins": [{"name": "group_admin", "enabled": True, "config": {
-            "write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "999", "request_managers": "123",
+        "plugins": [{"name": "account_requests", "enabled": True, "config": {
+            "allowed_callers": "123", "allowed_invitation_groups": "999", "request_managers": "123",
         }}],
     })
     provider = EdictumProvider(config_manager, registry, default_checkpoint_db=str(backend.platform_db_path("bot")))
@@ -335,46 +336,46 @@ async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path
     session.plugin_environment = PluginEnvironment("platform", "onebot")
     manager.pool.put("invite-session", session, "assistant")
     backend._platform_runtimes["bot"] = cast(Any, (manager, None))
-    origin = CallOrigin("bot", "100", "GroupMessage", "456", "123", "message-1", "request-1")
+    origin = CallOrigin("bot", "100", chat_type, "456" if chat_type == "GroupMessage" else "123", "123", "message-1", "request-1")
     set_current_adapter_manager(backend._adapter_mgr)
     try:
         await provider.prepare_session_async(session)
         assert session._wf is not None
-        tool = session._wf.tools_manager.tools["group_admin_handle_group_request"]
+        tool = session._wf.tools_manager.tools["account_requests_handle_group_invite"]
 
         await adapter.request_flags.register(
             "group", "panel-invite", self_id="100", group_id="999", sub_type="invite", user_id="123",
         )
-        panel = await backend.submit_group_action(
-            "bot", "100", "999", "panel-invite-action", "handle_group_request",
-            {"flag": "panel-invite", "sub_type": "invite", "approve": True}, actor_kind="panel",
-        )
-        assert panel["state"] == "pending"
-        panel_result = await backend.decide_group_action("bot", "100", "999", "panel-invite-action", approve=True)
-        assert panel_result["state"] == "succeeded"
+        panel_row = (await backend.account_group_invites("bot", "100"))["items"][0]
+        panel_params = {"request_id": panel_row["request_id"], "expected_revision": panel_row["revision"], "approve": True}
+        panel = await backend.submit_account_group_invite("bot", "100", panel_params, actor_kind="panel", action_id="panel-invite-action")
+        assert panel["state"] == "succeeded"
+        assert await backend.submit_account_group_invite("bot", "100", panel_params, actor_kind="panel", action_id="panel-invite-action") == panel
 
         await adapter.request_flags.register(
             "group", "model-invite", self_id="100", group_id="999", sub_type="invite", user_id="123",
         )
-        adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
-            "bot", "100", gid, "model-invite-action", action, params, actor_kind="model",
+        adapter.account_request_handler = lambda params: backend.submit_account_group_invite(
+            "bot", "100", params, actor_kind="model", action_id="model-invite-action",
         )
+        row = (await backend.account_group_invites("bot", "100"))["items"][0]
         with bind_call_origin(origin):
-            submitted = await tool.execute(group_id="999", flag="model-invite", sub_type="invite", approve=True)
+            submitted = await tool.execute(request_id=row["request_id"], approve=True)
         assert submitted["data"]["state"] == "pending"
-        model_result = await backend.decide_group_action("bot", "100", "999", "model-invite-action", approve=True)
+        model_result = await backend.decide_account_invite("bot", "100", "model-invite-action", approve=True)
         assert model_result["state"] == "succeeded"
 
         await adapter.request_flags.register(
             "group", "race-invite", self_id="100", group_id="999", sub_type="invite", user_id="123",
         )
         action_ids = iter(("race-invite-first", "race-invite-second"))
-        adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
-            "bot", "100", gid, next(action_ids), action, params, actor_kind="model",
+        adapter.account_request_handler = lambda params: backend.submit_account_group_invite(
+            "bot", "100", params, actor_kind="model", action_id=next(action_ids),
         )
+        row = (await backend.account_group_invites("bot", "100"))["items"][0]
         with bind_call_origin(origin):
-            first = await tool.execute(group_id="999", flag="race-invite", sub_type="invite", approve=True)
-            second = await tool.execute(group_id="999", flag="race-invite", sub_type="invite", approve=True)
+            first = await tool.execute(request_id=row["request_id"], approve=True)
+            second = await tool.execute(request_id=row["request_id"], approve=True)
         assert first["data"]["state"] == second["data"]["state"] == "pending"
 
         entered = asyncio.Event()
@@ -406,16 +407,17 @@ async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path
         await adapter.request_flags.register(
             "group", "revoked-invite", self_id="100", group_id="999", sub_type="invite", user_id="123",
         )
-        adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
-            "bot", "100", gid, "revoked-invite-action", action, params, actor_kind="model",
+        adapter.account_request_handler = lambda params: backend.submit_account_group_invite(
+            "bot", "100", params, actor_kind="model", action_id="revoked-invite-action",
         )
+        row = (await backend.account_group_invites("bot", "100"))["items"][0]
         with bind_call_origin(origin):
-            pending = await tool.execute(group_id="999", flag="revoked-invite", sub_type="invite", approve=True)
+            pending = await tool.execute(request_id=row["request_id"], approve=True)
         assert pending["data"]["state"] == "pending"
-        config_manager.update("assistant", {"plugins": [{"name": "group_admin", "enabled": True, "config": {
-            "write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "999", "request_managers": "",
+        config_manager.update("assistant", {"plugins": [{"name": "account_requests", "enabled": True, "config": {
+            "allowed_callers": "123", "allowed_invitation_groups": "999", "request_managers": "",
         }}]})
-        assert tool.config["request_managers"] == "123"
+        assert getattr(tool, "config")["request_managers"] == "123"
         revoked = await backend.decide_group_action("bot", "100", "999", "revoked-invite-action", approve=True)
         assert revoked["state"] == "failed" and revoked["result"]["reason"] == "model_permission_revoked"
         assert adapter._bot.set_group_add_request.await_count == 3

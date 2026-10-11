@@ -147,6 +147,8 @@ def test_permissions_may_explicitly_reject_system_admin_grants():
     lambda m: m["management_permissions"]["write"].update(system_admin="true"),
     lambda m: m["management_permissions"]["write"].update(unknown=True),
     lambda m: m["management_permissions"]["write"].update(requirements=[True]),
+    lambda m: m["management_permissions"]["write"].update(platform_group_admin=None),
+    lambda m: m["management_permissions"]["write"].update(platform_group_admin="writers"),
 ])
 def test_invalid_metadata_is_rejected(mutate):
     meta = metadata()
@@ -155,14 +157,32 @@ def test_invalid_metadata_is_rejected(mutate):
         parse_plugin_permissions(meta, parse_config_schema(meta))
 
 
+@pytest.mark.parametrize("role,enabled,chat_type,allowed", [
+    ("admin", True, "GroupMessage", True), ("owner", True, "GroupMessage", True),
+    ("member", True, "GroupMessage", False), ("admin", False, "GroupMessage", False),
+    ("admin", True, "FriendMessage", False), ("", True, "GroupMessage", False),
+])
+def test_platform_group_administrator_grants_are_explicit_and_scoped(role, enabled, chat_type, allowed):
+    meta = metadata()
+    meta["config_schema"]["group_admins_enabled"] = {"type": "bool", "default": False}
+    meta["management_permissions"]["write"]["platform_group_admin"] = "group_admins_enabled"
+    rules = parse_plugin_permissions(meta, parse_config_schema(meta))
+    result = evaluate_plugin_permissions("example", rules, "tools", "write", {"group_admins_enabled": enabled},
+                                         replace(origin(), group_role=role, chat_type=chat_type))
+    assert (result.status == "allowed") is allowed
+    if allowed:
+        assert result.grants[-1].source == "platform_group_admin" and result.grants[-1].group_ids == ("room",)
+    assert rules.to_payload()["management_permissions"]["write"]["platform_group_admin"] == "group_admins_enabled"
+
+
 def test_actual_install_validates_subcommands_and_not_prefix_matches():
     def handler(*args):
         return args
-    handler.subcommands = ["approve"]
+    setattr(handler, "subcommands", ["approve"])
     validate_permission_install(spec(), {"query": object(), "write": object()}, {"manage": handler})
     assert spec().required("commands", "manage", "approve") == ("read", "write")
     assert spec().required("commands", "manage", "approve-all") == ("read",)
-    handler.subcommands = []
+    setattr(handler, "subcommands", [])
     with pytest.raises(ValueError):
         validate_permission_install(spec(), {"query": object(), "write": object()}, {"manage": handler})
 

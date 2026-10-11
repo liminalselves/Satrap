@@ -191,23 +191,45 @@ class GroupActionStore(GroupConfigStore):
             return cursor.rowcount
 
     def list(
-        self, self_id: str, group_id: str, *, state: str = "pending", page: int = 1, page_size: int = 25,
+        self, self_id: str, group_id: str | None, *, state: str = "pending", page: int = 1, page_size: int = 25,
+        request_sub_type: str = "",
     ) -> dict[str, Any]:
-        """在数据库内按固定群和状态筛选分页"""
+        """
+        在数据库内按账号, 可选群和请求类型筛选分页
+
+        参数:
+        - self_id: 固定机器人账号
+        - group_id: 固定目标群, None 仅允许账号邀请查询
+        - state: 动作状态, 默认 pending
+        - page: 页码, 默认 1
+        - page_size: 每页 25 或 50 条
+        - request_sub_type: add 排除邀请, invite 只查邀请, 空值沿用旧范围
+
+        返回:
+        - 同一事务下的有限动作页与总数
+        """
         _identity(self_id, group_id)
+        if request_sub_type not in {"", "add", "invite"} or group_id is None and request_sub_type != "invite":
+            raise ValueError("账号动作查询必须限定入群邀请")
         if state not in {"all", "pending", "executing", "succeeded", "failed", "unknown", "rejected", "expired"}:
             raise ValueError("动作状态筛选无效")
         if page < 1 or page_size not in {25, 50}:
             raise ValueError("动作分页参数无效")
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            where = "self_id=?"
+            args: list[object] = [self_id]
+            if group_id is not None:
+                where += " AND group_id=?"
+                args.append(group_id)
+            if request_sub_type == "invite":
+                where += " AND action_type='handle_group_request' AND json_extract(params_json, '$.sub_type')='invite'"
+            elif request_sub_type == "add":
+                where += " AND (action_type!='handle_group_request' OR json_extract(params_json, '$.sub_type')='add')"
             connection.execute(
-                "UPDATE group_actions SET state='expired', decision_at=? "
-                "WHERE self_id=? AND group_id=? AND state='pending' AND expires_at<=?",
-                (time.time(), self_id, group_id, time.time()),
+                f"UPDATE group_actions SET state='expired', decision_at=? WHERE {where} AND state='pending' AND expires_at<=?",
+                (time.time(), *args, time.time()),
             )
-            where = "self_id=? AND group_id=?"
-            args: list[object] = [self_id, group_id]
             if state != "all":
                 where += " AND state=?"
                 args.append(state)
@@ -218,6 +240,31 @@ class GroupActionStore(GroupConfigStore):
             ).fetchall()
         return {"items": [self._record(row) for row in rows], "total": total,
                 "page": page, "page_size": page_size}
+
+    def invitation(self, self_id: str, action_id: str) -> dict[str, Any]:
+        """
+        按账号定位固定邀请动作, 不要求调用者预先提供群号
+
+        参数:
+        - self_id: 固定机器人账号
+        - action_id: 邀请动作 ID
+
+        返回:
+        - 原邀请动作; 不属于此账号或不是邀请时拒绝
+        """
+        _identity(self_id)
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT group_id FROM group_actions WHERE self_id=? AND action_id=? "
+                "AND action_type='handle_group_request' AND json_extract(params_json, '$.sub_type')='invite'",
+                (self_id, action_id),
+            ).fetchone()
+        if row is None:
+            raise LookupError("账号入群邀请动作不存在")
+        result = self.get(self_id, row['group_id'], action_id)
+        if result is None:
+            raise LookupError("账号入群邀请动作已删除")
+        return result
 
     def decide(self, self_id: str, group_id: str, action_id: str, *, approve: bool, policy_revision: int) -> dict[str, Any]:
         """在一个事务内比较待审批状态和策略版本并占用执行权"""

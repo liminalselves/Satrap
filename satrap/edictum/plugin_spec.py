@@ -163,7 +163,12 @@ def parse_plugin_specs(
         if migration_state:
             from satrap.edictum.friend_migration import FRIEND_SWITCHES
             originals = migration_state.get("friend_tools")
-            if name != "friend_manager" or set(migration_state) != {"friend_tools"} or not isinstance(originals, dict) or set(originals) != set(FRIEND_SWITCHES.values()) or any(type(state) is not bool for state in originals.values()):
+            friend_state = (name == "friend_manager" and set(migration_state) == {"friend_tools"}
+                            and isinstance(originals, dict) and set(originals) == set(FRIEND_SWITCHES.values())
+                            and all(type(state) is bool for state in originals.values()))
+            account_state = (name == "group_admin" and set(migration_state) == {"account_group_invites"}
+                             and type(migration_state["account_group_invites"]) is int and migration_state["account_group_invites"] == 1)
+            if not friend_state and not account_state:
                 raise ValueError("插件配置迁移记录无效")
         if entry is None and require_available:
             raise ValueError(f"插件不存在: {name}")

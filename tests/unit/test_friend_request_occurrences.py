@@ -124,7 +124,8 @@ async def test_adapter_uses_original_timestamp_and_host_sends_only_raw_credentia
 
 
 @pytest.mark.asyncio
-async def test_queued_old_decision_is_rejected_and_settlement_does_not_clear_new_request(tmp_path: Path, clock: list[float], monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_queued_old_decision_is_rejected_and_settlement_does_not_clear_new_request(tmp_path: Path, clock: list[float], monkeypatch: pytest.MonkeyPatch, asynchronous):
     adapter = _setup_adapter()
     adapter.set_request_ledger(RequestApprovalLedger(tmp_path / "ledger.json"))
     await incoming(adapter, flag="reused-user-uid", time=990)
@@ -138,7 +139,11 @@ async def test_queued_old_decision_is_rejected_and_settlement_does_not_clear_new
     monkeypatch.setattr(adapter.admin, "_call", queued_call)
     clock[0] = 1100
     checked: list[bool] = []
-    with bind_group_action_preflight(lambda: checked.append(True)):
+
+    async def async_preflight():
+        checked.append(True)
+
+    with bind_group_action_preflight(async_preflight if asynchronous else lambda: checked.append(True)):
         with pytest.raises(PermissionError, match="已有更新记录"):
             await adapter.friend_handle("10000", old["request_id"], True, "")
     adapter._bot.set_friend_add_request.assert_not_awaited()

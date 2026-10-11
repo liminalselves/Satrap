@@ -231,7 +231,7 @@ class TestConversationKind:
         adapter._bot.get_group_honor_info.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_group_request_requires_matching_sub_type(self):
+    async def test_group_request_requires_request_id_and_rejects_raw_credentials(self):
         adapter = _setup_adapter()
         adapter._bot.set_group_add_request.return_value = {}
         adapter.bot_self_id = "10000"
@@ -242,12 +242,13 @@ class TestConversationKind:
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_handle_group_request")
         with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
             bad = await tool.execute(flag="f1", sub_type="other", approve=True, group_id="456")
-            missing = await tool.execute(flag="f1", sub_type="add", approve=True)
-            ok = await tool.execute(flag="f1", sub_type="add", approve=False, reason="拒绝", group_id="456")
-        assert bad["ok"] is False and bad["error_type"] == "invalid_arguments" and "sub_type" in bad["error"]
-        assert missing == {"ok": True}
-        assert ok["ok"] is False
-        adapter._bot.set_group_add_request.assert_awaited_once_with(flag="f1", sub_type="add", approve=True, reason="")
+            missing = await tool.execute(approve=True)
+            row = (await adapter.request_flags.list_requests("group", self_id="10000"))["items"][0]
+            ok = await tool.execute(request_id=row["request_id"], approve=False, reason="拒绝", group_id="456")
+        assert bad["ok"] is False and bad["error_type"] == "invalid_arguments"
+        assert missing["ok"] is False and missing["error_type"] == "invalid_arguments"
+        assert ok["ok"] is True
+        adapter._bot.set_group_add_request.assert_awaited_once_with(flag="f1", sub_type="add", approve=False, reason="拒绝")
 
     @pytest.mark.asyncio
     async def test_group_request_rechecks_account_after_waiting(self, monkeypatch: pytest.MonkeyPatch):

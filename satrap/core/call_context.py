@@ -24,6 +24,7 @@ class CallOrigin:
     conversation_id: str = ""
     agent_route_generation: int = 0
     group_route_generation: int = 0
+    group_role: str = ""
 
 
 @dataclass

@@ -18,7 +18,7 @@ import json
 import weakref
 import traceback
 
-from satrap.core.call_context import current_call_origin, current_tool_workflow, CallOrigin
+from satrap.core.call_context import current_call_origin, current_tool_workflow, is_group_origin, CallOrigin
 from satrap.core.log import logger
 if TYPE_CHECKING:
     from satrap.edictum.plugin_permissions import PluginPermissions
@@ -136,8 +136,12 @@ def evaluate_plugin_permissions(
                 source = "administrator_group" if admin.group_ids else "administrator_override"
                 allowed = True
                 group_ids, override_ids = admin.group_ids, admin.allowed_overrides
+            if (not allowed and rule.platform_group_admin and config.get(rule.platform_group_admin) is True
+                    and is_group_origin(origin) and origin.chat_id and origin.self_id and origin.group_role in {"owner", "admin"}):
+                source, allowed, group_ids = "platform_group_admin", True, (origin.chat_id,)
             grants.append(PermissionGrant(permission, allowed, source, group_ids, override_ids))
-            definitions.append((permission, rule.caller_list, rule.empty_policy, rule.system_admin))
+            definitions.append((permission, rule.caller_list, rule.empty_policy, rule.system_admin, rule.platform_group_admin,
+                                config.get(rule.platform_group_admin) is True if rule.platform_group_admin else False))
     except (KeyError, ValueError, TypeError):
         return AuthorizationDecision("denied", *identity, required, reason_code="invalid_permission_config")
     permitted = all(grant.allowed for grant in grants)

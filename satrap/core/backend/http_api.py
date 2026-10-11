@@ -330,6 +330,7 @@ class BackendHTTPServer(MiniHTTPServer):
             self._route_ui_health_reload,
             self._route_platform_connection,
             self._route_friends,
+            self._route_account_requests,
             self._route_reminders,
             self._route_groups,
             self._route_edictum_runtime_plugins,
@@ -530,6 +531,73 @@ class BackendHTTPServer(MiniHTTPServer):
             logger.warning(f"[好友接口] 请求失败 code={code} reason={message}")
             status = 403 if code in {"permission_denied", "protected_friend"} else 409 if code in {"stale_account", "action_conflict"} else 503 if code in {"unavailable", "unconfirmed", "busy"} else 400
             return status, {"error": message, "reason": code}
+
+    async def _route_account_requests(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        已登录后台的账号入群邀请查询, 处理与人工审批
+
+        参数:
+        - method: HTTP 请求方法
+        - path: 路径和查询参数
+        - body: JSON 请求正文
+
+        返回:
+        - 匹配时的明确响应, 不匹配时为 None
+        """
+        parsed = urlsplit(path)
+        parts = parsed.path.split('/')
+        if len(parts) < 6 or parts[:3] != ['', 'api', 'platforms'] or parts[4:6] != ['account-requests', 'group-invites']:
+            return None
+        adapter_id = unquote(parts[3])
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        try:
+            if any(len(values) != 1 for values in query.values()) or set(query) - {'account', 'view', 'limit', 'cursor', 'state', 'page'}:
+                raise ValueError('账号邀请查询参数无效')
+            tail = parts[6:]
+            if method == 'GET':
+                account = query.get('account', [''])[0]
+                if not account:
+                    raise ValueError('必须指定机器人账号')
+                if not tail:
+                    return 200, await self.backend.account_group_invites(adapter_id, account,
+                        view=query.get('view', ['active'])[0], limit=int(query.get('limit', ['20'])[0]), cursor=query.get('cursor', [None])[0])
+                if tail == ['actions']:
+                    return 200, await self.backend.account_invite_actions(adapter_id, account,
+                        state=query.get('state', ['pending'])[0], page=int(query.get('page', ['1'])[0]))
+            if method == 'POST':
+                payload = _parse_json_object(body)
+                account = payload.get('expected_self_id')
+                if not isinstance(account, str) or not account:
+                    raise ValueError('必须确认机器人账号')
+                if not tail:
+                    if set(payload) - {'expected_self_id', 'action_id', 'request_id', 'approve', 'expected_revision', 'reason'}:
+                        raise ValueError('账号邀请参数含未知字段')
+                    action_id = payload.get('action_id')
+                    if not isinstance(action_id, str) or not action_id:
+                        raise ValueError('必须提供幂等 action_id')
+                    params = {key: value for key, value in payload.items() if key not in {'expected_self_id', 'action_id'}}
+                    result = await self.backend.submit_account_group_invite(adapter_id, account, params, actor_kind='panel', action_id=action_id)
+                    return (202 if result['state'] in {'pending', 'executing'} else 200), result
+                if len(tail) == 3 and tail[0] == 'actions' and tail[2] == 'decision':
+                    if set(payload) != {'expected_self_id', 'approve'} or type(payload.get('approve')) is not bool:
+                        raise ValueError('账号邀请审批参数无效')
+                    return 200, await self.backend.decide_account_invite(adapter_id, account, unquote(tail[1]), approve=payload['approve'])
+            return 405, {'error': '账号邀请入口不支持此操作'}
+        except PermissionError as error:
+            logger.warning(f'[账号邀请] 请求被拒绝: {error}')
+            return 403, {'error': str(error)}
+        except LookupError as error:
+            logger.warning(f'[账号邀请] 记录不可用: {error}')
+            return 404, {'error': str(error)}
+        except GroupConfigConflict as error:
+            logger.warning(f'[账号邀请] 操作冲突: {error}')
+            return 409, {'error': str(error)}
+        except (ValueError, TypeError) as error:
+            logger.warning(f'[账号邀请] 参数无效: {error}')
+            return 400, {'error': str(error)}
+        except Exception:
+            logger.error('[账号邀请] 请求失败\n' + traceback.format_exc())
+            return 503, {'error': '账号邀请服务暂不可用, 请查看后端日志'}
 
     async def _route_groups(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """
@@ -754,7 +822,10 @@ class BackendHTTPServer(MiniHTTPServer):
         if method == "GET" and len(parts) == 8 and parts[6] == "actions":
             if not account:
                 return 400, {"error": "account 必填", "reason": "missing_account"}
-            return 200, await self.backend.group_action(adapter_id, account, group_id, unquote(parts[7]))
+            record = await self.backend.group_action(adapter_id, account, group_id, unquote(parts[7]))
+            if record["action_type"] == "handle_group_request" and record["params"].get("sub_type") == "invite":
+                return 400, {"error": "机器人入群邀请请在账号入群邀请入口处理", "reason": "account_request_required"}
+            return 200, record
         if method == "POST" and parts[6:] == ["actions"]:
             payload = _parse_json_object(body)
             self_id = payload.get("expected_self_id")
@@ -763,6 +834,8 @@ class BackendHTTPServer(MiniHTTPServer):
             params = payload.get("params")
             if not all(isinstance(value, str) for value in (self_id, action_id, action_type)) or not isinstance(params, dict):
                 return 400, {"error": "群动作参数无效", "reason": "invalid_group_action"}
+            if action_type == "handle_group_request" and params.get("sub_type") == "invite":
+                return 400, {"error": "机器人入群邀请请在账号入群邀请入口处理", "reason": "account_request_required"}
             result = await self.backend.submit_group_action(
                 adapter_id, cast(str, self_id), group_id, cast(str, action_id), cast(str, action_type),
                 cast(dict[str, object], params), actor_kind="panel",
@@ -774,6 +847,9 @@ class BackendHTTPServer(MiniHTTPServer):
             approve = payload.get("approve")
             if not isinstance(self_id, str) or type(approve) is not bool:
                 return 400, {"error": "审批参数无效", "reason": "invalid_group_decision"}
+            record = await self.backend.group_action(adapter_id, self_id, group_id, unquote(parts[7]))
+            if record["action_type"] == "handle_group_request" and record["params"].get("sub_type") == "invite":
+                return 400, {"error": "机器人入群邀请请在账号入群邀请入口处理", "reason": "account_request_required"}
             return 200, await self.backend.decide_group_action(
                 adapter_id, self_id, group_id, unquote(parts[7]), approve=approve,
             )

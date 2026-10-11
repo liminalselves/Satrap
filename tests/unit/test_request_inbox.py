@@ -217,7 +217,10 @@ async def test_group_request_uses_original_target_and_existing_approval_handler(
         assert bad["ok"] is False and bad["error_type"] == "permission_denied"
         prepared = await handle.execute(request_id=request_id, approve=True)
         assert prepared["data"]["state"] == "pending"
-    adapter.group_action_handler.assert_awaited_once_with("456", "handle_group_request", {"flag": "private-flag", "sub_type": "add", "approve": True})
+    adapter.group_action_handler.assert_awaited_once_with("456", "handle_group_request", {
+        "flag": "private-flag", "sub_type": "add", "approve": True,
+        "request_id": request_id, "expected_revision": queried["data"]["items"][0]["revision"],
+    })
     adapter._bot.set_group_add_request.assert_not_called()
     with bind_call_origin(_origin(chat_id="789")):
         assert (await handle.execute(request_id=request_id, approve=True))["ok"] is False

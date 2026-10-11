@@ -1,7 +1,7 @@
 """模型群动作提交期间的可信授权来源"""
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -15,6 +15,11 @@ class ModelActionAuthorization:
     verify: Callable[[str], None]
     source_session: Callable[[], object | None] | None = None
     approval_required: bool = False
+    administrator_invites_auto_approve: bool = False
+    approval_exempt_inviter: str = ""
+    approval_exempt_until: float = 0.0
+    platform_group_role: str = ""
+    refresh: Callable[[str], Awaitable[None]] | None = None
 
 
 class ModelActionAuthorizationError(PermissionError):
@@ -24,7 +29,8 @@ class ModelActionAuthorizationError(PermissionError):
 _CURRENT: ContextVar[ModelActionAuthorization | None] = ContextVar(
     "satrap_model_group_action_authorization", default=None,
 )
-_PREFLIGHT: ContextVar[Callable[[], None] | None] = ContextVar(
+ActionPreflight = Callable[[], Awaitable[None] | None]
+_PREFLIGHT: ContextVar[ActionPreflight | None] = ContextVar(
     "satrap_group_action_preflight", default=None,
 )
 _REQUEST_OCCUPANCY: ContextVar[tuple[str, str, str, str, str] | None] = ContextVar(
@@ -37,8 +43,13 @@ def current_model_action_authorization() -> ModelActionAuthorization | None:
     return _CURRENT.get()
 
 
-def current_group_action_preflight() -> Callable[[], None] | None:
-    """取得平台写调用前的同步授权复核"""
+def current_group_action_preflight() -> ActionPreflight | None:
+    """
+    取得平台写调用前的同步或异步授权复核
+
+    返回:
+    - 当前复核回调或 None, 调用结果为可等待对象时必须等待完成
+    """
     return _PREFLIGHT.get()
 
 
@@ -58,8 +69,16 @@ def bind_model_action_authorization(source: ModelActionAuthorization) -> Iterato
 
 
 @contextmanager
-def bind_group_action_preflight(preflight: Callable[[], None]) -> Iterator[None]:
-    """仅在当前管理动作的网络调用中传递最终复核"""
+def bind_group_action_preflight(preflight: ActionPreflight | None) -> Iterator[None]:
+    """
+    仅在当前管理动作的网络调用中传递最终复核
+
+    参数:
+    - preflight: 同步或异步复核回调, None 仅在回源查询期间暂时清除
+
+    返回:
+    - 退出后恢复原复核回调的作用域
+    """
     token = _PREFLIGHT.set(preflight)
     try:
         yield
@@ -69,10 +88,22 @@ def bind_group_action_preflight(preflight: Callable[[], None]) -> Iterator[None]
 
 @contextmanager
 def bind_group_request_occupancy(
-    adapter_id: str, self_id: str, group_id: str, sub_type: str, flag_digest: str,
+    adapter_id: str, self_id: str, group_id: str, sub_type: str, identity_digest: str,
 ) -> Iterator[None]:
-    """仅在成功占用群请求的执行路径中保留占用凭据"""
-    token = _REQUEST_OCCUPANCY.set((adapter_id, self_id, group_id, sub_type, flag_digest))
+    """
+    保留成功占用的一次群请求身份, 原始处理凭据不进入上下文
+
+    参数:
+    - adapter_id: 固定平台实例
+    - self_id: 固定机器人账号
+    - group_id: 固定目标群
+    - sub_type: add 或 invite
+    - identity_digest: 固定申请摘要, 新版包含原始事件时间, 旧版沿用凭据摘要
+
+    返回:
+    - 当前执行路径的占用身份作用域, 退出后撤销
+    """
+    token = _REQUEST_OCCUPANCY.set((adapter_id, self_id, group_id, sub_type, identity_digest))
     try:
         yield
     finally:

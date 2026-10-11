@@ -2,26 +2,27 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Coroutine
+from dataclasses import replace
+import traceback
+import weakref
 from typing import Any, TypeVar, cast, overload
 
-import traceback
-from dataclasses import replace
-
-from satrap.core.platform.onebot.admin import (OneBotAdmin, AdminActionRejected, AdminActionUnconfirmed,
-                                                PlatformAdminError, UnsupportedAdminAction)
 from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS
-from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error
-from satrap.core.call_context import CallOrigin, require_call_origin, is_group_origin
-from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_model_action_authorization
-from satrap.core.framework.Base import Session, AsyncSession
-from satrap.core.platform import current_adapter_manager
-from satrap.edictum import AsyncSimpleSession
-from satrap.core.log import logger
 from satrap.core.config.model_tool_authorization import config_ids as _lines, bind_tool_session, model_tool_authorization
+from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_model_action_authorization, bind_group_action_preflight
 from satrap.core.config.group_approval import model_plugin_requires_approval
+from satrap.core.platform.onebot.admin import (OneBotAdmin, AdminActionRejected, AdminActionUnconfirmed,
+                                             PlatformAdminError, UnsupportedAdminAction)
+from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 from satrap.edictum.plugin_resources import PluginResources
+from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error
+from satrap.core.framework.Base import Session, AsyncSession
+from satrap.core.call_context import CallOrigin, require_call_origin, is_group_origin, bind_call_origin
+from satrap.core.platform import current_adapter_manager
+from satrap.edictum import AsyncSimpleSession
+
+from satrap.core.log import logger
 
 _ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
 
@@ -71,17 +72,17 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
         "group_id": ("string", "机器人要退出或解散的群号, 不填则使用当前群"),
         "dismiss": ("boolean", "false 只退出群聊, true 解散整个群; 不填默认 false"),
     }, [], True, True),
-    "group_admin_list_group_requests": ("查看后端收到的加群申请或邀请; view=archived 查看归档历史, 本地归档不代表平台申请失效. 返回申请 ID, revision 和 can_handle; 管理者私聊查询时需指定群号", {
+    "group_admin_list_group_requests": ("查看别人申请加入机器人所在群的申请; 不包含邀请机器人加入新群的邀请. view=archived 查看归档历史, 本地归档不代表平台申请失效. 返回申请 ID, revision 和 can_handle; 管理者私聊查询时需指定群号", {
         "group_id": ("string", "申请所属群号, 群聊中不填则查询当前群"),
         "limit": ("integer", "最多查看多少条, 不填默认 20, 最大 100"),
         "cursor": ("string", "继续查看时填写上次返回的 next_cursor, 沿用相同群号"),
         "view": ("string", "active 待处理, archived 归档历史, all 全部; 默认 active"),
     }, [], False, True),
-    "group_admin_handle_group_request": ("同意或拒绝查询结果中的加群申请或入群邀请; 类型和目标群由原申请确定, 不需要填写平台 flag" + _ACTION_RESULT_DESCRIPTION, {
+    "group_admin_handle_group_request": ("同意或拒绝别人加入本群的申请; 不处理邀请机器人加入新群的邀请. 目标群由原申请确定, 不需要填写平台 flag" + _ACTION_RESULT_DESCRIPTION, {
         "request_id": ("string", "加群申请查询返回的申请 ID"),
         "expected_revision": ("integer", "当前申请的 revision; 处理归档申请必须填写, 并等待人工批准"),
-        "approve": ("boolean", "true 同意该申请或邀请, false 拒绝"), "reason": ("string", "拒绝时填写的理由, 可不填"),
-        "group_id": ("string", "申请或邀请对应的群号; 不填时从原请求记录中确定"),
+        "approve": ("boolean", "true 同意成员入群申请, false 拒绝"), "reason": ("string", "拒绝时填写的理由, 可不填"),
+        "group_id": ("string", "成员入群申请对应的群号; 不填时从原请求记录中确定"),
     }, ["request_id", "approve"], True, True),
 }
 
@@ -135,7 +136,7 @@ def _resolve(tool: Any, write: bool, *, preview: bool = False) -> tuple[Any, Cal
     return adapter, origin, _lines(config.get("allowed_groups"))
 
 
-def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) -> str:
+def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any], *, tool: Any = None) -> str:
     """
     解析目标群, 默认当前群聊上下文, 私聊必须显式指定
 
@@ -143,6 +144,7 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) ->
     - origin: 调用来源
     - allowed: 插件允许的群列表, 空列表不额外限制
     - kwargs: 工具参数
+    - tool: 当前工具, 平台群管理员授权仅可用于来源群
 
     返回:
     - str: 目标群号
@@ -153,7 +155,48 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) ->
         raise ValueError("当前不是群聊上下文, 必须显式指定 group_id")
     if allowed and group_id not in allowed:
         raise PermissionError("目标群不在插件允许范围内")
+    if tool is not None and _uses_platform_group_admin(tool) and group_id != origin.chat_id:
+        raise PermissionError("QQ 群管理员只能管理当前群")
     return group_id
+
+
+def _uses_platform_group_admin(tool: Any) -> bool:
+    """
+    判断当前入口是否依赖平台群管理员授权
+
+    参数:
+    - tool: 实际工具及其宿主绑定
+
+    返回:
+    - 任一权限使用平台群管理员来源时为 True
+    """
+    decision = require_plugin_entry_permission(tool._plugin_entry_binding, refresh=True)
+    return any(grant.source == "platform_group_admin" for grant in decision.grants)
+
+
+async def _refresh_group_role(tool: Any, adapter: Any, origin: CallOrigin, target: str) -> None:
+    """
+    对依赖本群管理员身份的调用回源复核角色
+
+    参数:
+    - tool: 实际工具
+    - adapter: 固定的平台适配器
+    - origin: 固定的原消息来源
+    - target: 固定目标群, 不接受跨群授权
+    """
+    if not _uses_platform_group_admin(tool):
+        return
+    if (not is_group_origin(origin) or target != origin.chat_id or adapter.bot_self_id != origin.self_id):
+        raise PermissionError("QQ 群管理员授权的来源或目标已变化")
+    generation = adapter.connection_generation()
+    with bind_group_action_preflight(None):
+        member = await adapter.admin.get_group_member_info(target, origin.actor_id, no_cache=True)
+    current, _, groups = _resolve(tool, _DEFINITIONS[str(tool.tool_name)][3])
+    _group_id(origin, groups, {"group_id": target}, tool=tool)
+    if (current is not adapter or adapter.connection_generation() != generation or adapter.bot_self_id != origin.self_id
+            or str(member.get("group_id")) != target or str(member.get("user_id")) != origin.actor_id
+            or member.get("role") not in {"owner", "admin"}):
+        raise PermissionError("调用者当前不是该 QQ 群的群主或管理员, 或平台身份无法确认")
 
 
 def _request_access(tool: Any, origin: CallOrigin, adapter: Any) -> None:
@@ -197,9 +240,26 @@ def _write_authorization(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> M
             _request_access(live, origin, current_adapter)
         if current_adapter.admin is not admin or current_adapter.bot_self_id != origin.self_id:
             raise PermissionError("模型管理工具的机器人账号或平台已变化")
-        _group_id(origin, groups, {"group_id": target_group})
+        _group_id(origin, groups, {"group_id": target_group}, tool=live)
     source = model_tool_authorization(tool, origin, "group_admin", permission)
-    return replace(source, approval_required=model_plugin_requires_approval(str(tool.tool_name), tool.config))
+    tool_ref = weakref.ref(tool)
+
+    async def refresh(target_group: str) -> None:
+        """
+        审批后及发送前重新查询原调用者的平台群角色
+
+        参数:
+        - target_group: 固定动作目标群
+        """
+        live = tool_ref()
+        if live is None:
+            raise PermissionError("原群管理工具已失效")
+        with bind_call_origin(origin):
+            permission(live, target_group)
+            await _refresh_group_role(live, admin._adapter, origin, target_group)
+
+    return replace(source, approval_required=model_plugin_requires_approval(str(tool.tool_name), tool.config),
+                   platform_group_role=origin.group_role, refresh=refresh)
 
 
 def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str],
@@ -223,8 +283,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
             raise ValueError("群昵称修改必须使用 nickname, 不接受旧参数或未知参数")
         if not isinstance(kwargs["nickname"], str) or len(kwargs["nickname"]) > 60:
             raise ValueError("nickname 必须是最多 60 字符的文本")
-    if name == "group_admin_list_group_requests" or (
-            name == "group_admin_handle_group_request" and "request_id" in kwargs):
+    if name in {"group_admin_list_group_requests", "group_admin_handle_group_request"}:
         async def request_call() -> Any:
             """
             先解析申请身份, 等待后重验权限并沿用原有审批执行路径
@@ -232,20 +291,20 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
             返回:
             - 有界申请列表或管理动作结果
             """
-            if set(kwargs) - set(_DEFINITIONS[name][1]):
-                raise ValueError("申请工具含有未知参数")
+            if set(kwargs) - set(_DEFINITIONS[name][1]) or not set(_DEFINITIONS[name][2]) <= kwargs.keys():
+                raise ValueError("申请工具缺少必填参数或含有未知参数")
             adapter = admin._adapter
             _request_access(source_tool, origin, adapter)
             if name.startswith("group_admin_list_"):
-                gid = _group_id(origin, allowed, kwargs)
+                gid = _group_id(origin, allowed, kwargs, tool=source_tool)
                 if gid and not adapter.allows_group(gid):
                     raise PermissionError("申请目标群不在平台可管理范围内")
                 result = await adapter.request_flags.list_requests("group", self_id=origin.self_id, group_id=gid,
-                                                                  limit=kwargs.get("limit", 20), cursor=kwargs.get("cursor"), view=kwargs.get("view", "active"))
+                                                                  limit=kwargs.get("limit", 20), cursor=kwargs.get("cursor"), view=kwargs.get("view", "active"), sub_type="add")
                 _request_access(source_tool, origin, adapter)
                 if gid:
                     _, _, current_groups = _resolve(source_tool, False)
-                    _group_id(origin, current_groups, {"group_id": gid})
+                    _group_id(origin, current_groups, {"group_id": gid}, tool=source_tool)
                     if not adapter.allows_group(gid):
                         raise PermissionError("申请目标群不在平台可管理范围内")
                 return result
@@ -253,9 +312,11 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
             row = await adapter.request_flags.resolve_request("group", kwargs["request_id"], self_id=origin.self_id,
                                                               allow_archived=revision is not None, expected_revision=revision)
             _request_access(source_tool, origin, adapter)
+            if row["sub_type"] != "add":
+                raise PermissionError("机器人入群邀请请使用 account_requests 插件处理")
             values = {key: value for key, value in kwargs.items() if key != "request_id"}
-            if revision is not None:
-                values["request_id"] = kwargs["request_id"]
+            values["request_id"] = kwargs["request_id"]
+            values["expected_revision"] = row["revision"]
             values["flag"] = row["flag"]
             if kwargs.get("group_id") and str(kwargs["group_id"]) != row["group_id"]:
                 raise PermissionError("目标群与原申请不符")
@@ -264,21 +325,10 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
             values.update(group_id=row["group_id"], sub_type=row["sub_type"])
             _, _, current_groups = _resolve(source_tool, True)
             # 上一行与这里的等待后复核刚刚覆盖权限, 开关与账号, 直接组装动作而不重复授权
-            return await _dispatch_action(name, admin, origin, _group_id(origin, current_groups, values), values, source_tool)
+            return await _dispatch_action(name, admin, origin, _group_id(origin, current_groups, values, tool=source_tool), values, source_tool)
         return request_call()
-    if name == "group_admin_handle_group_request":
-        _request_access(source_tool, origin, admin._adapter)
     needs_group = _DEFINITIONS[name][4]
-    if name == "group_admin_handle_group_request" and not str(kwargs.get("group_id") or "").strip():
-        flag = str(kwargs.get("flag") or "")
-        adapter = admin._adapter
-        entry = adapter.request_flags.ledger.lookup(adapter.config.id, adapter.bot_self_id, "group", flag)
-        if entry is None:
-            raise ValueError("群请求目标无法从原请求账本确认, 请显式指定 group_id")
-        target = str(entry["group_id"])
-        gid = _group_id(origin, allowed, {"group_id": target})
-    else:
-        gid = _group_id(origin, allowed, kwargs) if needs_group else ""
+    gid = _group_id(origin, allowed, kwargs, tool=source_tool) if needs_group else ""
     return _dispatch_action(name, admin, origin, gid, kwargs, source_tool)
 
 
@@ -416,7 +466,15 @@ class _GroupAdminMixin:
         name = str(self.tool_name)
         write = _DEFINITIONS[name][3]
         adapter, origin, allowed = _resolve(self, write)
-        result = await _build_call(name, adapter.admin, origin, allowed, kwargs, self)
+        target = str(kwargs.get("group_id") or "").strip() or origin.chat_id
+        await _refresh_group_role(self, adapter, origin, target)
+
+        async def preflight() -> None:
+            """实际平台调用前复核本群管理员身份与当前开关"""
+            await _refresh_group_role(self, adapter, origin, target)
+
+        with bind_group_action_preflight(preflight):
+            result = await _build_call(name, adapter.admin, origin, allowed, kwargs, self)
         if write:
             logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
         return {"ok": True, "data": result} if result is not None else {"ok": True}
@@ -425,9 +483,9 @@ class _GroupAdminMixin:
         try:
             name = str(self.tool_name)
             write = _DEFINITIONS[name][3]
-            adapter, origin, allowed = _resolve(self, write)
+            adapter, origin, _ = _resolve(self, write)
             loop = getattr(adapter, "_loop", None)
-            coro = _build_call(name, adapter.admin, origin, allowed, kwargs, self)
+            coro = self._run(**kwargs)
             try:
                 result = run_on_platform_loop(coro, loop, 15)
             except TimeoutError:
@@ -436,9 +494,7 @@ class _GroupAdminMixin:
             except PlatformLoopUnavailable as error:
                 # 桥接已关闭未提交的协程, 这里只把原因还原成同步入口原有的参数错误结果
                 raise ValueError(str(error)) from error
-            if write:
-                logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
-            return {"ok": True, "data": result} if result is not None else {"ok": True}
+            return result
         except Exception as error:
             return _error_result(self.tool_name, error)
 

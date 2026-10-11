@@ -1,0 +1,51 @@
+name: account_requests
+version: 0.1.0
+author: Satrap Team
+description: "查看和处理邀请机器人加入新群的邀请; 成员加入已有群的申请由 group_admin 管理"
+permission_schema_version: 1
+management_permissions:
+  requests:
+    description: 查看机器人账号收到的入群邀请
+    caller_list: request_managers
+    empty_policy: deny
+    system_admin: true
+  write:
+    description: 接受或拒绝机器人入群邀请
+    caller_list: allowed_callers
+    empty_policy: deny
+    system_admin: true
+    requirements: [仍核验原邀请归属与有效期, 需要审批时必须人工批准]
+tool_permissions:
+  account_requests_list_group_invites: [requests]
+  account_requests_handle_group_invite: [requests, write]
+config_schema:
+  request_managers:
+    type: textarea
+    default: ""
+    description: "允许查看机器人入群邀请的成员账号 ID, 每行一个; 已获本插件授权的系统管理员无需重复填写"
+  allowed_callers:
+    type: textarea
+    default: ""
+    description: "允许请求接受或拒绝邀请的成员账号 ID, 每行一个; 还需查询权限. 已获本插件授权的系统管理员无需重复填写"
+  approval_required:
+    type: bool
+    default: true
+    description: "模型接受或拒绝邀请前需要人工批准; 在账号的入群邀请页面处理审批. 归档邀请仍需批准"
+  administrator_invites_auto_approve:
+    type: bool
+    default: false
+    description: "管理员邀请免二次审批: 已获本插件授权的系统管理员发出的近期邀请, 模型同意后直接入群; 归档邀请和拒绝操作仍按原审批规则处理"
+  allowed_invitation_groups:
+    type: textarea
+    default: ""
+    description: "可接受或拒绝哪些群的邀请, 每行一个群号; 留空不额外限制, 不要求机器人已加入这些群"
+tools:
+  account_requests_list_group_invites: "查看邀请机器人加入新群的邀请"
+  account_requests_handle_group_invite: "接受或拒绝机器人入群邀请"
+skills:
+  account_requests: "处理机器人账号的入群邀请"
+compatibility:
+  satrap: ">=0.1,<0.2"
+applicability:
+  session_types: [platform]
+  platforms: [onebot, aiocqhttp]

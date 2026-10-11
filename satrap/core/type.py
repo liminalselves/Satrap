@@ -443,6 +443,8 @@ class MessageMember:
     """用户昵称"""
     card: Optional[str] = None
     """接收时的本群昵称快照, 未提供时为 None"""
+    role: str = ""
+    """平台入站事件提供的本群角色, 执行管理操作前仍需回源复核"""
 
     def __str__(self) -> str:
         return (

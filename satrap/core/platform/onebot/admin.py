@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 import asyncio
+import inspect
 import base64
 import binascii
 import json
@@ -288,7 +289,9 @@ class OneBotAdmin:
 
                 preflight = current_group_action_preflight()
                 if preflight is not None:
-                    preflight()
+                    checked = preflight()
+                    if inspect.isawaitable(checked):
+                        await checked
                 return await call(**params)
 
             result = await asyncio.wait_for(guarded_call(), timeout)
@@ -446,20 +449,21 @@ class OneBotAdmin:
             )})
         return members
 
-    async def get_group_member_info(self, group_id: Any, user_id: Any) -> dict[str, Any]:
+    async def get_group_member_info(self, group_id: Any, user_id: Any, *, no_cache: bool = False) -> dict[str, Any]:
         """
         获取群成员信息
 
         参数:
         - group_id: 目标群
         - user_id: 目标成员
+        - no_cache: 是否要求平台刷新成员信息, 默认沿用平台缓存
 
         返回:
         - dict: 收窄后的成员信息
         """
         gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
         self._check_group(gid)
-        result = await self._call("get_group_member_info", group_id=int(gid), user_id=int(uid))
+        result = await self._call("get_group_member_info", group_id=int(gid), user_id=int(uid), **({"no_cache": True} if no_cache else {}))
         if not isinstance(result, dict):
             raise AdminActionUnconfirmed("成员信息响应格式不符")
         data = cast(dict[str, Any], result)
@@ -820,21 +824,23 @@ class OneBotAdmin:
         - self_id: 已绑定机器人账号
         - action: 审批动作名
         - params: 动作参数, 经 _call 原样交给平台实现
-        - identity_digest: 固定的一次好友申请身份, 不作为平台参数发送
+        - identity_digest: 固定的一次申请身份, 不作为平台参数发送
 
         超时或取消记 unknown, 平台给出明确结果记 completed; 终态写失败时标识保持
         executing, 不可重放优先于终态精确
         """
         try:
-            if kind == "friend" and identity_digest is not None:
+            if identity_digest is not None:
                 previous = current_group_action_preflight()
 
-                def verify_request() -> None:
+                async def verify_request() -> None:
                     """保留宿主权限复核, 并拒绝排队期间被新申请替代的旧申请"""
                     if previous is not None:
-                        previous()
-                    self._adapter.request_flags.ledger.verify_occupied_friend(
-                        self._adapter.config.id, self_id, flag, identity_digest,
+                        checked = previous()
+                        if inspect.isawaitable(checked):
+                            await checked
+                    self._adapter.request_flags.ledger.verify_occupied_request(
+                        self._adapter.config.id, self_id, kind, flag, identity_digest,
                     )
 
                 with bind_group_action_preflight(verify_request):
@@ -897,14 +903,17 @@ class OneBotAdmin:
         处理加群请求或邀请
 
         参数:
-        - group_id: 请求所属群, 必须在当前实例允许范围内且与登记一致
+        - group_id: 请求所属群, 必须与登记事件一致, 邀请不要求机器人已入群
         - flag: request 事件上报的标识, 必须已在群请求账本中且未被占用
         - sub_type: add 或 invite, 必须与登记事件一致
         - approve: 是否同意
-        - reason: 拒绝理由
+        - reason: 拒绝理由, 默认空文本
+        - request_id: 固定的一次申请 ID, None 仅允许旧版凭据身份
+        - expected_revision: 查询返回的当前修订号, 默认 None, 归档处理必填
+        - allow_archived: 是否经过归档确认, 默认 False
 
         flag 校验与持久占用在首次网络等待前完成; 动作超时, 取消或传输异常记 unknown,
-        不自动重试, 同一 flag 不可重放
+        不自动重试, 同一次申请不可重放; 新申请复用凭据时不会回写旧身份
         """
         gid = normalize_group_id(group_id)
         if sub_type not in {"add", "invite"}:
@@ -917,15 +926,20 @@ class OneBotAdmin:
         normalized = normalize_flag(flag)
         registry = self._adapter.request_flags
         self_id = self._adapter.bot_self_id
+        identity_digest = None
         if request_id is not None:
-            row = await registry.resolve_request("group", request_id, self_id=self_id,
-                                                 expected_revision=expected_revision, allow_archived=allow_archived)
+            try:
+                row = await registry.resolve_request("group", request_id, self_id=self_id,
+                                                     expected_revision=expected_revision, allow_archived=allow_archived)
+            except LookupError as error:
+                raise AdminActionRejected(str(error)) from None
             if row["flag"] != normalized or row["group_id"] != gid or row["sub_type"] != sub_type:
                 raise AdminActionRejected("群请求与固定申请身份不符")
+            identity_digest = row["digest"]
         try:
             occupied = await registry.occupy(
                 "group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type),
-                allow_archived=allow_archived,
+                allow_archived=allow_archived, identity_digest=identity_digest,
             )
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None
@@ -933,9 +947,10 @@ class OneBotAdmin:
             raise AdminActionRejected("群请求占用凭据与当前动作不符")
 
         with bind_group_request_occupancy(
-            self._adapter.config.id, self_id, gid, cast(str, sub_type), flag_digest("group", self_id, normalized),
+            self._adapter.config.id, self_id, gid, cast(str, sub_type), identity_digest or flag_digest("group", self_id, normalized),
         ):
             await self._execute_request_decision(
                 "group", normalized, self_id,
                 "set_group_add_request", {"flag": normalized, "sub_type": sub_type, "approve": approve, "reason": text},
+                identity_digest=identity_digest,
             )

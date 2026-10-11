@@ -1,5 +1,6 @@
 from typing import Any
 import asyncio
+from copy import deepcopy
 
 import pytest
 
@@ -11,6 +12,19 @@ def payload(message_id: int | None = 10, self_id: int | None = 10000, user_id: i
     return {"self_id": self_id, "user_id": user_id, "group_id": group_id,
             "message_id": message_id, "message_type": "group",
             "message": [{"type": "text", "data": {"text": "测试正文"}}]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role,sender_id,expected", [("admin", 123, "admin"), ("owner", 123, "owner"),
+                                                   ("admin", 999, ""), ("root", 123, "")])
+async def test_group_role_is_frozen_from_matching_platform_sender(role, sender_id, expected):
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot"))
+    frame = deepcopy(payload())
+    frame["sender"] = {"user_id": sender_id, "role": role}
+    await adapter._handle_group_message(frame)
+    event = adapter._event_queue.get_nowait()
+    frame["sender"]["role"] = "member"
+    assert event.call_origin.group_role == expected
 
 
 @pytest.mark.asyncio

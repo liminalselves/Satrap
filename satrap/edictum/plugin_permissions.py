@@ -21,6 +21,7 @@ class ManagementPermission:
     empty_policy: str
     system_admin: bool
     requirements: tuple[str, ...] = ()
+    platform_group_admin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class PluginPermissions:
         return {"permission_schema_version": self.version,
                 "management_permissions": {name: {"description": rule.description, "system_admin": rule.system_admin,
                     "requirements": list(rule.requirements),
+                    **({"platform_group_admin": rule.platform_group_admin} if rule.platform_group_admin else {}),
                     **({"caller_list": rule.caller_list, "empty_policy": rule.empty_policy} if rule.caller_list else {})}
                     for name, rule in self.rules.items()},
                 "tool_permissions": {name: list(values) for name, values in self.tools.items()},
@@ -108,7 +110,7 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
     for name, value in raw_rules.items():
         if not isinstance(name, str) or not name.strip() or name != name.strip() or not isinstance(value, dict):
             raise ValueError("管理权限名称或定义无效")
-        if set(value) - {"description", "caller_list", "empty_policy", "system_admin", "requirements"}:
+        if set(value) - {"description", "caller_list", "empty_policy", "system_admin", "requirements", "platform_group_admin"}:
             raise ValueError(f"管理权限 {name} 含有未知字段")
         description = value.get("description")
         if not isinstance(description, str) or not description.strip() or type(value.get("system_admin")) is not bool:
@@ -126,7 +128,14 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
         requirements = value.get("requirements", [])
         if not isinstance(requirements, list) or len(requirements) > 32 or any(not isinstance(item, str) or not item.strip() for item in requirements):
             raise ValueError(f"管理权限 {name} 的业务条件说明无效")
-        rules[name] = ManagementPermission(description.strip(), caller_list, policy, value["system_admin"], tuple(item.strip() for item in requirements))
+        group_admin = value.get("platform_group_admin")
+        if "platform_group_admin" in value:
+            group_field = config_schema.get(group_admin) if isinstance(group_admin, str) else None
+            field_type = group_field.get("type") if isinstance(group_field, dict) else getattr(group_field, "type", None)
+            if group_field is None or field_type != "bool":
+                raise ValueError(f"管理权限 {name} 的平台群管理员开关必须引用 bool 配置")
+        rules[name] = ManagementPermission(description.strip(), caller_list, policy, value["system_admin"],
+                                           tuple(item.strip() for item in requirements), group_admin)
 
     def permission_ids(value: object) -> tuple[str, ...]:
         """

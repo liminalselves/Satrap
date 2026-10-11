@@ -426,6 +426,8 @@ class MessageEvent:
             source_message_id=safe_getattr_str(platform_message, "message_id"), request_id=uuid.uuid4().hex,
             conversation_kind=self.conversation_kind, conversation_id=self.conversation_id,
             agent_route_generation=self.agent_route_generation, group_route_generation=self.group_route_generation,
+            group_role=safe_getattr_str(platform_message.sender, "role") if (mt == "GroupMessage" and isinstance(adapter, PlatformAdapter)
+                and adapter.config.type in {"onebot", "aiocqhttp"}) else "",
         )
 
         self.role = "member"
