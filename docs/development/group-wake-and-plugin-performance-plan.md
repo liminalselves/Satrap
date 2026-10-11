@@ -2,6 +2,8 @@
 
 状态: 实施中
 
+逐项验收证据见 [验收审计](group-wake-and-plugin-performance-audit.md); 最后待核对项尚未清零前不声明整项完成
+
 实施记录:
 
 - 2026-10-11: 修正性能夹具的凭据 CORS 与 WebSocket data 信封, 未匹配接口和页面异常明确失败; TypeScript 与生产构建通过, 6 项基准单测及全部 6 个 smoke 场景通过
