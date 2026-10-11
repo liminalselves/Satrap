@@ -24,24 +24,26 @@ from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
 
 
-async def _platforms(tmp_path: Path, monkeypatch: Any) -> tuple[Any, EdictumConfigManager, PluginConfigManager, list[Any], list[EdictumProvider]]:
+async def _platforms(tmp_path: Path, monkeypatch: Any, *, plugin_name: str = "session_commands", globals_manager: PluginConfigManager | None = None) -> tuple[Any, EdictumConfigManager, PluginConfigManager, list[Any], list[EdictumProvider]]:
     """
     创建两个隔离平台及三个实际 Edictum 实例, 不连接模型或适配器
 
     参数:
     - tmp_path: 临时存储根目录
     - monkeypatch: 全局配置来源替换夹具
+    - plugin_name: 实际安装插件名, 默认 session_commands
+    - globals_manager: 可选共享全局参数来源, 默认使用平台专属临时目录
 
     返回:
     - 后端, 命名配置, 全局参数, 实例及 Provider
     """
-    globals_ = PluginConfigManager(tmp_path / "globals")
+    globals_ = globals_manager or PluginConfigManager(tmp_path / "globals")
     monkeypatch.setattr("satrap.edictum.plugin_apply.PluginConfigManager", lambda: globals_)
     monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: globals_)
     registry = create_default_edictum_type_registry()
     configs = EdictumConfigManager(registry, tmp_path / "named.json")
     for name in ("agent-a", "agent-b"):
-        configs.create(name, {"edictum_type": "async_simple", "model_name": "demo", "plugins": ["session_commands"]})
+        configs.create(name, {"edictum_type": "async_simple", "model_name": "demo", "plugins": [plugin_name]})
     backend = cast(Any, BackendManager.__new__(BackendManager))
     backend._edictum_cfg = configs
     backend._platform_runtimes = {}
