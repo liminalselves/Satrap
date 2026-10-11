@@ -16,6 +16,7 @@ import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
 import { groupActionLabels } from './groupActionLabels';
 import { startVisiblePoll } from '@/utils/visiblePoll';
+import { AccountInvitations } from './AccountInvitations';
 
 const MEMBERSHIPS = [
   ['joined', '已加入'], ['all', '全部'], ['left', '已离开'],
@@ -75,6 +76,7 @@ export function Groups() {
   const [modeSaving, setModeSaving] = useState(false);
   const [settingsApplying, setSettingsApplying] = useState(false);
   const [showApproval, setShowApproval] = useState(false);
+  const [showInvitations, setShowInvitations] = useState(false);
   const [approvalDraft, setApprovalDraft] = useState<ApprovalDraft>({});
   const [approvalBaseline, setApprovalBaseline] = useState('{}');
   const [approvalSaving, setApprovalSaving] = useState(false);
@@ -303,6 +305,7 @@ export function Groups() {
             </Button>
             <Button variant="subtle" onClick={openMode} disabled={historical}>修改接入模式</Button>
             <Button variant="subtle" onClick={openApproval} disabled={historical}>管理默认设置</Button>
+            <Button variant="subtle" onClick={() => setShowInvitations(true)} disabled={!isRunning || historical}>机器人入群邀请</Button>
           </div>
           {historical && <p className="text-sm text-text-secondary">当前连接账号不同, 历史账号只读。账号选择只切换查看数据</p>}
           <div className="flex flex-wrap gap-3 text-sm text-text-secondary" aria-live="polite">
@@ -380,6 +383,8 @@ export function Groups() {
           <div className="flex justify-end gap-2"><Button variant="subtle" onClick={closeMode}>取消</Button><Button variant="primary" onClick={saveMode} disabled={modeSaving || !settings}>保存模式</Button></div>
         </div>
       </Modal>
+      <AccountInvitations key={`${adapterId}:${account}:${isRunning}:${historical}`} adapterId={adapterId} account={account}
+        open={showInvitations && isRunning && !historical} onClose={() => setShowInvitations(false)} />
       <Modal open={showApproval} onClose={closeApproval} title="平台群管理默认审批" size="lg">
         <div className="space-y-4 text-sm text-text-secondary">
           <p>只影响继承本账号默认值的群和以后新提交的动作。已有待审批请求不会自动执行</p>
