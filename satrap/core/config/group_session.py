@@ -1,10 +1,53 @@
 """逐群会话绑定和路由范围的无歧义配置结构"""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from satrap.core.config.agent_routing import resolve_agent_binding
+
+
+@dataclass(frozen=True)
+class GroupRouteSnapshot:
+    """已解码的群路由, 保留配置修订与运行代次的不同含义"""
+
+    generation: int
+    revision: int | None
+    binding: dict[str, str] | None
+    context_scope: str | None
+    overrides: dict[str, object]
+
+
+def decode_group_route(snapshot: object, *, error: Callable[[], Exception],
+                       with_revision: bool = False, strict_generation: bool = True) -> GroupRouteSnapshot:
+    """
+    解码适配器群路由并共用显式绑定, 范围和运行覆盖的提取规则
+
+    参数:
+    - snapshot: 适配器返回的群设置与代次元组
+    - error: 调用入口原有的快照格式异常
+    - with_revision: 事件入口是否兼容带配置修订的三项元组
+    - strict_generation: 是否拒绝 bool 和 int 子类, 事件旧契约保留 isinstance 规则
+
+    返回:
+    - 已核验的路由信息, 配置字段错误仍由 session_values 原样抛出
+    """
+    if not isinstance(snapshot, tuple) or len(snapshot) not in ({2, 3} if with_revision else {2}):
+        raise error()
+    settings, generation = snapshot[:2]
+    if not isinstance(settings, dict) or (type(generation) is not int if strict_generation else not isinstance(generation, int)):
+        raise error()
+    revision = snapshot[2] if len(snapshot) == 3 and isinstance(snapshot[2], int) else None
+    values = session_values(settings)
+    binding = values.get("binding")
+    scope = values.get("scope")
+    return GroupRouteSnapshot(
+        generation, revision,
+        {"provider": str(binding["provider"]), "config_name": str(binding["config_name"])} if isinstance(binding, dict) else None,
+        "group" if scope == "group_shared" else "group_member" if scope == "group_member" else None,
+        {key: value for key, value in values.items() if key in {"model", "prompt", "plugins"}},
+    )
 
 
 def session_values(explicit: Mapping[str, object]) -> dict[str, object]:

@@ -26,7 +26,6 @@ from satrap.core.platform import current_adapter_manager
 from satrap.core.log import logger
 from satrap.core.config.model_tool_authorization import bind_tool_session, model_tool_authorization
 from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, plugin_tool_live, permission_id_list
-from satrap.edictum.plugin_resources import PluginResources
 from satrap.core.config.group_action_origin import bind_model_action_authorization
 from satrap.core.group_chat.types import GroupChatError
 

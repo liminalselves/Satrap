@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 from typing import Awaitable, Callable
 import sys
+from satrap.core.utils.config_text import comma_names
 from satrap.expend.plugins.base_take.core.docread import extract_text
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.utils.sandbox import CodeSandbox
@@ -66,9 +67,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
         str(ws_override or cfg.get("workspace_root") or get_project_root())
     )
 
-    allowed_env = frozenset(
-        name.strip() for name in str(cfg.get("allowed_env_vars") or "").split(",") if name.strip()
-    )
+    allowed_env = comma_names(cfg.get("allowed_env_vars"))
     sandbox = CodeSandbox(str(sandbox_root), sys.executable, allowed_env=allowed_env)
 
     if isinstance(session, AsyncSimpleSession):

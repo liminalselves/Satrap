@@ -40,7 +40,7 @@ EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
 # - 输入: PlatformEvent
 # - 输出: 可等待对象或 None (均可)
 
-from satrap.core.config.group_session import session_values
+from satrap.core.config.group_session import decode_group_route
 from satrap.core.platform.message_archive import archive_snapshot
 from satrap.core.group_chat.types import GroupChatError, CAPABILITIES
 from satrap.core.platform.receipt import SendReceipt
@@ -231,18 +231,18 @@ class PlatformAdapter(ABC):
         group_route = getattr(self, "group_route", None)
         if kind == "group" and group_id and callable(group_route):
             route_result = group_route(group_id)
-            if (not isinstance(route_result, tuple) or len(route_result) != 2
-                    or not isinstance(route_result[0], dict) or type(route_result[1]) is not int):
+            def invalid_route() -> ValueError:
+                """保留适配器入口的群路由格式日志与异常类型"""
                 logger.error(f"[Agent 路由] 群路由快照无效: {self.config.id}/{group_id}")
-                raise ValueError("群路由快照无效")
-            explicit, group_generation = route_result
-            values = session_values(explicit)
-            selected = values.get("binding")
-            if isinstance(selected, dict):
-                binding = {"provider": str(selected["provider"]), "config_name": str(selected["config_name"])}
+                return ValueError("群路由快照无效")
+
+            route = decode_group_route(route_result, error=invalid_route)
+            group_generation = route.generation
+            if route.binding is not None:
+                binding = route.binding
                 source = "group"
-            if "scope" in values:
-                scope = "group" if values["scope"] == "group_shared" else "group_member"
+            if route.context_scope is not None:
+                scope = route.context_scope
                 group_scope_override = True
         signature: tuple[object, ...] = (self.config.type, binding["provider"], binding["config_name"], scope,
                                          group_generation, source, group_scope_override)
@@ -386,6 +386,37 @@ class PlatformAdapter(ABC):
         except Exception as exc:
             logger.error(f"[消息档案] 撤回标记失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
 
+    async def _verify_group_chat_agent_route(self, origin: CallOrigin, scope: MessageScope) -> None:
+        """
+        共用群聊与私聊的 Agent 路由代次核验, 旧来源沿用原兼容路径
+
+        参数:
+        - origin: 宿主冻结的入站来源
+        - scope: 已核验的实际对话身份
+        """
+        if not origin.conversation_kind:
+            return
+        group = scope.conversation_kind == "group"
+        legacy_route = origin.agent_route_generation == 0 if group else not origin.agent_route_generation
+        changed_message = "来源 Agent 路由已经切换" if group else "私聊 Agent 路由已经变化"
+        if self.config.session_bindings and legacy_route:
+            raise GroupChatError("stale_call", "来源轮次早于分类型 Agent 路由启用" if group else changed_message)
+        if self.agent_route_store is not None:
+            try:
+                revision = await asyncio.to_thread(
+                    self.agent_route_store.current_revision, scope.self_id, scope.conversation_kind, scope.chat_id,
+                )
+            except Exception as exc:
+                if not group:
+                    logger.error(f"[群列表来源] 私聊路由核验失败, 平台={self.config.id}, 原因={type(exc).__name__}")
+                message = "来源 Agent 路由暂时无法核验" if group else "来源私聊路由暂时无法核验"
+                raise GroupChatError("unavailable", message, retryable=True) from exc
+        else:
+            state = self._agent_route_memory.get((scope.self_id, scope.conversation_kind, scope.chat_id))
+            revision = state[1] if state else 0
+        if revision != origin.agent_route_generation:
+            raise GroupChatError("stale_call", changed_message)
+
     async def group_chat_scope(self, origin: CallOrigin) -> MessageScope:
         """
         为当前轮次核验群聊身份及路由代次, 不接受模型提供目标群
@@ -409,19 +440,8 @@ class PlatformAdapter(ABC):
             raise GroupChatError("wrong_conversation", "来源缺少有效群身份") from exc
         if scope.chat_id != origin.chat_id:
             raise GroupChatError("wrong_conversation", "归一对话身份与冻结来源群不一致")
+        await self._verify_group_chat_agent_route(origin, scope)
         if origin.conversation_kind:
-            if self.config.session_bindings and origin.agent_route_generation == 0:
-                raise GroupChatError("stale_call", "来源轮次早于分类型 Agent 路由启用")
-            if self.agent_route_store is not None:
-                try:
-                    revision = await asyncio.to_thread(self.agent_route_store.current_revision, scope.self_id, kind, scope.chat_id)
-                except Exception as exc:
-                    raise GroupChatError("unavailable", "来源 Agent 路由暂时无法核验", retryable=True) from exc
-            else:
-                state = self._agent_route_memory.get((scope.self_id, kind, scope.chat_id))
-                revision = state[1] if state else 0
-            if revision != origin.agent_route_generation:
-                raise GroupChatError("stale_call", "来源 Agent 路由已经切换")
             group_route = getattr(self, "group_route", None)
             if callable(group_route):
                 try:
@@ -490,20 +510,7 @@ class PlatformAdapter(ABC):
         scope = MessageScope(self.config.id, origin.self_id, kind, origin.conversation_id or origin.chat_id)
         if scope.chat_id != origin.chat_id:
             raise GroupChatError("stale_call", "私聊身份已经变化")
-        if origin.conversation_kind:
-            if self.config.session_bindings and not origin.agent_route_generation:
-                raise GroupChatError("stale_call", "私聊 Agent 路由已经变化")
-            if self.agent_route_store is not None:
-                try:
-                    revision = await asyncio.to_thread(self.agent_route_store.current_revision, scope.self_id, kind, scope.chat_id)
-                except Exception as exc:
-                    logger.error(f"[群列表来源] 私聊路由核验失败, 平台={self.config.id}, 原因={type(exc).__name__}")
-                    raise GroupChatError("unavailable", "来源私聊路由暂时无法核验", retryable=True) from exc
-            else:
-                state = self._agent_route_memory.get((scope.self_id, kind, scope.chat_id))
-                revision = state[1] if state else 0
-            if revision != origin.agent_route_generation:
-                raise GroupChatError("stale_call", "私聊 Agent 路由已经变化")
+        await self._verify_group_chat_agent_route(origin, scope)
         return scope
 
     async def group_chat_groups(self, scope: MessageScope) -> GroupSnapshot:
@@ -691,10 +698,6 @@ class PlatformAdapter(ABC):
     def group_chat_media_formats(self) -> tuple[str, ...]:
         """返回适配器实际可发送的图片 MIME 交集"""
         return ()
-
-    def group_chat_native_stickers(self) -> list[dict[str, str]]:
-        """提供已确认的原生表情目录, 缺少目录时返回空列表"""
-        return self.group_chat_native_sticker_catalog(self.message_archive)
 
     @classmethod
     def group_chat_native_sticker_catalog(cls, archive: PlatformMessageStore | None) -> list[dict[str, str]]:

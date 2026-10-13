@@ -2,7 +2,6 @@
 from collections import OrderedDict
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any
 
 from satrap.core.platform.event import MessageEvent
 from satrap.core.config.platform_policy import policy_default

@@ -26,64 +26,64 @@ from satrap.core.log import logger
 
 _ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
 
-_DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, bool]] = {
-    # 工具名: (描述, 参数, 必填参数, 是否写操作, 是否需要群上下文)
+_DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool]] = {
+    # 工具名: (描述, 参数, 必填参数, 是否写操作)
     "group_admin_get_honors": ("查看群里的龙王, 群聊之火等荣誉及对应成员; 不指定荣誉类型时查询全部类型", {
         "group_id": ("string", "要查看的群号, 不填则查看当前群"),
         "honor_type": ("string", "荣誉类型: all 全部, talkative 龙王, performer 群聊之火, legend 群聊炽焰, strong_newbie 冒尖小春笋, emotion 快乐源泉; 不填默认 all"),
-    }, [], False, True),
+    }, [], False),
     "group_admin_recall_message": ("撤回群里的一条指定消息, 需要填写该消息的 ID; 能否撤回取决于机器人权限和平台限制" + _ACTION_RESULT_DESCRIPTION, {
         "message_id": ("string", "要撤回的消息 ID, 从聊天上下文或消息查询结果中取得"), "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
-    }, ["message_id"], True, True),
+    }, ["message_id"], True),
     "group_admin_kick": ("将指定成员移出群聊; 操作前确认对方的 QQ 号. 默认允许对方重新申请入群" + _ACTION_RESULT_DESCRIPTION, {
         "user_id": ("string", "要移出群聊的成员 QQ 号, 从已确认的成员资料中取得"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
         "reject_add_request": ("boolean", "是否拒绝对方之后的加群申请; true 拒绝, false 允许重新申请, 不填默认 false"),
-    }, ["user_id"], True, True),
+    }, ["user_id"], True),
     "group_admin_ban": ("禁言指定群成员, 或解除该成员的禁言; duration 填 0 表示解除禁言" + _ACTION_RESULT_DESCRIPTION, {
         "user_id": ("string", "要禁言或解除禁言的成员 QQ 号, 从已确认的成员资料中取得"), "duration": ("number", "禁言时长, 单位为秒; 600 表示十分钟, 0 表示解除禁言. 不填默认 1800, 最长 2592000 秒 (30 天)"),
         "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
-    }, ["user_id"], True, True),
+    }, ["user_id"], True),
     "group_admin_whole_ban": ("开启或关闭整个群的全员禁言, 与对单个成员禁言不同" + _ACTION_RESULT_DESCRIPTION, {
         "enable": ("boolean", "true 开启全员禁言, false 关闭全员禁言"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
-    }, ["enable"], True, True),
+    }, ["enable"], True),
     "group_admin_ban_anonymous": ("禁言群里某条匿名消息的发送者; 需要消息中提供的匿名身份标识, 不能用昵称代替" + _ACTION_RESULT_DESCRIPTION, {
         "flag": ("string", "匿名消息里的 anonymous flag, 必须使用平台提供的原值"), "duration": ("number", "禁言时长, 单位为秒; 不填默认 1800, 最长 2592000 秒 (30 天)"),
         "group_id": ("string", "匿名消息所在的群号, 不填则使用当前群"),
-    }, ["flag"], True, True),
+    }, ["flag"], True),
     "group_admin_set_admin": ("将指定成员设为群管理员, 或取消其管理员身份; 需要机器人具有群主权限" + _ACTION_RESULT_DESCRIPTION, {
         "user_id": ("string", "要设置或取消管理员身份的成员 QQ 号"), "enable": ("boolean", "true 设为管理员, false 取消管理员身份"),
         "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
-    }, ["user_id", "enable"], True, True),
+    }, ["user_id", "enable"], True),
     "group_admin_set_anonymous": ("开启或关闭群内的匿名聊天; 是否支持取决于平台" + _ACTION_RESULT_DESCRIPTION, {
         "enable": ("boolean", "true 允许匿名聊天, false 关闭匿名聊天"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
-    }, ["enable"], True, True),
+    }, ["enable"], True),
     "group_admin_set_group_nickname": ("修改指定成员在群内显示的群昵称; nickname 填空字符串表示清空群昵称" + _ACTION_RESULT_DESCRIPTION, {
         "user_id": ("string", "要修改群昵称的成员 ID"), "nickname": ("string", "新的群昵称, 不超过 60 字符; 填写空字符串可清空"),
         "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
-    }, ["user_id", "nickname"], True, True),
+    }, ["user_id", "nickname"], True),
     "group_admin_set_name": ("修改整个群的名称; 修改某位成员的群昵称请使用 group_admin_set_group_nickname" + _ACTION_RESULT_DESCRIPTION, {
         "name": ("string", "新的群名称, 1 到 60 字符, 不能只填空格"), "group_id": ("string", "要改名的群号, 不填则使用当前群"),
-    }, ["name"], True, True),
+    }, ["name"], True),
     "group_admin_set_title": ("设置指定群成员的专属头衔; title 填空字符串表示清除头衔, 需要机器人具有相应权限" + _ACTION_RESULT_DESCRIPTION, {
         "user_id": ("string", "要设置头衔的成员 QQ 号"), "title": ("string", "新的专属头衔, 不超过 18 字符; 填写空字符串可清除"),
         "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
-    }, ["user_id"], True, True),
+    }, ["user_id"], True),
     "group_admin_leave": ("让机器人退出指定群; 机器人是群主时可选择解散整个群, 解散会影响所有成员" + _ACTION_RESULT_DESCRIPTION, {
         "group_id": ("string", "机器人要退出或解散的群号, 不填则使用当前群"),
         "dismiss": ("boolean", "false 只退出群聊, true 解散整个群; 不填默认 false"),
-    }, [], True, True),
+    }, [], True),
     "group_admin_list_group_requests": ("查看别人申请加入机器人所在群的申请; 不包含邀请机器人加入新群的邀请. view=archived 查看归档历史, 本地归档不代表平台申请失效. 返回申请 ID, revision 和 can_handle; 管理者私聊查询时需指定群号", {
         "group_id": ("string", "申请所属群号, 群聊中不填则查询当前群"),
         "limit": ("integer", "最多查看多少条, 不填默认 20, 最大 100"),
         "cursor": ("string", "继续查看时填写上次返回的 next_cursor, 沿用相同群号"),
         "view": ("string", "active 待处理, archived 归档历史, all 全部; 默认 active"),
-    }, [], False, True),
+    }, [], False),
     "group_admin_handle_group_request": ("同意或拒绝别人加入本群的申请; 不处理邀请机器人加入新群的邀请. 目标群由原申请确定, 不需要填写平台 flag" + _ACTION_RESULT_DESCRIPTION, {
         "request_id": ("string", "加群申请查询返回的申请 ID"),
         "expected_revision": ("integer", "当前申请的 revision; 处理归档申请必须填写, 并等待人工批准"),
         "approve": ("boolean", "true 同意成员入群申请, false 拒绝"), "reason": ("string", "拒绝时填写的理由, 可不填"),
         "group_id": ("string", "成员入群申请对应的群号; 不填时从原请求记录中确定"),
-    }, ["request_id", "approve"], True, True),
+    }, ["request_id", "approve"], True),
 }
 
 _ACTION_NAMES: dict[str, str] = {
@@ -327,8 +327,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
             # 上一行与这里的等待后复核刚刚覆盖权限, 开关与账号, 直接组装动作而不重复授权
             return await _dispatch_action(name, admin, origin, _group_id(origin, current_groups, values, tool=source_tool), values, source_tool)
         return request_call()
-    needs_group = _DEFINITIONS[name][4]
-    gid = _group_id(origin, allowed, kwargs, tool=source_tool) if needs_group else ""
+    gid = _group_id(origin, allowed, kwargs, tool=source_tool)
     return _dispatch_action(name, admin, origin, gid, kwargs, source_tool)
 
 
@@ -528,7 +527,7 @@ _AnyGroupAdminTool = TypeVar("_AnyGroupAdminTool", GroupAdminTool, AsyncGroupAdm
 def _build_tools(kind: type[_AnyGroupAdminTool], config: dict[str, Any]) -> list[_AnyGroupAdminTool]:
     """按工具基类批量构造定义表中的工具"""
     result: list[_AnyGroupAdminTool] = []
-    for name, (description, params, _, _, _) in _DEFINITIONS.items():
+    for name, (description, params, _, _) in _DEFINITIONS.items():
         tool = kind(name, description, params)
         tool.recovery_policy = "retry" if not _DEFINITIONS[name][3] else "manual"
         tool.config = config

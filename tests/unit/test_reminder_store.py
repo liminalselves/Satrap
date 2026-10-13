@@ -244,7 +244,7 @@ def test_recovery_keeps_confirmed_ids_without_requeueing(tmp_path):
     current = reloaded.get(SCOPE, reminder["reminder_id"])["reminder"]
     assert current["state"] == "unknown"
     assert current["delivery"]["message_ids"] == ["confirmed-id"]
-    assert reloaded.due() == []
+    assert reloaded.active() == []
     assert reloaded.recover() == 0
 
 

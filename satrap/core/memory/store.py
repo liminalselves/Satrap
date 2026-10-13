@@ -377,21 +377,6 @@ class MemoryStore:
             lines.append(f"- [{m['title']}] {m['content']}{tags}")
         return lines
 
-    def count(self) -> int:
-        """
-        统计当前会话的记忆条数
-
-        返回:
-        - int: 统计可见集合内记忆条数
-        """
-        clause, params = self._scope_filter()
-        with self._lock, closing(self._connect()) as conn, conn:
-            row = conn.execute(
-                f"SELECT COUNT(*) AS n FROM memories WHERE 1=1{clause}",
-                params,
-            ).fetchone()
-        return int(row["n"]) if row is not None else 0
-
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         """

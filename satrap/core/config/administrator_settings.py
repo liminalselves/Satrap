@@ -213,7 +213,7 @@ def prepare_administrator_overrides(config: Mapping[str, Any], overrides: object
     requested = _rebind_keys(_override_keys(previous), rebind_overrides, "override_id", "rebind_overrides", "例外")
     preserved = _strip_overrides(previous, requested)
     return normalize_administrator_overrides(overrides, platforms, bind_new=True, previous=preserved,
-                                             normalize_user=normalize_platform_user, strict_scope=True)
+                                             normalize_user=normalize_platform_user)
 
 
 def save_administrator_groups(

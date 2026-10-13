@@ -142,6 +142,12 @@ def test_snapshot_reads_globals_once_and_returns_private_copies(tmp_path, monkey
     copied = snapshot.global_config("probe")
     copied["note"] = "outside"
     assert snapshot.global_config("probe") == {"note": "before"}
+
+    def unexpected_manager():
+        """固定快照解析不能再构造实时参数来源"""
+        raise AssertionError("已有快照不应构造实时配置管理器")
+
+    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", unexpected_manager)
     for index in range(5):
         session = SimpleNamespace(session_id=str(index))
         result = resolve_runtime_specs(session, [PluginSpec(name="probe")], snapshot.catalog, snapshot=snapshot)

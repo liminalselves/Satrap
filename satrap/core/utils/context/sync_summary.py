@@ -1,3 +1,8 @@
+"""
+同步上下文摘要与压缩
+
+按模型预算生成分块摘要, 保留近期对话并协调上下文回退
+"""
 from __future__ import annotations
 from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING
 import copy
@@ -17,7 +22,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
+    from satrap.core.APICall.LLMCall import LLM
 from .sync_checkpoints import _SyncCheckpoints
 
 from satrap.core.utils.media import project_messages, visual_enabled

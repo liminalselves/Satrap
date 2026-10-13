@@ -184,13 +184,10 @@ def cmd_session_unregister(args: argparse.Namespace):
         node.unregister_session_class(args.name)
         ok(f"已注销: {args.name}")
         return
-    from satrap.core.config.agent_references import list_agent_references
+    from satrap.core.config.reference_checkers import build_reference_checker
 
     config = load_cli_config(args)
-    service = SessionClassConfigService(node, reference_checker=lambda name: list_agent_references(
-        "session_class", name, platforms=config.platforms, layout=StorageLayout(config.data_root),
-        default_session_type=config.default_session_type, session_classes=node.list_configs(),
-    ))
+    service = SessionClassConfigService(node, reference_checker=build_reference_checker("session_class", config, session_classes=node.list_configs))
     if service.delete(args.name):
         ok(f"已注销: {args.name}")
         return

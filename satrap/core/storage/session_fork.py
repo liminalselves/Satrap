@@ -9,6 +9,7 @@ import json
 import time
 import uuid
 
+from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 from satrap.core.storage.file_lock import session_storage_lock
 from satrap.core.storage.layout import StorageLayout
 
@@ -57,10 +58,10 @@ def fork_session_settings(layout: StorageLayout, platform_id: str, source_id: st
                 values.update(id=new_id, session_id=target_id, revision=1, created_at=time.time(), updated_at=time.time())
                 columns = ",".join(values)
                 connection.execute(f"INSERT INTO rag_knowledge_bases ({columns}) VALUES ({','.join('?' for _ in values)})", tuple(values.values()))
-            if "session_config_overrides" in tables:
-                if connection.execute("SELECT 1 FROM session_config_overrides WHERE session_id=?", (target_id,)).fetchone():
+            if SESSION_OVERRIDE_TABLE in tables:
+                if connection.execute(f'SELECT 1 FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=?', (target_id,)).fetchone():
                     raise ValueError("目标会话已有参数覆盖")
-                rows = connection.execute("SELECT * FROM session_config_overrides WHERE session_id=?", (source_id,)).fetchall()
+                rows = connection.execute(f'SELECT * FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=?', (source_id,)).fetchall()
                 for row in rows:
                     values = json.loads(row["config_json"])
                     if row["namespace"] == "plugins.rag":
@@ -69,7 +70,7 @@ def fork_session_settings(layout: StorageLayout, platform_id: str, source_id: st
                         if "write_db_id" in values:
                             values["write_db_id"] = mapping.get(values["write_db_id"], values["write_db_id"])
                     connection.execute(
-                        "INSERT INTO session_config_overrides (session_id,namespace,config_json,schema_version,revision,updated_at) VALUES (?,?,?,?,1,?)",
+                        f'INSERT INTO {SESSION_OVERRIDE_TABLE} (session_id,namespace,config_json,schema_version,revision,updated_at) VALUES (?,?,?,?,1,?)',
                         (target_id, row["namespace"], json.dumps(values, ensure_ascii=False), row["schema_version"], time.time()),
                     )
         return mapping

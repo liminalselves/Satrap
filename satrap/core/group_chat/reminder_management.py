@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 import traceback
 
-from satrap.core.config.conversation_catalog import platform_catalog
+from satrap.core.config.conversation_catalog import require_catalog_platform
 from satrap.core.config.platform_message_data import _archive_store
 from satrap.core.config.platform_messages import MessageScope, MessageArchiveError, PlatformMessageStore
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError
@@ -48,8 +48,7 @@ def reminder_management(layout: StorageLayout, document: dict[str, Any], platfor
     返回:
     - 有来源状态的提醒数据或实际取消结果
     """
-    if platform_id not in {item["id"] for item in platform_catalog(layout, document)}:
-        raise ReminderError("not_found", "平台实例不存在")
+    require_catalog_platform(layout, document, platform_id, ReminderError)
     scope = reminder_scope(platform_id, query)
     database = layout.platform_db(platform_id)
     if not database.is_file():

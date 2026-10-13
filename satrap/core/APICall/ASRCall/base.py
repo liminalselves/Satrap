@@ -50,54 +50,6 @@ class _ASRBase(Generic[_ClientT]):
         """由入口选择同步或异步客户端"""
         raise NotImplementedError
 
-    def get_model(self) -> str:
-        """
-        获取当前 ASR 实例使用的模型名称
-
-        返回:
-        - str: 当前 ASR 实例使用的模型名称
-        """
-        return self.model
-
-    def get_api_key(self) -> str:
-        """
-        获取当前 ASR 实例的 API Key
-
-        返回:
-        - str: 当前 ASR 实例的 API Key
-        """
-        return self.api_key
-
-    def get_base_url(self) -> str | None:
-        """
-        获取当前 ASR 实例的 Base URL
-
-        返回:
-        - str | None: 当前 ASR 实例的 Base URL, 未设置时为 None
-        """
-        return self.base_url
-
-    def set_parameters(
-        self,
-        model: str | None = None,
-        language: str | None = None,
-        prompt: str | None = None,
-    ):
-        """
-        更新 ASR 实例的默认参数设置
-
-        参数:
-        - model: 新的模型名称
-        - language: 新的默认识别语言
-        - prompt: 新的默认提示词
-        """
-        if model is not None:
-            self.model = model
-        if language is not None:
-            self.language = language
-        if prompt is not None:
-            self.prompt = prompt
-
     def _transcription_parameters(
         self,
         model: str | None,

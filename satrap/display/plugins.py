@@ -18,6 +18,8 @@
 - capabilities: 能力独立启用状态 (默认 true), 能力生效 = 插件启用 AND 独立启用
 """
 from __future__ import annotations
+
+from satrap.core.storage.persist import atomic_write_json
 from dataclasses import asdict
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 
@@ -25,7 +27,6 @@ import threading
 from pathlib import Path
 from typing import Any, cast
 import json
-import tempfile
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.config.document import ConfigRevisionConflict, config_document_revision
 
@@ -145,16 +146,7 @@ class ChatPluginRegistry:
 
     def _save(self) -> None:
         """写 json 启用状态 (调用方需已持有锁)"""
-        temporary: Path | None = None
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.state_path.parent, delete=False) as output:
-                temporary = Path(output.name)
-                json.dump(self._states, output, ensure_ascii=False, indent=2, allow_nan=False)
-            temporary.replace(self.state_path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        atomic_write_json(self.state_path, self._states, indent=2)
 
     # ---------- 扫描 ----------
 

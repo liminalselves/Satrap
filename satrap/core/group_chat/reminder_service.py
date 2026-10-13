@@ -9,6 +9,7 @@ import json
 import traceback
 
 from satrap.core.call_context import current_call_origin, current_tool_workflow
+from satrap.core.group_chat.reminder_validation import validate_reminder_text, validate_reminder_mentions
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError
 from satrap.core.group_chat.service import group_chat_service
 from satrap.core.group_chat.types import GroupChatError
@@ -99,8 +100,7 @@ async def execute_reminder_tool(
             result = await asyncio.to_thread(repository.change, context.scope, identity, "cancel", revision, actor=actor, authorize=check)
         else:
             text = arguments.get("text")
-            if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
-                raise ReminderError("invalid_argument", "提醒正文需要 1 至 2000 字")
+            text = validate_reminder_text(text)
             if host is None or not context.adapter.supports_scheduled_group_send:
                 raise ReminderError("unsupported", "当前平台没有可用的后台提醒发送能力")
             if config.get("reminders_enabled") is not True:
@@ -116,9 +116,7 @@ async def execute_reminder_tool(
 
             await asyncio.to_thread(check_source)
             mentions = arguments.get("mention_user_ids", [])
-            if (not isinstance(mentions, list) or len(mentions) > 10
-                    or any(not isinstance(item, str) or not item or item == "all" for item in mentions) or len(set(mentions)) != len(mentions)):
-                raise ReminderError("invalid_argument", "提及目标需要最多 10 个不同的成员 ID, 不能 @ 全体")
+            mentions = validate_reminder_mentions(mentions)
             for identity in dict.fromkeys([actor, *mentions]):
                 verified = await context.adapter.group_chat_member(context.scope, identity)
                 if verified.scope != context.scope or verified.member.user_id != identity:

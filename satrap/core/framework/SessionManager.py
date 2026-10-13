@@ -1447,7 +1447,7 @@ class SessionManager:
                 new_id = new_cfg.session_id
                 if not new_id:
                     logger.error(f"[SessionManager] handle_call_async 失败：切换会话时无法获取新 session_id，原 session_id={session_id}")
-                    return f"切换失败：无法获取新会话 ID"
+                    return "切换失败：无法获取新会话 ID"
 
                 new_entry = await self._get_or_create_entry_async(new_cfg)
 
@@ -1723,6 +1723,108 @@ class SessionManager:
         """
         return [(sid, entry, name, entry.instance_generation) for sid, entry, name in self._edictum_plugin_entries(config_name, session_ids)]
 
+    def _check_edictum_apply_entry(self, session_id: str, entry: SessionEntry, generation: str,
+                                   runtime_is_current: Callable[[], bool] | None) -> None:
+        """
+        同步核验所属平台与当前驻留实例, 每次调用均读取实时状态
+
+        参数:
+        - session_id: 原计划会话
+        - entry: 原计划驻留对象
+        - generation: 原计划实例代次
+        - runtime_is_current: 所属平台管理器实时核验器
+        """
+        self._check_apply_runtime(runtime_is_current)
+        if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
+            raise RuntimeError("会话运行时已变化")
+
+    async def _verify_edictum_apply_entry(
+        self, session_id: str, entry: SessionEntry, planned_name: str, generation: str,
+        snapshot: EdictumPluginApplySnapshot | None, runtime_is_current: Callable[[], bool] | None,
+        source_error: str,
+    ) -> SessionConfig | None:
+        """
+        持有原操作锁时复核来源, await 前后都确认实例身份并检查持久化绑定
+
+        参数:
+        - session_id: 原计划会话
+        - entry: 原计划驻留对象
+        - planned_name: 捕获来源前固定的 Agent 名称
+        - generation: 原实例代次
+        - snapshot: 本次共享配置来源, None 保留实时读取入口
+        - runtime_is_current: 所属平台管理器实时核验器
+        - source_error: 原入口的来源变化说明
+
+        返回:
+        - 本轮重新读取的会话配置, 不沿用来源捕获前的绑定
+        """
+        self._check_edictum_apply_entry(session_id, entry, generation, runtime_is_current)
+        if snapshot is not None and not await progress_source_check(snapshot.sources.is_current):
+            raise RuntimeError(source_error)
+        self._check_edictum_apply_entry(session_id, entry, generation, runtime_is_current)
+        stored = self.store.get(session_id)
+        if stored is not None and stored.session_type_name != planned_name:
+            raise RuntimeError("Agent 绑定在等待期间已变化, 请重试应用")
+        return stored
+
+    async def _reconcile_edictum_entry(
+        self, session_id: str, entry: SessionEntry, semaphore: asyncio.Semaphore,
+        apply_locked: Callable[[], Awaitable[object]], snapshot: EdictumPluginApplySnapshot | None,
+        *, plugin_only: bool,
+    ) -> dict[str, Any]:
+        """
+        共用逐实例协调的锁顺序, 观测范围和失败封装, 保留两种应用的计时契约
+
+        参数:
+        - session_id: 原计划会话
+        - entry: 原计划驻留对象
+        - semaphore: 本批次的并发限制
+        - apply_locked: 取得会话锁后执行的领域动作, 内部仍需实时核验
+        - snapshot: 可选共享来源, 用于报告捕获耗时
+        - plugin_only: 插件应用保留同步锁计时和原调试日志
+
+        返回:
+        - 含平台, 会话及原计时字段的逐实例结果, 取消仍向上传播
+        """
+        with progress_instance(self.platform_id, session_id):
+            timings = PhaseTimings()
+            started = time.perf_counter()
+            lock_wait_ms = 0.0
+            sync_lock_wait_ms = 0.0
+            label = "Edictum 插件热更新" if plugin_only else "Edictum 完整应用"
+
+            def timing_payload(*, failed: bool = False) -> dict[str, float]:
+                """保留成功和失败路径原有的共享读取与同步锁耗时字段"""
+                values = timings.to_payload() if plugin_only else {'total_ms': round((time.perf_counter() - started) * 1000, 3)}
+                values['queue_and_lock_wait_ms'] = round(lock_wait_ms, 3)
+                if plugin_only:
+                    values['sync_lock_wait_ms'] = round(sync_lock_wait_ms, 3)
+                if snapshot is not None and (plugin_only or not failed):
+                    values['shared_config_read_ms'] = round(snapshot.read_ms, 3)
+                return values
+
+            try:
+                async with progress_locks(semaphore, entry.async_operation_lock):
+                    lock_wait_ms = (time.perf_counter() - started) * 1000
+                    if isinstance(entry.session, AsyncSession):
+                        result = await apply_locked()
+                    else:
+                        sync_started = time.perf_counter()
+                        with entry.sync_operation_lock:
+                            sync_lock_wait_ms = (time.perf_counter() - sync_started) * 1000
+                            result = await apply_locked()
+                payload: dict[str, Any] = cast(dict[str, Any], result).copy() if isinstance(result, dict) else {"ok": True}
+                payload.update(session_id=session_id, platform_id=self.platform_id)
+                payload['timings_ms'] = {**payload.get('timings_ms', {}), **timing_payload()}
+                if plugin_only:
+                    logger.debug(f"[SessionManager] 插件协调完成, 会话={session_id}, timings_ms={payload['timings_ms']}")
+            except Exception as error:
+                logger.error(f"[SessionManager] {label}失败: {session_id}, {error}\n{traceback.format_exc()}")
+                payload = {"ok": False, "session_id": session_id, "platform_id": self.platform_id,
+                           "error": str(error), "timings_ms": timing_payload(failed=True)}
+            progress_result(payload)
+            return payload
+
     async def reconcile_edictum_plugins_async(
         self,
         *,
@@ -1766,24 +1868,12 @@ class SessionManager:
 
         async def reconcile_one(session_id: str, entry: SessionEntry, planned_name: str, generation: str) -> dict[str, Any]:
             """协调一个活跃 Edictum 会话"""
-            timings = PhaseTimings()
-            wait_started = time.perf_counter()
-            lock_wait_ms = 0.0
-            sync_lock_wait_ms = 0.0
-
             async def apply_locked() -> object:
-                """取得原操作锁后复核实例, 来源及绑定, 不沿用捕获前状态"""
-                self._check_apply_runtime(runtime_is_current)
-                if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
-                    raise RuntimeError("会话运行时已变化")
-                if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
-                    raise RuntimeError("插件配置在等待期间已变化, 请重试应用")
-                self._check_apply_runtime(runtime_is_current)
-                if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
-                    raise RuntimeError("会话运行时已变化")
-                stored = self.store.get(session_id)
-                if stored is not None and stored.session_type_name != planned_name:
-                    raise RuntimeError("Agent 绑定在等待期间已变化, 请重试应用")
+                """执行插件差量前核验同一实例, 绑定及来源"""
+                await self._verify_edictum_apply_entry(
+                    session_id, entry, planned_name, generation, apply_snapshot, runtime_is_current,
+                    "插件配置在等待期间已变化, 请重试应用",
+                )
                 runtime_name = safe_getattr_callable(provider, "plugin_config_name")
                 if runtime_name is not None and runtime_name(entry.session) != planned_name:
                     raise RuntimeError("运行时 Agent 绑定与目标不一致, 请应用完整 Agent 配置")
@@ -1793,47 +1883,9 @@ class SessionManager:
                 self._check_apply_runtime(runtime_is_current)
                 return result
 
-            try:
-                async with progress_locks(semaphore, entry.async_operation_lock):
-                    lock_wait_ms = (time.perf_counter() - wait_started) * 1000
-                    if isinstance(entry.session, AsyncSession):
-                        result = await apply_locked()
-                    else:
-                        sync_wait_started = time.perf_counter()
-                        with entry.sync_operation_lock:
-                            sync_lock_wait_ms = (time.perf_counter() - sync_wait_started) * 1000
-                            result = await apply_locked()
-                payload: dict[str, Any] = (
-                    cast(dict[str, Any], result).copy()
-                    if isinstance(result, dict)
-                    else {"ok": True}
-                )
-                payload["session_id"] = session_id
-                payload["platform_id"] = self.platform_id
-                payload['timings_ms'] = {**payload.get('timings_ms', {}), **timings.to_payload(),
-                                         'queue_and_lock_wait_ms': round(lock_wait_ms, 3), 'sync_lock_wait_ms': round(sync_lock_wait_ms, 3)}
-                if apply_snapshot is not None:
-                    payload['timings_ms']['shared_config_read_ms'] = round(apply_snapshot.read_ms, 3)
-                logger.debug(f"[SessionManager] 插件协调完成, 会话={session_id}, timings_ms={payload['timings_ms']}")
-                return payload
-            except Exception as error:
-                logger.error(f"[SessionManager] Edictum 插件热更新失败: {session_id}, {error}\n{traceback.format_exc()}")
-                return {
-                    "ok": False,
-                    "session_id": session_id,
-                    "platform_id": self.platform_id,
-                    "error": str(error),
-                    "timings_ms": {**timings.to_payload(), 'queue_and_lock_wait_ms': round(lock_wait_ms, 3),
-                                   'sync_lock_wait_ms': round(sync_lock_wait_ms, 3),
-                                   **({'shared_config_read_ms': round(apply_snapshot.read_ms, 3)} if apply_snapshot is not None else {})},
-                }
-
-        async def observed_plugin(session_id: str, entry: SessionEntry, name: str, generation: str) -> dict[str, Any]:
-            """在独立观测范围内保留原实例协调和结果"""
-            with progress_instance(self.platform_id, session_id):
-                result = await reconcile_one(session_id, entry, name, generation)
-                progress_result(result)
-                return result
+            return await self._reconcile_edictum_entry(
+                session_id, entry, semaphore, apply_locked, apply_snapshot, plugin_only=True,
+            )
 
         pending: list[Awaitable[dict[str, Any]]] = []
         for session_id, entry, name, generation in targets:
@@ -1842,7 +1894,7 @@ class SessionManager:
             selected_plugins = [spec.name for spec in apply_snapshot.specs_for(name)] if apply_snapshot is not None else desired_plugins
             if plugin_name is not None and references is not None and not references(entry.session, plugin_name, desired_plugins=selected_plugins):
                 continue
-            pending.append(observed_plugin(session_id, entry, name, generation))
+            pending.append(reconcile_one(session_id, entry, name, generation))
         return list(await asyncio.gather(*pending)) if pending else []
 
     def preview_edictum_plugins(
@@ -1977,27 +2029,12 @@ class SessionManager:
 
         async def reconcile_one(session_id: str, entry: SessionEntry, planned_name: str, generation: str) -> dict[str, Any]:
             """协调一个活跃 Edictum 会话"""
-            started = time.perf_counter()
-            lock_wait_ms = 0.0
-
             async def apply_locked() -> dict[str, Any]:
-                """
-                锁内复核有效目标, 所有操作复用当前目标与来源
-
-                返回:
-                - 重启, 卸载, 插件协调或无变化结果
-                """
-                self._check_apply_runtime(runtime_is_current)
-                if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
-                    raise RuntimeError("会话运行时已变化")
-                if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
-                    raise RuntimeError("配置在等待期间已变化, 请重试应用")
-                self._check_apply_runtime(runtime_is_current)
-                if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
-                    raise RuntimeError("会话运行时已变化")
-                stored = self.store.get(session_id)
-                if stored is not None and stored.session_type_name != planned_name:
-                    raise RuntimeError("Agent 绑定在等待期间已变化, 请重试应用")
+                """在共同生命周期核验后执行完整目标预览与协调"""
+                stored = await self._verify_edictum_apply_entry(
+                    session_id, entry, planned_name, generation, apply_snapshot, runtime_is_current,
+                    "配置在等待期间已变化, 请重试应用",
+                )
                 snapshot_args: dict[str, Any] = {}
                 if apply_snapshot is not None:
                     runtime_name = safe_getattr_callable(provider, "plugin_config_name")
@@ -2023,9 +2060,7 @@ class SessionManager:
                         plan["changed_fields"] = [*plan.get("changed_fields", []), "model_config"]
                 if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
                     raise RuntimeError("配置在目标核验期间已变化, 请重试应用")
-                self._check_apply_runtime(runtime_is_current)
-                if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
-                    raise RuntimeError("会话运行时已变化")
+                self._check_edictum_apply_entry(session_id, entry, generation, runtime_is_current)
                 action = str(plan.get("action", "noop"))
                 if action == "restart":
                     return await self._restart_entry_locked(session_id, entry, apply_snapshot=apply_snapshot, runtime_is_current=runtime_is_current)
@@ -2056,33 +2091,13 @@ class SessionManager:
                     "platform_id": self.platform_id,
                 }
 
-            try:
-                async with progress_locks(semaphore, entry.async_operation_lock):
-                    lock_wait_ms = (time.perf_counter() - started) * 1000
-                    if isinstance(entry.session, AsyncSession):
-                        payload = await apply_locked()
-                    else:
-                        with entry.sync_operation_lock:
-                            payload = await apply_locked()
-                payload['timings_ms'] = {**payload.get('timings_ms', {}), 'queue_and_lock_wait_ms': round(lock_wait_ms, 3),
-                                         'total_ms': round((time.perf_counter() - started) * 1000, 3),
-                                         **({'shared_config_read_ms': round(apply_snapshot.read_ms, 3)} if apply_snapshot is not None else {})}
-                return payload
-            except Exception as error:
-                logger.error(f"[SessionManager] Edictum 完整应用失败: {session_id}, {error}\n{traceback.format_exc()}")
-                return {"ok": False, "session_id": session_id, "platform_id": self.platform_id, "error": str(error),
-                        "timings_ms": {"queue_and_lock_wait_ms": round(lock_wait_ms, 3), "total_ms": round((time.perf_counter() - started) * 1000, 3)}}
-
-        async def observed_runtime(session_id: str, entry: SessionEntry, name: str, generation: str) -> dict[str, Any]:
-            """完整协调逐实例记录真实阶段和封装后的结果"""
-            with progress_instance(self.platform_id, session_id):
-                result = await reconcile_one(session_id, entry, name, generation)
-                progress_result(result)
-                return result
+            return await self._reconcile_edictum_entry(
+                session_id, entry, semaphore, apply_locked, apply_snapshot, plugin_only=False,
+            )
 
         pending: list[Awaitable[dict[str, Any]]] = []
         for session_id, entry, name, generation in targets:
-            pending.append(observed_runtime(session_id, entry, name, generation))
+            pending.append(reconcile_one(session_id, entry, name, generation))
         return list(await asyncio.gather(*pending)) if pending else []
 
     @staticmethod

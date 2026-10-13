@@ -6,7 +6,7 @@ import pytest
 
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.memory.store import MemoryStore
-from satrap.edictum.memory_migration import migrate_memory_overrides
+from satrap.edictum.memory_migration import migrate_memory_globals, migrate_memory_overrides
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.edictum.plugin_spec import parse_plugin_specs
@@ -79,6 +79,38 @@ def test_bad_new_global_file_does_not_remove_old_fields(tmp_path, catalog):
     with pytest.raises(ValueError):
         PluginConfigManager(tmp_path).load_global("memory", catalog.get("memory").config_schema)
     assert json.loads(source.read_text(encoding="utf-8"))["memory_mode"] == "base"
+
+
+@pytest.mark.parametrize("failed_name", ["memory.json", "base_take.json"])
+def test_global_migration_replace_failure_keeps_source_and_can_resume(tmp_path, monkeypatch, failed_name):
+    """原子写入失败不丢旧字段, 目标已写入时再次迁移仍收敛到同一结果"""
+    from satrap.core.storage import persist
+
+    manager = PluginConfigManager(tmp_path)
+    source, target = tmp_path / "base_take.json", tmp_path / "memory.json"
+    old = {"memory_mode": "base", "memory_scope": "isolated", "search_timeout": 17, "description": "保留字段"}
+    source.write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
+    target.write_text('{"memory_mode":"disabled"}', encoding="utf-8")
+    replace = persist.os.replace
+
+    def fail_replace(temporary, destination):
+        if Path(destination).name == failed_name:
+            raise OSError("模拟原子替换失败")
+        return replace(temporary, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(persist.os, "replace", fail_replace)
+        with pytest.raises(OSError, match="模拟原子替换失败"):
+            migrate_memory_globals(manager)
+    assert json.loads(source.read_text(encoding="utf-8")) == old
+    expected = {"memory_mode": "disabled"}
+    if failed_name == "base_take.json":
+        expected["memory_scope"] = "isolated"
+    assert json.loads(target.read_text(encoding="utf-8")) == expected
+    assert not list(tmp_path.glob("*.tmp"))
+    migrate_memory_globals(manager)
+    assert json.loads(source.read_text(encoding="utf-8")) == {"search_timeout": 17, "description": "保留字段"}
+    assert json.loads(target.read_text(encoding="utf-8")) == {"memory_mode": "disabled", "memory_scope": "isolated"}
 
 
 def test_session_override_migration_is_transactional_and_preserves_revision(tmp_path):

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from satrap.core.config.conversation_catalog import platform_catalog
+from satrap.core.config.conversation_catalog import require_catalog_platform
 from satrap.core.config.platform_message_data import _archive_store
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.memory.scoped import MemoryError, ScopedMemories
@@ -27,8 +27,7 @@ def memory_management(layout: StorageLayout, document: dict[str, Any], platform_
     返回:
     - 当前范围内的真实业务结果, 失败交给路由捕获与记录
     """
-    if platform_id not in {item["id"] for item in platform_catalog(layout, document)}:
-        raise MemoryError("not_found", "平台实例不存在")
+    require_catalog_platform(layout, document, platform_id, MemoryError)
     if set(query) - {"self_id", "chat_id", "conversation_kind", "kind", "user_id", "keyword", "limit", "cursor"}:
         raise MemoryError("invalid_argument", "记忆管理含未知参数")
     scope = MessageScope(platform_id, query.get("self_id", ""), query.get("conversation_kind", "group"), query.get("chat_id", ""))

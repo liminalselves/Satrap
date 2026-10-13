@@ -185,8 +185,6 @@ def install_plugin(
             path=str(plugin_dir),
         )
         plugin.resources = resources
-        plugin.permissions = permissions
-        plugin.effective_config = plugin_config
         validate_permission_install(permissions, tool_states, sync_commands)
         plugin._session = self
         plugin._cleanup = cleanup

@@ -1,5 +1,4 @@
 """OneBot 群管理动作封装的参数校验, 群范围与错误归一"""
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -8,7 +7,6 @@ import asyncio
 import base64
 import json
 import threading
-import time
 
 from aiocqhttp.exceptions import ActionFailed, ApiNotAvailable
 import pytest
@@ -17,7 +15,6 @@ from satrap.core.platform.onebot.admin import (
     ADMIN_CAPABILITIES,
     AdminActionRejected,
     AdminActionUnconfirmed,
-    OneBotAdmin,
     UnsupportedAdminAction,
 )
 from satrap.core.platform.onebot.adapter import OneBotAdapter
@@ -28,7 +25,6 @@ from satrap.core.platform.onebot.request_registry import (
     RequestApprovalLedger,
     RequestFlagRegistry,
 )
-from satrap.core.platform.receipt import SendReceipt
 from satrap.core.platform import PlatformAdapter, PlatformConfig
 
 
@@ -128,8 +124,9 @@ class TestOneBotAdminCalls:
             {"group_id": 456, "group_name": "测试群", "member_count": 3, "max_member_count": 500, "secret": "x"},
             "bad",
         ]
-        groups = await adapter.admin.get_group_list()
-        assert groups == [{"group_id": 456, "group_name": "测试群", "member_count": 3, "max_member_count": 500}]
+        groups = await adapter.admin.fetch_group_directory()
+        assert groups["items"] == [{"group_id": "456", "group_name": "测试群", "member_count": 3, "max_member_count": 500}]
+        assert not groups["complete"] and groups["reason"] == "invalid_entries"
 
     @pytest.mark.asyncio
     async def test_member_info_and_recall_and_requests_call_actions(self):
@@ -187,7 +184,7 @@ class TestOneBotAdminCalls:
     async def test_missing_client_is_unconfirmed(self):
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}))
         with pytest.raises(AdminActionUnconfirmed, match="未连接"):
-            await adapter.admin.get_group_list()
+            await adapter.admin.fetch_group_directory()
 
 
 class TestVoiceActions:
@@ -307,7 +304,7 @@ class TestAdminCapabilities:
         adapter = _adapter()
         adapter._running = True
         adapter._bot.get_group_list.return_value = []
-        await adapter.admin.get_group_list()
+        await adapter.admin.fetch_group_directory()
         assert adapter.admin_capabilities()["get_group_list"] == "supported"
         adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 10002})
         with pytest.raises(UnsupportedAdminAction):
@@ -361,33 +358,6 @@ class TestCapabilityConnectionStates:
         assert set(adapter.admin_capabilities().values()) == {"unavailable"}
 
 
-class TestReadAndForwardTools:
-    """get_message/get_forward_message 的归属核验与 send_group_forward 的公共发送路径"""
-
-    @pytest.mark.asyncio
-    async def test_get_message_verifies_group_and_narrows_fields(self):
-        adapter = _adapter()
-        adapter._bot.get_msg.return_value = {
-            "message_id": 77, "message_type": "group", "group_id": 456, "time": 1700000000,
-            "sender": {"user_id": 123, "nickname": "成员", "card": "卡", "role": "member", "secret": "x"},
-            "message": [{"type": "text", "data": {"text": "你好"}}], "raw_extra": 1,
-        }
-        data = await adapter.admin.get_message("456", "77")
-        adapter._bot.get_msg.assert_awaited_once_with(message_id=77)
-        assert data["sender"] == {"user_id": 123, "nickname": "成员", "card": "卡", "role": "member"}
-        assert data["message"] == [{"type": "text", "data": {"text": "你好"}}]
-        assert "raw_extra" not in data
-
-    @pytest.mark.asyncio
-    async def test_get_message_rejects_cross_group_and_out_of_scope(self):
-        adapter = _adapter()
-        adapter._bot.get_msg.return_value = {"message_type": "group", "group_id": 999}
-        with pytest.raises(AdminActionRejected, match="已拒绝读取"):
-            await adapter.admin.get_message("456", "77")
-        scoped = _adapter(group_whitelist=["789"])
-        with pytest.raises(AdminActionRejected, match="允许范围"):
-            await scoped.admin.get_message("456", "77")
-        scoped._bot.get_msg.assert_not_called()
 
 
 
@@ -544,19 +514,18 @@ class TestRequestFlagOccupancy:
 class TestRequestFlagRegistryUnit:
     @pytest.mark.asyncio
     async def test_expired_flag_cannot_be_occupied(self):
-        registry = RequestFlagRegistry("ob", limit=8, ttl=10.0)
+        registry = RequestFlagRegistry("ob", ttl=10.0)
         await registry.register("group", "flag-old", self_id="10000", group_id="456", sub_type="add",
                                 user_id="1", now=1000.0)
         with pytest.raises(LookupError, match="时限"):
             await registry.occupy("group", "flag-old", self_id="10000", group_id="456", sub_type="add", now=1011.0)
 
     @pytest.mark.asyncio
-    async def test_cache_eviction_keeps_ledger_identity(self):
-        """反例: 近期缓存淘汰只影响性能, 不得让已登记的 flag 掉出审批资格或变成可重复审批"""
-        registry = RequestFlagRegistry("ob", limit=1, ttl=600.0)
+    async def test_new_registration_keeps_prior_ledger_identity(self):
+        """新增申请不能让旧申请失去资格或变成可重复审批"""
+        registry = RequestFlagRegistry("ob", ttl=600.0)
         await registry.register("group", "f1", self_id="10000", group_id="1", sub_type="add", now=1000.0)
         await registry.register("group", "f2", self_id="10000", group_id="1", sub_type="add", now=1001.0)
-        assert registry.cached_state("group", "f1") is None    # 最旧一条已被淘汰
         await registry.occupy("group", "f1", self_id="10000", group_id="1", sub_type="add", now=1002.0)
         assert await registry.ledger.occupy("ob", "10000", "group", "f2", group_id="1", sub_type="add",
                                             now=1003.0) is not None
@@ -568,12 +537,14 @@ class TestRequestFlagRegistryUnit:
         registry = RequestFlagRegistry("ob")
         await registry.register("friend", "f", self_id="10000", now=1000.0)
         await registry.settle("friend", "f", self_id="10000", state="completed")   # 未占用不生效
-        assert registry.cached_state("friend", "f") == "available"
+        available = registry.ledger.lookup("ob", "10000", "friend", "f")
+        assert available is not None and available["state"] == "available"
         await registry.occupy("friend", "f", self_id="10000", now=1000.0)
         with pytest.raises(ValueError):
             await registry.settle("friend", "f", self_id="10000", state="available")
         await registry.settle("friend", "f", self_id="10000", state="unknown")
-        assert registry.cached_state("friend", "f") == "unknown"
+        unknown = registry.ledger.lookup("ob", "10000", "friend", "f")
+        assert unknown is not None and unknown["state"] == "unknown"
         with pytest.raises(LookupError):
             await registry.occupy("friend", "f", self_id="10000", now=1000.0)
 
@@ -728,7 +699,7 @@ class TestApprovalLedger:
     async def test_unknown_account_not_registered(self, tmp_path: Path):
         ledger = self._ledger(tmp_path)
         assert await ledger.register("ob", "", "group", "k1", group_id="1", sub_type="add", now=1000.0) == "unknown_account"
-        assert ledger.pending_counts()["entries_total"] == 0
+        assert json.loads((tmp_path / "request_ledger.json").read_text(encoding="utf-8"))["entries"] == {}
 
     @pytest.mark.asyncio
     async def test_corrupt_ledger_degrades_and_survives_restart(self, tmp_path: Path):
@@ -766,7 +737,7 @@ class TestApprovalLedger:
         (tmp_path / "request_ledger.manifest.json").unlink()
         migrated = self._ledger(tmp_path)
         assert migrated.degraded is False
-        assert migrated.pending_counts()["entries_total"] == 1
+        assert len(json.loads((tmp_path / "request_ledger.json").read_text(encoding="utf-8"))["entries"]) == 1
         assert self._ledger_states(tmp_path) == ["unknown"]     # 迁移时按重启规则结束无法确认的占用
         with pytest.raises(LookupError, match="结果未知"):
             await migrated.occupy("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1002.0)

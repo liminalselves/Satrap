@@ -12,7 +12,7 @@ import os
 
 from satrap.cli.cmd_run import cmd_run, load_run_config
 from satrap.cli.common import control_client_from_args, daemon_client_from_args
-from satrap.cli.output import CliError, dispatch_action, info, ok
+from satrap.cli.output import CliError, dispatch_action, ok
 from satrap.core.runtime_paths import get_runtime_path
 
 

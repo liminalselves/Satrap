@@ -14,14 +14,6 @@ from satrap.expend.plugins.satrap_coding.core.permission import (
 )
 from satrap.core.type import safe_getattr
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-from .constants import (
-    WORKSPACE_ROOT,
-    _PROTECTED_DIRS,
-    _PROTECTED_FILES,
-    _SYSTEM_PROTECTED_ROOT,
-    _FILE_LINE_BREAK,
-    DEFAULT_SANDBOX_ROOT,
-)
 from .approval import _approve_async, _approve_sync
 
 

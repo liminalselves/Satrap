@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal, TypedDict, cast, Generator
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 import copy
@@ -472,10 +472,11 @@ class ManualWakeStore:
             logger.error(f"[ManualWakeStore] 存储文件损坏, 已隔离为 {item.target.name}")
 
     def _archive_state(self) -> str:
-        """归档当前应处的状态: 文件存在为 present, 已被隔离为 missing, 其余为从未创建"""
+        """归档存在为 present, 曾创建但缺失或被隔离为 missing, 从未创建才为 absent"""
         if self._archive_path.is_file():
             return "present"
-        return "missing" if self._archive_quarantined else "absent"
+        expected = self._manifest.expected["archive"] if self._manifest is not None else "absent"
+        return "missing" if self._archive_quarantined or expected != "absent" else "absent"
 
     def _degrade(self, reason: str, detail: str, bad_files: Sequence[Path]) -> None:
         """
@@ -552,7 +553,6 @@ class ManualWakeStore:
         if not self._path.is_file():
             self._degrade("main_missing", f"主文件缺失但存在存储痕迹: {detail}", [])
             return
-        bad: list[Path] = []
         try:
             main_requests, main_attempts = self._read_payload(self._path)
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -663,8 +663,14 @@ class ManualWakeStore:
         - bool: 主文件与归档均完整一致时为 True 并解除降级; 缺失, 结构非法, 身份冲突, 重复或状态不一致时为 False
         """
         with self._mutex, self._transaction(archive=True):
+            if not self.degraded:
+                return True
             if not self._path.is_file():
                 logger.error("[ManualWakeStore] 恢复失败: 主文件不存在, 需先恢复原文件")
+                return False
+            expected_archive = self._manifest is not None and self._manifest.expected["archive"] != "absent"
+            if (expected_archive or self.degraded_reason in {"archive_missing", "archive_corrupt"}) and not self._archive_path.is_file():
+                logger.error("[ManualWakeStore] 恢复失败: 归档文件不存在, 需先恢复原文件")
                 return False
             try:
                 requests, attempts = self._read_payload(self._path)
@@ -1195,15 +1201,3 @@ class ManualWakeStore:
 
 
     # ---------- 测试与运维探针 ----------
-
-    def pending_counts(self) -> dict[str, Any]:
-        """未决记录计数与降级状态, 供健康检查与测试观察"""
-        with self._mutex:
-            return {
-                "requests_pending": sum(1 for record in self._requests.values() if record["status"] in {"accepted", "executing"}),
-                "requests_total": len(self._requests),
-                "attempts_submitted": sum(1 for attempt in self._attempts.values() if attempt["status"] == "submitted"),
-                "attempts_total": len(self._attempts),
-                "degraded": self.degraded,
-                "degraded_reason": self.degraded_reason,
-            }

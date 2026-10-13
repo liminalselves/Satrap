@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any, cast
-import traceback
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-from satrap.core.log import logger
+from satrap.core.config.reference_guard import guard_agent_reference
 
 
 _ALLOWED_FIELDS = {
@@ -21,7 +20,6 @@ _ALLOWED_FIELDS = {
 }
 """会话类配置允许写入的字段"""
 
-from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
 
 
 class SessionClassConfigService:
@@ -48,16 +46,7 @@ class SessionClassConfigService:
         - name: 待变更的配置名称
         """
 
-        if self.reference_checker is None:
-            return
-        try:
-            references = self.reference_checker(name)
-        except Exception as error:
-            logger.error(f"[Agent 配置] session_class/{name} 引用扫描失败: {error}\n{traceback.format_exc()}")
-            raise ConfigReferenceScanError("session_class", name, type(error).__name__) from error
-        if references:
-            logger.warning(f"[Agent 配置] 拒绝变更被引用的 session_class/{name}: {references}")
-            raise ConfigInUseError("session_class", name, references)
+        guard_agent_reference("session_class", name, self.reference_checker)
 
     def list_configs(self) -> dict[str, dict[str, Any]]:
         """

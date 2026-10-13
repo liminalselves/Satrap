@@ -130,9 +130,7 @@ def migrate_forward_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
         return result
     entry = catalog.get("message_forward")
     if entry is None:
-        if explicit:
-            raise ValueError("旧转发工具迁移需要可用的 message_forward 插件")
-        return result
+        raise ValueError("旧转发工具迁移需要可用的 message_forward 插件")
     existing = next((item for item in result if isinstance(item, dict) and item.get("name") == "message_forward"), None)
     old_entry = catalog.get("group_admin")
     manager = PluginConfigManager()

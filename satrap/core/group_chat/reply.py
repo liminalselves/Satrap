@@ -23,7 +23,7 @@ from satrap.core.group_chat.types import GroupChatError
 from satrap.core.log import logger
 
 if TYPE_CHECKING:
-    from satrap.core.platform.event import MessageChain, MessageEvent
+    from satrap.core.platform.event import MessageEvent
 
 from satrap.core.platform.event import MessageChain
 from satrap.core.framework.Base import AsyncSession
@@ -53,7 +53,6 @@ class ReplyTurn:
         self._verify: Callable[[], Awaitable[MessageChain]] | None = None
         self._enabled: Callable[[], bool] = lambda: False
         self._lock = asyncio.Lock()
-        self._output: list[str] = []
         self._output_size = 0
         self._media_leases: list[Any] = []
 
@@ -137,7 +136,6 @@ class ReplyTurn:
             self.abort()
             logger.error(f"[群聊回复] 本轮缓冲超过上限, 轮次={self.origin.request_id}")
             raise ValueError("群聊回复正文超过 100000 字符")
-        self._output.append(content)
         self._output_size += len(content)
 
     def abort(self) -> None:
@@ -145,7 +143,6 @@ class ReplyTurn:
         self.failed = True
         self.draft = None
         self._verify = None
-        self._output.clear()
         for lease in self._media_leases:
             lease.release()
         self._media_leases.clear()

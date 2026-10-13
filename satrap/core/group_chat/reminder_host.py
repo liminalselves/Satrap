@@ -19,6 +19,7 @@ from satrap.core.config.group_session import resolve_group_session
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.plugin_authorization import permission_id_list
+from satrap.core.group_chat.reminder_validation import validate_reminder_text, validate_reminder_mentions
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError
 from satrap.core.group_chat.reminder_scheduler import ReminderDelivery
 from satrap.core.group_chat.types import GroupChatError
@@ -282,11 +283,8 @@ class ReminderHost:
         connection = adapter.group_chat_connection_token()
         mentions = values.get("mention_user_ids", [])
         text = values.get("text")
-        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
-            raise ReminderError("invalid_argument", "提醒正文需要 1 至 2000 字")
-        if (not isinstance(mentions, list) or len(mentions) > 10 or any(not isinstance(item, str) or not item or item == "all" for item in mentions)
-                or len(set(mentions)) != len(mentions)):
-            raise ReminderError("invalid_argument", "提及目标需要最多 10 个不重复的成员 ID, 不能 @ 全体")
+        text = validate_reminder_text(text)
+        mentions = validate_reminder_mentions(mentions)
         for identity in mentions:
             member = await adapter.group_chat_member(scope, identity)
             if member.scope != scope or member.member.user_id != identity:

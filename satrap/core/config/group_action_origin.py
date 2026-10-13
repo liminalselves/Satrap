@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import inspect
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,31 @@ def bind_group_action_preflight(preflight: ActionPreflight | None) -> Iterator[N
         yield
     finally:
         _PREFLIGHT.reset(token)
+
+
+@contextmanager
+def extend_group_action_preflight(preflight: ActionPreflight) -> Iterator[None]:
+    """
+    在外层授权复核之后追加本层身份或占用复核, 任一失败均阻止网络调用
+
+    参数:
+    - preflight: 本层同步或异步复核, 仅在外层通过后执行
+
+    返回:
+    - 有序复核的临时作用域, 退出或取消时恢复外层回调
+    """
+    previous = current_group_action_preflight()
+
+    async def verify() -> None:
+        """依次完成外层和当前层的复核, 不吞异常或提前标记发送"""
+        for check in (previous, preflight):
+            if check is not None:
+                result = check()
+                if inspect.isawaitable(result):
+                    await result
+
+    with bind_group_action_preflight(verify):
+        yield
 
 
 @contextmanager

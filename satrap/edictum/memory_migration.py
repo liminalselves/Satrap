@@ -1,15 +1,16 @@
 """记忆插件拆分的配置迁移, 不保留旧运行入口"""
 from __future__ import annotations
+
+from satrap.core.storage.persist import atomic_write_json
 import traceback
 
 from copy import deepcopy
 from contextlib import closing
 import json
-import tempfile
 import time
-from pathlib import Path
 from typing import Any
 
+from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 from satrap.core.log import logger
 
 
@@ -26,8 +27,8 @@ def migrate_memory_globals(manager: Any) -> None:
     参数:
     - manager: 插件全局配置管理器
     """
-    source = manager._global_path("base_take")
-    target = manager._global_path("memory")
+    source = manager.global_path("base_take")
+    target = manager.global_path("memory")
     if not source.is_file():
         return
     from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
@@ -48,15 +49,7 @@ def migrate_memory_globals(manager: Any) -> None:
                     logger.warning(f"[插件迁移] 全局记忆配置冲突, 保留新插件显式值, 字段={key}")
                 new.setdefault(key, value)
             for path, values in ((target, new), (source, {key: value for key, value in old.items() if key not in MEMORY_FIELDS})):
-                temporary: Path | None = None
-                try:
-                    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", suffix=".tmp", delete=False) as output:
-                        temporary = Path(output.name)
-                        json.dump(values, output, ensure_ascii=False, indent=2, allow_nan=False)
-                    temporary.replace(path)
-                finally:
-                    if temporary is not None:
-                        temporary.unlink(missing_ok=True)
+                atomic_write_json(path, values, indent=2)
             logger.info("[插件迁移] 已迁移记忆全局配置")
     except Exception:
         logger.error("[插件迁移] 记忆全局配置迁移失败, 原配置保留以便重试" + "\n" + traceback.format_exc())
@@ -79,7 +72,7 @@ def migrate_memory_overrides(store: Any, session_id: str) -> bool:
     try:
         with REFERENCE_SCAN_LOCK, database_session_lock(store.database, session_id), closing(store._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT * FROM session_config_overrides WHERE session_id=? AND namespace='plugins.base_take'", (session_id,)).fetchone()
+            row = connection.execute(f"SELECT * FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=? AND namespace='plugins.base_take'", (session_id,)).fetchone()
             if row is None:
                 return False
             old = json.loads(row["config_json"])
@@ -88,7 +81,7 @@ def migrate_memory_overrides(store: Any, session_id: str) -> bool:
             moved = {key: old[key] for key in MEMORY_FIELDS if key in old}
             if not moved:
                 return False
-            current = connection.execute("SELECT * FROM session_config_overrides WHERE session_id=? AND namespace='plugins.memory'", (session_id,)).fetchone()
+            current = connection.execute(f"SELECT * FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=? AND namespace='plugins.memory'", (session_id,)).fetchone()
             new = json.loads(current["config_json"]) if current else {}
             if not isinstance(new, dict):
                 raise ValueError("记忆插件会话覆盖必须是对象")
@@ -98,11 +91,11 @@ def migrate_memory_overrides(store: Any, session_id: str) -> bool:
                 new.setdefault(key, value)
                 old.pop(key)
             now = time.time()
-            connection.execute("INSERT INTO session_config_overrides (session_id, namespace, config_json, schema_version, revision, updated_at) "
+            connection.execute(f'INSERT INTO {SESSION_OVERRIDE_TABLE} (session_id, namespace, config_json, schema_version, revision, updated_at) '
                                "VALUES (?, 'plugins.memory', ?, 1, ?, ?) ON CONFLICT(session_id, namespace) DO UPDATE SET "
                                "config_json=excluded.config_json, revision=excluded.revision, updated_at=excluded.updated_at",
                                (session_id, json.dumps(new, ensure_ascii=False), int(current["revision"]) + 1 if current else 1, now))
-            connection.execute("UPDATE session_config_overrides SET config_json=?, revision=revision+1, updated_at=? "
+            connection.execute(f'UPDATE {SESSION_OVERRIDE_TABLE} SET config_json=?, revision=revision+1, updated_at=? '
                                "WHERE session_id=? AND namespace='plugins.base_take'", (json.dumps(old, ensure_ascii=False), now, session_id))
             return True
     except Exception:

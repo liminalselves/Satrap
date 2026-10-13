@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import sqlite3
 
+from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
+
 
 PLATFORM_SCHEMA_VERSION = 10
 
-_OVERRIDE_TABLE = "session_config_overrides"
+_OVERRIDE_TABLE = SESSION_OVERRIDE_TABLE
 _GROUP_TABLES = frozenset({
     "group_accounts", "group_legacy_adoption", "group_configs", "group_directory", "group_sync_state", "group_actions",
 })
@@ -59,7 +61,7 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
 
     if version < 1:
         connection.execute(
-            "CREATE TABLE IF NOT EXISTS session_config_overrides ("
+            f'CREATE TABLE IF NOT EXISTS {SESSION_OVERRIDE_TABLE} ('
             "session_id TEXT NOT NULL, namespace TEXT NOT NULL, "
             "config_json TEXT NOT NULL DEFAULT '{}', schema_version INTEGER NOT NULL DEFAULT 1, "
             "revision INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL, "

@@ -10,7 +10,6 @@ import hashlib
 import asyncio
 from pathlib import Path
 import secrets
-import signal
 import time
 import traceback
 from typing import (
@@ -19,7 +18,6 @@ from typing import (
     Callable,
     Dict,
     List,
-    Optional,
     cast,
 )
 from copy import deepcopy
@@ -65,7 +63,6 @@ from satrap.core.platform import (
     EventDispatcher,
     PlatformAdapter,
     PlatformAdapterManager,
-    PlatformAdapterRegistry,
     PlatformConfig,
     PlatformStatus,
     registry as global_registry,
@@ -2231,6 +2228,30 @@ class BackendManager:
                 return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
         logger.info(f"[BackendManager] 手动唤醒已接受 request_id={request_id} adapter={adapter_id} group={group_id} operator={operator} pending={len(snapshot)}")
         return {"status": "accepted", "request_id": request_id}
+
+    async def recover_platform_store(self, name: str) -> dict[str, Any]:
+        """
+        管理入口校验已修复的持久文件后解除平台状态存储降级
+
+        参数:
+        - name: manual_wake 或 request_ledger, 不接受文件路径
+
+        返回:
+        - 存储名称, 是否恢复成功及当前降级原因, 不清空历史或重发动作
+        """
+        if name not in {"manual_wake", "request_ledger"}:
+            raise ValueError("存储名称必须为 manual_wake 或 request_ledger")
+        store = self._manual_wake_store if name == "manual_wake" else self._request_ledger
+        if store is None:
+            return {"ok": False, "store": name, "reason": "store_unavailable"}
+        try:
+            recovered = await asyncio.to_thread(store.recover)
+        except Exception as error:
+            logger.error(f"[BackendManager] 平台状态存储恢复失败 store={name}: {type(error).__name__}: {error}")
+            return {"ok": False, "store": name, "reason": "recovery_failed", "degraded": store.degraded}
+        logger.info(f"[BackendManager] 管理员请求恢复平台状态存储 store={name} recovered={recovered}")
+        return {"ok": recovered and not store.degraded, "store": name, "degraded": store.degraded,
+                "reason": "" if recovered and not store.degraded else "recovery_failed", "detail": store.degraded_reason}
 
     async def manual_wake_status(self, request_id: str, adapter_id: str | None = None) -> dict[str, Any]:
         """

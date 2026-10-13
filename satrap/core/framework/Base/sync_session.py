@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from satrap.core.config.session_overrides import SessionOverrideStore
     from satrap.core.config.model_snapshot import ModelConfigReader
     from satrap.core.storage.layout import StorageLayout
-    from satrap.core.framework.SessionManager import SessionManager
     from satrap.core.framework.UserManager import UserManager
 
 from .base import _SessionCore

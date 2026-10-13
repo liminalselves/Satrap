@@ -1610,7 +1610,7 @@ def test_service_delete_conversation_cascades_data_and_trashes_files(
     assert (trashed[0] / "files" / "sandbox" / "result.txt").read_text(encoding="utf-8") == "data"
     assert (trashed[0] / "manifest.json").exists()
     assert (trashed[0] / "records.json").exists()
-    assert memory.count() == 0
+    assert memory.list_all() == []
     assert svc.list_turns(conversation_id) == []
 
 

@@ -15,17 +15,18 @@ import json
 import sqlite3
 import threading
 
+from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
+from satrap.core.config.plugin_references import reference_fields
 from satrap.core.config.document import load_config_document
 from satrap.core.log import logger
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageLayout
 
 REFERENCE_SCAN_LOCK = threading.RLock()
 """引用扫描与相关配置写入共用的锁: 扫描期间不允许新增或改写引用来源"""
-OVERRIDE_TABLE = "session_config_overrides"
+OVERRIDE_TABLE = SESSION_OVERRIDE_TABLE
 """会话覆盖表名, 与 session_overrides.ensure_override_tables 保持一致"""
 
-from satrap.edictum.plugin import PLUGINS_PRESET_DIR, USER_PLUGINS_DIR, load_plugin_meta
-from satrap.edictum.plugin_config import parse_config_schema, CONFIG_DIR
+from satrap.edictum.plugin_config import CONFIG_DIR
 from satrap.core.config.session_overrides import OVERRIDE_SCHEMA_VERSION
 
 
@@ -66,40 +67,13 @@ def _platform_references(platforms: list[object], config_name: str) -> list[dict
     return references
 
 
-def _plugin_dirs(plugins_dir: Path | None) -> list[Path]:
-    """枚举插件目录: 不依赖 scan_plugin_dirs 的静默过滤, 元数据损坏的目录必须参与扫描"""
-
-    bases = [PLUGINS_PRESET_DIR, Path(plugins_dir) if plugins_dir is not None else USER_PLUGINS_DIR]
-    found: list[Path] = []
-    for base in bases:
-        if not base.is_dir():
-            continue
-        for entry in sorted(base.iterdir()):
-            if entry.is_dir() and (entry / "meta.yaml").is_file():
-                found.append(entry)
-    return found
-
-
 def _asr_plugin_fields(plugins_dir: Path | None) -> dict[str, list[str]]:
-    """全部已安装插件中 asr 类型的配置字段 (插件名 -> 字段列表); 元数据损坏即扫描不完整"""
+    """严格读取 ASR 字段, 保留扫描不完整的领域原因码"""
+    def failure(directory: Path, error: Exception | None) -> AsrReferenceScanError:
+        detail = f"插件目录 {directory.name} 缺少合法 name" if error is None else f"插件目录 {directory.name} 元数据无法解析 ({type(error).__name__})"
+        return AsrReferenceScanError("plugin_meta", detail)
 
-    fields: dict[str, list[str]] = {}
-    for plugin_dir in _plugin_dirs(plugins_dir):
-        try:
-            meta = load_plugin_meta(plugin_dir)
-            schema = parse_config_schema(meta)
-        except Exception as error:
-            # 读不出的插件声明可能含 asr 字段, 按扫描不完整处理而不是跳过
-            raise AsrReferenceScanError(
-                "plugin_meta", f"插件目录 {plugin_dir.name} 元数据无法解析 ({type(error).__name__})",
-            ) from error
-        name = str(meta.get("name") or "").strip()
-        if not name:
-            raise AsrReferenceScanError("plugin_meta", f"插件目录 {plugin_dir.name} 缺少合法 name")
-        matched = [key for key, definition in schema.items() if definition.type == "asr"]
-        if matched:
-            fields[name] = matched
-    return fields
+    return reference_fields("asr", plugins_dir, failure=failure, strip_names=True, include_empty=False)
 
 
 def _plugin_global_references(
@@ -150,8 +124,6 @@ def _session_override_references(
             continue
         try:
             rows = _read_override_rows(database, platform_id)
-        except AsrReferenceScanError:
-            raise
         except sqlite3.Error as error:
             # 库存在但读不出: 锁定, 损坏或结构异常都不允许当作"没配置"
             raise AsrReferenceScanError(

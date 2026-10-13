@@ -11,6 +11,7 @@ import time
 from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.core.log import logger
+from satrap.core.utils.file_snapshot import file_fingerprint, capture_stable_source
 from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
 from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.edictum.plugin_resources import MODEL_TYPES
@@ -18,23 +19,6 @@ from satrap.edictum.plugin_resources import MODEL_TYPES
 if TYPE_CHECKING:
     from satrap.edictum.config import EdictumConfigManager
     from satrap.core.framework.BackGroundManager import ModelConfigManager
-
-
-def _file_state(path: Path) -> tuple[int, int, int, int] | None:
-    """
-    读取来源状态, 缺失与不可读取分别处理
-
-    参数:
-    - path: 配置文件路径
-
-    返回:
-    - 文件时间, 大小与身份; 缺失时为 None, 其它读取错误抛出
-    """
-    try:
-        info = path.stat()
-    except FileNotFoundError:
-        return None
-    return info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_ino
 
 
 def _file_digest(path: Path) -> str | None:
@@ -63,7 +47,7 @@ def plugin_source_version(path: Path) -> tuple[tuple[int, int, int, int] | None,
     返回:
     - 文件身份与内容摘要, 仅供应用内部核验
     """
-    return _file_state(path), _file_digest(path)
+    return file_fingerprint(path, missing_ok=True), _file_digest(path)
 
 
 class PluginApplySnapshot:
@@ -107,11 +91,12 @@ class PluginApplySnapshot:
         - 已核验快照; 损坏来源或持续变化时记录堆栈并抛出
         """
         try:
-            for _attempt in range(3):
+            def capture_once() -> PluginApplySnapshot | None:
+                """捕获一次完整来源, 仅在来源失配时请求重试"""
                 catalog_state = catalog.fingerprint()
                 fixed = catalog.snapshot()
                 entries = [entry for entry in fixed.scan() if plugin_names is None or entry.name in plugin_names]
-                paths = {entry.name: manager._global_path(entry.name) for entry in entries}
+                paths = {entry.name: manager.global_path(entry.name) for entry in entries}
                 needs_models = model_plugin_filter is None or any(
                     model_plugin_filter(entry) and any(field.type in MODEL_TYPES for field in entry.config_schema.values())
                     for entry in entries
@@ -128,7 +113,9 @@ class PluginApplySnapshot:
                 after = {path: plugin_source_version(path) for path in sources}
                 if before == after and catalog_state == catalog.fingerprint():
                     return cls(fixed, values, {path: state[0] for path, state in after.items()}, catalog_state, models)
-            raise RuntimeError("插件配置在捕获期间持续变化, 请重试应用")
+                return None
+
+            return capture_stable_source(capture_once, "插件配置在捕获期间持续变化, 请重试应用")
         except Exception as error:
             logger.error(f"[插件应用] 捕获全局参数失败: {error}\n{traceback.format_exc()}")
             raise
@@ -153,7 +140,7 @@ class PluginApplySnapshot:
         - 目录与全部捕获文件仍匹配时为 True; 文件读取错误由协调入口捕获
         """
         return self.catalog.fingerprint() == self._catalog_state and all(
-            _file_state(path) == expected for path, expected in self._sources.items()
+            file_fingerprint(path, missing_ok=True) == expected for path, expected in self._sources.items()
         )
 
     def models_for(self, manager: ModelConfigManager | None) -> ModelConfigSnapshot | None:
@@ -220,7 +207,8 @@ class EdictumPluginApplySnapshot:
         started = time.perf_counter()
         globals_ = global_manager or PluginConfigManager()
         try:
-            for _attempt in range(3):
+            def capture_once() -> EdictumPluginApplySnapshot | None:
+                """捕获一次完整来源, 仅在来源失配时请求重试"""
                 before = plugin_source_version(manager.storage_path)
                 manager.reload()
                 catalog = manager.plugin_catalog.snapshot()
@@ -252,7 +240,9 @@ class EdictumPluginApplySnapshot:
                 if (before == plugin_source_version(manager.storage_path) and sources.is_current()
                         and catalog.snapshot_token() == sources.catalog.snapshot_token()):
                     return cls(sources, specs, (time.perf_counter() - started) * 1000, {name: configs.get(name) for name in specs})
-            raise RuntimeError("Edictum 插件配置在捕获期间持续变化, 请重试应用")
+                return None
+
+            return capture_stable_source(capture_once, "Edictum 插件配置在捕获期间持续变化, 请重试应用")
         except Exception as error:
             logger.error(f"[插件应用] 捕获 Edictum 命名配置失败: {error}\n{traceback.format_exc()}")
             raise

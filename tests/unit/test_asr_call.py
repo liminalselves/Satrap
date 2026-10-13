@@ -153,9 +153,9 @@ def test_build_asr_from_config_maps_fields(monkeypatch: pytest.MonkeyPatch):
                     language="zh", prompt="p", timeout=30)
     asr = build_asr_from_config(cfg)
     assert isinstance(asr, ASR)
-    assert asr.model == "whisper-1" and asr.get_base_url() == "https://api.example.com/v1"
+    assert asr.model == "whisper-1" and asr.base_url == "https://api.example.com/v1"
     assert asr.language == "zh" and asr.prompt == "p"
-    assert asr.get_api_key() == "api key locked"
+    assert asr.api_key == "api key locked"
     async_asr = build_asr_from_config(cfg, async_=True)
     assert isinstance(async_asr, AsyncASR)
 
@@ -171,15 +171,9 @@ def test_insecure_base_url_requires_explicit_opt_in(monkeypatch: pytest.MonkeyPa
     with pytest.raises(ValueError, match="https"):
         ASR(api_key="k", base_url="http://8.8.8.8:8080/v1")
     asr = ASR(api_key="k", base_url="http://8.8.8.8:8080/v1", allow_insecure_base_url=True)
-    assert asr.get_base_url() == "http://8.8.8.8:8080/v1"
+    assert asr.base_url == "http://8.8.8.8:8080/v1"
 
 
-def test_set_parameters_updates_defaults(monkeypatch: pytest.MonkeyPatch):
-    asr, _, calls = _pair(monkeypatch)
-    asr.set_parameters(model="m2", language="en", prompt="pp")
-    asr.transcribe(b"audio-bytes", filename="voice.mp3")
-    request = calls[0][0]
-    assert request["model"] == "m2" and request["language"] == "en" and request["prompt"] == "pp"
 
 
 @pytest.mark.asyncio

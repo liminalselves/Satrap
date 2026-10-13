@@ -9,7 +9,7 @@ from typing import Any, cast
 import re
 
 from satrap.core.config.platform_policy import POLICY_DEFAULTS, normalize_group_whitelist, policy_default, validate_wake_policy
-from satrap.core.config.wake_overrides import SOURCE_PLATFORM, resolve_wake_policy_sources, resolve_wake_settings
+from satrap.core.config.wake_overrides import resolve_wake_policy_sources, resolve_wake_settings
 from satrap.core.pipeline.wake_policy import NEVER_TRIGGER_THRESHOLD, WakeDecision, evaluate_wake, resolve_message_threshold
 from satrap.core.pipeline.wake_window import PendingMessage, WakeWindow
 from satrap.core.platform import PlatformConfig

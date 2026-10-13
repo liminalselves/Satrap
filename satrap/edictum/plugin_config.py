@@ -16,14 +16,16 @@
 """
 from __future__ import annotations
 
+from satrap.core.storage.persist import atomic_write_json
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 import json
-import tempfile
 import math
 import re
 
+from satrap.edictum.migration_keys import GLOBAL_RECEIPT
 from satrap.core.config_paths import get_config_path
 
 from satrap.core.log import logger
@@ -205,7 +207,7 @@ class PluginConfigManager:
         """
         self._dir = Path(config_dir) if config_dir is not None else CONFIG_DIR
 
-    def _global_path(self, name: str) -> Path:
+    def global_path(self, name: str) -> Path:
         """
         校验插件名称并返回配置目录内的真实路径
 
@@ -241,7 +243,7 @@ class PluginConfigManager:
         if name in {"base_take", "memory"}:
             from satrap.edictum.memory_migration import migrate_memory_globals
             migrate_memory_globals(self)
-        path = self._global_path(name)
+        path = self.global_path(name)
         if not path.is_file():
             return merged
         try:
@@ -254,7 +256,7 @@ class PluginConfigManager:
             logger.warning(f"[插件配置] {name} 全局配置应为字典, 已忽略")
             return merged
         for key, value in cast(dict[str, Any], raw).items():
-            if name == "friend_manager" and key == "__capability_migration":
+            if name == "friend_manager" and key == GLOBAL_RECEIPT:
                 continue
             fld = schema.get(key)
             if fld is None:
@@ -271,7 +273,7 @@ class PluginConfigManager:
         if name in {"base_take", "memory"}:
             from satrap.edictum.memory_migration import migrate_memory_globals
             migrate_memory_globals(self)
-        path = self._global_path(name)
+        path = self.global_path(name)
         if not path.is_file():
             return {}
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -302,25 +304,16 @@ class PluginConfigManager:
                 logger.warning(f"[插件配置] {name} 配置键 {key} 未在 schema 声明, 忽略")
                 continue
             cleaned[key] = fld.validate(value)
-        path = self._global_path(name)
-        temporary = None
+        path = self.global_path(name)
         # 与 ASR 引用扫描共用同一把锁: 扫描判定无引用与删除配置之间不允许写入新引用
         from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 
-        try:
-
-            with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
-                if name == "friend_manager" and path.is_file():
-                    previous = json.loads(path.read_text(encoding="utf-8"))
-                    if isinstance(previous, dict) and "__capability_migration" in previous:
-                        cleaned["__capability_migration"] = previous["__capability_migration"]
-                with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
-                    temporary = Path(file.name)
-                    json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)
-                temporary.replace(path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
+            if name == "friend_manager" and path.is_file():
+                previous = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(previous, dict) and GLOBAL_RECEIPT in previous:
+                    cleaned[GLOBAL_RECEIPT] = previous[GLOBAL_RECEIPT]
+            atomic_write_json(path, cleaned, indent=2)
         return self.load_global(name, schema)
 
     def resolve(

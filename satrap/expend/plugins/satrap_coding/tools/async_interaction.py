@@ -18,7 +18,7 @@ from .constants import _SUBAGENT_PROMPT
 from .subagent import _AsyncCodingSubAgent
 from .approval import _parse_integer_argument, _ask_user_async, _approve_async
 from .paths import _tool_root, _resolve_path
-from .shell import _prepare_shell, _run_shell
+from .shell import _prepare_shell
 
 class AsyncAskUserTool(AsyncTool):
     """向用户询问请求 (异步)"""

@@ -19,7 +19,7 @@ from satrap.core.utils.media import user_media_content, freeze_tool_result
 from .errors import ModelCallError
 from satrap.core.call_context import bind_tool_workflow
 from .store import RunStore, RunConflictError, RunNeedsAttention, fingerprint
-from .flow import ModelStep, ToolStep, agent_flow
+from .flow import ModelStep, agent_flow
 
 if TYPE_CHECKING:
     from ..async_workflow import AsyncModelWorkflowFramework

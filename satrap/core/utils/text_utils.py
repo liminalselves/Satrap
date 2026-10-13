@@ -68,7 +68,6 @@ class TextSplitter:
         - 分割后的文本块列表
         """
         # Step.1 确定当前使用的分隔符
-        final_chunks: list[str] = []
         separator = separators[-1] if separators else ""
         new_separators = []
 

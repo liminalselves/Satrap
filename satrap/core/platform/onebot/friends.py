@@ -5,14 +5,13 @@ from typing import Any, TYPE_CHECKING
 from collections.abc import Awaitable
 import json
 import asyncio
-import inspect
 
 from satrap.core.friends import FriendError
 from satrap.core.platform.onebot.group_chat import _numeric_id
 from satrap.core.platform.onebot.admin import UnsupportedAdminAction, AdminActionRejected, AdminActionUnconfirmed
 from satrap.core.platform.onebot.request_registry import request_digest
 from satrap.core.platform.onebot import request_registry
-from satrap.core.config.group_action_origin import current_group_action_preflight, bind_group_action_preflight
+from satrap.core.config.group_action_origin import extend_group_action_preflight
 from satrap.core.log import logger
 
 SUSPICIOUS_REQUEST_LIMIT = 200
@@ -270,14 +269,9 @@ class OneBotFriends:
             proof = await self.refresh_suspicious(account)
             if row["digest"] not in proof["identities"]:
                 raise FriendError("request_not_confirmed", "本次平台查询未确认这条可疑申请仍待处理, 未执行")
-        previous = current_group_action_preflight()
 
         async def verify_record() -> None:
             """发送前复核申请路由和修订号, 变更后拒绝旧审批"""
-            if previous is not None:
-                checked = previous()
-                if inspect.isawaitable(checked):
-                    await checked
             self.check(account, generation)
             try:
                 self.adapter.request_flags.inbox.resolve(self.adapter.config.id, account, "friend", request_id, request_registry.time(), row["revision"])
@@ -285,7 +279,7 @@ class OneBotFriends:
                 raise PermissionError("申请记录在发送前已变化, 请重新查询后处理") from error
 
         self.adapter.request_flags.inbox.resolve(self.adapter.config.id, account, "friend", request_id, request_registry.time(), row["revision"])
-        with bind_group_action_preflight(verify_record):
+        with extend_group_action_preflight(verify_record):
             await self.protocol(self.adapter.admin.handle_friend_request(row["flag"], approve, remark,
                                 allow_archived=allow_archived, identity_digest=row["digest"], suspicious=suspicious))
         self.check(account, generation)

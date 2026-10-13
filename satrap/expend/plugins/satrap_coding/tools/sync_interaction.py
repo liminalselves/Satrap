@@ -16,7 +16,7 @@ from .constants import _SUBAGENT_PROMPT
 from .subagent import _CodingSubAgent
 from .approval import _parse_integer_argument, _ask_user_sync, _approve_sync
 from .paths import _tool_root, _resolve_path
-from .shell import _prepare_shell, _run_shell
+from .shell import _prepare_shell
 
 def _shell_definition(definition: dict[str, Any], default_timeout: int) -> dict[str, Any]:
     """

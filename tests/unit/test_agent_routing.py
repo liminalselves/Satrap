@@ -140,7 +140,7 @@ def test_distinct_agent_binding_and_group_override() -> None:
         "provider": "edictum", "config_name": "group-override",
     }}}, 1)
     group = _event(adapter)
-    assert group.session_type == "group-override" and group.agent_binding_source == "group"
+    assert group.session_type == "group-override"
     adapter.config.session_bindings["group"]["config_name"] = "new-default"
     assert group.agent_route_is_current()
 

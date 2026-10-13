@@ -486,13 +486,6 @@ class OneBotAdapter(PlatformAdapter):
             if snapshot is not None and snapshot.self_id == expected_self_id:
                 self._group_access_snapshot = replace(snapshot, membership=members)
 
-    def group_active_revision(self, group_id: str) -> int | None:
-        """返回当前账号已装载的群配置修订号"""
-        snapshot = self._group_access_snapshot
-        if snapshot is None or snapshot.self_id != self.bot_self_id:
-            return None
-        return snapshot.revisions.get(group_id, 0)
-
     def resolve_policy_settings(self, group_id: str) -> dict[str, Any]:
         """取得与入站群消息同一快照的有效策略"""
 

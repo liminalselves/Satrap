@@ -1,8 +1,8 @@
 """群管理写动作的目标、参数和风险元数据"""
 from __future__ import annotations
 
-from typing import Any
 
+from satrap.core.platform.onebot.validation import boolean_parameter, action_text
 from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS, HIGH_IMPACT_ACTIONS
 from satrap.core.platform.onebot.admin import (
     _normalize_duration, _normalize_message_id, normalize_flag, normalize_user_id,
@@ -70,9 +70,7 @@ def normalize_action_params(action: str, raw: dict[str, object], self_id: str) -
         elif kind == "duration":
             normalized[key] = _normalize_duration(value, "禁言秒数无效")
         elif kind == "bool":
-            if type(value) is not bool:
-                raise ValueError(f"{key} 必须为布尔值")
-            normalized[key] = value
+            normalized[key] = boolean_parameter(value, f"{key} 必须为布尔值")
         elif kind == "revision":
             if type(value) is not int or value < 1:
                 raise ValueError("申请修订号必须为正整数")
@@ -85,9 +83,7 @@ def normalize_action_params(action: str, raw: dict[str, object], self_id: str) -
         else:
             if not isinstance(value, str):
                 raise ValueError(f"{key} 必须为文本")
-            limits = {"card": 60, "name": 60, "title": 18, "reason": 120, "sub_type": 8}
-            if len(value) > limits.get(key, 200) or (key == "name" and not value):
-                raise ValueError(f"{key} 长度无效")
+            action_text(value, key, allow_empty=key != "name")
             if key == "sub_type" and value not in {"add", "invite"}:
                 raise ValueError("sub_type 必须为 add 或 invite")
             normalized[key] = value

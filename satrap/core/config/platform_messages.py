@@ -15,6 +15,7 @@ import sqlite3
 import time
 import uuid
 
+from satrap.core.utils.validation import is_bounded_text
 from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION, ensure_platform_tables
 
 
@@ -43,7 +44,7 @@ def _identity(value: object) -> str:
     返回:
     - 原字符串, 非法输入抛出 ValueError
     """
-    if not isinstance(value, str) or not value or len(value) > 256 or any(ord(c) < 32 for c in value):
+    if not is_bounded_text(value):
         raise ValueError("消息档案身份必须是长度不超过 256 的非空字符串")
     return value
 
@@ -766,9 +767,9 @@ class PlatformMessageStore:
             return empty
         conditions = ["c.adapter_id=?"]
         parameters: list[object] = [self.adapter_id]
-        for field, value in (("conversation_kind", conversation_kind), ("self_id", self_id)):
+        for column_name, value in (("conversation_kind", conversation_kind), ("self_id", self_id)):
             if value:
-                conditions.append(f"c.{field}=?")
+                conditions.append(f"c.{column_name}=?")
                 parameters.append(value)
         if keyword:
             conditions.append("instr(c.label || ' ' || c.chat_id || ' ' || c.self_id, ?) > 0")

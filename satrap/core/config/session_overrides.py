@@ -10,6 +10,7 @@ from copy import deepcopy
 import json
 import time
 
+from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.core.storage.file_lock import database_session_lock
 
@@ -55,7 +56,7 @@ class SessionOverrideStore:
         self._validate_identity(session_id, namespace)
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT * FROM session_config_overrides WHERE session_id=? AND namespace=?",
+                f'SELECT * FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=? AND namespace=?',
                 (session_id, namespace),
             ).fetchone()
         if row is None:
@@ -85,7 +86,7 @@ class SessionOverrideStore:
         with REFERENCE_SCAN_LOCK, database_session_lock(self.database, session_id), closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT revision FROM session_config_overrides WHERE session_id=? AND namespace=?",
+                f'SELECT revision FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=? AND namespace=?',
                 (session_id, namespace),
             ).fetchone()
             revision = int(row[0]) if row else 0
@@ -95,7 +96,7 @@ class SessionOverrideStore:
                 return {"overrides": {}, "revision": 0, "schema_version": 1, "updated_at": None}
             revision += 1
             connection.execute(
-                "INSERT INTO session_config_overrides "
+                f'INSERT INTO {SESSION_OVERRIDE_TABLE} '
                 "(session_id, namespace, config_json, schema_version, revision, updated_at) "
                 "VALUES (?, ?, ?, 1, ?, ?) ON CONFLICT(session_id, namespace) DO UPDATE SET "
                 "config_json=excluded.config_json, revision=excluded.revision, updated_at=excluded.updated_at",
@@ -121,14 +122,14 @@ class SessionOverrideStore:
         with REFERENCE_SCAN_LOCK, database_session_lock(self.database, session_id), closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             for namespace, (_, expected, _) in encoded.items():
-                row = connection.execute("SELECT revision FROM session_config_overrides WHERE session_id=? AND namespace=?", (session_id, namespace)).fetchone()
+                row = connection.execute(f'SELECT revision FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=? AND namespace=?', (session_id, namespace)).fetchone()
                 if (int(row[0]) if row else 0) != expected:
                     raise OverrideConflictError("会话配置已更新, 请刷新后重试")
             now = time.time()
             for namespace, (values, revision, nonempty) in encoded.items():
                 if revision == 0 and not nonempty:
                     continue
-                connection.execute("INSERT INTO session_config_overrides(session_id,namespace,config_json,schema_version,revision,updated_at) VALUES(?,?,?,1,?,?) "
+                connection.execute(f'INSERT INTO {SESSION_OVERRIDE_TABLE}(session_id,namespace,config_json,schema_version,revision,updated_at) VALUES(?,?,?,1,?,?) '
                                    "ON CONFLICT(session_id,namespace) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,updated_at=excluded.updated_at",
                                    (session_id, namespace, values, revision + 1, now))
 

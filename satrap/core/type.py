@@ -13,7 +13,7 @@ import time
 
 from satrap.core.conversation import ConversationRoute
 from satrap.core.call_context import CallOrigin
-from satrap.core.components import BaseMessageComponent, PlatformComponentType
+from satrap.core.components import BaseMessageComponent
 
 THINKING_LEVEL_VALUES = ("low", "medium", "high", "xhigh", "max", "ultra")
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, cast
 
-import traceback
 
 from satrap.edictum.plugin_settings import validate_plugin_settings
 from satrap.edictum.plugin_catalog import PluginCatalog
@@ -24,8 +23,7 @@ _ALLOWED_FIELDS = {
 }
 """Edictum 冷配置允许写入的字段"""
 
-from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
-from satrap.core.log import logger
+from satrap.core.config.reference_guard import guard_agent_reference
 
 
 class EdictumConfigService:
@@ -60,16 +58,7 @@ class EdictumConfigService:
         - name: 待变更的配置名称
         """
 
-        if self.reference_checker is None:
-            return
-        try:
-            references = self.reference_checker(name)
-        except Exception as error:
-            logger.error(f"[Agent 配置] edictum/{name} 引用扫描失败: {error}\n{traceback.format_exc()}")
-            raise ConfigReferenceScanError("edictum", name, type(error).__name__) from error
-        if references:
-            logger.warning(f"[Agent 配置] 拒绝变更被引用的 edictum/{name}: {references}")
-            raise ConfigInUseError("edictum", name, references)
+        guard_agent_reference("edictum", name, self.reference_checker)
 
     def list_types(self) -> list[dict[str, Any]]:
         """

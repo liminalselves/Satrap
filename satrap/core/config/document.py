@@ -1,7 +1,8 @@
 """提供配置文档的校验, 原子保存和平台配置操作"""
 from __future__ import annotations
 
-import tempfile
+from satrap.core.storage.persist import atomic_write_text
+
 import time
 import errno
 import hashlib
@@ -409,24 +410,7 @@ def _write_config_document(config_path: Path, normalized: dict[str, Any]) -> Non
         dumped_value = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
     else:
         dumped_value = safe_yaml_dump(normalized)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{config_path.name}.",
-        suffix=".tmp",
-        dir=config_path.parent,
-        text=True,
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as temporary_file:
-            temporary_file.write(dumped_value)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-        _replace_with_retry(temporary_path, config_path)
-    except Exception:
-        if temporary_path.exists():
-            temporary_path.unlink()
-        raise
+    atomic_write_text(config_path, dumped_value, newline="\n", durable=True, replace=_replace_with_retry)
 
 
 def _replace_with_retry(source: Path, target: Path, attempts: int = 20, interval: float = 0.05) -> None:

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import aiosqlite
-from typing import List, Dict, Any, TYPE_CHECKING
+from typing import List, Dict, Any
 from types import TracebackType
 import json
 import traceback
@@ -28,10 +28,6 @@ from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_WRITE, c
 
 from satrap.core.log import logger
 
-if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-    from .sync import ContextManager
-    from .async_ import AsyncContextManager
 
 
 class _AsyncStorage(_ContextCore):

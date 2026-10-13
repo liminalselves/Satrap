@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from typing import Any
+from collections.abc import Callable
 import traceback
 import sqlite3
 import json
@@ -52,6 +53,25 @@ def platform_catalog(layout: StorageLayout, document: dict[str, Any]) -> list[di
     for value in values.values():
         value.setdefault("type_label", value["type"])
     return sorted(values.values(), key=lambda item: (item["type"], item["id"]))
+
+
+def require_catalog_platform(layout: StorageLayout, document: dict[str, Any], platform_id: object,
+                             error: Callable[[str, str], Exception]) -> str:
+    """
+    核验管理目标在配置或保留存储目录中存在, 无需启动适配器
+
+    参数:
+    - layout: 当前数据布局
+    - document: 当前平台配置
+    - platform_id: 请求选择的平台实例
+    - error: 入口原有的领域异常构造器
+
+    返回:
+    - 已存在的字符串实例 ID, 不创建数据库或推断新实例
+    """
+    if not isinstance(platform_id, str) or not any(item["id"] == platform_id for item in platform_catalog(layout, document)):
+        raise error("not_found", "平台实例不存在")
+    return platform_id
 
 
 def _rows(connection: sqlite3.Connection, tables: set[str], table: str) -> list[dict[str, Any]]:

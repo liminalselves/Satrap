@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 import sqlite3
-from typing import List, Dict, Any, TYPE_CHECKING
+from typing import List, Dict, Any
 import json
 import traceback
 import time
@@ -28,8 +28,6 @@ from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_WRITE, c
 
 from satrap.core.log import logger
 
-if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 
 
 class _SyncStorage(_ContextCore):

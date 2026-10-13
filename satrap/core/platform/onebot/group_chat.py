@@ -5,13 +5,13 @@ from typing import TYPE_CHECKING, Any
 import asyncio
 import json
 import math
-import re
 import time
 from dataclasses import replace
 
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.group_chat.types import GroupChatError, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
 from satrap.core.platform.message_archive import archive_snapshot
+from satrap.core.platform.onebot.validation import decimal_digits
 from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
 from satrap.core.log import logger
 
@@ -33,7 +33,8 @@ def _numeric_id(value: object, *, message: bool = False) -> str:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise ValueError("OneBot 身份必须是十进制 ID")
     text = str(value)
-    if not re.fullmatch(r"-?[0-9]{1,20}" if message else r"[0-9]{1,20}", text):
+    digits = text[1:] if message and text.startswith("-") else text
+    if not 1 <= len(digits) <= 20 or not decimal_digits(digits, ascii_only=True):
         raise ValueError("OneBot 身份必须是十进制 ID")
     number = int(text)
     if not message and number <= 0:

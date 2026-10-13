@@ -8,14 +8,8 @@
 from __future__ import annotations
 import inspect, copy
 from typing import Optional, Callable, Any, Awaitable, cast, Literal
-from typing import TYPE_CHECKING
 from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.core.utils.TCBuilder import AsyncToolsManager
-from satrap.core.utils.context import (
-    add_bot_message,
-    add_tools_call_flow,
-    clear_reasoning_content,
-)
 from satrap.core.utils.paths import get_db_path
 from satrap.core.type import LLMCallResponse, ModelContextTurnStats
 from satrap.core.log import logger

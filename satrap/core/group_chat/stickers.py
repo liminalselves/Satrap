@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 import base64
 import hashlib
@@ -16,6 +15,7 @@ import time
 
 from PIL import Image as PillowImage
 
+from satrap.core.utils.validation import is_bounded_text
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.group_chat.assets import AssetLease, inspect_image, lease_file, read_blob, remove_unleased_file, _LOCK, _LEASES
 from satrap.core.group_chat.types import GroupChatError
@@ -48,7 +48,7 @@ def _text(value: object, maximum: int = 80) -> str:
     返回:
     - 去除两端空白的有限文本
     """
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum or any(ord(c) < 32 for c in value):
+    if not is_bounded_text(value, maximum=maximum, non_blank=True):
         raise ValueError("名称和标签不能为空, 含控制字符或超过长度限制")
     return value.strip()
 

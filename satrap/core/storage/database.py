@@ -8,12 +8,13 @@ import sqlite3
 from typing import Any, cast
 import json
 
+from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 from satrap.core.storage.context_catalog import CATALOG_SCHEMA
 
 
 _RESTORABLE_TABLES = frozenset({
     "session_configs",
-    "session_config_overrides",
+    SESSION_OVERRIDE_TABLE,
     "rag_knowledge_bases",
     "conversation_meta",
     "display_turns",
@@ -134,7 +135,7 @@ def snapshot_session_domain(database: str | Path, session_id: str) -> dict[str, 
                 (session_id, related_pattern),
             ),
             "session_configs": ("session_id = ?", (session_id,)),
-            "session_config_overrides": ("session_id = ?", (session_id,)),
+            SESSION_OVERRIDE_TABLE: ("session_id = ?", (session_id,)),
             "rag_knowledge_bases": ("session_id = ? AND scope = 'session'", (session_id,)),
             "conversation_meta": ("conversation_id = ?", (session_id,)),
             "display_turns": ("conversation_id = ?", (session_id,)),
@@ -243,7 +244,7 @@ def restore_session_domain(
                 if receipt["session_id"] != session_id or receipt["metadata"] != restore_metadata:
                     raise ValueError("恢复凭据与归档不匹配")
                 return   # 先前提交已成功, 不重复恢复数据库记录
-        if "session_config_overrides" in records:
+        if SESSION_OVERRIDE_TABLE in records:
             from satrap.core.config.session_overrides import ensure_override_tables
             # core.config 包导出依赖存储维护模块, 延迟到恢复时避免循环导入
             ensure_override_tables(connection)
@@ -280,7 +281,7 @@ def restore_session_domain(
                 _validated_restore_columns(table, row, schemas[table])
                 identity_column = {
                     "session_configs": "session_id", "conversation_meta": "conversation_id",
-                    "session_config_overrides": "session_id",
+                    SESSION_OVERRIDE_TABLE: "session_id",
                     "rag_knowledge_bases": "session_id",
                     "display_turns": "conversation_id", "context_sessions": "session_id",
                 }.get(table)
@@ -441,7 +442,7 @@ def delete_session_domain_rows(database: str | Path, session_id: str) -> None:
         for table, column in (("agent_runs", "scope"), ("chat_history", "conversation_id"), ("context_runtime_state", "conversation_id"), ("conversation_data_backups", "conversation_id"), ("context_catalog", "context_id")):
             if table in tables:
                 connection.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", params)
-        for table in ("session_configs", "session_config_overrides"):
+        for table in ("session_configs", SESSION_OVERRIDE_TABLE):
             if table in tables:
                 connection.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
         if "rag_knowledge_bases" in tables:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import asyncio
-from typing import List, Dict, Union, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Union, Optional, Any
 import copy
 import json
 
@@ -20,10 +20,6 @@ from .utils import _ContextRuntimeState, add_tool_message
 
 from satrap.core.log import logger
 
-if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-    from .sync import ContextManager
-    from .async_ import AsyncContextManager
 
 
 class AsyncContextManager(_AsyncSummary):

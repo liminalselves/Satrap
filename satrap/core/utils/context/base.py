@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import List, Dict, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Optional, Any
 import copy
 
 from satrap.core.state import StateStore
@@ -15,8 +15,6 @@ from .utils import _SUMMARY_PROMPT_VERSION, TokenEstimateMethod, _ContextRuntime
 
 from satrap.core.log import logger
 
-if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 
 
 class _ContextCore:
@@ -386,11 +384,6 @@ class _ContextCore:
         logger.debug(
             f"模型上下文达触发线 ({current_tokens} > {self.trigger_tokens})，应用 {self.exceed_process} 截断到 {self.floor_tokens}"
         )
-
-        turns = self._group_messages_by_turns(messages)
-        system_turn = None
-        if turns and all(msg.get("role") == "system" for msg in turns[0]):
-            system_turn = turns.pop(0)
 
         if self.exceed_process == "sliding":  # 滑动窗口截断
             return self._apply_sliding_truncation(messages, self.floor_tokens, method)

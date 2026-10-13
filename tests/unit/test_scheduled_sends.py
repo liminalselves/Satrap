@@ -95,4 +95,4 @@ async def test_interrupt_after_submission_is_unknown_and_never_due_again(tmp_pat
     with pytest.raises(asyncio.CancelledError):
         await execute_scheduled_segments(target(reminder), recorder, [{"index": 0}], [send])
     assert store.get(recorder.scope, recorder.identity)["reminder"]["state"] == "unknown"
-    assert not store.due()
+    assert not store.active()

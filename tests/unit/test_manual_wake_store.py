@@ -197,7 +197,7 @@ class TestRequestStore:
         store.accept_request("bot", "p3", "fp", "group:20", "op")
         archived = store.lookup_request("s1", "bot")
         assert archived is not None and archived["status"] == "sent"
-        assert store.pending_counts()["requests_total"] == 3
+        assert len(json.loads(store._path.read_text(encoding="utf-8"))["requests"]) == 3
         store.update_request("bot", "p2", "sent")
         store.accept_request("bot", "s2", "fp", "group:20", "op")
         # 归档已满: 拒绝新记录且不动未决记录
@@ -420,7 +420,7 @@ class TestPersistentDegradation:
         assert archived is not None and archived["fingerprint"] == "fp2"
         manifest = json.loads((tmp_path / "store.manifest.json").read_text(encoding="utf-8"))
         assert manifest["expected_files"]["archive"] == "present"
-        assert store.pending_counts()["degraded"] is False
+        assert store.degraded is False
 
     def test_failed_persist_does_not_show_unconfirmed_terminal_state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         store = ManualWakeStore(tmp_path / "store.json")
@@ -548,7 +548,7 @@ class TestAcceptTransaction:
         # 同指纹重试返回原状态, 不遗留假 accepted
         retry = await backend.wake_platform(_payload("enq"), operator="management")
         assert retry["status"] == "already_pending" and retry["state"] == "failed"
-        assert store.pending_counts()["requests_pending"] == 0
+        assert all(row["status"] not in {"accepted", "executing"} for row in json.loads(store._path.read_text(encoding="utf-8"))["requests"].values())
 
     @pytest.mark.asyncio
     async def test_persist_failure_rejects_without_placeholder(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -572,7 +572,7 @@ class TestAcceptTransaction:
         statuses = sorted(result["status"] for result in results)
         assert statuses == ["accepted", "already_pending", "already_pending"]
         assert adapter._event_queue.qsize() == 1
-        assert store.pending_counts()["requests_total"] == 1
+        assert len(json.loads(store._path.read_text(encoding="utf-8"))["requests"]) == 1
 
 
 class TestPipelineAndSendAttempts:

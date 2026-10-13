@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 import threading
@@ -104,11 +104,6 @@ class RequestDiagnosticLog:
         self._per_adapter = per_adapter
         self._requests: dict[str, OrderedDict[str, list[RequestDiagnostic]]] = {}
         self._lock = threading.Lock()
-
-    @property
-    def capacity(self) -> int:
-        """每适配器保留的请求数上限"""
-        return self._per_adapter
 
     def record(self, entry: RequestDiagnostic) -> None:
         """

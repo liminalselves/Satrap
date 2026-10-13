@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
-import base64
 import hashlib
 import json
 import sqlite3
@@ -14,26 +13,13 @@ import time
 import uuid
 import math
 
+from satrap.core.utils.pagination import decode_offset, encode_offset
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.platform.scheduled import ScheduledTarget
+from satrap.core.group_chat.reminder_validation import ReminderError, validate_reminder_text, validate_reminder_mentions
 from satrap.core.group_chat.reminder_time import resolve_reminder_time
-
-
-class ReminderError(ValueError):
-    """携带稳定错误码的提醒拒绝"""
-
-    def __init__(self, code: str, message: str) -> None:
-        """
-        构造提醒业务错误
-
-        参数:
-        - code: 稳定错误码
-        - message: 对外说明
-        """
-        super().__init__(message)
-        self.code = code
 
 
 ACTIVE_STATES = frozenset({"scheduled", "waiting_delivery", "paused", "sending"})
@@ -140,12 +126,8 @@ class ReminderStore:
             raise ReminderError("invalid_argument", "提醒范围或创建者无效")
         if creator_kind == "model" and (not isinstance(source_message_id, str) or not source_message_id):
             raise ReminderError("invalid_source", "模型创建提醒需要真实来源消息 ID")
-        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
-            raise ReminderError("invalid_argument", "提醒正文需要 1 至 2000 字")
-        if (not isinstance(mentions, list) or len(mentions) > 10
-                or any(not isinstance(item, str) or not item or len(item) > 256 or item == "all" or any(ord(char) < 32 for char in item) for item in mentions)
-                or len(set(mentions)) != len(mentions)):
-            raise ReminderError("invalid_argument", "提及成员需要 0 至 10 个不重复的成员 ID")
+        text = validate_reminder_text(text)
+        mentions = validate_reminder_mentions(mentions)
         if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 512:
             raise ReminderError("invalid_argument", "提醒操作标识无效")
         if (due_at is None) == (time_spec is None):
@@ -240,7 +222,7 @@ class ReminderStore:
             offset = self._offset(cursor, signature)
             more = offset + limit < len(rows)
             return {"ok": True, "items": self._page_records(connection, [row["reminder_id"] for row in rows[offset:offset + limit]]), "has_more": more,
-                    "next_cursor": base64.urlsafe_b64encode(json.dumps([signature, offset + limit]).encode()).decode() if more else None}
+                    "next_cursor": encode_offset(signature, offset + limit) if more else None}
 
     @staticmethod
     def _offset(cursor: str, signature: str) -> int:
@@ -254,14 +236,9 @@ class ReminderStore:
         返回:
         - 当前页起始偏移, 游标无效或内容已变化时抛出 invalid_cursor
         """
-        if not cursor:
-            return 0
         try:
-            token = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
-            if token[0] != signature or type(token[1]) is not int or token[1] < 0:
-                raise ValueError()
-            return int(token[1])
-        except (ValueError, TypeError, KeyError, IndexError) as exc:
+            return decode_offset(cursor, signature)
+        except ValueError as exc:
             raise ReminderError("invalid_cursor", "任务或筛选已变化, 请重新查询") from exc
 
     def _page_records(self, connection: sqlite3.Connection, identities: list[str]) -> list[dict[str, Any]]:
@@ -338,20 +315,6 @@ class ReminderStore:
                                    (self.clock(), detail, row["reminder_id"]))
             connection.execute("UPDATE group_chat_reminder_attempts SET status='unknown' WHERE status IN ('planned','sending')")
             return len(pending)
-
-    def due(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        """
-        返回尚未取得发送权的到期任务
-
-        参数:
-        - limit: 每轮最多处理数量
-
-        返回:
-        - 到期且重试等待结束的任务
-        """
-        with closing(self._connect()) as connection:
-            return [self._record(row) for row in connection.execute("SELECT * FROM group_chat_reminders WHERE state IN ('scheduled','waiting_delivery') "
-                    "AND due_at<=? AND (retry_at IS NULL OR retry_at<=?) ORDER BY due_at LIMIT ?", (self.clock(), self.clock(), limit))]
 
     def transition(self, identity: str, expected_states: tuple[str, ...], state: str, reason: str = "", retry_at: float | None = None) -> bool:
         """

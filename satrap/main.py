@@ -200,6 +200,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--request-id", default="", help="幂等请求标识, 省略时自动生成")
     add_config_flag(p)
 
+    p = plat_sub.add_parser("recover-store", help="校验修复后的平台状态文件并解除降级, 不清空历史")
+    p.add_argument("store", choices=["manual-wake", "request-ledger"], help="后端共享的状态存储")
+    add_config_flag(p)
+
     p_plug = subparsers.add_parser("plugin", help="聊天插件管理")
     # satrap plugin 命令
     plug_sub = p_plug.add_subparsers(dest="action", help="操作")

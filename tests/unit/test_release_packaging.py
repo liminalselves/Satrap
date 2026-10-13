@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def load_script(name: str, path: Path):
     """加载构建和启动脚本, 不执行命令行入口"""
     spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -142,6 +143,20 @@ def test_release_ui_config_uses_chat_port_override(monkeypatch):
     assert build_ui_config()["chat_api"] == "http://127.0.0.1:29872"
     assert build_ui_config()["control_api"] == "http://127.0.0.1:29871"
     assert build_ui_config(chat_port=39872)["chat_api"] == "http://127.0.0.1:39872"
+
+
+def test_smoke_waits_for_state_written_by_launcher_in_runtime_directory(launcher, tmp_path, monkeypatch):
+    """全新发行目录中消费启动器实际写出的状态, 不等待不存在的旧位置"""
+    smoke = load_script("release_smoke", ROOT / "scripts/release/smoke_release.py")
+    monkeypatch.setattr(smoke, "ROOT", tmp_path)
+    launcher.write_state({"ready": True})
+    assert not (tmp_path / ".satrap/release-instance.json").exists()
+
+    def unexpected_wait(_):
+        pytest.fail("没有读取启动器的 runtime 状态")
+
+    monkeypatch.setattr(smoke.time, "sleep", unexpected_wait)
+    smoke.wait_ready(SimpleNamespace(poll=lambda: None), tmp_path / "smoke.log")
 
 
 def test_copy_sources_includes_builtin_resources(tmp_path):

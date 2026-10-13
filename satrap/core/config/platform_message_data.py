@@ -5,7 +5,7 @@ from typing import Any, cast
 import json
 
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
-from satrap.core.config.conversation_catalog import platform_catalog
+from satrap.core.config.conversation_catalog import platform_catalog, require_catalog_platform
 from satrap.core.platform.catalog import adapter_catalog
 from satrap.core.storage.layout import StorageLayout
 from satrap.core.log import logger
@@ -104,9 +104,7 @@ def platform_archive_operation(layout: StorageLayout, document: dict[str, Any], 
     返回:
     - 档案管理结果
     """
-    platform_id = payload.get("platform_id")
-    if not isinstance(platform_id, str) or platform_id not in {item["id"] for item in platform_catalog(layout, document)}:
-        raise MessageArchiveError("not_found", "平台实例不存在")
+    platform_id = require_catalog_platform(layout, document, payload.get("platform_id"), MessageArchiveError)
     service = PlatformMessageDataService(_archive_store(layout, document, platform_id))
     return service.operate({key: value for key, value in payload.items() if key != "platform_id"})
 

@@ -9,6 +9,7 @@ import secrets
 import time
 import traceback
 
+from satrap.core.utils.validation import is_bounded_text
 from satrap.core.friends import FriendError
 from satrap.core.friends.store import FriendStore
 from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_group_action_preflight
@@ -26,7 +27,7 @@ def text_id(value: Any, label: str = "ID") -> str:
     返回:
     - 有界且不含控制字符的原始 ID
     """
-    if not isinstance(value, str) or not value or len(value) > 256 or any(ord(ch) < 32 for ch in value) or value != value.strip():
+    if not is_bounded_text(value, trimmed=True):
         raise FriendError("invalid_parameters", f"{label} 必须是非空 ID 字符串")
     return value
 

@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator
 import asyncio
 import random
 from typing import Any, cast
-import os
 import re
 from time import time
 

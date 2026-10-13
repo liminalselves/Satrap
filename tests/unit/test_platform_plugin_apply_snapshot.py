@@ -433,7 +433,7 @@ async def test_removed_reference_unloads_and_unrelated_corrupt_global_is_not_rea
         await backend.reconcile_edictum_plugins_async(config_name="agent-b")
         configs.update("agent-a", {"plugins": []})
         globals_._dir.mkdir(parents=True, exist_ok=True)
-        globals_._global_path("group_chat").write_text("broken", encoding="utf-8")
+        globals_.global_path("group_chat").write_text("broken", encoding="utf-8")
         result = await backend.reconcile_edictum_plugins_async(plugin_name="session_commands")
         assert len(result) == 2 and all(item["ok"] for item in result)
         assert all(item["plugins"][0]["action"] == "remove" for item in result)
@@ -518,7 +518,7 @@ async def test_corrupt_platform_source_preserves_all_runtime_plugins(tmp_path: P
     backend, configs, globals_, sessions, providers = await _platforms(tmp_path, monkeypatch)
     try:
         old = [session.list_plugins()[0] for session in sessions]
-        path = configs.storage_path if source == "named" else globals_._global_path("session_commands")
+        path = configs.storage_path if source == "named" else globals_.global_path("session_commands")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("broken", encoding="utf-8")
         with pytest.raises(ValueError):

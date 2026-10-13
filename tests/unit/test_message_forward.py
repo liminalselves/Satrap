@@ -237,6 +237,15 @@ async def test_sync_and_async_tools_have_same_definitions_and_send_original_refe
         assert call.kwargs["messages"] == [{"type": "node", "data": {"id": "77"}}]
 
 
+def test_migration_only_requires_missing_forward_plugin_for_explicit_legacy_tools():
+    catalog = SimpleNamespace(get=lambda _: None)
+    ordinary = [{"name": "group_admin", "capabilities": {"tools": {"group_admin_ban": True}}}]
+    assert migrate_forward_tool_specs(ordinary, catalog) == ordinary
+    legacy = [{"name": "group_admin", "capabilities": {"tools": {"group_admin_get_forward": False}}}]
+    with pytest.raises(ValueError, match="旧转发工具迁移需要可用的 message_forward 插件"):
+        migrate_forward_tool_specs(legacy, catalog)
+
+
 def test_migration_does_not_enable_new_private_or_original_send_capabilities(tmp_path):
     catalog = PluginCatalog(user_dir=tmp_path / "plugins")
     original = [{"name": "group_admin", "enabled": True, "config": {"allowed_callers": "123", "write_tools_enabled": True},

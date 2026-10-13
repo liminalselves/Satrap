@@ -225,7 +225,7 @@ def test_memory_isolated_between_sessions(tmp_path: Path):
     assert second.get(first_id)["ok"] is False
     assert second.delete(first_id)["ok"] is False
     assert second.clear() == 1
-    assert first.count() == 1
+    assert [item["title"] for item in first.list_all()] == ["第一会话"]
 
 
 def test_add_memory_tool_writes_only_current_session(tmp_path: Path):

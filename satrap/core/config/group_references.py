@@ -7,12 +7,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
-from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK, _plugin_dirs
+from satrap.core.config.plugin_references import reference_fields
+from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
 from satrap.core.storage import StorageLayout
 
-from satrap.edictum.plugin import load_plugin_meta
-from satrap.edictum.plugin_config import parse_config_schema
 
 
 class GroupReferenceScanError(RuntimeError):
@@ -20,22 +19,14 @@ class GroupReferenceScanError(RuntimeError):
 
 
 def _plugin_fields(target: str, plugins_dir: Path | None) -> dict[str, list[str]]:
-    """从全部插件声明中严格识别资源引用字段"""
+    """严格读取群配置资源字段, 保留已有名称与空字段项语义"""
     if target not in {"llm", "asr"}:
         return {}
 
-    result: dict[str, list[str]] = {}
-    for directory in _plugin_dirs(plugins_dir):
-        try:
-            meta = load_plugin_meta(directory)
-            schema = parse_config_schema(meta)
-            plugin = str(meta.get("name") or "")
-            if not plugin:
-                raise ValueError("插件缺少名称")
-            result[plugin] = [key for key, field in schema.items() if field.type == target]
-        except Exception as error:
-            raise GroupReferenceScanError(f"插件 {directory.name} 元数据无法解析") from error
-    return result
+    def failure(directory: Path, error: Exception | None) -> GroupReferenceScanError:
+        return GroupReferenceScanError(f"插件 {directory.name} 元数据无法解析")
+
+    return reference_fields(target, plugins_dir, failure=failure, strip_names=False, include_empty=True)
 
 
 def list_group_references(

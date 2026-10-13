@@ -34,7 +34,6 @@ from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.log.stream import standard_log_stream
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageMaintenanceService
-from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.api import checkpoint as checkpoint_api
 from satrap.api import user as user_api
 
@@ -858,6 +857,17 @@ class BackendHTTPServer(MiniHTTPServer):
     async def _route_ui_health_reload(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """UI 配置 / 健康检查 / 配置热加载 (精确路径)"""
         backend = self.backend
+
+        if method == "POST" and path == "/api/platforms/recover-store":
+            try:
+                payload = _parse_json_object(body)
+                if set(payload) != {"store"} or not isinstance(payload["store"], str):
+                    raise ValueError("仅接受 store 字符串字段")
+                result = await backend.recover_platform_store(payload["store"])
+            except (ValueError, json.JSONDecodeError) as error:
+                return 400, {"ok": False, "error": str(error), "reason": "invalid_store"}
+            status = 200 if result["ok"] else 503 if result["reason"] == "store_unavailable" else 409
+            return status, result
 
         if method == "POST" and path == "/api/platforms/wake":
             try:

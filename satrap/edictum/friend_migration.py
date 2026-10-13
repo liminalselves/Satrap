@@ -1,15 +1,17 @@
 """好友写开关迁移为工具状态, 旧配置只用于一次性迁移"""
 from __future__ import annotations
 
+from satrap.core.storage.persist import atomic_write_json
+
 from copy import deepcopy
 from contextlib import closing
-from pathlib import Path
 from typing import Any, cast
 import json
-import tempfile
 import time
 import traceback
 
+from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
+from satrap.edictum.migration_keys import GLOBAL_RECEIPT
 from satrap.core.log import logger
 from satrap.core.storage.file_lock import FileLock, database_session_lock
 
@@ -18,7 +20,6 @@ FRIEND_SWITCHES = {
     "delete_friend_enabled": "friend_manager_delete_friend",
     "send_request_enabled": "friend_manager_send_request",
 }
-GLOBAL_RECEIPT = "__capability_migration"
 
 
 def legacy_bool(value: Any) -> bool:
@@ -45,7 +46,7 @@ def migrate_friend_globals(manager: Any) -> dict[str, bool]:
     返回:
     - 以工具名标识的旧全局默认值, 仅供旧安装项转换
     """
-    path = manager._global_path("friend_manager")
+    path = manager.global_path("friend_manager")
     defaults = dict.fromkeys(FRIEND_SWITCHES.values(), False)
     if not path.is_file():
         return defaults
@@ -66,15 +67,7 @@ def migrate_friend_globals(manager: Any) -> dict[str, bool]:
                 if field in raw:
                     defaults[tool] = legacy_bool(raw.pop(field))
             raw[GLOBAL_RECEIPT] = {"version": 1, "legacy_defaults": defaults}
-            temporary: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", suffix=".tmp", delete=False) as output:
-                    temporary = Path(output.name)
-                    json.dump(raw, output, ensure_ascii=False, indent=2, allow_nan=False)
-                temporary.replace(path)
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
+            atomic_write_json(path, raw, indent=2)
             logger.info("[插件迁移] 已清除好友全局重复开关, 保留旧安装项迁移基准")
             return defaults
     except Exception:
@@ -146,9 +139,9 @@ def migrate_friend_overrides(store: Any, session_id: str, spec: Any) -> dict[str
     try:
         with REFERENCE_SCAN_LOCK, database_session_lock(store.database, session_id), closing(store._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            old_row = connection.execute("SELECT * FROM session_config_overrides WHERE session_id=? AND namespace='plugins.friend_manager'", (session_id,)).fetchone()
+            old_row = connection.execute(f"SELECT * FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=? AND namespace='plugins.friend_manager'", (session_id,)).fetchone()
             old = json.loads(old_row["config_json"]) if old_row else {}
-            new_row = connection.execute("SELECT * FROM session_config_overrides WHERE session_id=? AND namespace=?", (session_id, namespace)).fetchone()
+            new_row = connection.execute(f'SELECT * FROM {SESSION_OVERRIDE_TABLE} WHERE session_id=? AND namespace=?', (session_id, namespace)).fetchone()
             new = json.loads(new_row["config_json"]) if new_row else {}
             if not isinstance(old, dict) or not isinstance(new, dict) or set(new) - set(FRIEND_SWITCHES.values()) or any(type(state) is not bool for state in new.values()):
                 raise ValueError("好友实例配置或工具覆盖无效")
@@ -160,10 +153,10 @@ def migrate_friend_overrides(store: Any, session_id: str, spec: Any) -> dict[str
                     flag_enabled = legacy_bool(old.pop(field))
                     new.setdefault(tool, originals.get(tool, True) and flag_enabled)
                 now = time.time()
-                connection.execute("INSERT INTO session_config_overrides(session_id,namespace,config_json,schema_version,revision,updated_at) VALUES(?,?,?,1,?,?) "
+                connection.execute(f'INSERT INTO {SESSION_OVERRIDE_TABLE}(session_id,namespace,config_json,schema_version,revision,updated_at) VALUES(?,?,?,1,?,?) '
                                    "ON CONFLICT(session_id,namespace) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,updated_at=excluded.updated_at",
                                    (session_id, namespace, json.dumps(new, ensure_ascii=False), int(new_row["revision"]) + 1 if new_row else 1, now))
-                connection.execute("UPDATE session_config_overrides SET config_json=?,revision=revision+1,updated_at=? WHERE session_id=? AND namespace='plugins.friend_manager'",
+                connection.execute(f"UPDATE {SESSION_OVERRIDE_TABLE} SET config_json=?,revision=revision+1,updated_at=? WHERE session_id=? AND namespace='plugins.friend_manager'",
                                    (json.dumps(old, ensure_ascii=False), now, session_id))
             return new
     except Exception:

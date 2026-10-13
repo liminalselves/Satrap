@@ -12,7 +12,7 @@ from email.policy import default as email_policy
 import json
 
 from satrap.core.config.platform_message_data import _archive_store
-from satrap.core.config.conversation_catalog import platform_catalog
+from satrap.core.config.conversation_catalog import require_catalog_platform
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.group_chat.summaries import SummaryStore
 from satrap.core.group_chat.types import GroupChatError
@@ -40,8 +40,7 @@ def summary_management(layout: StorageLayout, document: dict[str, Any], platform
     返回:
     - 摘要管理结果, 失败由控制路由记录和归一
     """
-    if platform_id not in {item["id"] for item in platform_catalog(layout, document)}:
-        raise GroupChatError("not_found", "平台实例不存在")
+    require_catalog_platform(layout, document, platform_id, GroupChatError)
     if set(query) - {"self_id", "chat_id", "conversation_kind", "keyword", "limit", "cursor"}:
         raise ValueError("摘要管理含有未知参数")
     scope = MessageScope(platform_id, query.get("self_id", ""), query.get("conversation_kind", "group"), query.get("chat_id", ""))
@@ -136,8 +135,7 @@ def sticker_settings_management(layout: StorageLayout, document: dict[str, Any],
     返回:
     - 当前群授权
     """
-    if platform_id not in {item["id"] for item in platform_catalog(layout, document)}:
-        raise GroupChatError("not_found", "平台实例不存在")
+    require_catalog_platform(layout, document, platform_id, GroupChatError)
     if set(query) != {"self_id", "chat_id", "conversation_kind"}:
         raise ValueError("群表情设置需要完整对话身份")
     scope = MessageScope(platform_id, query["self_id"], query["conversation_kind"], query["chat_id"])

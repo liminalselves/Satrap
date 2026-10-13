@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, timezone
-import base64
 import hashlib
 import json
 import sqlite3
@@ -11,6 +10,7 @@ import unicodedata
 import uuid
 from typing import Any
 
+from satrap.core.utils.pagination import decode_offset, encode_offset
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.memory.store import MemoryStore
 from satrap.core.memory.lifecycle import erase_memory
@@ -199,7 +199,7 @@ class ScopedMemories:
             pending = [(row, self._source_ids(connection, str(row["id"]))) for row in page]
         items = [self._present(row, ids) for row, ids in pending]
         more = offset + limit < len(rows)
-        next_cursor = base64.urlsafe_b64encode(json.dumps([signature, offset + limit]).encode()).decode() if more else None
+        next_cursor = encode_offset(signature, offset + limit) if more else None
         return {"ok": True, "items": items, "has_more": more, "next_cursor": next_cursor}
 
     def _filters(self, *, kind: str, user_id: str, viewer: str) -> tuple[str, tuple[str, ...]]:
@@ -239,14 +239,9 @@ class ScopedMemories:
         返回:
         - 当前页起始偏移, 游标无效或内容已变化时抛出 invalid_cursor
         """
-        if not cursor:
-            return 0
         try:
-            token = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
-            if token[0] != signature or type(token[1]) is not int or token[1] < 0:
-                raise ValueError()
-            return int(token[1])
-        except (ValueError, TypeError, KeyError, IndexError) as exc:
+            return decode_offset(cursor, signature)
+        except ValueError as exc:
             raise MemoryError("invalid_cursor", "筛选或记忆内容已变化, 请重新查询") from exc
 
     def mutate(self, operation: str, values: dict[str, Any], *, actor: str, current_message: str = "", operator: bool = False, operation_id: str) -> dict[str, Any]:

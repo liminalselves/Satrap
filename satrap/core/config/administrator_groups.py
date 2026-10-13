@@ -15,6 +15,7 @@ import json
 import re
 import threading
 
+from satrap.core.utils.validation import is_bounded_text
 from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.call_context import CallOrigin
 
@@ -38,7 +39,7 @@ def _text(value: object, label: str, limit: int = 256) -> str:
     返回:
     - 去除首尾空白的非空字符串, 非法时抛出 ValueError
     """
-    if not isinstance(value, str) or not 1 <= len(value.strip()) <= limit or any(ord(c) < 32 for c in value):
+    if not is_bounded_text(value, maximum=limit, non_blank=True, measure_stripped=True):
         raise ValueError(f"{label} 必须是非空文字, 长度不超过 {limit}")
     return value.strip()
 
@@ -190,7 +191,6 @@ def normalize_administrator_overrides(
     raw: object, platforms: Sequence[Mapping[str, Any]], *, bind_new: bool = False,
     previous: Sequence[Mapping[str, Any]] = (),
     normalize_user: Callable[[Mapping[str, Any], str], str] | None = None,
-    strict_scope: bool = False,
 ) -> list[dict[str, Any]]:
     """
     校验成员例外并为新身份绑定服务端平台代次
@@ -201,7 +201,6 @@ def normalize_administrator_overrides(
     - bind_new: 管理接口保存时绑定新身份, 不信任提交的实例代次
     - previous: 已保存成员例外, 保留旧身份绑定而不自动重新授权
     - normalize_user: 保存新身份时使用适配器的用户 ID 规范接口
-    - strict_scope: 保留与组归一化同形的开关, 例外层当前没有需要拒绝的范围组合
 
     返回:
     - 规范成员例外, 无效结构抛出 ValueError; 无授权意义且不保护的空条目被丢弃

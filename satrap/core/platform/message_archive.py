@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+from satrap.core.utils.validation import is_bounded_text
 from satrap.core.components.message import PlatformComponentType
 from satrap.core.config.platform_messages import ArchiveMessage
 from satrap.core.type import PlatformMessage
@@ -44,7 +45,7 @@ def archive_snapshot(message: PlatformMessage, *, direction: str = "inbound") ->
                       PlatformComponentType.File}:
             reference: dict[str, object] = {"type": kind.value}
             native_id = getattr(component, "native_media_id", "")
-            if isinstance(native_id, str) and 0 < len(native_id) <= 256 and not any(ord(c) < 32 for c in native_id):
+            if is_bounded_text(native_id):
                 reference["native_id"] = native_id
             raw_url = getattr(component, "url", "") or getattr(component, "file", "") or ""
             if isinstance(raw_url, str) and len(raw_url) <= 4096:

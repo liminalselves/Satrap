@@ -43,17 +43,17 @@ DEFINITIONS: dict[str, tuple[str, dict[str, Any], list[str]]] = {
 }
 
 
-def _failure_result(error: Exception) -> dict[str, Any]:
+def _failure_result(parsed: tuple[str, str, bool]) -> dict[str, Any]:
     """
     按好友工具契约构造嵌套失败结果
 
     参数:
-    - error: 捕获的异常
+    - parsed: 日志已经取得的错误解析结果
 
     返回:
     - 带 code, message 与 retryable 的失败结果
     """
-    code, message, retryable = failure(error)
+    code, message, retryable = parsed
     return {"ok": False, "error": {"code": code, "message": message, "retryable": retryable}}
 
 
@@ -196,9 +196,10 @@ class _FriendMixin:
                 raise FriendError("permission_denied", "好友查询权限已变化, 请重新查询")
             return {"ok": True, "data": result}
         except Exception as error:
-            code, message, _ = failure(error)
+            parsed = failure(error)
+            code, message, _ = parsed
             logger.warning(f"[friend_manager] 工具失败 tool={self.tool_name} code={code} reason={message}")
-            return _failure_result(error)
+            return _failure_result(parsed)
 
 
 class FriendTool(_FriendMixin, Tool):
@@ -222,9 +223,10 @@ class FriendTool(_FriendMixin, Tool):
             except PlatformLoopUnavailable as error:
                 raise FriendError("unavailable", "来源平台事件循环不可用于同步工具") from error
         except Exception as error:
-            code, message, _ = failure(error)
+            parsed = failure(error)
+            code, message, _ = parsed
             logger.warning(f"[friend_manager] 同步调用失败 code={code} reason={message}")
-            return _failure_result(error)
+            return _failure_result(parsed)
 
 
 class AsyncFriendTool(_FriendMixin, AsyncTool):

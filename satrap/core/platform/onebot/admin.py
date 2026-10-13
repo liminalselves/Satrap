@@ -14,12 +14,12 @@ import base64
 import binascii
 import json
 import re
-import unicodedata
 
+from satrap.core.platform.onebot.validation import decimal_digits, media_identifier, normalized_retcode, boolean_parameter, action_text
 from satrap.core.platform.onebot.request_registry import flag_digest
 from satrap.core.log import logger
 
-from satrap.core.config.group_action_origin import current_group_action_preflight, bind_group_action_preflight, bind_group_request_occupancy
+from satrap.core.config.group_action_origin import current_group_action_preflight, extend_group_action_preflight, bind_group_request_occupancy
 
 
 class PlatformAdminError(Exception):
@@ -42,7 +42,7 @@ class AdminActionRejected(PlatformAdminError):
         - retcode: 平台返回的整数错误码, 缺少或格式无效时为 None
         """
         super().__init__(message)
-        self.retcode = retcode if type(retcode) is int and -(2 ** 31) <= retcode < 2 ** 31 else None
+        self.retcode = normalized_retcode(retcode)
 
 
 class AdminActionUnconfirmed(PlatformAdminError):
@@ -168,7 +168,7 @@ def _normalize_decimal(value: Any, label: str) -> str:
     - str: 纯数字字符串
     """
     text = str(value).strip()
-    if not text or not text.isdecimal():
+    if not text or not decimal_digits(text):
         raise ValueError(f"{label} 必须为纯数字字符串")
     return text
 
@@ -190,7 +190,7 @@ def _normalize_message_id(value: Any, message: str = "消息 ID 必须为整数"
     - str: 允许负号的十进制字符串 (群聊消息 ID 可为负数)
     """
     text = str(value).strip()
-    if not text or not text.lstrip("-").isdecimal():
+    if not text or not decimal_digits(text.lstrip("-")):
         raise ValueError(message)
     return text
 
@@ -310,7 +310,7 @@ class OneBotAdmin:
                     raise UnsupportedAdminAction(f"当前实现不支持动作 {action}") from error
                 raw_result = getattr(error, "result", None)
                 raw_retcode = raw_result.get("retcode") if isinstance(raw_result, dict) else None
-                retcode = raw_retcode if type(raw_retcode) is int and -(2 ** 31) <= raw_retcode < 2 ** 31 else None
+                retcode = normalized_retcode(raw_retcode)
                 logger.warning(f"[OneBotAdmin] {action} 被平台拒绝 retcode={retcode}")
                 raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})", retcode=retcode) from error
             logger.warning(f"[OneBotAdmin] {action} 结果未知: {type(error).__name__}")
@@ -339,24 +339,6 @@ class OneBotAdmin:
             if self._adapter._group_access_store is None:
                 raise AdminActionRejected("目标群不在当前实例允许范围内")
             raise AdminActionRejected("目标群成员关系未确认或已离开")
-
-    async def get_group_list(self) -> list[dict[str, Any]]:
-        """
-        获取机器人所在群列表
-
-        返回:
-        - list[dict]: 收窄后的群信息 (group_id/group_name/member_count/max_member_count)
-        """
-        result = await self._call("get_group_list")
-        if not isinstance(result, list):
-            raise AdminActionUnconfirmed("群列表响应格式不符")
-        groups: list[dict[str, Any]] = []
-        for item in cast(list[Any], result)[:512]:
-            if not isinstance(item, dict):
-                continue
-            data = cast(dict[str, Any], item)
-            groups.append({key: data.get(key) for key in ("group_id", "group_name", "member_count", "max_member_count")})
-        return groups
 
     async def fetch_group_directory(self) -> dict[str, Any]:
         """
@@ -483,12 +465,7 @@ class OneBotAdmin:
         - dict[str, Any]: file, url 与 file_name; url 是重新解析后的可下载地址;
           实现不支持该动作时抛 UnsupportedAdminAction, 图片不在实现缓存时抛 AdminActionRejected
         """
-        source = str(file).strip()
-        if not source:
-            raise ValueError("图片标识不能为空")
-        if len(source) > 512 or any(unicodedata.category(ch) == "Cc" for ch in source):
-            # 合法值是实现自定义的文件 ID 或 URL, 不做路径语义假设, 只挡控制字符与异常长度
-            raise ValueError("图片标识超长或含控制字符")
+        source = media_identifier(file, "图片")
         result = await self._call("get_image", timeout=ADMIN_TIMEOUT, file=source)
         payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
         url = str(payload.get("url") or "")
@@ -515,12 +492,7 @@ class OneBotAdmin:
         """
         if out_format not in RECORD_OUT_FORMATS:
             raise ValueError("out_format 不在支持范围")
-        source = str(file).strip()
-        if not source:
-            raise ValueError("语音标识不能为空")
-        if len(source) > 512 or any(unicodedata.category(ch) == "Cc" for ch in source):
-            # 合法值是实现自定义的文件 ID 或 URL, 不做路径语义假设, 只挡控制字符与异常长度
-            raise ValueError("语音标识超长或含控制字符")
+        source = media_identifier(file, "语音")
         result = await self._call("get_record", timeout=ADMIN_TIMEOUT * 3, file=source, out_format=out_format)
         payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
         encoded = payload.get("base64")
@@ -547,9 +519,7 @@ class OneBotAdmin:
         返回:
         - str: 转写文本, 空字符串表示实现返回空结果
         """
-        text = str(message_id).strip()
-        if not text or not text.lstrip("-").isdecimal():
-            raise ValueError("消息 ID 必须为整数")
+        text = _normalize_message_id(message_id)
         result = await self._call("fetch_ptt_text", timeout=PTT_TEXT_TIMEOUT, message_id=int(text))
         payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
         value = payload.get("text", "")
@@ -595,37 +565,6 @@ class OneBotAdmin:
         if payload.get("message_type") != "group" or actual_group != gid:
             raise AdminActionRejected(rejection)
         return int(text), payload
-
-    async def get_message(self, group_id: Any, message_id: Any) -> dict[str, Any]:
-        """
-        回源读取一条群消息, 收窄字段后返回
-
-        参数:
-        - group_id: 消息所在群, 必须在当前实例允许范围内
-        - message_id: 平台消息 ID
-
-        返回:
-        - dict: 消息 ID, 时间, 发送者与原文; 归属无法确认或超界一律拒绝, 防借读工具跨群读消息
-        """
-        gid = normalize_group_id(group_id)
-        self._check_group(gid)
-        _, payload = await self._verify_group_message(gid, message_id, rejection="无法确认消息属于目标群, 已拒绝读取")
-        self._check_group(gid)
-        if len(json.dumps(payload, ensure_ascii=False, default=str)) > 65536:
-            raise AdminActionUnconfirmed("消息回源响应超过大小上限")
-        sender = payload.get("sender")
-        sender_data = cast(dict[str, Any], sender) if isinstance(sender, dict) else {}
-        return {
-            "message_id": payload.get("message_id"),
-            "time": payload.get("time"),
-            "message_type": payload.get("message_type"),
-            "group_id": payload.get("group_id"),
-            "sender": {key: sender_data.get(key) for key in ("user_id", "nickname", "card", "role")},
-            "message": payload.get("message"),
-        }
-
-
-
 
     async def recall_message(self, group_id: Any, message_id: Any) -> None:
         """
@@ -681,8 +620,7 @@ class OneBotAdmin:
         """
         gid = normalize_group_id(group_id)
         self._check_group(gid)
-        if not isinstance(enable, bool):
-            raise ValueError("enable 必须为布尔值")
+        enable = boolean_parameter(enable, 'enable 必须为布尔值')
         await self._call("set_group_whole_ban", group_id=int(gid), enable=enable)
 
     async def ban_anonymous(self, group_id: Any, flag: Any, duration: Any = 1800) -> None:
@@ -710,8 +648,7 @@ class OneBotAdmin:
         """
         gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
         self._check_group(gid)
-        if not isinstance(enable, bool):
-            raise ValueError("enable 必须为布尔值")
+        enable = boolean_parameter(enable, 'enable 必须为布尔值')
         await self._call("set_group_admin", group_id=int(gid), user_id=int(uid), enable=enable)
 
     async def set_group_anonymous(self, group_id: Any, enable: Any) -> None:
@@ -724,8 +661,7 @@ class OneBotAdmin:
         """
         gid = normalize_group_id(group_id)
         self._check_group(gid)
-        if not isinstance(enable, bool):
-            raise ValueError("enable 必须为布尔值")
+        enable = boolean_parameter(enable, 'enable 必须为布尔值')
         await self._call("set_group_anonymous", group_id=int(gid), enable=enable)
 
     async def set_group_card(self, group_id: Any, user_id: Any, card: Any = "") -> None:
@@ -740,8 +676,7 @@ class OneBotAdmin:
         gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
         self._check_group(gid)
         text = str(card)
-        if len(text) > 60:
-            raise ValueError("本群昵称长度不能超过 60 字符")
+        action_text(text, "card", allow_empty=True, error='本群昵称长度不能超过 60 字符')
         await self._call("set_group_card", group_id=int(gid), user_id=int(uid), card=text)
 
     async def set_group_name(self, group_id: Any, name: Any) -> None:
@@ -755,8 +690,7 @@ class OneBotAdmin:
         gid = normalize_group_id(group_id)
         self._check_group(gid)
         text = str(name).strip()
-        if not text or len(text) > 60:
-            raise ValueError("群名必须为 1 到 60 字符")
+        action_text(text, "name", allow_empty=False, error='群名必须为 1 到 60 字符')
         await self._call("set_group_name", group_id=int(gid), group_name=text)
 
     async def set_group_special_title(self, group_id: Any, user_id: Any, title: Any, duration: Any = -1) -> None:
@@ -772,8 +706,7 @@ class OneBotAdmin:
         gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
         self._check_group(gid)
         text = str(title)
-        if len(text) > 18:
-            raise ValueError("专属头衔长度不能超过 18 字符")
+        action_text(text, "title", allow_empty=True, error='专属头衔长度不能超过 18 字符')
         seconds = _normalize_duration(duration, "头衔有效期必须为 -1 或 0 到 2592000 秒", allow_minus_one=True)
         await self._call("set_group_special_title", group_id=int(gid), user_id=int(uid), special_title=text, duration=seconds)
 
@@ -787,8 +720,7 @@ class OneBotAdmin:
         """
         gid = normalize_group_id(group_id)
         self._check_group(gid)
-        if not isinstance(dismiss, bool):
-            raise ValueError("dismiss 必须为布尔值")
+        dismiss = boolean_parameter(dismiss, 'dismiss 必须为布尔值')
         await self._call("set_group_leave", group_id=int(gid), is_dismiss=dismiss)
 
     async def _settle_request_flag(self, kind: str, flag: str, self_id: str, state: str,
@@ -826,32 +758,32 @@ class OneBotAdmin:
         - params: 动作参数, 经 _call 原样交给平台实现
         - identity_digest: 固定的一次申请身份, 不作为平台参数发送
 
-        超时或取消记 unknown, 平台给出明确结果记 completed; 终态写失败时标识保持
-        executing, 不可重放优先于终态精确
+        协议调用前的拒绝释放占用, 已发送后的超时或取消记 unknown, 明确结果记 completed;
+        写失败时标识保持 executing, 不可重放优先于终态精确
         """
-        try:
+        dispatched = False
+
+        async def verify_request() -> None:
+            """保留宿主复核, 在交给协议方法前标记发送边界"""
+            nonlocal dispatched
             if identity_digest is not None:
-                previous = current_group_action_preflight()
+                self._adapter.request_flags.ledger.verify_occupied_request(
+                    self._adapter.config.id, self_id, kind, flag, identity_digest,
+                )
+            dispatched = True
 
-                async def verify_request() -> None:
-                    """保留宿主权限复核, 并拒绝排队期间被新申请替代的旧申请"""
-                    if previous is not None:
-                        checked = previous()
-                        if inspect.isawaitable(checked):
-                            await checked
-                    self._adapter.request_flags.ledger.verify_occupied_request(
-                        self._adapter.config.id, self_id, kind, flag, identity_digest,
-                    )
-
-                with bind_group_action_preflight(verify_request):
-                    await self._call(action, **params)
-            else:
+        try:
+            with extend_group_action_preflight(verify_request):
                 await self._call(action, **params)
-        except AdminActionUnconfirmed:
-            await self._settle_request_flag(kind, flag, self_id, "unknown", identity_digest=identity_digest)
-            raise
-        except Exception:
-            await self._settle_request_flag(kind, flag, self_id, "completed", identity_digest=identity_digest)
+        except Exception as error:
+            if not dispatched:
+                try:
+                    await self._adapter.request_flags.release(kind, flag, self_id=self_id, identity_digest=identity_digest)
+                except Exception as release_error:
+                    logger.error(f"[OneBotAdmin] 未发送的审批占用释放失败 kind={kind}: {type(release_error).__name__}")
+            else:
+                state = "unknown" if isinstance(error, AdminActionUnconfirmed) else "completed"
+                await self._settle_request_flag(kind, flag, self_id, state, identity_digest=identity_digest)
             raise
         except BaseException:
             # 取消等 BaseException 路径保守结束为 unknown, 不遗漏
@@ -876,11 +808,9 @@ class OneBotAdmin:
         flag 校验与持久占用在首次网络等待前完成; 动作超时, 取消或传输异常记 unknown,
         不自动重试, 同一次申请不可重放
         """
-        if not isinstance(approve, bool):
-            raise ValueError("approve 必须为布尔值")
+        approve = boolean_parameter(approve, 'approve 必须为布尔值')
         text = str(remark)
-        if len(text) > 60:
-            raise ValueError("备注长度不能超过 60 字符")
+        action_text(text, "remark", allow_empty=True, error='备注长度不能超过 60 字符')
         if type(suspicious) is not bool or suspicious and text:
             raise ValueError("可疑申请不支持备注或类别无效")
         normalized = normalize_flag(flag)
@@ -918,11 +848,9 @@ class OneBotAdmin:
         gid = normalize_group_id(group_id)
         if sub_type not in {"add", "invite"}:
             raise ValueError("sub_type 必须为 add 或 invite")
-        if not isinstance(approve, bool):
-            raise ValueError("approve 必须为布尔值")
+        approve = boolean_parameter(approve, 'approve 必须为布尔值')
         text = str(reason)
-        if len(text) > 120:
-            raise ValueError("理由长度不能超过 120 字符")
+        action_text(text, "reason", allow_empty=True, error='理由长度不能超过 120 字符')
         normalized = normalize_flag(flag)
         registry = self._adapter.request_flags
         self_id = self._adapter.bot_self_id

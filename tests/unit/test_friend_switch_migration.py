@@ -28,7 +28,7 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.parametrize("tool_enabled", [False, True])
 def test_old_effective_state_preserved_and_migration_idempotent(config, field, tool, global_flag, named_flag, tool_enabled):
     manager, catalog = config
-    path = manager._global_path("friend_manager")
+    path = manager.global_path("friend_manager")
     path.write_text(json.dumps({field: global_flag}), encoding="utf-8")
     source = [{"name": "friend_manager", "config": {field: named_flag} if named_flag is not None else {}, "capabilities": {"tools": {tool: tool_enabled}}}]
     before = deepcopy(source)
@@ -56,7 +56,7 @@ def test_absent_old_switches_stay_disabled_and_new_config_can_enable(config):
 
 def test_global_save_preserves_legacy_baseline_but_not_live_gate(config):
     manager, catalog = config
-    path = manager._global_path("friend_manager")
+    path = manager.global_path("friend_manager")
     path.write_text(json.dumps({"request_handling_enabled": True}), encoding="utf-8")
     migrate_friend_globals(manager)
     schema = catalog.get("friend_manager").config_schema
@@ -94,7 +94,7 @@ def test_instance_highest_priority_converted_to_tool_override(config, tmp_path, 
 
 def test_invalid_global_migration_does_not_overwrite_source(config):
     manager, _ = config
-    path = manager._global_path("friend_manager")
+    path = manager.global_path("friend_manager")
     path.write_text("{bad-json", encoding="utf-8")
     with pytest.raises(ValueError):
         migrate_friend_globals(manager)

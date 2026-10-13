@@ -23,6 +23,7 @@ import traceback
 from copy import deepcopy
 from pathlib import Path
 
+from satrap.core.utils.validation import is_bounded_text
 from satrap.core.call_context import CallOrigin, current_call_origin, require_call_origin
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
@@ -70,7 +71,7 @@ def _id(value: object) -> str:
     返回:
     - 长度有限的原始 ID, 无效值抛出 ValueError
     """
-    if not isinstance(value, str) or not value or len(value) > 256 or any(ord(c) < 32 for c in value):
+    if not is_bounded_text(value):
         raise ValueError("ID 必须是长度不超过 256 的非空字符串")
     return value
 
@@ -376,7 +377,7 @@ class GroupChatService:
             code, message, retryable = exc.code, str(exc), exc.retryable
         except ValueError as exc:
             code, message, retryable = "invalid_argument", str(exc), False
-        except Exception as exc:
+        except Exception:
             code, message, retryable = "unavailable", "群聊查询暂不可用", True
             logger.error(f"[群聊工具] 未预期执行失败, 操作={operation}: {traceback.format_exc()}")
         origin = context.origin if context else current_call_origin()

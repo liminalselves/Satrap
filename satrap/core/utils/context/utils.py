@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 import sqlite3
-from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING, Literal
+from typing import List, Dict, Optional, Any, cast, Literal
 import json
 
 from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate
@@ -17,15 +17,12 @@ from satrap.core.utils.vision import (
     DEFAULT_IMAGE_TOKEN_COST,
     build_multimodal_content,
     content_text_projection,
-    estimate_content_image_count,
     estimate_content_media_tokens,
 )
 from satrap.core.type import JsonRow, RestoreOptions, SnapshotDomain, StateScope
 
 from satrap.core.log import logger
 
-if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 
 TokenEstimateMethod = Literal["tokenizer", "experience"]
 

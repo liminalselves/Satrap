@@ -331,43 +331,6 @@ class GroupConfigStore:
             "updated_at": float(row["updated_at"]),
         }
 
-    def access_snapshot(self, self_id: str) -> tuple[str, dict[str, bool]]:
-        """
-        读取同一数据库快照中的账号模式和逐群响应例外
-
-        参数:
-        - self_id: 已确认的机器人账号
-
-        返回:
-        - (selected 或 all, 群号到显式启停值); 账号未采用时抛出异常
-        """
-        _identity(self_id)
-        with closing(self._connect()) as connection:
-            connection.execute("BEGIN")
-            account = connection.execute(
-                "SELECT mode FROM group_accounts WHERE self_id=?", (self_id,),
-            ).fetchone()
-            if account is None:
-                raise RuntimeError("群接入账号尚未采用")
-            rows = connection.execute(
-                "SELECT group_id, config_json FROM group_configs WHERE self_id=?", (self_id,),
-            ).fetchall()
-        exceptions: dict[str, bool] = {}
-        for row in rows:
-            explicit = json.loads(row["config_json"])
-            if not isinstance(explicit, dict):
-                raise RuntimeError("群配置数据损坏: 显式配置不是对象")
-            policy = explicit.get("policy", {})
-            if not isinstance(policy, dict):
-                raise RuntimeError("群配置数据损坏: policy 不是对象")
-            enabled = policy.get("enabled")
-            if enabled is None or enabled == {"mode": "inherit"}:
-                continue
-            if not isinstance(enabled, dict) or enabled.get("mode") != "value" or type(enabled.get("value")) is not bool:
-                raise RuntimeError("群配置数据损坏: enabled 不是显式布尔值")
-            exceptions[str(row["group_id"])] = enabled["value"]
-        return str(account["mode"]), exceptions
-
     def runtime_snapshot(self, self_id: str) -> GroupRuntimeSnapshot:
         """在一次数据库读事务中构造完整的账号群运行时快照"""
 
@@ -415,66 +378,6 @@ class GroupConfigStore:
         membership = {str(row["group_id"]): str(row["membership"]) for row in members}
         return GroupRuntimeSnapshot(self_id, str(account["mode"]), exceptions, policies,
                                     revisions, routes, events, membership, int(account["revision"]))
-
-    def policy_snapshot(self, self_id: str) -> dict[str, dict[str, object]]:
-        """读取已确认账号所有群的显式策略供运行时冻结使用"""
-        _identity(self_id)
-        with closing(self._connect()) as connection:
-            rows = connection.execute(
-                "SELECT group_id, config_json FROM group_configs WHERE self_id=?", (self_id,),
-            ).fetchall()
-        policies: dict[str, dict[str, object]] = {}
-        for row in rows:
-            explicit = json.loads(row["config_json"])
-            if not isinstance(explicit, dict) or not isinstance(explicit.get("policy", {}), dict):
-                raise RuntimeError("群策略数据损坏")
-            policy = cast(dict[str, object], explicit.get("policy", {}))
-            policy_values(policy)
-            policies[str(row["group_id"])] = policy
-        return policies
-
-    def event_snapshot(self, self_id: str) -> dict[str, dict[str, bool]]:
-        """读取逐群业务事件订阅开关, 不影响协议维护与请求账本"""
-
-        _identity(self_id)
-        with closing(self._connect()) as connection:
-            rows = connection.execute(
-                "SELECT group_id, config_json FROM group_configs WHERE self_id=?", (self_id,),
-            ).fetchall()
-        events: dict[str, dict[str, bool]] = {}
-        for row in rows:
-            explicit = json.loads(row["config_json"])
-            if not isinstance(explicit, dict) or not isinstance(explicit.get("events", {}), dict):
-                raise RuntimeError("群事件配置数据损坏")
-            events[str(row["group_id"])] = event_values(explicit.get("events", {}))
-        return events
-
-    def revision_snapshot(self, self_id: str) -> dict[str, int]:
-        """读取账号内每个群的已保存修订号供运行时应用状态对比"""
-        _identity(self_id)
-        with closing(self._connect()) as connection:
-            rows = connection.execute(
-                "SELECT group_id, revision FROM group_configs WHERE self_id=?", (self_id,),
-            ).fetchall()
-        return {str(row["group_id"]): int(row["revision"]) for row in rows}
-
-    def route_snapshot(self, self_id: str) -> dict[str, tuple[dict[str, object], int]]:
-        """冻结群会话显式配置和路由代次供入站事件使用"""
-        _identity(self_id)
-        with closing(self._connect()) as connection:
-            rows = connection.execute(
-                "SELECT group_id, config_json, route_generation FROM group_configs WHERE self_id=?",
-                (self_id,),
-            ).fetchall()
-        result: dict[str, tuple[dict[str, object], int]] = {}
-        for row in rows:
-            explicit = json.loads(row["config_json"])
-            if not isinstance(explicit, dict) or not isinstance(explicit.get("session", {}), dict):
-                raise RuntimeError("群会话配置数据损坏")
-            session = cast(dict[str, object], explicit.get("session", {}))
-            session_values(session)
-            result[str(row["group_id"])] = (session, int(row["route_generation"]))
-        return result
 
     def group_exists(self, self_id: str, group_id: str) -> bool:
         """确认群已发现或保留配置, 禁止为任意未见群创建设置"""

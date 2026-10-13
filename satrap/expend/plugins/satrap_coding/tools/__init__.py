@@ -21,6 +21,7 @@ import uuid
 import os
 import re
 
+from satrap.core.utils.config_text import comma_names
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionDecision,
@@ -104,11 +105,7 @@ def parse_allowed_env_vars(config: dict[str, Any]) -> frozenset[str]:
     返回:
     - frozenset[str]: 显式放行的环境变量名, 未配置或为空时返回空集合
     """
-    return frozenset(
-        name.strip()
-        for name in str(config.get("allowed_env_vars") or "").split(",")
-        if name.strip()
-    )
+    return comma_names(config.get("allowed_env_vars"))
 
 
 def get_tools(

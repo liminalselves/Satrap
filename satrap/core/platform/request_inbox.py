@@ -242,19 +242,6 @@ class RequestInbox:
                 raise ValueError("申请记录已变化, 请重新查询后处理")
             return dict(row)
 
-    def discard(self, request_ids: list[str]) -> None:
-        """
-        清除已失去执行资格的申请原值, 保留独立账本的不可重放记录
-
-        参数:
-        - request_ids: 已确认终态的收件箱 ID
-        """
-        if request_ids:
-            with self._transaction() as connection:
-                connection.executemany("UPDATE requests SET flag='',archived_at=COALESCE(archived_at,received_at),"
-                                       "execution_state='unknown',revision=revision+1 WHERE request_id=? AND flag!=''",
-                                       ((identity,) for identity in request_ids))
-
     def forget(self, adapter_id: str, self_id: str, kind: str, flag: str, *, state: str = "completed",
                decision: str | None = None, now: float | None = None, identity_digest: str | None = None) -> None:
         """

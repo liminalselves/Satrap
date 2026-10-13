@@ -63,7 +63,7 @@ class PluginManagementService:
         返回:
         - 原始文件内容的 SHA256, 文件缺失时为 missing
         """
-        path = self.manager._global_path(name)
+        path = self.manager.global_path(name)
         return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "missing"
 
     def get_config(self, name: str) -> dict[str, Any]:
@@ -79,7 +79,7 @@ class PluginManagementService:
         entry = self.catalog.get(name)
         if entry is None:
             raise KeyError(f"插件不存在: {name}")
-        path = self.manager._global_path(name)
+        path = self.manager.global_path(name)
         with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
             overrides = self.manager.load_global_explicit(name, entry.config_schema)
             return {"ok": True, "schema": schema_to_payload(entry.config_schema), "overrides": overrides,
@@ -101,7 +101,7 @@ class PluginManagementService:
         entry = self.catalog.get(name)
         if entry is None:
             raise KeyError(f"插件不存在: {name}")
-        path = self.manager._global_path(name)
+        path = self.manager.global_path(name)
         with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
             if not expected_revision or self._revision(name) != expected_revision:
                 raise ConfigRevisionConflict("全局参数已被其他页面修改, 请重新读取后合并")

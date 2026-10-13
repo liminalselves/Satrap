@@ -1,5 +1,7 @@
 """Edictum 插件目录: 统一扫描插件元数据, 配置结构和能力声明"""
 from __future__ import annotations
+
+from satrap.core.utils.file_snapshot import file_fingerprint
 from dataclasses import dataclass, field, replace
 from copy import deepcopy
 from pathlib import Path
@@ -115,11 +117,11 @@ class PluginCatalog:
                     continue
                 meta = directory / 'meta.yaml'
                 try:
-                    info = meta.stat()
+                    state = file_fingerprint(meta)
                 except FileNotFoundError:
                     records.append((directory.name, None))
                     continue
-                records.append((directory.name, info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_ino))
+                records.append((directory.name, *state))
         return tuple(records)
 
     def invalidate(self) -> None:

@@ -366,10 +366,9 @@ class TestMemoryStore:
         updated = store.update(memory_id, content="改用 pytest-asyncio")
         assert updated["ok"] is True and updated["content"] == "改用 pytest-asyncio"
 
-        assert store.count() == 1
-        assert store.list_all()[0]["id"] == memory_id
+        assert [item["id"] for item in store.list_all()] == [memory_id]
         assert store.delete(memory_id)["ok"] is True
-        assert store.count() == 0
+        assert store.list_all() == []
 
     def test_prefix_resolution(self, store: MemoryStore, tmp_path: Path):
         """
@@ -402,7 +401,7 @@ class TestMemoryStore:
         s1 = MemoryStore(db_path=tmp_path / "m.db", scope="u1")
         s2 = MemoryStore(db_path=tmp_path / "m.db", scope="u2")
         s1.add("秘密", "u1 的数据")
-        assert s1.count() == 1 and s2.count() == 0
+        assert [item["title"] for item in s1.list_all()] == ["秘密"] and s2.list_all() == []
         assert s2.get(s1.list_all()[0]["id"])["ok"] is False
         assert s2.clear() == 0
 

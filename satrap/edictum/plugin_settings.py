@@ -201,7 +201,7 @@ def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any, *, snaps
     返回:
     - 已合成参数, 能力覆盖和模型引用版本的运行目标
     """
-    manager = PluginConfigManager()
+    manager: PluginConfigManager | None = None
     store = getattr(session, "plugin_override_store", None)
     if store is not None and any(spec.name == "base_take" for spec in specs):
         from satrap.edictum.memory_migration import migrate_memory_overrides
@@ -219,6 +219,8 @@ def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any, *, snaps
             tool_overrides = migrate_friend_overrides(store, session.session_id, spec)
             spec = replace(spec, capabilities={**spec.capabilities, "tools": {**spec.capabilities.get("tools", {}), **tool_overrides}})
         if snapshot is None:
+            if manager is None:
+                manager = PluginConfigManager()
             config = manager.resolve(spec.name, entry.config_schema, spec.config)
         else:
             config = snapshot.global_config(spec.name)

@@ -21,7 +21,8 @@ def check_imports() -> None:
     """确认所有依赖来自便携目录并执行关键原生功能"""
     for name in ("satrap", "mcp", "splintr", "faiss", "av", "openpyxl", "docx", "pdfplumber", "pypdfium2", "pip", "aiocqhttp", "win32api", "pythoncom"):
         module = importlib.import_module(name)
-        if not Path(module.__file__).resolve().is_relative_to(ROOT):
+        source = module.__file__
+        if not source or not Path(source).resolve().is_relative_to(ROOT):
             raise AssertionError(f"依赖从发行包之外加载: {name}")
     import faiss
     import numpy as np
@@ -92,6 +93,27 @@ def spawn_orphan(module: str, args: list[str], url: str) -> subprocess.Popen:
         raise
 
 
+def wait_ready(process: subprocess.Popen, output: Path) -> None:
+    """
+    读取与启动器相同的运行状态路径, 等待本次启动完成
+
+    参数:
+    - process: 本次启动器进程
+    - output: 启动器日志路径
+    """
+    from satrap.core.runtime_paths import get_runtime_path
+
+    deadline = time.monotonic() + 90
+    state_path = get_runtime_path("release-instance.json", data_dir=ROOT / ".satrap")
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise AssertionError(output.read_text(encoding="utf-8"))
+        if state_path.exists() and json.loads(state_path.read_text(encoding="utf-8")).get("ready"):
+            return
+        time.sleep(0.3)
+    raise AssertionError("启动超时: " + output.read_text(encoding="utf-8"))
+
+
 def check_lifecycle() -> None:
     """验证真实启动, 静态页面, 鉴权, 重复启动及停止后端"""
     backend_port, control_port, chat_port = free_ports()
@@ -126,16 +148,7 @@ def check_lifecycle() -> None:
     with output.open("wb") as log:
         process = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=log)
         try:
-            deadline = time.monotonic() + 90
-            state_path = ROOT / ".satrap/release-instance.json"
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    raise AssertionError(output.read_text(encoding="utf-8"))
-                if state_path.exists() and json.loads(state_path.read_text(encoding="utf-8")).get("ready"):
-                    break
-                time.sleep(0.3)
-            else:
-                raise AssertionError("启动超时: " + output.read_text(encoding="utf-8"))
+            wait_ready(process, output)
             for orphan in orphans:
                 orphan.wait(timeout=5)
             print("启动前旧控制服务, 聊天服务和平台后端残留清理通过", flush=True)

@@ -6,6 +6,8 @@ Edictum 命名会话冷配置管理器
 """
 from __future__ import annotations
 
+from satrap.core.utils.file_snapshot import file_fingerprint
+
 import threading
 from pathlib import Path
 from typing import Any, cast
@@ -156,7 +158,7 @@ class EdictumConfigManager:
 
     def reload(self, *, cached: bool = False) -> None:
         """
-        从磁盘重新加载冷配置, 写事务与显式重载始终读原文
+        从磁盘重新加载并在内存归一化冷配置, 写事务与显式重载始终读原文
 
         参数:
         - cached: 仅构造读取服务时复用已核验快照, 默认不使用缓存
@@ -177,12 +179,11 @@ class EdictumConfigManager:
                     返回:
                     - 已归一化内容的全部来源指纹
                     """
-                    info = self.storage_path.stat()
-                    return (info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_ino, type_names, catalog.snapshot_token())
+                    return (*file_fingerprint(self.storage_path), type_names, catalog.snapshot_token())
 
                 def load() -> dict[str, dict[str, Any]]:
                     """
-                    读取与归一化命名配置, 保留原迁移写入行为
+                    只读取与归一化命名配置, 不在快照加载期间写回来源文件
 
                     返回:
                     - 本轮完整命名配置
@@ -195,9 +196,6 @@ class EdictumConfigManager:
                     for raw_name, raw_entry in cast(dict[str, object], payload).items():
                         name = self._normalize_name(raw_name)
                         loaded[name] = self._normalize_entry(raw_entry, catalog)
-                    self._configs = loaded
-                    if loaded != payload:
-                        self._save_locked()
                     return loaded
 
                 if cached:

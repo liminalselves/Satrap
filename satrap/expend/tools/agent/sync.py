@@ -1,4 +1,4 @@
-import multiprocessing
+"""同步子 Agent 工具的消息输入与执行桥接"""
 import threading
 import pickle
 from typing import Any, cast
