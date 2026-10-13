@@ -62,7 +62,4 @@ export const edictumApi = {
     config_name: configName,
   }),
 
-  retryFullRuntimeChanges: (sessionRefs: Array<{ platform_id: string; session_id: string }>) => backendApi.reconcileEdictumRuntime({
-    session_refs: sessionRefs,
-  }),
 };

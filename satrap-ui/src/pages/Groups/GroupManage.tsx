@@ -1,3 +1,4 @@
+import { groupActionStateLabels as actionStateLabels } from './groupActionLabels';
 import { useEffect, useState } from 'react';
 import { ApiError } from '@/api/client';
 import { groupApi, type GroupAction } from '@/api/groups';
@@ -15,10 +16,7 @@ const fields: Record<string, string> = {
 };
 
 // 后端英文枚举码到中文的映射, 未覆盖的值回退原样展示
-const actionStateLabels: Record<string, string> = {
-  pending: '待处理', expired: '已过期', rejected: '已拒绝', executing: '执行中',
-  succeeded: '已成功', failed: '已失败', unknown: '结果未确认',
-};
+
 const capabilityLabels: Record<string, string> = {
   supported: '平台已支持', unsupported: '平台已确认不支持',
   unavailable: '平台连接不可用', unknown: '待平台确认',

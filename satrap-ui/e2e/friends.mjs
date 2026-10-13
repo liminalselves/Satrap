@@ -1,3 +1,4 @@
+import { finishConfirmation } from './confirmation.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -162,13 +163,13 @@ try {
   await page.getByRole('button', { name: '保存保留设置', exact: true }).click();
   await page.getByText('申请保留设置已保存', { exact: true }).waitFor();
   assert.deepEqual(requestPolicy, { credential_days: 10, history_days: 60 });
-  page.once('dialog', (dialog) => { assert.ok(dialog.message().includes('不删除防重复执行记录')); dialog.accept(); });
   await archivedRow.getByRole('button', { name: '删除历史', exact: true }).click();
+  await finishConfirmation(page, true, /不删除防重复执行记录/);
   await page.waitForFunction(() => !document.body.textContent.includes('ID: archived-user'));
   await page.getByRole('button', { name: '操作记录与审批', exact: true }).click();
   await page.getByRole('button', { name: '批准删除', exact: true }).waitFor();
-  page.once('dialog', (dialog) => { assert.ok(dialog.message().includes('bob')); assert.ok(dialog.message().includes('乙')); dialog.accept(); });
   await page.getByRole('button', { name: '批准删除', exact: true }).click();
+  await finishConfirmation(page, true, /bob[\s\S]*乙|乙[\s\S]*bob/);
   await page.waitForFunction(() => !Array.from(document.querySelectorAll('button')).some((button) => button.textContent === '批准删除'));
   assert.equal(actions.find((row) => row.action_id === 'model-pending').state, 'succeeded');
   await page.getByRole('button', { name: '删除保护', exact: true }).click();

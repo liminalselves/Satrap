@@ -6,7 +6,7 @@ import { backendApi } from '@/api/backend';
 import type { RequestDiagnosticDetail, RequestDiagnosticRecord, RequestDiagnosticSummary } from '@/api/backend';
 
 // 阶段与原因码的中文展示: 只做翻译, 不改变服务端给出的结论
-export const STAGE_LABELS: Record<string, string> = {
+const STAGE_LABELS: Record<string, string> = {
   wake_decision: '唤醒决策',
   rate_limit: '限流',
   projection: '补全',

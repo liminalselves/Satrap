@@ -38,6 +38,9 @@ try {
     const url = new URL(request.url());
     const pathname = decodeURIComponent(url.pathname);
     const respond = (json, status = 200) => route.fulfill({ json, status, headers: cors });
+    if (pathname === '/config/versions') return respond({ ok: true, resources: Object.fromEntries(
+      (url.searchParams.get('resources') || '').split(',').filter(Boolean).map((name) => [name, { state: 'available', change_token: name + ':stable' }]),
+    ) });
     if (pathname === '/config/plugins') return respond({ plugins: [plugin] });
     if (pathname === '/api/group-chat/stickers' && request.method() === 'GET') return respond({ ok: true, items, has_more: false, next_cursor: null });
     if (pathname === '/api/group-chat/stickers/upload') {

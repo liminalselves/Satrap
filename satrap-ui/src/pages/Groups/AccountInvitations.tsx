@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { accountRequestsApi, type GroupInvitation, type InvitationAction } from '@/api/accountRequests';
 import { Button } from '@/components/ui/Button';
@@ -11,6 +12,7 @@ const states: Record<string, string> = { pending: '待人工批准', executing: 
 export function AccountInvitations({ adapterId, account, open, onClose }: {
   adapterId: string; account: string; open: boolean; onClose: () => void;
 }) {
+  const confirm = useConfirm(`${adapterId}:${account}:${open}`);
   const [view, setView] = useState('active');
   const [cursor, setCursor] = useState<string>();
   const [page, setPage] = useState(1);
@@ -75,8 +77,8 @@ export function AccountInvitations({ adapterId, account, open, onClose }: {
     } finally { setBusy(false); }
   };
 
-  const handle = (invitation: GroupInvitation, approve: boolean) => {
-    if (!window.confirm(`确认${approve ? '接受' : '拒绝'}群 ${invitation.group_id} 对机器人的入群邀请?`)) return;
+  const handle = async (invitation: GroupInvitation, approve: boolean) => {
+    if (!(await confirm(`确认${approve ? '接受' : '拒绝'}群 ${invitation.group_id} 对机器人的入群邀请?`))) return;
     void operate(`${invitation.request_id}:${invitation.revision}:${approve}`, (id) =>
       accountRequestsApi.handle(adapterId, account, invitation, approve, id));
   };
@@ -114,8 +116,8 @@ export function AccountInvitations({ adapterId, account, open, onClose }: {
         <p>{action.params.approve ? '接受' : '拒绝'}群 {action.group_id} 的邀请 · {states[action.state] || action.state}</p>
         <p className="text-sm text-text-secondary">ID: {action.action_id}{action.result?.reason ? ` · ${action.result.reason}` : ''}</p>
         {action.state === 'pending' && <div className="flex gap-2">
-          <Button disabled={busy || loading} onClick={() => {
-            if (window.confirm(`确认批准机器人${action.params.approve ? '接受' : '拒绝'}群 ${action.group_id} 的邀请?`))
+          <Button disabled={busy || loading} onClick={async () => {
+            if ((await confirm(`确认批准机器人${action.params.approve ? '接受' : '拒绝'}群 ${action.group_id} 的邀请?`)))
               void operate(action.action_id, () => accountRequestsApi.decide(adapterId, account, action.action_id, true));
           }}>批准执行</Button>
           <Button variant="subtle" disabled={busy || loading} onClick={() => void operate(action.action_id, () => accountRequestsApi.decide(adapterId, account, action.action_id, false))}>拒绝执行</Button>

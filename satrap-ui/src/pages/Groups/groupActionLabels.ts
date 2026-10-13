@@ -4,3 +4,9 @@ export const groupActionLabels: Record<string, string> = {
   set_group_anonymous: '匿名聊天', set_group_card: '修改群昵称', set_group_name: '修改群名',
   set_group_special_title: '设置头衔', leave_group: '退出或解散群', handle_group_request: '处理加群请求',
 };
+
+// 群动作执行状态, 过滤器的全部选项由页面单独提供
+export const groupActionStateLabels: Record<string, string> = {
+  pending: '待处理', executing: '执行中', succeeded: '已成功', failed: '已失败',
+  unknown: '结果未确认', rejected: '已拒绝', expired: '已过期',
+};

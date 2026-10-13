@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Plus, Puzzle, RefreshCw, Settings, Trash2 } from 'lucide-react';
@@ -61,6 +62,7 @@ function parsePlugins(value: string): EdictumSessionConfig['plugins'] {
 }
 
 export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSessionsPanelProps) {
+  const confirm = useConfirm();
   useConfigWatch(['edictum']);
   const [searchParams] = useSearchParams();
   const linkedName = searchParams.get('edictum');
@@ -196,7 +198,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         const affected = preview.edictum_sessions.filter((item) => item.action !== 'noop');
         if (
           affected.length > 0
-          && !confirm('本次配置将立即协调 ' + affected.length + ' 个活跃会话, 是否继续?')
+          && !(await confirm('本次配置将立即协调 ' + affected.length + ' 个活跃会话, 是否继续?'))
         ) return;
       }
       const updated = editingName ? await edictumApi.update(editingName, payload) : await edictumApi.create(payload);
@@ -219,10 +221,10 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     } finally {
       setSaving(false);
     }
-  }, [editingName, form, isRunning, acceptEdictumConfig, llmConfigs, applyRuntime, application.view?.busy]);
+  }, [editingName, form, isRunning, acceptEdictumConfig, llmConfigs, applyRuntime, application.view?.busy, confirm]);
 
   const remove = useCallback(async (name: string) => {
-    if (!confirm(`确定要删除 Edictum 配置 "${name}" 吗?`)) return;
+    if (!(await confirm(`确定要删除 Edictum 配置 "${name}" 吗?`))) return;
     try {
       await edictumApi.remove(name);
       const reloaded = !isRunning || await reloadConfig();
@@ -234,7 +236,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     } catch (error) {
       toast('error', '删除失败: ' + (error instanceof Error ? error.message : '未知错误'));
     }
-  }, [isRunning, refresh, reloadConfig]);
+  }, [isRunning, refresh, reloadConfig, confirm]);
 
   const createRuntime = useCallback(async (name: string, selectedPlatformId?: string) => {
     const config = configs[name];
@@ -302,7 +304,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         const pluginChanges = affected.reduce((total, item) => total + (item.plugins?.length || 0), 0);
         if (
           pluginChanges > 0
-          && !confirm(`本次插件配置将影响 ${affected.length} 个活跃会话, 共 ${pluginChanges} 项运行时变更, 是否继续?`)
+          && !(await confirm(`本次插件配置将影响 ${affected.length} 个活跃会话, 共 ${pluginChanges} 项运行时变更, 是否继续?`))
         ) return;
       }
       setPluginProgress('正在保存插件配置');
@@ -335,7 +337,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       setPluginSaving(false);
       setPluginProgress('');
     }
-  }, [isRunning, pluginManagerName, acceptEdictumConfig, applyRuntime, application.view?.busy]);
+  }, [isRunning, pluginManagerName, acceptEdictumConfig, applyRuntime, application.view?.busy, confirm]);
 
   const retryRuntimeChanges = useCallback(async () => {
     const failedSessions = runtimeResult?.edictum_sessions.filter((item) => !item.ok) || [];

@@ -48,7 +48,7 @@ describe('edictumApi cold management', () => {
     expect(deleteSpy).toHaveBeenCalledWith('renamed');
   });
 
-  it('完整配置保存与重试只协调目标配置或失败实例', async () => {
+  it('完整配置保存只协调目标配置', async () => {
     const reloadSpy = vi.spyOn(backendApi, 'reconcileEdictumRuntime').mockResolvedValue({
       ok: true,
       edictum_sessions: [],
@@ -58,10 +58,7 @@ describe('edictumApi cold management', () => {
       ok: true,
       edictum_sessions: [],
     });
-    const refs = [{ platform_id: 'ob', session_id: 'one' }];
-    await edictumApi.retryFullRuntimeChanges(refs);
     expect(reloadSpy).toHaveBeenNthCalledWith(1, { config_name: 'assistant' });
-    expect(reloadSpy).toHaveBeenNthCalledWith(2, { session_refs: refs });
   });
 
   it('delegates plugin preview and targeted retry to the running backend', async () => {

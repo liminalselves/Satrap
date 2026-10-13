@@ -1,3 +1,4 @@
+import { ConfirmModal } from '@/components/common/ConfirmModal';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { controlApi } from '@/api/control';
 import type { GroupChatSummary, GroupChatSummaryPage, PlatformArchiveMessage, PlatformArchiveRecord } from '@/api/types';
@@ -100,8 +101,8 @@ export function GroupSummaries({ record, refresh }: { record: PlatformArchiveRec
       {sourceLoading && <p role="status">正在读取来源…</p>}{sourceError && <p role="alert" className="text-error">{sourceError}</p>}
       {source && <div className="space-y-3"><p className="break-all text-sm">消息 {source.message_id} · {source.card || source.nickname || source.sender_id}（{source.sender_id}）</p><p className="text-xs text-text-tertiary">{formatTime(source.message_time)}</p><p className="whitespace-pre-wrap break-words text-sm">{source.status === 'active' ? source.text || '无文本正文' : '来源正文已删除、撤回或过期'}</p>{source.truncated && <p className="text-warning">来源记录已截断</p>}</div>}
     </Modal>
-    <Modal open={!!pending} title="删除群摘要" onClose={() => { if (!busy) setPending(undefined); }}>
-      <div className="space-y-4"><p className="break-words">删除「{pending?.summary.title || '来源已失效的摘要'}」？仅删除派生摘要，原始消息和模型上下文保持原状。</p>{deleteError && <p role="alert" className="text-error">{deleteError}</p>}<div className="flex justify-end gap-2"><Button disabled={busy} onClick={() => setPending(undefined)}>取消</Button><Button variant="danger" disabled={busy} onClick={remove}>{busy ? '正在删除…' : '确认删除摘要'}</Button></div></div>
-    </Modal>
+    <ConfirmModal open={!!pending} title="删除群摘要" busy={busy} error={deleteError}
+      message={`删除「${pending?.summary.title || '来源已失效的摘要'}」？仅删除派生摘要，原始消息和模型上下文保持原状。`}
+      confirmText={busy ? '正在删除…' : '确认删除摘要'} onCancel={() => setPending(undefined)} onConfirm={() => void remove()} />
   </Card>;
 }

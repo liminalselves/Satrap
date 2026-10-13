@@ -3,7 +3,7 @@ import { groupApi, GROUP_PAGE_SIZE, type GroupAction } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useGroupContext } from './GroupLayout';
-import { groupActionLabels } from './groupActionLabels';
+import { groupActionLabels, groupActionStateLabels } from './groupActionLabels';
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
 import { VersionedConfigRead } from '@/api/configVersions';
@@ -11,10 +11,7 @@ import { getApiBaseUrl } from '@/utils/constants';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 
 // 后端动作状态英文码到中文的映射, all 为前端筛选项, 未覆盖的值回退原样展示
-const actionStateLabels: Record<string, string> = {
-  all: '全部', pending: '待处理', executing: '执行中', succeeded: '已成功',
-  failed: '已失败', unknown: '结果未确认', rejected: '已拒绝', expired: '已过期',
-};
+const actionStateLabels: Record<string, string> = { all: '全部', ...groupActionStateLabels };
 
 export function GroupActions() {
   const { adapterId, groupId, account, historical, isRunning } = useGroupContext();

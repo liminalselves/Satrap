@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { errorText } from '@/utils/errorText';
 import { ensureApiSession, establishApiSession } from './auth';
 import { getChatApiUrl, getControlApiUrl } from '@/utils/constants';
 import { chatApi } from './chat';
@@ -28,14 +29,11 @@ export interface RagResult {
 }
 
 export function ragErrorMessage(reason: unknown): string {
-  if (axios.isAxiosError(reason)) {
-    const data: unknown = reason.response?.data;
-    if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' && data.error.trim()) return data.error;
-    if (reason.response) return '请求失败（HTTP ' + reason.response.status + '），后端未返回具体原因';
-    if (reason.code === 'ECONNABORTED' || reason.code === 'ETIMEDOUT') return '等待后端处理超时，任务可能仍在执行。请刷新知识库确认结果后再重试';
-    if (reason.code === 'ERR_NETWORK') return '无法读取后端响应，请检查后端是否运行及网络连接、跨域配置。任务结果未知，请刷新知识库确认';
-  }
-  return reason instanceof Error ? reason.message : String(reason || '操作失败，请重试');
+  return errorText(reason, String(reason || '操作失败，请重试'), {
+    httpFallback: (status) => `请求失败（HTTP ${status}），后端未返回具体原因`,
+    timeoutMessage: '等待后端处理超时，任务可能仍在执行。请刷新知识库确认结果后再重试',
+    networkMessage: '无法读取后端响应，请检查后端是否运行及网络连接、跨域配置。任务结果未知，请刷新知识库确认',
+  });
 }
 
 export const ragApi = {

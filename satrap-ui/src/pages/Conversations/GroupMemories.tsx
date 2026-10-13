@@ -1,3 +1,4 @@
+import { ConfirmModal } from '@/components/common/ConfirmModal';
 import { useEffect, useRef, useState } from 'react';
 import { memoryApi, type MemoryKind, type MemoryPage, type MemoryProposal, type ScopedMemory } from '@/api/memory';
 import { controlApi } from '@/api/control';
@@ -127,8 +128,14 @@ export function GroupMemories({ record, refresh, onDirty }: { record: PlatformAr
         {draftError && <p role="alert" className="text-error">{draftError}</p>}<div className="flex justify-end gap-2"><Button type="button" disabled={busy} onClick={closeDraft}>取消</Button><Button type="submit" variant="primary" disabled={busy || !draft.title.trim() || !draft.content.trim()}>{busy ? '正在保存…' : '保存记忆'}</Button></div>
       </form>}
     </Modal>
-    <Modal open={!!pendingDelete} title="删除长期记忆" onClose={() => { if (!busy) setPendingDelete(undefined); }}><div className="space-y-4"><p className="break-words">删除「{pendingDelete?.memory.title}」？下一轮将不再读取该记忆，聊天原文与已有模型上下文不会因此删除。</p>{error && <p role="alert" className="text-error">{error}</p>}<div className="flex justify-end gap-2"><Button disabled={busy} onClick={() => setPendingDelete(undefined)}>取消</Button><Button disabled={busy} variant="danger" onClick={remove}>确认删除记忆</Button></div></div></Modal>
-    <Modal open={!!pendingDecision} title="批准群记忆提案" onClose={() => { if (!busy) setPendingDecision(undefined); }}><div className="space-y-4"><p className="whitespace-pre-wrap break-words">{pendingDecision?.proposed.content}</p><p className="text-sm text-text-secondary">批准后应用此提案，下一轮读取生效；来源失效或版本冲突时不会覆盖当前记忆。</p>{error && <p role="alert" className="text-error">{error}</p>}<div className="flex justify-end gap-2"><Button disabled={busy} onClick={() => setPendingDecision(undefined)}>取消</Button><Button disabled={busy} variant="primary" onClick={() => { if (pendingDecision) void decide(pendingDecision, true); }}>确认批准</Button></div></div></Modal>
+    <ConfirmModal open={!!pendingDelete} title="删除长期记忆" busy={busy} error={error}
+      message={`删除「${pendingDelete?.memory.title}」？下一轮将不再读取该记忆，聊天原文与已有模型上下文不会因此删除。`}
+      confirmText="确认删除记忆" onCancel={() => setPendingDelete(undefined)} onConfirm={() => void remove()} />
+    <ConfirmModal open={!!pendingDecision} title="批准群记忆提案" busy={busy} error={error}
+      message={pendingDecision?.proposed.content} confirmText="确认批准" variant="primary"
+      onCancel={() => setPendingDecision(undefined)} onConfirm={() => { if (pendingDecision) void decide(pendingDecision, true); }}>
+      <p className="text-sm text-text-secondary">批准后应用此提案，下一轮读取生效；来源失效或版本冲突时不会覆盖当前记忆。</p>
+    </ConfirmModal>
     <Modal open={sourceOpen} title="记忆来源消息" onClose={() => { sourceSequence.current += 1; setSourceOpen(false); }}><div className="space-y-3">{sourceError && <p role="alert" className="text-error">{sourceError}</p>}{!source && !sourceError && <p role="status">正在读取来源…</p>}{source && <><p className="break-all text-sm">{source.card || source.nickname || source.sender_id}（{source.sender_id}） · {source.message_id}</p><p className="whitespace-pre-wrap break-words">{source.status === 'active' ? source.text || '无文本正文' : '来源已删除、撤回或过期，正文不可用'}</p></>}</div></Modal>
   </Card>;
 }

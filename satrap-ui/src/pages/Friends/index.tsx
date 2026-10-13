@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { friendApi, type Friend, type FriendRequest, type FriendAction, type FriendInfo, type RequestPolicy } from '@/api/friends';
@@ -52,6 +53,7 @@ export function Friends() {
   const [protectedText, setProtectedText] = useState('');
   const account = info?.current_account || '';
   const scope = `${adapterId}\0${account}`;
+  const confirm = useConfirm(scope);
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
   const busyRef = useRef(false);
@@ -128,9 +130,9 @@ export function Friends() {
   };
   const decide = async (action: FriendAction, approve: boolean) => {
     if (busyRef.current) return;
-    if (approve && !window.confirm(action.action_type === 'delete_friend'
+    if (approve && !(await confirm(action.action_type === 'delete_friend'
       ? `机器人 ${account}\n删除好友 ${action.target?.nickname || ''} (${action.params.user_id})\n备注: ${action.target?.remark || '无'}\n确认批准此申请? 历史对话和上下文保留`
-      : `机器人 ${account}\n${action.params.approve ? '同意' : '拒绝'}归档好友申请 ${action.params.request_id}\n平台状态可能尚未确认, 是否批准一次处理尝试?`)) return;
+      : `机器人 ${account}\n${action.params.approve ? '同意' : '拒绝'}归档好友申请 ${action.params.request_id}\n平台状态可能尚未确认, 是否批准一次处理尝试?`))) return;
     busyRef.current = true; setBusy(true);
     try { const data = await friendApi.decide(adapterId, account, action.action_id, approve); if (scopeRef.current === scope) { toast(data.state === 'failed' || data.state === 'unknown' ? 'error' : 'success', outcome(data)); setRefresh((value) => value + 1); } }
     catch (caught) { if (scopeRef.current === scope) setError(`${errorText(caught)}; 请刷新操作记录核查结果`); }
@@ -145,7 +147,7 @@ export function Friends() {
   };
   const requestOperation = async (request: FriendRequest, remove: boolean) => {
     if (busyRef.current) return;
-    if (remove && !window.confirm('仅删除本地归档记录, 不处理平台申请, 也不删除防重复执行记录. 确认删除?')) return;
+    if (remove && !(await confirm('仅删除本地归档记录, 不处理平台申请, 也不删除防重复执行记录. 确认删除?'))) return;
     busyRef.current = true; setBusy(true);
     try {
       if (remove) await friendApi.deleteRequest(adapterId, account, request.request_id, request.revision);

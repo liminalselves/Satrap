@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { RagManager } from '@/components/common/RagManager';
 import { Modal } from '@/components/ui/Modal';
 import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
@@ -36,6 +37,7 @@ const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>)
 const PLATFORM_SESSION_EXCLUDED_IDS = new Set(['chat']);
 
 export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' }) {
+  const confirm = useConfirm();
   useConfigWatch(['sessions', 'llm']);
   const [searchParams] = useSearchParams();
   const groupAdapter = searchParams.get('groupAdapter') || '';
@@ -218,7 +220,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
   }, [fetchSessionClasses, registerForm]);
 
   const handleUnregister = useCallback(async (name: string) => {
-    if (!confirm(`确定要注销会话类 "${name}" 吗?`)) return;
+    if (!(await confirm(`确定要注销会话类 "${name}" 吗?`))) return;
     try {
       await sessionApi.unregister(name);
       toast('success', '已注销');
@@ -226,7 +228,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
     } catch (e) {
       toast('error', '注销失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  }, [fetchSessionClasses]);
+  }, [fetchSessionClasses, confirm]);
 
   const openEdit = useCallback((name: string) => {
     const config = sessionClasses[name];
@@ -335,7 +337,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
   }, [visibleRuntimeSessions]);
 
   const handleDeleteRuntime = useCallback(async (session: RuntimeSession) => {
-    if (!confirm(`确定要删除 ${session.platform_id} 的会话实例 "${session.session_id}" 吗? 此操作会同时清理用户绑定和上下文路由`)) return;
+    if (!(await confirm(`确定要删除 ${session.platform_id} 的会话实例 "${session.session_id}" 吗? 此操作会同时清理用户绑定和上下文路由`))) return;
     setDeleting(true);
     try {
       await sessionApi.deleteRuntime(session.platform_id, session.session_id, backendRunning);
@@ -346,7 +348,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
     } finally {
       setDeleting(false);
     }
-  }, [backendRunning, fetchRuntimeSessions]);
+  }, [backendRunning, fetchRuntimeSessions, confirm]);
 
   const handleBulkDeleteRuntime = useCallback(async (mode: 'empty' | 'single' | 'selected') => {
     if (groupFilter && mode !== 'selected') return;
@@ -362,7 +364,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
       : mode === 'single'
         ? '所有消息数为 1 的会话实例'
         : `选中的 ${selectedRefs.length} 个会话实例`;
-    if (!confirm(`确定要删除${description}吗? 此操作会同时清理用户绑定和上下文路由`)) return;
+    if (!(await confirm(`确定要删除${description}吗? 此操作会同时清理用户绑定和上下文路由`))) return;
     setDeleting(true);
     try {
       const result = await sessionApi.bulkDeleteRuntime({
@@ -377,7 +379,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
     } finally {
       setDeleting(false);
     }
-  }, [backendRunning, fetchRuntimeSessions, visibleRuntimeSessions, selectedRuntimeIds, groupFilter]);
+  }, [backendRunning, fetchRuntimeSessions, visibleRuntimeSessions, selectedRuntimeIds, groupFilter, confirm]);
 
   const columns: Column<SessionClassItem>[] = useMemo(() => [
     { key: 'name', title: '名称', render: (item) => <span className="font-medium">{item.name}</span> },

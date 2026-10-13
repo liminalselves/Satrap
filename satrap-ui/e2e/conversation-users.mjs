@@ -1,3 +1,4 @@
+import { finishConfirmation } from './confirmation.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -108,14 +109,14 @@ try {
   assert.match(page.url(), /view=users/);
   await page.getByRole('button').filter({ has: page.getByText('修改昵称', { exact: true }) }).click();
   await page.getByText('高级资料操作', { exact: true }).click();
-  page.once('dialog', (message) => message.accept());
   await page.getByRole('button', { name: '移除关联', exact: true }).click();
+  await finishConfirmation(page);
   await page.waitForFunction(() => !document.querySelector('button')?.disabled && ![...document.querySelectorAll('button')].some((item) => item.textContent === '移除关联'));
   assert.equal(users[0].conversations[0].routed, true);
   await page.getByRole('button', { name: '编辑用户资料', exact: true }).waitFor();
   await page.getByText('高级资料操作', { exact: true }).click();
-  page.once('dialog', (message) => { assert.match(message.message(), /对话、消息和平台路由会保留/); return message.accept(); });
   await page.getByRole('button', { name: '删除用户资料', exact: true }).click();
+  await finishConfirmation(page, true, /对话、消息和平台路由会保留/);
   await page.getByText('仅存在路由记录，尚未保存用户资料', { exact: true }).waitFor();
   assert.equal(users[0].conversations[0].routed, true);
   assert.equal(requests.some((item) => item.action && item.layer), false);

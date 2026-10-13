@@ -1,5 +1,6 @@
+import { errorText } from '@/utils/errorText';
+import { useConfirm } from '@/hooks/useConfirm';
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import axios from 'axios';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -16,6 +17,7 @@ import { Search, GitBranch, RotateCcw, RefreshCw, Plus, GitCommitHorizontal } fr
 import type { Checkpoint } from '@/api/types';
 
 export function Checkpoints() {
+  const confirm = useConfirm();
   const [search] = useSearchParams();
   const health = useBackendStore((state) => state.health);
   const [platformId, setPlatformId] = useState(search.get('platform') || 'local');
@@ -101,7 +103,7 @@ export function Checkpoints() {
 
   const handleRevert = useCallback(async () => {
     if (!selectedCheckpoint) return;
-    if (!window.confirm('确定从此检查点恢复消息上下文吗？当前上下文会先备份，展示历史不会改变。')) {
+    if (!(await confirm('确定从此检查点恢复消息上下文吗？当前上下文会先备份，展示历史不会改变。'))) {
       return;
     }
     try {
@@ -111,9 +113,9 @@ export function Checkpoints() {
       setShowRevertModal(false);
       fetchData();
     } catch (e) {
-      toast('error', '操作失败: ' + (axios.isAxiosError<{ error?: string }>(e) ? e.response?.data?.error || e.message : e instanceof Error ? e.message : '未知错误'));
+      toast('error', '操作失败: ' + errorText(e, '未知错误'));
     }
-  }, [conversationId, fetchData, platformId, selectedCheckpoint]);
+  }, [conversationId, fetchData, platformId, selectedCheckpoint, confirm]);
 
   const handleTraceLineage = useCallback(async (checkpointId: string) => {
     setShowLineageModal(true);

@@ -12,14 +12,10 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { PageHeader } from '@/components/common';
 import { Play, Pause, Trash2, Download, Search, Wifi, WifiOff } from 'lucide-react';
 
-interface LogLine {
-  id: number;
-  content: string;
-  level: string;
-}
+
 
 // 日志行组件 - 使用 memo 优化渲染
-const LogLineItem = memo(function LogLineItem({ log }: { log: LogLine }) {
+const LogLineItem = memo(function LogLineItem({ log }: { log: LogEntry }) {
   const levelColor = useMemo(() => {
     switch (log.level) {
       case 'ERROR':
@@ -62,7 +58,7 @@ const LogLineItem = memo(function LogLineItem({ log }: { log: LogLine }) {
 const renderLog = (log: LogEntry) => <LogLineItem log={log} />;
 
 export function Logs() {
-  const [logs, setLogs] = useState<LogLine[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [bufferedCount, setBufferedCount] = useState(0);
   const [paused, setPaused] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -70,7 +66,7 @@ export function Logs() {
   const [historyLines, setHistoryLines] = useState(100);
   const [autoScroll, setAutoScroll] = useState(true);
   const logIdRef = useRef(0);
-  const buffer = useRef(new LogBuffer<LogLine>());
+  const buffer = useRef(new LogBuffer<LogEntry>());
   const flushTimer = useRef<ReturnType<typeof setTimeout>>();
   const flush = useCallback(() => {
     if (flushTimer.current !== undefined) clearTimeout(flushTimer.current);
@@ -82,7 +78,7 @@ export function Logs() {
   const { connect, disconnect, isConnected } = useWebSocket(`/ws/logs?lines=${historyLines}`);
 
   const handleLog = useCallback((data: { content: string; level: string }) => {
-    const newLog: LogLine = {
+    const newLog: LogEntry = {
       id: logIdRef.current++,
       content: data.content,
       level: data.level,

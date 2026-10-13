@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { AxiosError, type AxiosResponse } from 'axios';
+import { AxiosError, type AxiosResponse, type AxiosAdapter } from 'axios';
 
 vi.mock('@/utils/constants', () => ({ getApiBaseUrl: () => 'http://backend', getControlApiUrl: () => 'http://control', getChatApiUrl: () => 'http://chat' }));
 let auth: typeof import('./auth');
@@ -13,9 +13,65 @@ beforeEach(async () => {
   auth = await import('./auth');
   sessionStore = (await import('@/stores/useApiSessionStore')).useApiSessionStore;
 });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+async function backendClient(adapter: AxiosAdapter) {
+  const axios = (await import('axios')).default;
+  const create = axios.create;
+  vi.spyOn(axios, 'create').mockImplementationOnce((config) => {
+    const client = create(config);
+    client.defaults.adapter = adapter;
+    return client;
+  });
+  return (await import('./client')).apiClient;
+}
 
 describe('每服务认证', () => {
+  it('绑定后端的写请求收到 401 时不重放, 保留错误原因码', async () => {
+    const adapter = vi.fn<AxiosAdapter>(async (config) => {
+      throw new AxiosError('401', 'ERR_BAD_RESPONSE', config, undefined,
+        { status: 401, data: { reason: 'auth_required' } } as AxiosResponse);
+    });
+    const client = await backendClient(adapter);
+    const request = client.forService('http://backend').post('/api/applications', {});
+    const rejected = expect(request).rejects.toMatchObject({ status: 401, code: 'auth_required' });
+    await vi.advanceTimersByTimeAsync(0);
+    await rejected;
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('绑定后端的读取只重放一次并解包结果, 两次调用保持同一服务地址', async () => {
+    const adapter = vi.fn<AxiosAdapter>(async (config) => {
+      if (adapter.mock.calls.length === 1) {
+        throw new AxiosError('401', 'ERR_BAD_RESPONSE', config, undefined, { status: 401, data: {} } as AxiosResponse);
+      }
+      return { status: 200, statusText: 'OK', data: { state: 'succeeded' }, headers: {}, config };
+    });
+    const client = await backendClient(adapter);
+    const request = client.forService('http://backend').get('/api/applications/test');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await request).toEqual({ state: 'succeeded' });
+    expect(adapter).toHaveBeenCalledTimes(2);
+    expect(adapter.mock.calls.map(([config]) => config.baseURL)).toEqual(['http://backend', 'http://backend']);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('认证等待期间服务地址变化时阻止原任务请求', async () => {
+    const pending = deferred<Response>();
+    vi.mocked(fetch).mockReturnValueOnce(pending.promise);
+    const adapter = vi.fn<AxiosAdapter>(async (config) => ({ status: 200, statusText: 'OK', data: {}, headers: {}, config }));
+    const client = await backendClient(adapter);
+    let service = 'http://backend';
+    const request = client.forService(service, () => service).get('/api/applications/test');
+    const rejected = expect(request).rejects.toMatchObject({ code: 'service_changed' });
+    await vi.advanceTimersByTimeAsync(0);
+    service = 'http://replacement';
+    pending.resolve(response());
+    await rejected;
+    expect(adapter).not.toHaveBeenCalled();
+  });
+
   it('同服务合并, 提前消费 URL 令牌, 成功后业务读取不再反复认证', async () => {
     const pending = deferred<Response>();
     vi.mocked(fetch).mockReturnValueOnce(pending.promise);

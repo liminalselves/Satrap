@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import policyCases from '../../../tests/fixtures/wake_policy_cases.json';
 import {
-  POLICY_FIELDS,
-  POLICY_FIELD_LABELS,
+  POLICY_FIELD_BY_KEY,
   formNumericLimits,
   formRangeSuffix,
   formRangeText,
   overrideFieldKeys,
   policyField,
-  policyFieldLabel,
   policyIssuesMessage,
   previewFieldKeys,
   rangeText,
@@ -45,7 +43,7 @@ function validOf(context: PolicyCaseContext, value: Record<string, unknown>): bo
 
 describe('策略字段契约加载', () => {
   it('字段数量与关键取值与生成的契约一致', () => {
-    expect(POLICY_FIELDS.length).toBe(35);
+    expect(POLICY_FIELD_BY_KEY.size).toBe(35);
     const maxWait = policyField('wake_max_wait');
     expect(maxWait?.max_exclusive).toBe(120);
     expect(maxWait?.max).toBeUndefined();
@@ -58,10 +56,12 @@ describe('策略字段契约加载', () => {
     expect(policyField('wake_talk_value')?.nullable).toBe(true);
   });
 
-  it('每个契约字段都有校验文案用的字段名', () => {
-    for (const field of POLICY_FIELDS) {
-      expect(POLICY_FIELD_LABELS[field.key], field.key).toBeDefined();
-      expect(policyFieldLabel(field.key), field.key).not.toBe(field.key);
+  it('每个基础校验字段的错误文案使用字段名称', () => {
+    for (const field of POLICY_FIELD_BY_KEY.values()) {
+      if (['scope', 'group_ids', 'group_map', 'time_rules'].includes(field.kind)) continue;
+      const error = validatePolicyValue(field, Symbol('invalid'));
+      expect(error, field.key).not.toBeNull();
+      expect(error?.startsWith(field.key), field.key).toBe(false);
     }
   });
 

@@ -1,3 +1,4 @@
+import { autoAcceptConfirmations } from './confirmation.mjs';
 /** 知识库管理及通用会话覆盖浏览器回归, 所有模型和管理请求使用受控响应 */
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const server = await createServer({ root, server: { host: '127.0.0.1', port: 0 } });
-let browser;
+let browser, stopConfirmations;
 try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
@@ -77,6 +78,7 @@ try {
     return route.fulfill({ status, json, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS' } });
   });
   const page = await context.newPage();
+  stopConfirmations = autoAcceptConfirmations(page);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('dialog', (dialog) => dialog.accept());
@@ -132,6 +134,7 @@ try {
   assert.deepEqual(errors, []);
   console.log('PASS: 管理页面, 模型选择, 会话分页, 导入检索, 独立覆写, 禁止覆写字段, 恢复继承');
 } finally {
+  if (stopConfirmations) await stopConfirmations();
   await browser?.close();
   await server.close();
 }

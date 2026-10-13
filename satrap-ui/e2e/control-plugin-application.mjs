@@ -1,3 +1,4 @@
+import { autoAcceptConfirmations } from './confirmation.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,12 +7,13 @@ import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const server = await createServer({ root, server: { host: '127.0.0.1', port: 0 } });
-let browser;
+let browser, stopConfirmations;
 try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage(); await page.clock.install();
+  const page = await browser.newPage();
+  stopConfirmations = autoAcceptConfirmations(page); await page.clock.install();
   const errors = [], writes = [], applications = [], queries = [], operations = new Map();
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('dialog', (dialog) => dialog.accept());
@@ -161,6 +163,7 @@ try {
   assert.deepEqual(errors, []);
   console.log('PASS: 控制服务保存/应用分离, 真实阶段与超时, 已保存草稿保留, 查询不写入, 位置范围重试, 旧服务不重复应用, 离开取消迟到保存后应用');
 } finally {
+  if (stopConfirmations) await stopConfirmations();
   if (browser) await browser.close();
   await server.close();
 }

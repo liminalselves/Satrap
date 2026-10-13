@@ -1,9 +1,7 @@
-import axios, { AxiosInstance, AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from 'axios';
 import { getApiBaseUrl } from '@/utils/constants';
-import { ensureApiSession, establishApiSession } from '@/api/auth';
+import { configureServiceAuth, type ServiceRequestConfig } from './serviceAuth';
 
-type ServiceRequestConfig = { _satrapBoundService?: string; _satrapCurrentService?: () => string; _satrapNoAuthReplay?: boolean };
-type RetriableRequestConfig = InternalAxiosRequestConfig & ServiceRequestConfig & { _satrapAuthRetry?: boolean };
 type ErrorBody = { error?: string; reason?: string };
 
 export class ApiError extends Error {
@@ -19,7 +17,8 @@ export class ApiError extends Error {
 
 // 后端拒绝统一用 {status, reason} 信封, error 只用于请求体解析失败等通用错误;
 // 保留稳定原因码, 调用方据此区分队列满/冲突/存储不可用, 而不是只看 HTTP 状态
-export function toApiError(error: AxiosError<ErrorBody>): ApiError {
+export function toApiError(error: AxiosError<ErrorBody> | ApiError): ApiError {
+  if (error instanceof ApiError) return error;
   const data = error.response?.data;
   const body = data && typeof data === 'object' ? data : undefined;
   const message = body?.error || error.message;
@@ -39,33 +38,18 @@ class ApiClient {
       },
     });
 
-    this.client.interceptors.request.use(async (config) => {
-      const retry = config as RetriableRequestConfig;
-      const baseUrl = retry._satrapBoundService || (retry._satrapAuthRetry && config.baseURL ? config.baseURL : getApiBaseUrl());
-      await ensureApiSession(baseUrl);
-      if (retry._satrapBoundService && (retry._satrapCurrentService || getApiBaseUrl)().replace(/\/$/, '') !== baseUrl) {
-        throw new ApiError('后端地址已变化, 原应用任务的生效状态未确认', undefined, 'service_changed');
-      }
-      config.baseURL = baseUrl;
-      return config;
-    });
-
-    this.setupInterceptors();
-  }
-
-  private setupInterceptors() {
-    this.client.interceptors.response.use(
-      (response) => response.data,
-      async (error: AxiosError<ErrorBody>) => {
-        const config = error.config as RetriableRequestConfig | undefined;
-        if (error.response?.status === 401 && config && !config._satrapAuthRetry && !config._satrapNoAuthReplay) {
-          config._satrapAuthRetry = true;
-          await establishApiSession(config.baseURL || getApiBaseUrl());
-          return this.client.request(config);
+    configureServiceAuth<ErrorBody>(this.client, {
+      currentService: getApiBaseUrl,
+      resolveService: (config) => config._satrapBoundService || (config._satrapAuthRetry && config.baseURL ? config.baseURL : getApiBaseUrl()),
+      verifyService: (config, service) => {
+        if (config._satrapBoundService && (config._satrapCurrentService || getApiBaseUrl)().replace(/\/$/, '') !== service) {
+          throw new ApiError('后端地址已变化, 原应用任务的生效状态未确认', undefined, 'service_changed');
         }
-        return Promise.reject(toApiError(error));
-      }
-    );
+      },
+      canReplay: (config) => !config._satrapNoAuthReplay,
+      unwrapResponse: true,
+      formatError: toApiError,
+    });
   }
 
   async get<T>(url: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {

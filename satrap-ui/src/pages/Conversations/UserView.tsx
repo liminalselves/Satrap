@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { controlApi } from '@/api/control';
@@ -16,6 +17,7 @@ export function UserView({ platform, platformType, platforms, query, offset, ref
   const [search, setSearch] = useSearchParams();
   const selected = search.get('user') || '';
   const userPlatform = search.get('user_platform') || platform;
+  const confirm = useConfirm(`${userPlatform}:${selected}`);
   const [catalog, setCatalog] = useState<ConversationUserCatalog>({ items: [], total: 0, new_revision: '' });
   const [detail, setDetail] = useState<ConversationUser | null>(null);
   const [loading, setLoading] = useState(false);
@@ -110,9 +112,9 @@ export function UserView({ platform, platformType, platforms, query, offset, ref
             <p className="mt-3 text-xs text-text-secondary">列表关联不会改写平台路由；本地按用户选择会话的调用可能使用此列表。移除列表关联后，路由关联仍然保留。</p>
             <label className="block text-sm">当前平台的对话 ID<input aria-label="关联对话 ID" className="glass-input mt-1 w-full" value={session} disabled={busy} onChange={(event) => setSession(event.target.value)} /></label>
             <Button size="sm" disabled={busy || !session.trim()} onClick={() => void mutate(detail.platform_id, detail.user_id, { action: 'associate', session_id: session.trim(), expected_revision: detail.revision })}>添加关联</Button>
-            {detail.user_session.map((identity) => <div key={identity} className="flex flex-wrap items-center justify-between gap-2"><span className="break-all text-xs">{identity}</span><Button size="sm" disabled={busy} onClick={() => { if (window.confirm('确定移除此列表关联吗？平台路由和对话内容会保留；本地按用户选择会话的调用可能受影响。')) void mutate(detail.platform_id, detail.user_id, { action: 'dissociate', session_id: identity, expected_revision: detail.revision }); }}>移除关联</Button></div>)}
+            {detail.user_session.map((identity) => <div key={identity} className="flex flex-wrap items-center justify-between gap-2"><span className="break-all text-xs">{identity}</span><Button size="sm" disabled={busy} onClick={async () => { if ((await confirm('确定移除此列表关联吗？平台路由和对话内容会保留；本地按用户选择会话的调用可能受影响。'))) void mutate(detail.platform_id, detail.user_id, { action: 'dissociate', session_id: identity, expected_revision: detail.revision }); }}>移除关联</Button></div>)}
             <p className="text-xs text-text-secondary">删除用户资料会删除昵称和列表关联，保留对话、消息和平台路由。后续消息可能重新创建资料。</p>
-            <Button size="sm" variant="danger" disabled={busy} onClick={() => { if (window.confirm('确定删除此用户资料吗？昵称和列表关联将删除，对话、消息和平台路由会保留，后续消息可能重新创建资料。')) void mutate(detail.platform_id, detail.user_id, { action: 'delete', expected_revision: detail.revision }); }}>删除用户资料</Button>
+            <Button size="sm" variant="danger" disabled={busy} onClick={async () => { if ((await confirm('确定删除此用户资料吗？昵称和列表关联将删除，对话、消息和平台路由会保留，后续消息可能重新创建资料。'))) void mutate(detail.platform_id, detail.user_id, { action: 'delete', expected_revision: detail.revision }); }}>删除用户资料</Button>
           </details>}
         </>}
       </Card>

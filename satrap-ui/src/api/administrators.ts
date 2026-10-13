@@ -1,4 +1,4 @@
-import axios from 'axios';
+import { errorText } from '@/utils/errorText';
 import { controlClient } from './control';
 import { apiClient, ApiError } from './client';
 import { getControlApiUrl } from '@/utils/constants';
@@ -132,8 +132,7 @@ export const administratorsApi = {
 };
 
 export function administratorError(cause: unknown): string {
-  if (axios.isAxiosError(cause)) return cause.response?.data?.error || cause.message;
-  return cause instanceof Error ? cause.message : '管理员设置请求失败';
+  return errorText(cause, '管理员设置请求失败');
 }
 
 export function administratorRuntimeLabel(runtime: AdministratorRuntime): string {

@@ -1,3 +1,4 @@
+import { autoAcceptConfirmations } from './confirmation.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,12 +7,13 @@ import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const server = await createServer({ root, server: { host: '127.0.0.1', port: 0 } });
-let browser;
+let browser, stopConfirmations;
 try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
+  stopConfirmations = autoAcceptConfirmations(page);
   await page.clock.install();
   const errors = [], applications = [], writes = [], reads = {};
   page.on('pageerror', (error) => errors.push(error.message));
@@ -117,6 +119,7 @@ try {
   assert.deepEqual(configs.other, untouched); assert.deepEqual(errors, []);
   console.log('PASS: 202 实际阶段展示, 120 秒截止保留已保存事实和草稿, 查询不重发, 部分失败仅重试失败实例, 完整保存沿正确接口');
 } finally {
+  if (stopConfirmations) await stopConfirmations();
   if (browser) await browser.close();
   await server.close();
 }

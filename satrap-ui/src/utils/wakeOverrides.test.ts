@@ -7,7 +7,6 @@ import {
   fieldValue,
   fromGroupRows,
   fromTimeRows,
-  parseOverrideJson,
   toGroupRows,
   toTimeRows,
 } from './wakeOverrides';
@@ -76,20 +75,10 @@ describe('applyField', () => {
   });
 });
 
-describe('parseOverrideJson', () => {
-  it('非字符串原样返回', () => {
-    const value = { a: 1 };
-    expect(parseOverrideJson(value, {})).toBe(value);
-  });
-
-  it('空串与非法 JSON 回退 fallback', () => {
-    expect(parseOverrideJson('', { fb: 1 })).toEqual({ fb: 1 });
-    expect(parseOverrideJson('   ', { fb: 1 })).toEqual({ fb: 1 });
-    expect(parseOverrideJson('{oops', { fb: 1 })).toEqual({ fb: 1 });
-  });
-
-  it('合法 JSON 字符串被解析', () => {
-    expect(parseOverrideJson('{"20": {"wake_mode": "frequency"}}', {})).toEqual({ '20': { wake_mode: 'frequency' } });
+describe('覆盖编辑入口解析', () => {
+  it.each(['', '   ', '{oops'])('空串与非法 JSON 在两个编辑入口都回退为空集合: %s', (value) => {
+    expect(toGroupRows(value)).toEqual([]);
+    expect(toTimeRows(value)).toEqual([]);
   });
 });
 

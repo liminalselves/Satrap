@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { restoreConversation, type Conversation as ConversationState } from './conversations';
 import { RunRecovery } from "./RunRecovery";
 import { RagManager } from '@/components/common/RagManager';
@@ -275,6 +276,7 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
 }
 
 export function Chat() {
+  const confirm = useConfirm();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>('');
   const [input, setInput] = useState('');
@@ -975,7 +977,7 @@ export function Chat() {
     async (id: string) => {
       const conv = conversations.find((c) => c.id === id);
       const title = conv?.title || id;
-      if (!window.confirm(`确定删除会话 "${title}" 吗？`)) return;
+      if (!(await confirm(`确定删除会话 "${title}" 吗？`))) return;
       if (id !== '__draft__') {
         try {
           await chatApi.deleteConversation(id);
@@ -997,7 +999,7 @@ export function Chat() {
         return next;
       });
     },
-    [activeId, conversations]
+    [activeId, conversations, confirm]
   );
 
   // 新建项目 (绑定工作区文件夹, 后端校验路径存在且是目录)
@@ -1010,16 +1012,16 @@ export function Chat() {
   }, []);
 
   // 删除项目 (仅解绑会话归入"最近", 磁盘文件不动)
-  const handleDeleteProject = useCallback((projectId: string) => {
+  const handleDeleteProject = useCallback(async (projectId: string) => {
     const project = projects.find((p) => p.project_id === projectId);
-    if (!window.confirm(`确定删除项目 "${project?.name ?? projectId}" 吗？\n其下会话将移入"最近", 磁盘文件不受影响。`)) return;
+    if (!(await confirm(`确定删除项目 "${project?.name ?? projectId}" 吗？\n其下会话将移入"最近", 磁盘文件不受影响。`))) return;
     chatApi.deleteProject(projectId).catch((err) => {
       console.error('[Chat] 删除项目失败:', err);
       alert(`删除项目失败: ${err instanceof Error ? err.message : String(err)}`);
     });
     setProjects((prev) => prev.filter((p) => p.project_id !== projectId));
     setConversations((prev) => prev.map((c) => (c.projectId === projectId ? { ...c, projectId: null } : c)));
-  }, [projects]);
+  }, [projects, confirm]);
 
   // 会话改绑项目 (null = 移出项目归入"最近"; 仅影响之后的工具调用)
   const handleMoveConversation = useCallback(async (projectId: string | null) => {
@@ -1357,7 +1359,7 @@ export function Chat() {
 
   // 删除模型配置
   const handleDeleteModel = useCallback(async (name: string) => {
-    if (!confirm(`确定删除模型配置 "${name}" 吗？`)) return;
+    if (!(await confirm(`确定删除模型配置 "${name}" 吗？`))) return;
     try {
       const result = await chatApi.deleteModel(name);
       if (result.ok) {
@@ -1378,7 +1380,7 @@ export function Chat() {
       console.error('[Chat] 删除模型失败:', err);
       alert(`删除模型失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [settings.model, models]);
+  }, [settings.model, models, confirm]);
 
   // 模型保存后刷新列表
   const handleModelSaved = useCallback(async () => {

@@ -1,3 +1,4 @@
+import { groupActionStateLabels as actionStateLabels } from './groupActionLabels';
 import { useEffect, useState } from 'react';
 import { groupApi, GROUP_PAGE_SIZE, type GroupAction, type GroupMember } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
@@ -11,10 +12,7 @@ const memberActions = [
 ] as const;
 
 // 后端英文枚举码到中文的映射, 未覆盖的值回退原样展示
-const actionStateLabels: Record<string, string> = {
-  pending: '待处理', expired: '已过期', rejected: '已拒绝', executing: '执行中',
-  succeeded: '已成功', failed: '已失败', unknown: '结果未确认',
-};
+
 const memberRoleLabels: Record<string, string> = {
   owner: '群主', admin: '管理员', member: '普通成员',
 };

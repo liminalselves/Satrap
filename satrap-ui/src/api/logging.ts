@@ -1,4 +1,4 @@
-import axios from 'axios';
+import { errorText } from '@/utils/errorText';
 import { controlClient } from './control';
 
 export interface LogPolicy {
@@ -28,8 +28,7 @@ export interface LogPolicySnapshot {
 }
 
 export function loggingError(error: unknown): string {
-  if (axios.isAxiosError<{ error?: string }>(error) && error.response?.data?.error) return error.response.data.error;
-  return error instanceof Error ? error.message : '日志管理请求失败';
+  return errorText(error, '日志管理请求失败');
 }
 
 export const loggingApi = {

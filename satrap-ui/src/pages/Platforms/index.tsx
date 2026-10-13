@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
@@ -29,6 +30,7 @@ import type { GroupOverrideRow, RowIssue, TimeRuleRow } from '@/utils/wakeOverri
 import type { AdapterDeclaration, AgentBinding, PlatformConfig } from '@/api/types';
 
 export function Platforms() {
+  const confirm = useConfirm();
   useConfigWatch(['sessions', 'edictum', 'asr']);
   const { health, isRunning, refreshHealth } = useBackendStore(useShallow((state) => ({ health: state.health, isRunning: state.isRunning, refreshHealth: state.refreshHealth })));
   const { sessionClasses, fetchSessionClasses, asrConfigs, edictumConfigs, fetchEdictumConfigs: loadEdictumConfigs } = useConfigStore(useShallow((state) => ({
@@ -176,7 +178,7 @@ export function Platforms() {
   }, [refreshHealth]);
 
   const handleDelete = useCallback(async (id: string) => {
-    if (!confirm(`确定要删除平台 "${id}" 吗?`)) return;
+    if (!(await confirm(`确定要删除平台 "${id}" 吗?`))) return;
     try {
       if (!revision) throw new Error('请先刷新平台配置后再删除');
       const result = await controlApi.deletePlatform(id, revision);
@@ -191,7 +193,7 @@ export function Platforms() {
     } catch (e) {
       toast('error', '删除失败: ' + (isAxiosError(e) && e.response?.status === 409 ? '配置已被其他操作修改, 请刷新后重试' : e instanceof Error ? e.message : '未知错误'));
     }
-  }, [health?.running, applySavedPlatform, revision]);
+  }, [health?.running, applySavedPlatform, revision, confirm]);
 
   const handleSubmit = useCallback(async () => {
     if (!formData.id.trim()) {

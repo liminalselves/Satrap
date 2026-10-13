@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
@@ -101,6 +102,7 @@ const FIELD_META: Record<ModelType, FormField[]> = {
 };
 
 export function Models() {
+  const confirm = useConfirm();
   useConfigWatch(['llm', 'embedding', 'rerank', 'asr']);
   const {
     llmConfigs,
@@ -159,10 +161,10 @@ export function Models() {
   }, [activeTab]);
 
   const handleDelete = useCallback(async (name: string) => {
-    if (!confirm(`确定要删除配置 "${name}" 吗？`)) return;
+    if (!(await confirm(`确定要删除配置 "${name}" 吗？`))) return;
     const ok = await deleteModel(activeTab, name);
     toast(ok ? 'success' : 'error', ok ? '已删除' : '删除失败');
-  }, [activeTab, deleteModel]);
+  }, [activeTab, deleteModel, confirm]);
 
   const handleSubmit = useCallback(async () => {
     const { name, ...config } = formData;

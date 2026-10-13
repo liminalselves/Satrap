@@ -1,5 +1,6 @@
+import { ConfirmModal } from '@/components/common/ConfirmModal';
 import { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
+import { errorText } from '@/utils/errorText';
 import { controlApi } from '@/api/control';
 import type { GroupChatSticker, GroupChatStickerPage, PlatformConfig } from '@/api/types';
 import { Button } from '@/components/ui/Button';
@@ -7,7 +8,6 @@ import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
 
-const errorText = (error: unknown) => axios.isAxiosError<{ error?: string }>(error) ? error.response?.data?.error || error.message : error instanceof Error ? error.message : String(error);
 type Draft = { original?: GroupChatSticker; mode: 'image' | 'native'; name: string; tags: string; collection: string; enabled: boolean; platform: string; nativeKey: string; file?: File };
 const emptyDraft = (): Draft => ({ mode: 'image', name: '', tags: '', collection: '常用', enabled: true, platform: '', nativeKey: '' });
 
@@ -132,7 +132,9 @@ export function StickerLibrary({ onDirty }: { onDirty: (dirty: boolean) => void 
         <div className="flex justify-end gap-2"><Button type="button" disabled={busy} onClick={closeDraft}>取消</Button><Button type="submit" disabled={busy}>{busy ? '正在保存…' : '保存表情'}</Button></div>
       </form>}
     </Modal>
-    <Modal open={!!deleting} title="删除表情" onClose={() => { if (!busy) setDeleting(undefined); }}><div className="space-y-4"><p className="break-words">删除「{deleting?.name}」后，所有群均无法再选择它。已经提交的平台消息不会撤回。</p>{formError && <p role="alert" className="text-error">{formError}</p>}<div className="flex justify-end gap-2"><Button disabled={busy} onClick={() => setDeleting(undefined)}>取消</Button><Button disabled={busy} variant="danger" onClick={remove}>{busy ? '正在删除…' : '确认删除表情'}</Button></div></div></Modal>
+    <ConfirmModal open={!!deleting} title="删除表情" busy={busy} error={formError}
+      message={`删除「${deleting?.name}」后，所有群均无法再选择它。已经提交的平台消息不会撤回。`}
+      confirmText={busy ? '正在删除…' : '确认删除表情'} onCancel={() => setDeleting(undefined)} onConfirm={() => void remove()} />
     <Modal open={!!preview} title={preview?.title || '表情预览'} onClose={() => { previewRequest.current += 1; setPreview(undefined); }}>
       {preview?.error ? <p role="alert" className="text-error">{preview.error}</p> : preview?.image ? <img src={preview.image} alt={preview.title} className="mx-auto max-h-64 max-w-full object-contain" /> : preview?.image === null ? <p>平台原生表情没有本地图片预览</p> : <p role="status">正在读取预览…</p>}
     </Modal>

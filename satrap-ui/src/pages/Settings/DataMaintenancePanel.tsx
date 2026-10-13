@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { formatBytes } from '@/utils/format';
 import { useCallback, useMemo, useState } from 'react';
 import { RefreshCw, RotateCcw, ShieldAlert, Trash2 } from 'lucide-react';
@@ -24,6 +25,7 @@ export function DataMaintenancePanel({
   backendRunning: boolean;
   controlAvailable: boolean;
 }) {
+  const confirm = useConfirm();
   const [items, setItems] = useState<StorageAuditItem[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -83,7 +85,7 @@ export function DataMaintenancePanel({
       toast('warning', '请选择可安全清理的项目');
       return;
     }
-    if (!confirm('确定将选中的 ' + targets.length + ' 项孤儿数据移入回收区或清理引用吗?')) return;
+    if (!(await confirm('确定将选中的 ' + targets.length + ' 项孤儿数据移入回收区或清理引用吗?'))) return;
     setLoading(true);
     try {
       const result = await storageApi.cleanup(targets, backendRunning);
@@ -98,7 +100,7 @@ export function DataMaintenancePanel({
     } finally {
       setLoading(false);
     }
-  }, [backendRunning, items, scan, selected]);
+  }, [backendRunning, items, scan, selected, confirm]);
 
   const restore = useCallback(async (item: StorageAuditItem) => {
     const archiveId = item.details.archive_id;
@@ -121,7 +123,7 @@ export function DataMaintenancePanel({
   const purge = useCallback(async (item: StorageAuditItem) => {
     const archiveId = item.details.archive_id;
     if (!archiveId) return;
-    if (!confirm('永久删除回收项 "' + archiveId + '"? 此操作无法恢复')) return;
+    if (!(await confirm('永久删除回收项 "' + archiveId + '"? 此操作无法恢复'))) return;
     setLoading(true);
     try {
       await storageApi.purge(item.platform_id, archiveId, backendRunning);
@@ -132,7 +134,7 @@ export function DataMaintenancePanel({
     } finally {
       setLoading(false);
     }
-  }, [backendRunning, scan]);
+  }, [backendRunning, scan, confirm]);
 
   const purgeBatch = useCallback(async (byRetention: boolean) => {
     if (!byRetention && selectedTrash.length === 0) {
@@ -142,7 +144,7 @@ export function DataMaintenancePanel({
     const description = byRetention
       ? '永久删除所有存放超过 ' + retentionDays + ' 天的回收项'
       : '永久删除选中的 ' + selectedTrash.length + ' 个回收项';
-    if (!confirm(description + '? 此操作无法恢复')) return;
+    if (!(await confirm(description + '? 此操作无法恢复'))) return;
     setLoading(true);
     try {
       const result = await storageApi.purgeBatch(
@@ -169,7 +171,7 @@ export function DataMaintenancePanel({
     } finally {
       setLoading(false);
     }
-  }, [backendRunning, retentionDays, scan, selectedTrash]);
+  }, [backendRunning, retentionDays, scan, selectedTrash, confirm]);
 
   return (
     <div className="space-y-4">

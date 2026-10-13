@@ -4,8 +4,8 @@ import { getControlApiUrl } from '@/utils/constants';
 
 export type ConfigResource = 'main_config' | 'models' | 'session_classes' | 'edictum_configs'
   | 'chat_plugins' | 'plugin_catalog' | 'plugin_defaults';
-export interface ConfigVersion { change_token: string; state: 'available' | 'missing' | 'damaged' | 'unreadable' }
-export type ConfigVersions = Partial<Record<ConfigResource, ConfigVersion>>;
+interface ConfigVersion { change_token: string; state: 'available' | 'missing' | 'damaged' | 'unreadable' }
+type ConfigVersions = Partial<Record<ConfigResource, ConfigVersion>>;
 
 export async function getConfigVersions(resources: readonly ConfigResource[], force = false, signal?: AbortSignal): Promise<ConfigVersions | null> {
   if (!resources.length) return null; // 无版本来源的读取仅合并在途请求, 不缓存正文
@@ -25,7 +25,7 @@ export async function getConfigVersions(resources: readonly ConfigResource[], fo
   }
 }
 
-export function sameConfigVersions(left: ConfigVersions | null, right: ConfigVersions | null, resources: readonly ConfigResource[]): boolean {
+function sameConfigVersions(left: ConfigVersions | null, right: ConfigVersions | null, resources: readonly ConfigResource[]): boolean {
   return left !== null && right !== null && resources.every((name) => left[name]?.change_token === right[name]?.change_token && left[name]?.state === right[name]?.state);
 }
 

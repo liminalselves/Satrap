@@ -1,3 +1,4 @@
+import { ConfirmModal } from '@/components/common/ConfirmModal';
 import { useEffect, useRef, useState } from 'react';
 import { reminderApi, type GroupReminder, type ReminderPage, type ReminderState } from '@/api/reminders';
 import { controlApi } from '@/api/control';
@@ -9,7 +10,7 @@ import { confirmDiscard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
 
-export const reminderStateLabels: Record<ReminderState, string> = {
+const reminderStateLabels: Record<ReminderState, string> = {
   scheduled: '待执行', waiting_delivery: '等待平台恢复', paused: '已暂停', sending: '正在发送', sent: '已发送',
   partial: '部分发送成功', failed: '发送失败', unknown: '无法确认是否送达', missed: '已错过', cancelled: '已取消',
 };
@@ -140,10 +141,12 @@ export function GroupReminders({ record, refresh, onDirty }: { record: PlatformA
         {draftError && <p role="alert" className="text-error">{draftError}</p>}<Button type="submit" disabled={busy}>{busy ? '正在安排…' : '安排提醒'}</Button>
       </form>}
     </Modal>
-    <Modal open={!!action} onClose={() => { if (!busy) setAction(undefined); }} title={action?.kind === 'resume' ? '恢复提醒' : '取消提醒'}>
-      <p>{action?.kind === 'resume' ? '恢复会重新检查当前配置和群成员，保持原定时间；超过补发宽限会记为已错过。' : '取消尚未开始发送的任务；如果发送已经开始，无法保证撤回。'}</p>
-      <p className="my-3 whitespace-pre-wrap break-words">{action?.reminder.text}</p>{error && <p role="alert" className="text-error">{error}</p>}<Button disabled={busy} onClick={() => void mutate()}>确认{action?.kind === 'resume' ? '恢复' : '取消'}</Button>
-    </Modal>
+    <ConfirmModal open={!!action} title={action?.kind === 'resume' ? '恢复提醒' : '取消提醒'} busy={busy} error={error}
+      message={action?.kind === 'resume' ? '恢复会重新检查当前配置和群成员，保持原定时间；超过补发宽限会记为已错过。' : '取消尚未开始发送的任务；如果发送已经开始，无法保证撤回。'}
+      confirmText={`确认${action?.kind === 'resume' ? '恢复' : '取消'}`} variant={action?.kind === 'resume' ? 'primary' : 'danger'}
+      onCancel={() => setAction(undefined)} onConfirm={() => void mutate()}>
+      <p className="whitespace-pre-wrap break-words">{action?.reminder.text}</p>
+    </ConfirmModal>
     <Modal open={!!selected} onClose={() => { sourceSequence.current++; setSelected(undefined); setSource(undefined); setSourceError(''); }} title="提醒详情">
       {selected && <div className="space-y-3"><p>{reminderStateLabels[selected.state]} · 修订 {selected.revision}</p><p className="whitespace-pre-wrap break-words">{selected.text}</p>
         <p>计划执行：{formatDate(selected.due_at_utc)}</p><p>创建时间：{formatDate(selected.created_at)}</p>

@@ -1,3 +1,4 @@
+import { autoAcceptConfirmations } from './confirmation.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,12 +8,13 @@ import { createServer } from 'vite';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scopeOnly = ({ operation_id, ...scope }) => { assert.match(operation_id, /^[\w-]{16,128}$/); return scope; };
 const server = await createServer({ root, server: { host: '127.0.0.1', port: 0 } });
-let browser;
+let browser, stopConfirmations;
 try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
+  stopConfirmations = autoAcceptConfirmations(page);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const configs = { assistant: { provider: 'edictum', edictum_type: 'async_simple', enabled: true,
@@ -110,6 +112,7 @@ try {
   console.log('PASS: 完整 Agent 保存只应用目标配置, 局部回填且无全量读取, 完整重试只处理失败实例');
   console.log('PASS: 冷保存失败不应用, 已保存后应用失败明确提示并保留草稿, 无关 Agent 及额外参数保留');
 } finally {
+  if (stopConfirmations) await stopConfirmations();
   if (browser) await browser.close();
   await server.close();
 }

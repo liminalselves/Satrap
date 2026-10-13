@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
+import { errorText } from '@/utils/errorText';
 import { controlApi } from '@/api/control';
 import type { PluginInstallPreview } from '@/api/types';
 import { Modal } from '@/components/ui/Modal';
@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { PLUGIN_CAPABILITY_LABELS } from '@/components/common/PluginCapabilities';
 
 export function pluginError(error: unknown): string {
-  return axios.isAxiosError(error) ? error.response?.data?.error || error.response?.data?.detail || error.message : error instanceof Error ? error.message : '操作失败';
+  return errorText(error);
 }
 
 export function InstallPluginModal({ onClose, onInstalled }: { onClose: () => void; onInstalled: (name: string) => void }) {

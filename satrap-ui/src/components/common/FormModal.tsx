@@ -29,7 +29,6 @@ export interface FormModalProps {
   onChange: (key: string, value: unknown) => void;
   onSubmit: () => void;
   submitText?: string;
-  cancelText?: string;
   loading?: boolean;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   // 默认保留浏览器原生校验 (必填与控件约束); 由应用校验器统一给提示的表单显式关闭
@@ -46,7 +45,6 @@ export const FormModal = memo(function FormModal({
   onChange,
   onSubmit,
   submitText = '保存',
-  cancelText = '取消',
   loading = false,
   size = 'md',
   noValidate = false,
@@ -195,7 +193,7 @@ export const FormModal = memo(function FormModal({
             {loading ? '处理中...' : submitText}
           </Button>
           <Button type="button" variant="default" onClick={onClose}>
-            {cancelText}
+            取消
           </Button>
         </div>
       </form>
