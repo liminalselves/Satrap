@@ -38,16 +38,7 @@ class _FakeProviderRegistry:
         self.calls: list[tuple[str, str | None]] = []
 
     def binding_status(self, definition_name: str, provider_name: str | None = None) -> BindingStatus:
-        """
-        记录判定调用并按登记表答复三态
-
-        参数:
-        - definition_name: 会话定义名称
-        - provider_name: 会话 Provider 名称
-
-        返回:
-        - BindingStatus: 未登记的定义按失效处理, 登记为禁用时按禁用处理
-        """
+        """记录判定调用并按登记表答复三态"""
         self.calls.append((definition_name, provider_name))
         location = f"provider={provider_name or ''}, name={definition_name}"
         if definition_name not in self.definitions:
@@ -58,22 +49,12 @@ class _FakeProviderRegistry:
 
 
 def _constant_runnable(*_args: object) -> BindingStatus:
-    """
-    恒定答复可运行的绑定判定
-
-    返回:
-    - BindingStatus: 可运行
-    """
+    """恒定答复可运行的绑定判定"""
     return BindingStatus(BindingState.RUNNABLE)
 
 
 def _runnable_async_session_manager() -> Any:
-    """
-    构造只记录 handle_call_async 的会话管理器替身
-
-    返回:
-    - Any: 绑定判定恒为可运行, 避免既有用例受管线闸门影响
-    """
+    """构造只记录 handle_call_async 的会话管理器替身"""
     from unittest.mock import AsyncMock
 
     manager = AsyncMock()
@@ -217,12 +198,7 @@ async def test_rate_limiter_keys_are_independent():
 
 @pytest.mark.asyncio
 async def test_rate_limiter_refills_after_time(monkeypatch: pytest.MonkeyPatch):
-    """
-    时间流逝后 token 按 rate 恢复
-
-    参数:
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """时间流逝后 token 按 rate 恢复"""
     rl = RateLimiter(rate=10.0, burst=5)
     now = time.monotonic()
     current = {"value": now}
@@ -370,12 +346,7 @@ async def test_execute_error_sends_feedback():
 
 @pytest.mark.asyncio
 async def test_temporary_files_cleaned(tmp_path: Path):
-    """
-    事件结束后跟踪的临时文件被清理
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """事件结束后跟踪的临时文件被清理"""
     sm = _FakeSessionManager()
     sched = PipelineScheduler(_as_session_manager(sm))
 
@@ -391,12 +362,7 @@ async def test_temporary_files_cleaned(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_execute_resolves_session_via_user_manager(monkeypatch: pytest.MonkeyPatch):
-    """
-    配置 UserManager 时通过 resolve_session 解析目标会话
-
-    参数:
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """配置 UserManager 时通过 resolve_session 解析目标会话"""
     sm = _FakeSessionManager()
     sched = PipelineScheduler(_as_session_manager(sm))
 
@@ -818,15 +784,7 @@ class _GroupBindingAdapter(_RecorderAdapter):
         self.binding = binding
 
     def group_route(self, group_id: str) -> tuple[dict[str, Any], int]:
-        """
-        返回群路由快照
-
-        参数:
-        - group_id: 群号
-
-        返回:
-        - tuple[dict[str, Any], int]: 路由设置与代次, 未登记绑定时为空设置
-        """
+        """返回群路由快照"""
         if self.binding is None:
             return ({}, 1)
         return ({"binding": {"mode": "value", "value": self.binding}}, 1)
@@ -839,18 +797,7 @@ class _RecordingUserManager:
         self.resolved: list[str] = []
 
     def resolve_session(self, user_id: str, platform: str, session_type: str, **kwargs: Any) -> str:
-        """
-        记录解析入参并返回稳定会话 ID
-
-        参数:
-        - user_id: 发送者 ID
-        - platform: 平台实例 ID
-        - session_type: 会话类型名称
-        - kwargs: 其余路由参数
-
-        返回:
-        - str: 供管线继续执行的会话 ID
-        """
+        """记录解析入参并返回稳定会话 ID"""
         self.resolved.append(session_type)
         return f"{platform}:{user_id}:sid"
 
@@ -868,17 +815,7 @@ class _GateHarness(NamedTuple):
 def _gate_harness(
     definitions: dict[str, bool], *, adapter: _RecorderAdapter | None = None, rate_limiter: RateLimiter | None = None,
 ) -> _GateHarness:
-    """
-    装配绑定闸门用例: 注册表替身按定义表答复三态, 会话与用户管理器记录调用
-
-    参数:
-    - definitions: 会话定义名到是否启用的映射
-    - adapter: 可选的事件来源适配器
-    - rate_limiter: 可选的限流器, 用于断言闸门命中不消耗额度
-
-    返回:
-    - _GateHarness: 调度器与全部替身
-    """
+    """装配绑定闸门用例: 注册表替身按定义表答复三态, 会话与用户管理器记录调用"""
     registry = _FakeProviderRegistry(definitions)
     manager = _FakeSessionManager()
     manager.provider_registry = registry
@@ -890,17 +827,7 @@ def _gate_harness(
 
 
 def _group_event(adapter: _RecorderAdapter, *, message_str: str = "hello", group_id: str = "g1") -> MessageEvent:
-    """
-    构造带群号的群消息事件, 使群路由绑定参与最终绑定解析
-
-    参数:
-    - adapter: 事件来源适配器
-    - message_str: 正文
-    - group_id: 群号
-
-    返回:
-    - MessageEvent: 群消息事件
-    """
+    """构造带群号的群消息事件, 使群路由绑定参与最终绑定解析"""
     message = PlatformMessage()
     message.type = PlatformMessageType.GROUP_MESSAGE
     message.self_id = "bot"
@@ -918,18 +845,7 @@ def _group_event(adapter: _RecorderAdapter, *, message_str: str = "hello", group
 
 
 def _spy_window_paths(scheduler: PipelineScheduler, monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[str]]:
-    """
-    记录入窗与排程调用并转发真实实现
-
-    参数:
-    - scheduler: 待观测的调度器
-    - monkeypatch: pytest 补丁器
-
-    返回:
-    - tuple[list[str], list[str]]: 入窗与排程的会话 ID 记录
-
-    转发真实实现才能同时断言"未被调用"与"调用结果与既有行为一致"
-    """
+    """记录入窗与排程调用并转发真实实现"""
     observes: list[str] = []
     schedules: list[str] = []
     original_observe = scheduler.wake_window.observe
@@ -949,16 +865,7 @@ def _spy_window_paths(scheduler: PipelineScheduler, monkeypatch: pytest.MonkeyPa
 
 
 def _diagnostic_rows(scheduler: PipelineScheduler, event: MessageEvent) -> list[dict[str, Any]]:
-    """
-    取事件对应的诊断阶段记录
-
-    参数:
-    - scheduler: 采集诊断的调度器
-    - event: 目标事件
-
-    返回:
-    - list[dict[str, Any]]: 阶段记录列表
-    """
+    """取事件对应的诊断阶段记录"""
     detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
     if detail is None:
         raise AssertionError("缺少诊断记录")
@@ -966,16 +873,7 @@ def _diagnostic_rows(scheduler: PipelineScheduler, event: MessageEvent) -> list[
 
 
 def _projection_rows(scheduler: PipelineScheduler, event: MessageEvent) -> list[tuple[Any, Any]]:
-    """
-    取事件的投影阶段结论
-
-    参数:
-    - scheduler: 采集诊断的调度器
-    - event: 目标事件
-
-    返回:
-    - list[tuple[Any, Any]]: (判定, 原因码) 列表, 收尾的发送阶段结论不计入
-    """
+    """取事件的投影阶段结论"""
     return [
         (row["decision"], row["reason_code"]) for row in _diagnostic_rows(scheduler, event)
         if row["stage"] == "projection"

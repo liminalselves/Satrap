@@ -14,7 +14,6 @@ import asyncio
 import sqlite3
 from pathlib import Path
 import pytest
-from typing import Any, cast
 from types import SimpleNamespace
 import json
 import time
@@ -27,93 +26,16 @@ from satrap.edictum.plugin_archive import PluginArchiveInstaller
 from satrap.edictum.plugin_catalog import PluginCatalog
 
 
-class _BufferWriter:
-    """记录控制服务响应的测试写入器"""
-
-    def __init__(self) -> None:
-        self.data = bytearray()
-        self.closed = False
-
-    def write(self, data: bytes) -> None:
-        """
-        记录响应字节
-
-        参数:
-        - data: 响应字节
-        """
-        self.data.extend(data)
-
-    async def drain(self) -> None:
-        """模拟等待响应写出"""
-
-    def close(self) -> None:
-        """记录连接关闭状态"""
-        self.closed = True
 
 
-async def _request(
-    path: str,
-    method: str = "GET",
-    body: bytes = b"",
-    *, authorized: bool = True,
-) -> bytes:
-    """
-    直接调用控制服务连接处理器 (默认携带测试令牌)
-
-    参数:
-    - path: 请求路径
-    - method: HTTP 方法
-    - body: 请求体
-    - authorized: 是否携带测试管理令牌
-
-    返回:
-    - bytes: 完整响应
-    """
-    reader = asyncio.StreamReader()
-    header = (
-        f"{method} {path} HTTP/1.1\r\n"
-        "Host: 127.0.0.1\r\n"
-        f"Authorization: Bearer {control_server._CONTROL_AUTH.token if authorized else 'invalid'}\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "Connection: close\r\n\r\n"
-    ).encode()
-    reader.feed_data(header + body)
-    reader.feed_eof()
-    writer = _BufferWriter()
-    await control_server._handle_request(
-        reader,
-        cast(asyncio.StreamWriter, writer),
-    )
-    assert writer.closed is True
-    return bytes(writer.data)
 
 
-def _json_body(response: bytes) -> dict[str, Any]:
-    """
-    解析响应 JSON 体
-
-    参数:
-    - response: 完整响应字节
-
-    返回:
-    - dict[str, Any]: JSON 对象
-    """
-    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
-    assert isinstance(payload, dict)
-    return payload
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('model_type', ['llm', 'embedding', 'rerank', 'asr'])
 async def test_model_get_keeps_config_version_and_file_unchanged(monkeypatch, tmp_path, model_type):
-    """
-    连续页面读取不能改写模型配置或触发版本重试
-
-    参数:
-    - monkeypatch: 隔离控制服务来源
-    - tmp_path: 测试配置目录
-    - model_type: 页面读取的模型类型
-    """
+    """连续页面读取不能改写模型配置或触发版本重试"""
     models = tmp_path / 'models.json'
     ModelConfigManager(storage_path=models)
     main = tmp_path / 'main.json'
@@ -134,13 +56,7 @@ async def test_model_get_keeps_config_version_and_file_unchanged(monkeypatch, tm
 
 @pytest.mark.asyncio
 async def test_model_versions_detect_external_edits_and_parallel_reads_are_stable(monkeypatch, tmp_path):
-    """
-    外部配置修改仍改变版本, 四种模型并发读取不再改写文件
-
-    参数:
-    - monkeypatch: 隔离控制服务来源
-    - tmp_path: 测试配置目录
-    """
+    """外部配置修改仍改变版本, 四种模型并发读取不再改写文件"""
     models = tmp_path / 'models.json'
     ModelConfigManager(storage_path=models)
     main = tmp_path / 'main.json'
@@ -252,29 +168,6 @@ async def test_single_plugin_read_does_not_construct_unrelated_services(monkeypa
     assert body['schema']
 
 
-def _use_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """
-    写入覆盖全部冷配置服务的最小配置并停止后端健康检查
-
-    参数:
-    - monkeypatch: pytest monkeypatch 夹具
-    - tmp_path: 临时目录
-    """
-    scan_dir = tmp_path / "sessions"
-    scan_dir.mkdir()
-    config_path = tmp_path / "config.json"
-    config_path.write_text(
-        json.dumps({
-            "data_root": str(tmp_path / "data"),
-            "model_config_path": str(tmp_path / "models.json"),
-            "session_class_config_path": str(tmp_path / "session-classes.json"),
-            "session_scan_paths": [str(scan_dir)],
-            "edictum_config_path": str(tmp_path / "edictum.json"),
-            "platforms": [],
-        }),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
 
 
 @pytest.mark.asyncio
@@ -676,12 +569,7 @@ async def test_concurrent_start_spawns_single_backend(
     monkeypatch.setattr(control_server, "_write_backend_runtime", _skip_runtime)
 
     def slow_health(*args: object, **kwargs: object) -> dict[str, object]:
-        """
-        模拟耗时的健康检查, 让两个请求都在检查阶段让出
-
-        返回:
-        - 始终未运行的健康结果
-        """
+        """模拟耗时的健康检查, 让两个请求都在检查阶段让出"""
         time.sleep(0.05)
         return {"running": False}
 
@@ -716,12 +604,7 @@ async def test_blocking_health_check_runs_off_event_loop(monkeypatch: pytest.Mon
     ticks = {"count": 0}
 
     def slow_health() -> dict[str, object]:
-        """
-        记录调用线程并模拟 200 毫秒的阻塞 IO
-
-        返回:
-        - 停止状态的健康结果
-        """
+        """记录调用线程并模拟 200 毫秒的阻塞 IO"""
         threads.append(threading.current_thread())
         time.sleep(0.2)
         return {"running": False}
@@ -781,12 +664,7 @@ class _FakeOsModule:
         self.exit_codes: list[int] = []
 
     def _exit(self, code: int) -> None:
-        """
-        记录退出码而不终止进程
-
-        参数:
-        - code: 退出码
-        """
+        """记录退出码而不终止进程"""
         self.exit_codes.append(code)
 
 
@@ -991,3 +869,4 @@ async def test_dynamic_conversation_platform_types_aggregate_same_ids_and_isolat
     finally:
         for context in contexts:
             context.close()
+from support.http import _json_body, _request, _use_config

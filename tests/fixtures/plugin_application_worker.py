@@ -25,7 +25,7 @@ from satrap.display.server import ChatHTTPServer
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.edictum.plugin_catalog import PluginCatalog
 from tests.unit.test_display_service import _FakeAsyncLLM, _make_service, _must_conversation
-from tests.unit.test_platform_plugin_apply_snapshot import _platforms, _release
+from tests.support.platform_application import _platforms, _release
 
 
 async def publish(path: Path, payload: dict[str, Any]) -> None:
@@ -232,7 +232,7 @@ async def main() -> None:
                 held.release()
                 held = None
             state = {"pid": os.getpid(), "instances": len(sessions), **counters,
-                "values": [session.list_plugins()[0].effective_config.get("about_text") if session.list_plugins() else None for session in sessions],
+                "values": [(await session.cmd_process("/about"))[0] if session.list_plugins() else None for session in sessions],
                 "same_handles": [bool(session.list_plugins()) and id(session.list_plugins()[0]) == old for session, old in zip(sessions, original_handles)],
                 "model_tasks": [{"done": task.done(), "cancelled": task.cancelled()} for task in model_tasks if task is not None]}
             await publish(local / "state.json", state)

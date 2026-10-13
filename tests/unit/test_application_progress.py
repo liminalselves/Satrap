@@ -14,14 +14,6 @@ from satrap.core.utils.application_progress import (
 from satrap.core.utils.performance import PhaseTimings
 
 
-async def _finished(registry: ApplicationOperations, key: str) -> dict:
-    """只读等候已登记的任务, 不提交第二次动作"""
-    for _attempt in range(100):
-        result = registry.get(key)
-        if result["status"] != "running":
-            return result
-        await asyncio.sleep(0.01)
-    raise AssertionError("已启动任务未结束")
 
 
 @pytest.mark.asyncio
@@ -292,3 +284,4 @@ async def test_cancellation_before_task_starts_releases_capacity() -> None:
     assert registry.get(key)["status"] == "cancelled" and not called
     registry.submit("early-cancel-operation-002", {}, apply)
     assert (await _finished(registry, "early-cancel-operation-002"))["status"] == "completed"
+from support.progress import _finished

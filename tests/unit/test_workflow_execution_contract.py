@@ -24,28 +24,14 @@ class Script:
     """记录外部模型的动态请求, 替身边界沿用 JSON 消息类型"""
 
     def __init__(self, replies: Sequence[LLMCallResponse | bool | BaseException]) -> None:
-        """
-        保存测试脚本或初始化响应记录
-
-        参数:
-        - replies: 预设模型响应或异常序列
-        """
+        """保存测试脚本或初始化响应记录"""
         self.replies = list(replies)
         self.requests: list[dict[str, Any]] = []
         self.observe: Callable[[], object] = lambda: None
         self.histories: list[object] = []
 
     def next(self, messages: list[dict[str, Any]], kwargs: dict[str, Any]) -> LLMCallResponse | bool:
-        """
-        记录请求及调用时历史, 返回预设响应或抛出预设异常
-
-        参数:
-        - messages: 本次模型请求消息
-        - kwargs: 本次模型请求的动态 JSON 参数
-
-        返回:
-        - 预设模型响应或失败标记, 预设异常直接抛出
-        """
+        """记录请求及调用时历史, 返回预设响应或抛出预设异常"""
         self.histories.append(copy.deepcopy(self.observe()))
         self.requests.append(copy.deepcopy({"messages": messages, **kwargs}))
         reply = self.replies.pop(0)
@@ -58,38 +44,15 @@ class SyncModel:
     model = "offline"
 
     def __init__(self, script: Script) -> None:
-        """
-        保存测试脚本或初始化响应记录
-
-        参数:
-        - script: 记录请求并提供预设结果的模型脚本
-        """
+        """保存测试脚本或初始化响应记录"""
         self.script = script
 
     def call(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMCallResponse | bool:
-        """
-        使用预设脚本模拟非流式模型响应
-
-        参数:
-        - messages: 本次模型请求消息
-        - kwargs: 本次模型请求的动态 JSON 参数
-
-        返回:
-        - 预设模型响应或失败标记
-        """
+        """使用预设脚本模拟非流式模型响应"""
         return self.script.next(messages, kwargs)
 
     def stream_call(self, messages: list[dict[str, Any]], **kwargs: Any) -> Iterator[LLMCallStreamEvent]:
-        """
-        使用预设脚本模拟思考, 内容和最终响应事件
-
-        参数:
-        - messages: 本次模型请求消息
-        - kwargs: 本次模型请求的动态 JSON 参数
-
-        返回:
-        - 思考, 内容和最终响应事件迭代器, 失败标记不产生最终事件
-        """
+        """使用预设脚本模拟思考, 内容和最终响应事件"""
         reply = self.script.next(messages, kwargs)
         if isinstance(reply, LLMCallResponse):
             yield LLMCallStreamEvent("thinking_delta", delta=reply.thinking or "")
@@ -101,38 +64,15 @@ class AsyncModel:
     model = "offline"
 
     def __init__(self, script: Script) -> None:
-        """
-        保存测试脚本或初始化响应记录
-
-        参数:
-        - script: 记录请求并提供预设结果的模型脚本
-        """
+        """保存测试脚本或初始化响应记录"""
         self.script = script
 
     async def call(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMCallResponse | bool:
-        """
-        使用预设脚本模拟非流式模型响应
-
-        参数:
-        - messages: 本次模型请求消息
-        - kwargs: 本次模型请求的动态 JSON 参数
-
-        返回:
-        - 预设模型响应或失败标记
-        """
+        """使用预设脚本模拟非流式模型响应"""
         return self.script.next(messages, kwargs)
 
     async def stream_call(self, messages: list[dict[str, Any]], **kwargs: Any) -> AsyncIterator[LLMCallStreamEvent]:
-        """
-        使用预设脚本模拟思考, 内容和最终响应事件
-
-        参数:
-        - messages: 本次模型请求消息
-        - kwargs: 本次模型请求的动态 JSON 参数
-
-        返回:
-        - 思考, 内容和最终响应事件迭代器, 失败标记不产生最终事件
-        """
+        """使用预设脚本模拟思考, 内容和最终响应事件"""
         reply = self.script.next(messages, kwargs)
         if isinstance(reply, LLMCallResponse):
             yield LLMCallStreamEvent("thinking_delta", delta=reply.thinking or "")
@@ -146,12 +86,7 @@ class Noop(Tool):
     params_dict = {}
 
     def execute(self) -> str:
-        """
-        返回固定工具结果以验证执行轮数
-
-        返回:
-        - 固定工具结果文本
-        """
+        """返回固定工具结果以验证执行轮数"""
         return "工具结果"
 
 
@@ -161,38 +96,17 @@ class AsyncNoop(AsyncTool):
     params_dict = {}
 
     async def execute(self) -> str:
-        """
-        返回固定工具结果以验证执行轮数
-
-        返回:
-        - 固定工具结果文本
-        """
+        """返回固定工具结果以验证执行轮数"""
         return "工具结果"
 
 
 async def make_workflow(tmp_path: Path, script: Script, asynchronous: bool, recoverable: bool) -> tuple[Workflow, list[str]]:
-    """
-    构造带有既存历史的工作流并收集回调
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - script: 记录请求并提供预设结果的模型脚本
-    - asynchronous: 是否使用原生异步工作流
-    - recoverable: 是否启用执行记录与恢复
-
-    返回:
-    - 工作流及回调输出列表
-    """
+    """构造带有既存历史的工作流并收集回调"""
     events: list[str] = []
     database = str(tmp_path / "history.db")
     if asynchronous:
         async def callback(text: str) -> None:
-            """
-            收集异步模型回调
-
-            参数:
-            - text: 模型回调输出
-            """
+            """收集异步模型回调"""
             events.append(text)
         wf = AsyncModelWorkflowFramework(cast(AsyncLLM, AsyncModel(script)), "test", db_path=database,
                                          recoverable=recoverable, content_callback=callback, return_thinking=True)
@@ -203,12 +117,7 @@ async def make_workflow(tmp_path: Path, script: Script, asynchronous: bool, reco
         await wf.ctx.load_context()
     else:
         def sync_callback(text: str) -> None:
-            """
-            收集同步模型回调
-
-            参数:
-            - text: 模型回调输出
-            """
+            """收集同步模型回调"""
             events.append(text)
         wf = ModelWorkflowFramework(cast(LLM, SyncModel(script)), "test", db_path=database,
                                     recoverable=recoverable, content_callback=sync_callback, return_thinking=True)
@@ -221,17 +130,7 @@ async def make_workflow(tmp_path: Path, script: Script, asynchronous: bool, reco
 
 
 async def invoke(wf: Workflow, stream: bool, iterations: int = 1) -> str:
-    """
-    通过指定入口调用统一工作流
-
-    参数:
-    - wf: 待验证的工作流
-    - stream: 是否使用流式模型入口
-    - iterations: 最大工具轮数, 默认 1
-
-    返回:
-    - 最终回答, 执行异常向外传播
-    """
+    """通过指定入口调用统一工作流"""
     if isinstance(wf, AsyncModelWorkflowFramework):
         if stream:
             return await wf.stream_full_agent("新输入", thinking="high", max_iterations=iterations)
@@ -242,15 +141,7 @@ async def invoke(wf: Workflow, stream: bool, iterations: int = 1) -> str:
 
 
 def stored_history(wf: Workflow) -> list[tuple[str, str]]:
-    """
-    读取实际落库消息以验证原子提交
-
-    参数:
-    - wf: 待验证的工作流
-
-    返回:
-    - 按写入顺序排列的角色和内容列表
-    """
+    """读取实际落库消息以验证原子提交"""
     with sqlite3.connect(wf.ctx.db_path) as db:
         return db.execute("SELECT role,content FROM chat_history WHERE conversation_id=? ORDER BY id", (wf.ctx.conversation_id,)).fetchall()
 
@@ -261,16 +152,7 @@ def stored_history(wf: Workflow) -> list[tuple[str, str]]:
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("iterations", [0, 1, 2])
 async def test_iterations_thinking_and_atomic_history(tmp_path: Path, asynchronous: bool, recoverable: bool, stream: bool, iterations: int) -> None:
-    """
-    验证各入口共用轮数上限, 思考参数与整轮提交约定
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - asynchronous: 是否使用原生异步工作流
-    - recoverable: 是否启用执行记录与恢复
-    - stream: 是否使用流式模型入口
-    - iterations: 最大工具轮数, 默认 1
-    """
+    """验证各入口共用轮数上限, 思考参数与整轮提交约定"""
     rounds = max(1, iterations)
     script = Script([TOOLS] * rounds + [ANSWER])
     wf, events = await make_workflow(tmp_path, script, asynchronous, recoverable)
@@ -295,16 +177,7 @@ async def test_iterations_thinking_and_atomic_history(tmp_path: Path, asynchrono
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("failure", ["first", "later", "final_tools", "cancel"])
 async def test_failures_never_commit_partial_history(tmp_path: Path, asynchronous: bool, recoverable: bool, stream: bool, failure: str) -> None:
-    """
-    验证失败或取消向外传播且不留下部分历史
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - asynchronous: 是否使用原生异步工作流
-    - recoverable: 是否启用执行记录与恢复
-    - stream: 是否使用流式模型入口
-    - failure: 待模拟的失败阶段或取消类型
-    """
+    """验证失败或取消向外传播且不留下部分历史"""
     replies: list[LLMCallResponse | bool | BaseException] = {
         "first": [False], "later": [TOOLS, False], "final_tools": [TOOLS, TOOLS],
         "cancel": [asyncio.CancelledError()],
@@ -326,13 +199,7 @@ async def test_failures_never_commit_partial_history(tmp_path: Path, asynchronou
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_memory_only_execution_does_not_flush(tmp_path: Path, asynchronous: bool) -> None:
-    """
-    验证普通内存模式成功后仍不写入数据库
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - asynchronous: 是否使用原生异步工作流
-    """
+    """验证普通内存模式成功后仍不写入数据库"""
     script = Script([ANSWER])
     wf, _ = await make_workflow(tmp_path, script, asynchronous, False)
     wf.ctx.keep_in_memory = True
@@ -344,13 +211,7 @@ async def test_memory_only_execution_does_not_flush(tmp_path: Path, asynchronous
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_sql_failure_rolls_back_complete_turn(tmp_path: Path, asynchronous: bool) -> None:
-    """
-    通过真实数据库写入失败验证内存和持久化历史回滚
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - asynchronous: 是否使用原生异步工作流
-    """
+    """通过真实数据库写入失败验证内存和持久化历史回滚"""
     script = Script([ANSWER])
     wf, _ = await make_workflow(tmp_path, script, asynchronous, False)
     original = copy.deepcopy(wf.ctx.get_context())
@@ -365,13 +226,7 @@ async def test_sql_failure_rolls_back_complete_turn(tmp_path: Path, asynchronous
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_legacy_executor_returns_false_on_failure(tmp_path: Path, asynchronous: bool) -> None:
-    """
-    验证兼容执行器仍使用二元组报告失败
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - asynchronous: 是否使用原生异步工作流
-    """
+    """验证兼容执行器仍使用二元组报告失败"""
     script = Script([False])
     wf, _ = await make_workflow(tmp_path, script, asynchronous, False)
     original = copy.deepcopy(wf.ctx.get_context())
@@ -387,14 +242,7 @@ async def test_legacy_executor_returns_false_on_failure(tmp_path: Path, asynchro
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("recoverable", [False, True])
 async def test_non_stream_session_supports_thinking(tmp_path: Path, asynchronous: bool, recoverable: bool) -> None:
-    """
-    验证会话非流式入口向模型传递思考强度
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - asynchronous: 是否使用原生异步工作流
-    - recoverable: 是否启用执行记录与恢复
-    """
+    """验证会话非流式入口向模型传递思考强度"""
     from satrap import SimpleSession, AsyncSimpleSession
 
     script = Script([ANSWER])
@@ -413,13 +261,7 @@ async def test_non_stream_session_supports_thinking(tmp_path: Path, asynchronous
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_existing_positional_images_remain_compatible(tmp_path: Path, asynchronous: bool) -> None:
-    """
-    验证新增思考参数不改变原图片位置参数含义
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - asynchronous: 是否使用原生异步工作流
-    """
+    """验证新增思考参数不改变原图片位置参数含义"""
     script = Script([ANSWER])
     wf, _ = await make_workflow(tmp_path, script, asynchronous, False)
     wf.llm.supports_visual_input = True
@@ -437,13 +279,7 @@ async def test_existing_positional_images_remain_compatible(tmp_path: Path, asyn
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_resume_preserves_original_thinking(tmp_path: Path, asynchronous: bool) -> None:
-    """
-    验证恢复执行沿用原任务的思考强度
-
-    参数:
-    - tmp_path: 隔离测试数据库的临时目录
-    - asynchronous: 是否使用原生异步工作流
-    """
+    """验证恢复执行沿用原任务的思考强度"""
     from satrap.core.framework.Base.execution.engine import run_async, run_sync
 
     script = Script([False, ANSWER])

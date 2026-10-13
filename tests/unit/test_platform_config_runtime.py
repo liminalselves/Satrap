@@ -41,14 +41,7 @@ def _require_manager(backend: BackendManager) -> PlatformAdapterManager:
 
 
 def _scheduler_session_manager() -> AsyncMock:
-    """
-    构造管线测试用的会话管理器替身
-
-    返回:
-    - AsyncMock: 只记录 handle_call_async 调用, 绑定判定恒为可运行
-
-    这些用例只关心配置热更新对事件与窗口的影响, 因此不引入真实注册表
-    """
+    """构造管线测试用的会话管理器替身"""
     manager = AsyncMock()
     manager.handle_call_async.return_value = ""
     manager.provider_registry = SimpleNamespace(
@@ -450,18 +443,7 @@ class _BindingRegistry:
         self.calls: list[tuple[str, str | None]] = []
 
     def binding_status(self, definition_name: str, provider_name: str | None = None) -> BindingStatus:
-        """
-        记录判定调用并答复三态
-
-        参数:
-        - definition_name: 会话定义名称
-        - provider_name: 会话 Provider 名称
-
-        返回:
-        - BindingStatus: 未登记的 Provider 与未登记的定义按失效处理, 定义存在但未启用按禁用处理
-
-        与生产实现同构, 生产实现自身的三态语义由 test_session_providers.py 覆盖
-        """
+        """记录判定调用并答复三态"""
         self.calls.append((definition_name, provider_name))
         location = f"provider={provider_name or ''}, name={definition_name}"
         if provider_name is not None and provider_name not in self.providers:
@@ -473,18 +455,7 @@ class _BindingRegistry:
         return BindingStatus(BindingState.RUNNABLE)
 
     def resolve_definition(self, definition_name: str, provider_name: str | None = None) -> tuple[object, object] | None:
-        """
-        记录解析调用并答复定义替身
-
-        参数:
-        - definition_name: 会话定义名称
-        - provider_name: 会话 Provider 名称
-
-        返回:
-        - tuple[object, object] | None: 名称未登记时返回 None
-
-        未登记的 Provider 按注册表既有语义抛异常, 用于覆盖"Provider 不存在也属失效绑定"
-        """
+        """记录解析调用并答复定义替身"""
         self.calls.append((definition_name, provider_name))
         if provider_name is not None and provider_name not in self.providers:
             raise ValueError(f"未知会话 Provider: {provider_name}")
@@ -501,12 +472,7 @@ class _LifecycleAdapter(PlatformAdapter):
         await asyncio.Future()
 
     def meta(self) -> PlatformMetadata:
-        """
-        返回适配器元数据
-
-        返回:
-        - PlatformMetadata: 名称与 id 均取平台配置 id
-        """
+        """返回适配器元数据"""
         return PlatformMetadata(name=self.config.id, id=self.config.id)
 
 
@@ -523,21 +489,11 @@ class _RecordingScheduler:
         self.cleared.append(adapter_id)
 
     async def clear_manual_wakes(self, adapter_id: str) -> None:
-        """
-        记录手动唤醒清理
-
-        参数:
-        - adapter_id: 平台实例 id
-        """
+        """记录手动唤醒清理"""
         self.cleared.append(adapter_id)
 
     def set_platform_runtimes(self, runtimes: dict[str, object]) -> None:
-        """
-        记录平台运行时刷新
-
-        参数:
-        - runtimes: 平台运行时映射
-        """
+        """记录平台运行时刷新"""
         self.runtime_updates += 1
 
 
@@ -559,18 +515,7 @@ def _lifecycle_backend(
     definitions: dict[str, bool],
     providers: set[str] | None = None,
 ) -> _Lifecycle:
-    """
-    装配运行中的后端: 管理器, 分发器与鸭子运行时齐备, 供定向替换断言使用
-
-    参数:
-    - tmp_path: 临时目录, 必须已存在
-    - platform: 目标平台配置, 会被写入启动配置文件
-    - definitions: 会话定义名到是否启用的映射, 未列出的定义不存在
-    - providers: 已注册的 Provider 名称集合, 默认只含 session_class
-
-    返回:
-    - _Lifecycle: 装配件集合, registry 携带解析调用记录
-    """
+    """装配运行中的后端: 管理器, 分发器与鸭子运行时齐备, 供定向替换断言使用"""
     backend, _, path, _ = setup_runtime(tmp_path)
     manager = _require_manager(backend)
     manager.registry.register("probe-runtime", _LifecycleAdapter)
@@ -603,31 +548,13 @@ def _write_many(path: Path, platforms: list[dict[str, Any]]) -> None:
 
 
 def _dangling_platform(enabled: bool, session_type: str = "missing-session") -> dict[str, Any]:
-    """
-    构造绑定失效的平台配置
-
-    参数:
-    - enabled: 平台是否启用
-    - session_type: 绑定的会话类配置名称
-
-    返回:
-    - dict[str, Any]: 平台配置
-    """
+    """构造绑定失效的平台配置"""
     return {"id": "bot", "type": "probe-runtime", "enable": enabled, "session_provider": "session_class",
             "session_type": session_type, "settings": {}}
 
 
 def _bound_platform(session_type: str = "bot-session", enabled: bool = True) -> dict[str, Any]:
-    """
-    构造绑定有效的平台配置
-
-    参数:
-    - session_type: 绑定的会话类配置名称
-    - enabled: 平台是否启用
-
-    返回:
-    - dict[str, Any]: 平台配置
-    """
+    """构造绑定有效的平台配置"""
     return {"id": "bot", "type": "probe-runtime", "enable": enabled, "session_provider": "session_class",
             "session_type": session_type, "settings": {}}
 
@@ -850,16 +777,7 @@ async def test_init_platform_enabled_with_missing_definition_is_rejected(tmp_pat
 
 
 def _spy_binding_status(calls: list[tuple[str, str | None]], status: BindingStatus) -> Any:
-    """
-    构造记录调用的三态判定替身
-
-    参数:
-    - calls: 调用记录列表, 原地追加 (定义名, Provider 名)
-    - status: 恒定答复的判定结果
-
-    返回:
-    - Callable[..., BindingStatus]: 供替换注册表方法的无绑定函数, 用 staticmethod 包裹避免注入 self
-    """
+    """构造记录调用的三态判定替身"""
     def spy(definition_name: str, provider_name: str | None = None) -> BindingStatus:
         calls.append((definition_name, provider_name))
         return status
@@ -1024,16 +942,7 @@ async def test_route_store_failure_preserves_hot_platform_settings(tmp_path: Pat
 
 
 def _hot_route_event(adapter: PlatformAdapter, private: bool) -> MessageEvent:
-    """
-    创建持有真实路由代次的事件, 不提交到平台或模型
-
-    参数:
-    - adapter: 当前运行中的适配器
-    - private: 是否为私聊事件
-
-    返回:
-    - 已冻结账号, 对话身份和 Agent 绑定的事件
-    """
+    """创建持有真实路由代次的事件, 不提交到平台或模型"""
     message = PlatformMessage()
     message.type = PlatformMessageType.FRIEND_MESSAGE if private else PlatformMessageType.GROUP_MESSAGE
     message.self_id = "999000000"
@@ -1049,13 +958,7 @@ def _hot_route_event(adapter: PlatformAdapter, private: bool) -> MessageEvent:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["session_class", "edictum"])
 async def test_typed_binding_hot_apply_preserves_receiver_and_unaffected_group(tmp_path: Path, provider: str) -> None:
-    """
-    验证类型绑定在线应用, 保留接收任务和未变更群路由, 废止旧私聊输出
-
-    参数:
-    - tmp_path: 隔离配置和路由存储
-    - provider: 同步类与 Edictum 均使用通用更新入口
-    """
+    """验证类型绑定在线应用, 保留接收任务和未变更群路由, 废止旧私聊输出"""
     platform = dict(_bound_platform(), session_provider=provider, session_bindings={
         kind: {"mode": "value", "provider": provider, "config_name": "bot-session"} for kind in ("private", "group")
     })
@@ -1088,14 +991,7 @@ async def test_typed_binding_hot_apply_preserves_receiver_and_unaffected_group(t
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["disabled", "unknown_kind", "storage"])
 async def test_binding_hot_apply_failure_keeps_actual_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
-    """
-    绑定校验与路由写入失败保持实际配置, 不停止接收或报告新版本已应用
-
-    参数:
-    - tmp_path: 隔离配置目录
-    - monkeypatch: 注入路由存储失败
-    - failure: 失效 Agent, 未声明类型或路由持久化故障
-    """
+    """绑定校验与路由写入失败保持实际配置, 不停止接收或报告新版本已应用"""
     life = _lifecycle_backend(tmp_path, _bound_platform(), {"bot-session": True, "private-agent": failure != "disabled"})
     await life.old.start()
     original_config = life.old.config
@@ -1121,13 +1017,7 @@ async def test_binding_hot_apply_failure_keeps_actual_config(tmp_path: Path, mon
 
 @pytest.mark.asyncio
 async def test_route_hot_apply_with_real_onebot_websocket(tmp_path: Path, unused_tcp_port: int) -> None:
-    """
-    保持真实 SDK 的反向 WebSocket 连接时更改绑定, 验证不进入停止监听器路径
-
-    参数:
-    - tmp_path: 隔离配置和路由存储
-    - unused_tcp_port: 测试专用监听端口, 不连接 QQ 或 SnowLuma
-    """
+    """保持真实 SDK 的反向 WebSocket 连接时更改绑定, 验证不进入停止监听器路径"""
     import inspect
     import websockets
 

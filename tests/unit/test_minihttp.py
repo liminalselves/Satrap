@@ -41,20 +41,7 @@ class _EchoServer(MiniHTTPServer):
         hold_websocket: bool = False,
         log_errors: bool = False,
     ) -> None:
-        """
-        初始化可调请求限制的测试服务器
-
-        参数:
-        - max_header_bytes: 请求头最大字节数
-        - max_body_bytes: 请求体最大字节数
-        - header_timeout: 请求头读取超时秒数
-        - max_connections: 最大并发连接数
-        - max_websocket_connections: 最大 WebSocket 并发连接数
-        - websocket_idle_timeout: WebSocket 客户端空闲超时秒数
-        - websocket_ping_interval: WebSocket 服务端 ping 间隔秒数
-        - hold_websocket: 是否保持测试 WebSocket 不主动关闭
-        - log_errors: 是否开启连接异常日志, 日志级别断言用例需要打开
-        """
+        """初始化可调请求限制的测试服务器"""
         auth = ServerAuth.create(
             "127.0.0.1",
             0,
@@ -94,26 +81,14 @@ class _FailingDispatchServer(_EchoServer):
     """WebSocket 分发抛指定异常的测试服务器"""
 
     def __init__(self, error: BaseException) -> None:
-        """
-        初始化固定抛出指定异常的分发器
-
-        参数:
-        - error: 分发会话时抛出的异常
-        """
+        """初始化固定抛出指定异常的分发器"""
         super().__init__(log_errors=True)
         self._dispatch_error = error
 
     async def _ws_dispatch(
         self, path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """
-        抛出预置异常
-
-        参数:
-        - path: 路径
-        - reader: 流读取器
-        - writer: 流写入器
-        """
+        """抛出预置异常"""
         raise self._dispatch_error
 
 
@@ -125,12 +100,7 @@ class _MemoryWriter:
         self.data = bytearray()
 
     def write(self, data: bytes) -> None:
-        """
-        追加响应字节
-
-        参数:
-        - data: 待记录的响应字节
-        """
+        """追加响应字节"""
         self.data.extend(data)
 
 
@@ -139,13 +109,7 @@ class _MemoryWriter:
     [(201, "Created"), (204, "No Content"), (599, "Unknown Status")],
 )
 def test_send_json_uses_standard_status_reason(status: int, reason: str):
-    """
-    JSON 响应状态行使用标准 reason phrase 并安全处理未知状态码
-
-    参数:
-    - status: 参数化 HTTP 状态码
-    - reason: 预期 reason phrase
-    """
+    """JSON 响应状态行使用标准 reason phrase 并安全处理未知状态码"""
     server = _EchoServer()
     writer = _MemoryWriter()
     server._send_json(cast(asyncio.StreamWriter, writer), status, {"ok": True})
@@ -153,15 +117,7 @@ def test_send_json_uses_standard_status_reason(status: int, reason: str):
 
 
 async def _start_server(server: MiniHTTPServer) -> int:
-    """
-    启动服务器并返回实际监听端口 (port=0 系统分配)
-
-    参数:
-    - server: 服务器
-
-    返回:
-    - int: 实际监听端口 (port=0 系统分配)
-    """
+    """启动服务器并返回实际监听端口 (port=0 系统分配)"""
     await server.start()
     assert server._server is not None
     sockets = server._server.sockets
@@ -170,16 +126,7 @@ async def _start_server(server: MiniHTTPServer) -> int:
 
 
 async def _raw_request(port: int, request: bytes) -> bytes:
-    """
-    建立 TCP 连接发送原始 HTTP 请求, 返回完整响应字节
-
-    参数:
-    - port: 端口
-    - request: 请求对象
-
-    返回:
-    - bytes: 完整响应字节
-    """
+    """建立 TCP 连接发送原始 HTTP 请求, 返回完整响应字节"""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(request)
     await writer.drain()
@@ -193,16 +140,7 @@ async def _raw_request(port: int, request: bytes) -> bytes:
 
 
 def _websocket_request(path: str = "/ws/test", key: str = "dGhlIHNhbXBsZSBub25jZQ==") -> bytes:
-    """
-    构造带鉴权的 WebSocket 升级请求
-
-    参数:
-    - path: WebSocket 路径
-    - key: WebSocket 握手密钥
-
-    返回:
-    - bytes: 原始 HTTP 升级请求
-    """
+    """构造带鉴权的 WebSocket 升级请求"""
     return (
         f"GET {path} HTTP/1.1\r\n"
         "Host: 127.0.0.1\r\n"
@@ -217,15 +155,7 @@ def _websocket_request(path: str = "/ws/test", key: str = "dGhlIHNhbXBsZSBub25jZ
 async def _read_server_websocket_frame(
     reader: asyncio.StreamReader,
 ) -> tuple[int, bytes]:
-    """
-    读取一个未掩码的服务端 WebSocket 帧
-
-    参数:
-    - reader: 流读取器
-
-    返回:
-    - tuple[int, bytes]: 操作码与载荷
-    """
+    """读取一个未掩码的服务端 WebSocket 帧"""
     first, second = await reader.readexactly(2)
     length = second & 0x7F
     if length == 126:
@@ -236,14 +166,7 @@ async def _read_server_websocket_frame(
 
 
 async def _wait_for_counter(server: MiniHTTPServer, name: str, value: int) -> None:
-    """
-    等待服务器连接计数达到预期值
-
-    参数:
-    - server: 服务器
-    - name: 计数字段名称
-    - value: 预期计数
-    """
+    """等待服务器连接计数达到预期值"""
     async def matches() -> None:
         """让出事件循环直至连接计数匹配"""
         while getattr(server, name) != value:
@@ -257,17 +180,7 @@ async def _json_get(
     path: str,
     token: str | None = "test-token-that-is-at-least-thirty-two-characters",
 ) -> tuple[int, dict[str, object]]:
-    """
-    发送 GET 请求并解析 JSON 响应
-
-    参数:
-    - port: 端口
-    - path: 路径
-    - token: Bearer 令牌; 为 None 时不发送鉴权头
-
-    返回:
-    - tuple[int, dict[str, Any]]: 发送 GET 请求并解析 JSON 响应
-    """
+    """发送 GET 请求并解析 JSON 响应"""
     authorization = f"Authorization: Bearer {token}\r\n" if token else ""
     request = (
         f"GET {path} HTTP/1.1\r\n"
@@ -291,12 +204,7 @@ async def echo_server() -> Any:
 
 @pytest.mark.asyncio
 async def test_json_get_and_query_param(echo_server: int):
-    """
-    GET 返回 JSON, query 参数经 _query_param 解析
-
-    参数:
-    - echo_server: echo服务器
-    """
+    """GET 返回 JSON, query 参数经 _query_param 解析"""
     port = echo_server
     status, data = await _json_get(port, "/api/echo?x=hello%20world")
     assert status == 200
@@ -306,12 +214,7 @@ async def test_json_get_and_query_param(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_unknown_route_404(echo_server: int):
-    """
-    未知路由返回 404 JSON
-
-    参数:
-    - echo_server: echo服务器
-    """
+    """未知路由返回 404 JSON"""
     port = echo_server
     status, data = await _json_get(port, "/api/nope")
     assert status == 404
@@ -320,12 +223,7 @@ async def test_unknown_route_404(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_api_requires_authentication(echo_server: int):
-    """
-    普通 API 缺少令牌时返回 401
-
-    参数:
-    - echo_server: 测试服务器端口
-    """
+    """普通 API 缺少令牌时返回 401"""
     status, data = await _json_get(echo_server, "/api/echo", token=None)
     assert status == 401
     assert data["error"] == "unauthorized"
@@ -333,12 +231,7 @@ async def test_api_requires_authentication(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_cors_preflight(echo_server: int):
-    """
-    OPTIONS 预检返回 204 + CORS 头
-
-    参数:
-    - echo_server: echo服务器
-    """
+    """OPTIONS 预检返回 204 + CORS 头"""
     port = echo_server
     request = b"OPTIONS /api/echo HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://localhost:5173\r\n\r\n"
     resp = await _raw_request(port, request)
@@ -351,12 +244,7 @@ async def test_cors_preflight(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_untrusted_origin_is_rejected(echo_server: int):
-    """
-    非白名单浏览器来源在鉴权前直接拒绝
-
-    参数:
-    - echo_server: 测试服务器端口
-    """
+    """非白名单浏览器来源在鉴权前直接拒绝"""
     request = (
         b"GET /api/echo HTTP/1.1\r\n"
         b"Host: 127.0.0.1\r\n"
@@ -370,12 +258,7 @@ async def test_untrusted_origin_is_rejected(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_websocket_handshake_and_frame(echo_server: int):
-    """
-    WS 握手返回 101, 随后收到文本帧与关闭帧
-
-    参数:
-    - echo_server: echo服务器
-    """
+    """WS 握手返回 101, 随后收到文本帧与关闭帧"""
     port = echo_server
     request = (
         b"GET /ws/test HTTP/1.1\r\n"
@@ -402,12 +285,7 @@ async def test_websocket_handshake_and_frame(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_websocket_rejects_missing_authentication(echo_server: int):
-    """
-    WebSocket 握手必须携带有效 Bearer 或会话 Cookie
-
-    参数:
-    - echo_server: 测试服务器端口
-    """
+    """WebSocket 握手必须携带有效 Bearer 或会话 Cookie"""
     request = (
         b"GET /ws/test HTTP/1.1\r\n"
         b"Host: 127.0.0.1\r\n"
@@ -513,12 +391,7 @@ async def test_websocket_ping_and_idle_timeout_close_inactive_client():
 
 @pytest.mark.asyncio
 async def test_loopback_browser_can_establish_http_only_session(echo_server: int):
-    """
-    白名单本地前端可建立 HttpOnly Cookie 会话
-
-    参数:
-    - echo_server: 测试服务器端口
-    """
+    """白名单本地前端可建立 HttpOnly Cookie 会话"""
     request = (
         b"POST /auth/session HTTP/1.1\r\n"
         b"Host: 127.0.0.1\r\n"
@@ -606,15 +479,7 @@ async def test_slow_request_header_returns_408():
 
 
 def _make_chat_server(tmp_path: Path) -> ChatHTTPServer:
-    """
-    构造 ChatHTTPServer (fake 模型配置, 不启动端口)
-
-    参数:
-    - tmp_path: tmp路径
-
-    返回:
-    - ChatHTTPServer: 构造 ChatHTTPServer (fake 模型配置, 不启动端口)
-    """
+    """构造 ChatHTTPServer (fake 模型配置, 不启动端口)"""
     from satrap.core.type import LLMConfig
 
     class _FakeModelConfig:
@@ -638,12 +503,7 @@ def _make_chat_server(tmp_path: Path) -> ChatHTTPServer:
 
 @pytest.mark.asyncio
 async def test_chat_server_health_route(tmp_path: Path):
-    """
-    聊天服务器 HTTP 层: /api/chat/health
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """聊天服务器 HTTP 层: /api/chat/health"""
     server = _make_chat_server(tmp_path)
     status, data = await server._route("GET", "/api/chat/health", b"")
     assert status == 200
@@ -652,12 +512,7 @@ async def test_chat_server_health_route(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_chat_server_lists_conversations_from_service_database(tmp_path: Path):
-    """
-    会话列表接口必须读取 ChatService 当前平台数据库
-
-    参数:
-    - tmp_path: 临时目录
-    """
+    """会话列表接口必须读取 ChatService 当前平台数据库"""
     server = _make_chat_server(tmp_path)
     recorder = DisplayRecorder(
         db_path=server.service._display_db_path,
@@ -675,12 +530,7 @@ async def test_chat_server_lists_conversations_from_service_database(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_chat_server_manages_history_and_trash(tmp_path: Path):
-    """
-    Chat 热管理接口应查询、回收并恢复完整历史
-
-    参数:
-    - tmp_path: 临时目录
-    """
+    """Chat 热管理接口应查询、回收并恢复完整历史"""
     server = _make_chat_server(tmp_path)
     recorder = DisplayRecorder(
         db_path=server.service._display_db_path,

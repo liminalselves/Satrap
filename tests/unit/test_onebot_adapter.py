@@ -27,12 +27,7 @@ class _RunnableRegistry:
 
     @staticmethod
     def binding_status(*_args: object) -> BindingStatus:
-        """
-        恒定答复可运行
-
-        返回:
-        - BindingStatus: 可运行
-        """
+        """恒定答复可运行"""
         return BindingStatus(BindingState.RUNNABLE)
 
 

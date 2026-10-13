@@ -28,12 +28,6 @@ from satrap.core.platform.onebot.request_registry import (
 from satrap.core.platform import PlatformAdapter, PlatformConfig
 
 
-def _adapter(**settings: object) -> OneBotAdapter:
-    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings=dict(settings)))
-    adapter._bot = AsyncMock()
-    if not adapter.bot_self_id:
-        adapter.bot_self_id = "10000"
-    return adapter
 
 
 async def _register_flag(
@@ -807,3 +801,4 @@ class TestRequestRegistration:
             await _occupy_flag(adapter, "group", "alien", group_id="456", sub_type="add")
         with pytest.raises(LookupError):
             await _occupy_flag(adapter, "friend", "no-self")
+from support.onebot import _adapter

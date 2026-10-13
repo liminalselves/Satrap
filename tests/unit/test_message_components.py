@@ -148,15 +148,7 @@ async def test_file_download_uses_server_generated_safe_name(
     name: str,
     expected_suffix: str,
 ) -> None:
-    """
-    外部文件名仅用于展示, 不能影响临时目录内的落盘路径
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    - name: 参数化外部文件名
-    - expected_suffix: 预期保留的安全扩展名
-    """
+    """外部文件名仅用于展示, 不能影响临时目录内的落盘路径"""
     from satrap.core.components import message as message_mod
 
     temp_root = tmp_path / "temp"
@@ -164,16 +156,7 @@ async def test_file_download_uses_server_generated_safe_name(
     captured: list[Path] = []
 
     async def fake_download(url: str, path: str) -> str:
-        """
-        记录下载目标而不发起网络请求
-
-        参数:
-        - url: 模拟下载地址
-        - path: 服务端生成的目标路径
-
-        返回:
-        - 原样返回目标路径
-        """
+        """记录下载目标而不发起网络请求"""
         captured.append(Path(path))
         return path
 
@@ -277,13 +260,7 @@ def test_component_types_mapping_contains_astrbot_keys():
 async def test_media_source_whitelist_rejects_paths_outside_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """
-    消息组件不得读取媒体白名单之外的本地路径, 防止本地文件随消息外发
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """消息组件不得读取媒体白名单之外的本地路径, 防止本地文件随消息外发"""
     from satrap.core.utils import paths as paths_mod
 
     fake_root = tmp_path / "allowed"
@@ -308,13 +285,7 @@ async def test_media_source_whitelist_rejects_paths_outside_roots(
 
 @pytest.mark.asyncio
 async def test_media_source_whitelist_allows_extra_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    SATRAP_EXTRA_MEDIA_ROOTS 追加的根目录内路径可正常读取
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """SATRAP_EXTRA_MEDIA_ROOTS 追加的根目录内路径可正常读取"""
     extra = tmp_path / "extra"
     extra.mkdir()
     picture = extra / "pic.png"

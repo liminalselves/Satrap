@@ -115,7 +115,14 @@ def test_plugin_application_across_actual_processes(tmp_path: Path) -> None:
         - 当前实例及真实生命周期计数, 首次发布前返回空字典
         """
         path = tmp_path / kind / "state.json"
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.01)  # Windows 原子替换期间可能短暂占用读取句柄
 
     try:
         chat = start("chat")

@@ -48,13 +48,7 @@ class _ThreadProcess:
         target: Callable[..., None],
         args: tuple[object, ...],
     ) -> None:
-        """
-        初始化线程承载的 worker
-
-        参数:
-        - target: worker 入口
-        - args: worker 参数
-        """
+        """初始化线程承载的 worker"""
         self._thread = threading.Thread(target=target, args=args, daemon=True)
 
     def start(self) -> None:
@@ -62,21 +56,11 @@ class _ThreadProcess:
         self._thread.start()
 
     def join(self, timeout: float | None = None) -> None:
-        """
-        等待 worker 线程结束
-
-        参数:
-        - timeout: 最大等待秒数
-        """
+        """等待 worker 线程结束"""
         self._thread.join(timeout)
 
     def is_alive(self) -> bool:
-        """
-        检查 worker 线程是否仍在运行
-
-        返回:
-        - worker 线程是否仍在运行
-        """
+        """检查 worker 线程是否仍在运行"""
         return self._thread.is_alive()
 
     def terminate(self) -> None:
@@ -96,41 +80,20 @@ class _ThreadConnection:
         incoming: queue.Queue[object],
         outgoing: queue.Queue[object],
     ) -> None:
-        """
-        初始化队列连接端点
-
-        参数:
-        - incoming: 当前端点的接收队列
-        - outgoing: 对端的接收队列
-        """
+        """初始化队列连接端点"""
         self._incoming = incoming
         self._outgoing = outgoing
 
     def send(self, value: object) -> None:
-        """
-        向对端发送消息
-
-        参数:
-        - value: 待发送消息
-        """
+        """向对端发送消息"""
         self._outgoing.put(value)
 
     def recv(self) -> object:
-        """
-        接收对端消息
-
-        返回:
-        - 对端发送的消息
-        """
+        """接收对端消息"""
         return self._incoming.get()
 
     def poll(self) -> bool:
-        """
-        检查是否存在待接收消息
-
-        返回:
-        - 是否存在待接收消息
-        """
+        """检查是否存在待接收消息"""
         return not self._incoming.empty()
 
     def close(self) -> None:
@@ -141,15 +104,7 @@ class _ThreadProcessContext:
     """提供队列 Pipe 和线程 Process 的测试上下文"""
 
     def Pipe(self, duplex: bool = True) -> tuple[_ThreadConnection, _ThreadConnection]:
-        """
-        创建双向队列管道
-
-        参数:
-        - duplex: 是否创建双向管道
-
-        返回:
-        - 管道两端的连接对象
-        """
+        """创建双向队列管道"""
         assert duplex is True
         parent_incoming: queue.Queue[object] = queue.Queue()
         child_incoming: queue.Queue[object] = queue.Queue()
@@ -164,16 +119,7 @@ class _ThreadProcessContext:
         target: Callable[..., None],
         args: tuple[object, ...],
     ) -> _ThreadProcess:
-        """
-        创建线程承载的测试进程
-
-        参数:
-        - target: worker 入口
-        - args: worker 参数
-
-        返回:
-        - 测试进程替身
-        """
+        """创建线程承载的测试进程"""
         return _ThreadProcess(target, args)
 
 
@@ -185,27 +131,14 @@ class _ThreadMultiprocessing:
         self._context = _ThreadProcessContext()
 
     def get_context(self, method: str) -> _ThreadProcessContext:
-        """
-        获取线程进程上下文
-
-        参数:
-        - method: 生产代码请求的进程启动方式
-
-        返回:
-        - 线程进程上下文
-        """
+        """获取线程进程上下文"""
         assert method == "spawn"
         return self._context
 
 
 @pytest.fixture
 def threaded_sub_agent_process_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    将同步子代理切换到线程承载的测试进程上下文
-
-    参数:
-    - monkeypatch: pytest 属性替换工具
-    """
+    """将同步子代理切换到线程承载的测试进程上下文"""
     monkeypatch.setattr(agent_module, "multiprocessing", _ThreadMultiprocessing())
 
 
@@ -236,12 +169,7 @@ def _load_deepseek_config() -> dict[str, str]:
 
 
 def _build_deepseek_llm() -> tuple[LLM | None, AsyncLLM | None]:
-    """
-    使用 .toolkit 中的 DeepSeek 配置创建同步和异步 LLM 实例
-
-    返回:
-    - tuple[LLM | None, AsyncLLM | None]: 使用 .toolkit 中的 DeepSeek 配置创建同步和异步 LLM 实例
-    """
+    """使用 .toolkit 中的 DeepSeek 配置创建同步和异步 LLM 实例"""
     cfg = _load_deepseek_config()
     api_key = cfg.get("api key", "")
     base_url = cfg.get("base url", "")
@@ -307,17 +235,7 @@ class _SlowLLM:
         tools: list[dict[str, Any]] | None = None,
         img_urls: list[str] | None = None,
     ) -> LLMCallResponse | bool:
-        """
-        阻塞足够长时间以触发子进程硬超时
-
-        参数:
-        - messages: 对话消息
-        - tools: 可选工具定义
-        - img_urls: 可选图片 URL
-
-        返回:
-        - 不应在测试超时前返回的模型响应
-        """
+        """阻塞足够长时间以触发子进程硬超时"""
         time.sleep(10)
         return LLMCallResponse(type="message", content="late")
 
@@ -335,17 +253,7 @@ class _ToolCallingLLM:
         tools: list[dict[str, Any]] | None = None,
         img_urls: list[str] | None = None,
     ) -> LLMCallResponse | bool:
-        """
-        首次调用请求 echo 工具, 后续调用返回最终结果
-
-        参数:
-        - messages: 对话消息
-        - tools: 可选工具定义
-        - img_urls: 可选图片 URL
-
-        返回:
-        - 工具调用或最终模型响应
-        """
+        """首次调用请求 echo 工具, 后续调用返回最终结果"""
         self.call_count += 1
         if self.call_count == 1:
             return LLMCallResponse(
@@ -371,15 +279,7 @@ class _RecordingToolsManager(_FakeToolsManager):
         self,
         call_info: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """
-        记录并执行工具调用
-
-        参数:
-        - call_info: 工具调用信息
-
-        返回:
-        - 工具消息与工具结果
-        """
+        """记录并执行工具调用"""
         self.call_count += 1
         arguments = call_info.get("arguments", {})
         parsed_arguments = cast(dict[str, object], arguments) if isinstance(arguments, dict) else {}

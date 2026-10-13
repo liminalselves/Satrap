@@ -31,16 +31,7 @@ from satrap.display import service as service_mod
 
 
 def _must_conversation(service: ChatService, conversation_id: str):
-    """
-    取必须存在的会话运行时状态
-
-    参数:
-    - service: 聊天服务
-    - conversation_id: 会话 ID
-
-    返回:
-    - 会话运行时状态
-    """
+    """取必须存在的会话运行时状态"""
     conv = service.get_conversation(conversation_id)
     if conv is None:
         raise AssertionError(f"会话不存在: {conversation_id}")
@@ -48,13 +39,7 @@ def _must_conversation(service: ChatService, conversation_id: str):
 
 
 async def _wait_conversation_task(service: ChatService, conversation_id: str) -> None:
-    """
-    等待会话当前任务结束 (会话与任务必须存在)
-
-    参数:
-    - service: 聊天服务
-    - conversation_id: 会话 ID
-    """
+    """等待会话当前任务结束 (会话与任务必须存在)"""
     task = _must_conversation(service, conversation_id).task
     if task is None:
         raise AssertionError(f"会话无进行中任务: {conversation_id}")
@@ -151,17 +136,7 @@ async def test_chat_data_edit_updates_live_context_without_rewriting_display(tmp
 
 
 def _write_plugin(base: Path, name: str, tools: dict[str, str] | None = None) -> Path:
-    """
-    在指定目录写一个最小插件 (meta.yaml)
-
-    参数:
-    - base: 基础
-    - name: 名称
-    - tools: 工具列表
-
-    返回:
-    - Path: 在指定目录写一个最小插件 (meta.yaml)
-    """
+    """在指定目录写一个最小插件 (meta.yaml)"""
     pdir = base / name
     pdir.mkdir(parents=True, exist_ok=True)
     meta: dict[str, Any] = {"name": name, "version": "0.1.0", "description": f"{name} 插件"}
@@ -173,13 +148,7 @@ def _write_plugin(base: Path, name: str, tools: dict[str, str] | None = None) ->
 
 
 def test_registry_scan_default_not_installed(tmp_path: Path, monkeypatch: Any):
-    """
-    扫描到插件但默认不启用 (enabled=False)
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """扫描到插件但默认不启用 (enabled=False)"""
     preset = tmp_path / "preset"
     _write_plugin(preset, "plug_a", tools={"shell": "执行命令", "read_file": "读文件"})
     monkeypatch.setattr("satrap.display.plugins.PLUGINS_PRESET_DIR", preset)
@@ -196,13 +165,7 @@ def test_registry_scan_default_not_installed(tmp_path: Path, monkeypatch: Any):
 
 
 def test_registry_enable_persist(tmp_path: Path, monkeypatch: Any):
-    """
-    启用状态写入 json 且跨实例持久
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """启用状态写入 json 且跨实例持久"""
     preset = tmp_path / "preset"
     _write_plugin(preset, "plug_b")
     monkeypatch.setattr("satrap.display.plugins.PLUGINS_PRESET_DIR", preset)
@@ -221,12 +184,7 @@ def test_registry_enable_persist(tmp_path: Path, monkeypatch: Any):
 
 
 def test_registry_capability_toggle(tmp_path: Path):
-    """
-    能力独立启停状态持久化, 非法类别返回 False
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """能力独立启停状态持久化, 非法类别返回 False"""
     reg = ChatPluginRegistry(state_path=tmp_path / "state.json")
     assert reg.set_capability("plug_c", "tools", "shell", False) is True
     assert reg.capability_enabled("plug_c", "tools", "shell") is False
@@ -235,13 +193,7 @@ def test_registry_capability_toggle(tmp_path: Path):
 
 
 def test_registry_official_overrides_user(tmp_path: Path, monkeypatch: Any):
-    """
-    同名插件官方目录优先
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """同名插件官方目录优先"""
     preset = tmp_path / "preset"
     user = tmp_path / "user"
     _write_plugin(preset, "dup")
@@ -293,16 +245,7 @@ def _as_model_config(fake: Any) -> ModelConfigManager:
 
 
 def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
-    """
-    构造 ChatService, build_llm 替换为 fake
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-
-    返回:
-    - ChatService: 构造 ChatService, build_llm 替换为 fake
-    """
+    """构造 ChatService, build_llm 替换为 fake"""
     def _fake_build_llm(cfg: Any) -> AsyncLLM:
         return _FakeAsyncLLM()
 
@@ -584,13 +527,7 @@ def test_service_list_models(tmp_path: Path, monkeypatch: Any):
 
 
 def test_service_send_and_turns(tmp_path: Path, monkeypatch: Any):
-    """
-    send 立即返回, 后台 run 完成后 turns 落库且 WS 收到事件
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """send 立即返回, 后台 run 完成后 turns 落库且 WS 收到事件"""
     svc = _make_service(tmp_path, monkeypatch)
 
     async def _run() -> tuple[str, list[dict[str, Any]]]:
@@ -635,13 +572,7 @@ def test_service_send_and_turns(tmp_path: Path, monkeypatch: Any):
 
 
 def test_service_model_policy_hot_update_defers_running_conversation(tmp_path: Path, monkeypatch: Any):
-    """
-    生成中的 Chat 会话应在本轮结束后安全应用最新上下文策略
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """生成中的 Chat 会话应在本轮结束后安全应用最新上下文策略"""
     manager = ModelConfigManager(storage_path=tmp_path / "models.json")
     manager.set_llm_config(
         LLMConfig(name="default", model="m", api_key="k", base_url="https://x"),
@@ -705,13 +636,7 @@ def test_service_model_policy_hot_update_defers_running_conversation(tmp_path: P
 
 
 def test_service_ask_user_round_trip(tmp_path: Path, monkeypatch: Any):
-    """
-    ask_user 经 WS 发出问题并由 HTTP 服务层回填回答
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """ask_user 经 WS 发出问题并由 HTTP 服务层回填回答"""
     svc = _make_service(tmp_path, monkeypatch)
 
     async def _run() -> None:
@@ -768,13 +693,7 @@ def test_service_ask_user_round_trip(tmp_path: Path, monkeypatch: Any):
 
 
 def test_service_cancel_pending_ask_user(tmp_path: Path, monkeypatch: Any):
-    """
-    取消生成会结束等待中的 ask_user 请求
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """取消生成会结束等待中的 ask_user 请求"""
     svc = _make_service(tmp_path, monkeypatch)
 
     async def _run() -> None:
@@ -813,13 +732,7 @@ def test_service_cancel_pending_ask_user(tmp_path: Path, monkeypatch: Any):
 
 
 def test_service_preload_is_invisible_until_first_send(tmp_path: Path, monkeypatch: Any):
-    """
-    预加载只创建内存运行时, 首次发送时才写入会话列表
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """预加载只创建内存运行时, 首次发送时才写入会话列表"""
     svc = _make_service(tmp_path, monkeypatch)
 
     async def _run() -> str:
@@ -857,13 +770,7 @@ def test_service_preload_is_invisible_until_first_send(tmp_path: Path, monkeypat
 
 
 def test_service_preload_rebuilds_same_id_after_model_change(tmp_path: Path, monkeypatch: Any):
-    """
-    首次发送时模型设置变化应在同一 ID 下重建预加载运行时
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """首次发送时模型设置变化应在同一 ID 下重建预加载运行时"""
     built_models: list[str | None] = []
 
     def _fake_build_llm(cfg: Any) -> AsyncLLM:
@@ -902,13 +809,7 @@ def test_service_preload_rebuilds_same_id_after_model_change(tmp_path: Path, mon
 
 
 def test_service_preload_rebuilds_after_selected_model_config_change(tmp_path: Path, monkeypatch: Any):
-    """
-    同名模型的参数变化也应使预加载指纹失效
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """同名模型的参数变化也应使预加载指纹失效"""
 
     temperatures: list[float | None] = []
 
@@ -956,13 +857,7 @@ def test_service_runtime_fingerprint_tracks_plugin_capability_and_config(
     tmp_path: Path,
     monkeypatch: Any,
 ):
-    """
-    插件能力开关和全局配置变化都应改变会话运行时指纹
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """插件能力开关和全局配置变化都应改变会话运行时指纹"""
 
     preset = tmp_path / "preset"
     plugin_dir = _write_plugin(preset, "plug", tools={"shell": "执行命令"})
@@ -1024,13 +919,7 @@ def test_chat_plugin_capability_updates_active_session(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """
-    Chat 子能力开关应通过插件命名空间即时更新活跃会话
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """Chat 子能力开关应通过插件命名空间即时更新活跃会话"""
     config_manager = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
     _write_chat_commands(tmp_path, monkeypatch)
@@ -1064,13 +953,7 @@ def test_chat_plugin_config_hot_reinstalls_active_session(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    """
-    Chat 插件配置保存后应通过共享协调器热重装活跃会话
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """Chat 插件配置保存后应通过共享协调器热重装活跃会话"""
     config_manager = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
     _write_chat_commands(tmp_path, monkeypatch)
@@ -1097,13 +980,7 @@ def test_chat_plugin_config_hot_reinstalls_active_session(
 
 
 def test_chat_plugin_reconcile_reads_global_cold_writes(tmp_path: Path, monkeypatch: Any) -> None:
-    """
-    独立管理页写入全局参数后, Chat 协调接口更新实际命令
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: 测试环境替换
-    """
+    """独立管理页写入全局参数后, Chat 协调接口更新实际命令"""
     from satrap.core.config.plugin_service import PluginManagementService
 
     config_manager = PluginConfigManager(tmp_path / "plugin_config")
@@ -1138,13 +1015,7 @@ def test_chat_plugin_reconcile_reads_global_cold_writes(tmp_path: Path, monkeypa
 
 
 def test_chat_apply_snapshot_shared_by_instances_and_keeps_unchanged_handle(tmp_path: Path, monkeypatch: Any) -> None:
-    """
-    三个真实 Chat 实例复用一次全局解析, 独立覆盖未变化时不重装
-
-    参数:
-    - tmp_path: 隔离数据目录
-    - monkeypatch: 配置来源替换夹具
-    """
+    """三个真实 Chat 实例复用一次全局解析, 独立覆盖未变化时不重装"""
     manager = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
     _write_chat_commands(tmp_path, monkeypatch)
@@ -1171,16 +1042,7 @@ def test_chat_apply_snapshot_shared_by_instances_and_keeps_unchanged_handle(tmp_
             reads = []
 
             def counted(name, schema):
-                """
-                记录单次应用的正文解析次数
-
-                参数:
-                - name: 插件名称
-                - schema: 参数声明
-
-                返回:
-                - 原解析结果
-                """
+                """记录单次应用的正文解析次数"""
                 reads.append(name)
                 return load(name, schema)
 
@@ -1201,13 +1063,7 @@ def test_chat_apply_snapshot_shared_by_instances_and_keeps_unchanged_handle(tmp_
 
 @pytest.mark.asyncio
 async def test_chat_model_resources_share_capture_reject_stale_source_and_rollback(tmp_path: Path, monkeypatch: Any) -> None:
-    """
-    三个真实 Chat 实例共享四类模型来源, 排队变化拒绝且失败回滚旧资源
-
-    参数:
-    - tmp_path: 隔离配置目录
-    - monkeypatch: 模型构造与来源记录夹具
-    """
+    """三个真实 Chat 实例共享四类模型来源, 排队变化拒绝且失败回滚旧资源"""
     globals_ = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: globals_)
     monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: globals_)
@@ -1243,15 +1099,7 @@ async def test_chat_model_resources_share_capture_reject_stale_source_and_rollba
     capture = PluginApplySnapshot.capture
 
     def counted(source):
-        """
-        记录实际模型文件解析, 不刷新运行期管理器
-
-        参数:
-        - source: 实际来源管理器
-
-        返回:
-        - 独立快照
-        """
+        """记录实际模型文件解析, 不刷新运行期管理器"""
         reads.append(source.storage_path)
         return read(source)
 
@@ -1328,14 +1176,7 @@ async def test_chat_model_resources_share_capture_reject_stale_source_and_rollba
 
 @pytest.mark.parametrize("source", ["global", "chat_state"])
 def test_chat_queued_apply_rejects_changed_source_and_retries_latest(tmp_path: Path, monkeypatch: Any, source: str) -> None:
-    """
-    等待会话锁期间来源变化不应用旧快照, 显式重试再加载新参数
-
-    参数:
-    - tmp_path: 隔离数据目录
-    - monkeypatch: 捕获同步夹具
-    - source: 等待时发生变化的参数或能力状态来源
-    """
+    """等待会话锁期间来源变化不应用旧快照, 显式重试再加载新参数"""
     manager = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
     _write_chat_commands(tmp_path, monkeypatch)
@@ -1394,14 +1235,7 @@ def test_chat_queued_apply_rejects_changed_source_and_retries_latest(tmp_path: P
 
 @pytest.mark.parametrize("change", ["session", "entry", "source_check", "new_conversation"])
 def test_chat_application_freezes_instances_before_capture_and_rechecks_after_source(tmp_path: Path, monkeypatch: Any, change: str) -> None:
-    """
-    Chat 在捕获前固定实例, 同对象替换及来源核验期间变化均保留旧插件
-
-    参数:
-    - tmp_path: 隔离目录
-    - monkeypatch: 来源捕获和核验通知夹具
-    - change: 排队实例, 条目, 来源核验期间实例或新增会话
-    """
+    """Chat 在捕获前固定实例, 同对象替换及来源核验期间变化均保留旧插件"""
     manager = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
     _write_chat_commands(tmp_path, monkeypatch)
@@ -1428,17 +1262,7 @@ def test_chat_application_freezes_instances_before_capture_and_rechecks_after_so
             manager.save_global("chat_commands", entry.config_schema, {"about_text": "changed"})
 
             def record(catalog, manager, **kwargs):
-                """
-                捕获真实来源, 在第二次核验让出循环期间替换实例
-
-                参数:
-                - catalog: 目录来源
-                - manager: 全局配置来源
-                - kwargs: 状态文件等捕获选项
-
-                返回:
-                - 已捕获快照
-                """
+                """捕获真实来源, 在第二次核验让出循环期间替换实例"""
                 snapshot = capture(catalog, manager, **kwargs)
                 if change == "source_check":
                     check = snapshot.is_current
@@ -1488,13 +1312,7 @@ def test_chat_application_freezes_instances_before_capture_and_rechecks_after_so
 
 
 def test_chat_corrupt_state_does_not_disable_existing_runtime(tmp_path: Path, monkeypatch: Any) -> None:
-    """
-    损坏启用状态使应用明确失败, 不把空状态当成应卸载全部插件
-
-    参数:
-    - tmp_path: 隔离目录
-    - monkeypatch: 配置来源替换夹具
-    """
+    """损坏启用状态使应用明确失败, 不把空状态当成应卸载全部插件"""
     manager = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
     _write_chat_commands(tmp_path, monkeypatch)
@@ -1519,13 +1337,7 @@ def test_chat_corrupt_state_does_not_disable_existing_runtime(tmp_path: Path, mo
 
 
 def test_service_preload_timeout_purges_empty_runtime(tmp_path: Path, monkeypatch: Any):
-    """
-    未发送的预加载会话超时后应释放内存并清除私有目录
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """未发送的预加载会话超时后应释放内存并清除私有目录"""
     svc = _make_service(tmp_path, monkeypatch)
     svc._preload_ttl_seconds = 0.01
 
@@ -1546,13 +1358,7 @@ def test_service_preload_timeout_purges_empty_runtime(tmp_path: Path, monkeypatc
 
 
 def test_service_send_concurrent_rejected(tmp_path: Path, monkeypatch: Any):
-    """
-    同一会话上一个 run 未完成时拒绝并发 send
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """同一会话上一个 run 未完成时拒绝并发 send"""
     svc = _make_service(tmp_path, monkeypatch)
 
     async def _run() -> dict[str, Any]:
@@ -1582,13 +1388,7 @@ def test_service_delete_conversation_cascades_data_and_trashes_files(
     tmp_path: Path,
     monkeypatch: Any,
 ):
-    """
-    删除 Chat 会话应清理上下文和会话记忆, 并把全部私有文件移入回收区
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """删除 Chat 会话应清理上下文和会话记忆, 并把全部私有文件移入回收区"""
 
     svc = _make_service(tmp_path, monkeypatch)
     conversation_id = asyncio.run(svc.create_conversation())
@@ -1615,13 +1415,7 @@ def test_service_delete_conversation_cascades_data_and_trashes_files(
 
 
 def test_service_plugin_enable_no_plugins(tmp_path: Path, monkeypatch: Any):
-    """
-    无插件目录时 enable 返回不存在
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """无插件目录时 enable 返回不存在"""
     monkeypatch.setattr("satrap.display.plugins.PLUGINS_PRESET_DIR", tmp_path / "none1")
     monkeypatch.setattr("satrap.display.plugins.USER_PLUGINS_DIR", tmp_path / "none2")
     svc = _make_service(tmp_path, monkeypatch)
@@ -1631,13 +1425,7 @@ def test_service_plugin_enable_no_plugins(tmp_path: Path, monkeypatch: Any):
 
 
 def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
-    """
-    send 未显式传 think 时使用会话默认 (create_conversation 持久化到 meta)
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """send 未显式传 think 时使用会话默认 (create_conversation 持久化到 meta)"""
     recorded: list[Any] = []
 
     class _RecLLM(_FakeAsyncLLM):
@@ -1676,13 +1464,7 @@ def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
 
 
 def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
-    """
-    retry 传入 think 时按指定强度重发, 不回落默认
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """retry 传入 think 时按指定强度重发, 不回落默认"""
     recorded: list[Any] = []
 
     class _RecLLM(_FakeAsyncLLM):
@@ -1724,13 +1506,7 @@ def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
 
 
 def test_service_retry_preserves_variants_and_switches_context(tmp_path: Path, monkeypatch: Any):
-    """
-    Retry 保留旧回复, 新生成不携带旧回答, 左右切换同步模型上下文
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """Retry 保留旧回复, 新生成不携带旧回答, 左右切换同步模型上下文"""
     model_inputs: list[list[dict[str, Any]]] = []
 
     class _VariantLLM(_FakeAsyncLLM):
@@ -1794,13 +1570,7 @@ def test_service_retry_preserves_variants_and_switches_context(tmp_path: Path, m
 
 
 def test_service_fork_copies_display_and_model_context(tmp_path: Path, monkeypatch: Any):
-    """
-    Fork 同时复制展示轮次和模型实际使用的上下文
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """Fork 同时复制展示轮次和模型实际使用的上下文"""
     def build_fake_llm(_config: LLMConfig) -> _FakeAsyncLLM:
         """返回 Fork 测试使用的异步模型替身"""
         return _FakeAsyncLLM()
@@ -1838,13 +1608,7 @@ def test_service_fork_copies_display_and_model_context(tmp_path: Path, monkeypat
 
 
 def test_service_memory_failure_propagation(tmp_path: Path, monkeypatch: Any):
-    """
-    记忆管理接口: 存储层失败必须传播为 ok=False (不再无条件假成功)
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """记忆管理接口: 存储层失败必须传播为 ok=False (不再无条件假成功)"""
 
     monkeypatch.setattr(ms_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
     svc = _make_service(tmp_path, monkeypatch)
