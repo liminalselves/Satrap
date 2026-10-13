@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import pytest
 from satrap.core.utils.application_progress import ApplicationOperations
 
 async def _finished(registry: ApplicationOperations, key: str) -> dict:

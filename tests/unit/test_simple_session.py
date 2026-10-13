@@ -957,20 +957,6 @@ async def test_async_plugin_empty_string_rewrite(tmp_path: Path):
     assert user_msgs[-1]["content"] == ""
 
 
-def test_plugin_non_str_return_ignored_sync(tmp_path: Path):
-    """非 str/HandlerResult 返回值被忽略 (不改写, 不中断)"""
-    def bad(t: str, ctx: HandlerContext) -> bool:
-        return False
-
-    llm = _FakeLLM()
-    session = _make_session(tmp_path, llm)
-    session.add_handler(SessionHandler(name="p", before_user_send=cast(Any, bad)))
-    result = session.run("hi")
-    assert result == "回复"
-    user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
-    assert user_msgs[-1]["content"] == "hi"   # False 被忽略, 未改写
-
-
 @pytest.mark.asyncio
 async def test_plugin_non_str_return_ignored_async(tmp_path: Path):
     """异步版非 str 返回值被忽略"""

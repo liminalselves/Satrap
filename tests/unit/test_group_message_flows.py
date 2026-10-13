@@ -40,7 +40,6 @@ from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.type import LLMCallResponse
-from satrap.edictum import AsyncSimpleSession, SimpleSession
 from support.group_models import AsyncModel, Invoker, Model, PLUGIN, Script, session
 
 _group_chat_service_SCOPE = MessageScope("ob", "10000", "group", "456")
@@ -804,7 +803,6 @@ async def test_new_adapter_and_opaque_ids_use_same_reply_contract(tmp_path):
             return None
 
         def meta(self):
-            from satrap.core.platform.event import PlatformMetadata
             return PlatformMetadata("扩展平台", self.config.id)
 
         def group_chat_capabilities(self):

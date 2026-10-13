@@ -179,3 +179,55 @@ PowerShell 执行前需设置 Console InputEncoding/OutputEncoding 与 OutputEnc
 三套运行器的累计实测耗时: 1810.08 → 1238.71 秒, 本轮下降 31.6%. 不将其解释为稳定性能收益或并行流水线墙钟耗时
 
 后端 pytest 内部计时为 601.16 秒, 时间表采用含 Python/pytest 启动的外层进程墙钟计时, 与原基线口径一致
+
+## 后续非必要测试清理
+
+此阶段基于 `a384463`, 与上面的整合基线分开记录
+
+- 删除已审计的 11 个用例: 根目录常量相等, MCP 占位文档, CLI 自动配置类型, 两个 forward 类型冒烟, 已被共享矩阵覆盖的通知合法值, 两个 JSON 格式检查及三个真实 DeepSeek 冒烟
+- 删除 DeepSeek 专用配置读取/客户端构建, 路径常量和失去用途的导入
+- 插件依赖扫描集中为一个用例, 保留旧 group_admin 工具排除/新昵称工具存在断言, 以及 Import/ImportFrom 的插件互相依赖检查
+- RAG 重复超时/网络提示检查移除, 非对象输入 123 的独有回退断言合入保留用例
+- 后端全量收集 4,038 → 4,026, 核对仅减少上述 11 项及合并掉的 1 项扫描, 其余用例 ID 与参数化场景一致
+- 后端受影响模块回归 434 通过, 1 跳过; 前端 298 项通过, TypeScript 检查通过; 未重复运行未受影响的浏览器场景
+- 测试源码新增 12 行, 删除 169 行, 净减少 157 行; 文件数不变, 生产代码无变更
+
+## 冗余删除与夹具复用
+
+此阶段基于上一节, 覆盖全库测试审计中确认可精简的项. 生产代码无变更
+
+### 删除的用例与断言
+
+| 位置 | 理由 |
+|---|---|
+| `test_control_ui_flows.py` 三处导入/别名元测试 | 零断言纯导入与符号 callable 复述, 已由参数化打包检查与真实调用覆盖 |
+| `test_simple_session.py` 非 str 返回值同步用例 | 与 `test_handler_invalid_return_value_warns` 构造相同且后者多断言 warning |
+| `test_llm_protocol_flows.py` 两处 `safe_parse_arguments` 用例 | 与保留用例断言等价, 其中一处弱于 `is arg` 身份断言 |
+| `test_checkpoint_flows.py` 未知操作退出码用例 | 与 `test_cli_flows.py` 同名用例逐条断言相同, 该封装路径已被同文件其它用例走过 |
+| `test_routing_flows.py` 来源适配器两用例 | 合并为参数化用例, 保留两个不同类级配置值 |
+
+保留但有意不动的项: `test_wake_policy_flows.py` 的产物字段校验与导入顺序用例 (byte-for-byte 断言不覆盖契约字段语义), `test_onebot_adapter.py` 的 `Image(file=裸路径)` 拒绝用例 (媒体白名单矩阵无对等覆盖), 平台通知的 `_adapter` 与转发 `_adapter` (分别依赖"起点无 self_id"与无 `dict()` 转换), 各文件 `restore_manager` 导入 (`usefixtures` 字符串引用, pyflakes 误报)
+
+### 提取到共享夹具
+
+| 共享模块 | 来源 | 消除的副本 |
+|---|---|---|
+| `tests/support/providers.py` | `RunnableRegistry` | 8 个文件中的 11 份逐字相同替身 |
+| `tests/support/adapters.py` | `RecorderAdapter` | 3 个文件中两两逐字相同的副本 |
+| `tests/support/casts.py` | LLM/工具管理器 cast 工厂 | 2 个文件各 4 个函数 |
+| `satrap-ui/src/test/helpers.ts` | `deferred` 与 Axios 响应工厂 | 3 处 deferred 与 2 处 response |
+
+`RecorderAdapter` 统一为记录三元组 (会话, 消息链, 用途), 原二元组解包点相应更新; 子类改为调用父类记录后阻塞, 不再自行 append
+
+### 未使用导入清理
+
+按 `pyflakes` 报告逐条核验后删除测试文件与共享夹具中的死导入, 并保留全部 fixture 字符串引用; 修复 RAG 验证命令与群验证命令中的已删脚本路径, 重写 `tests/README.md` 的后端回归模块表
+
+### 验证
+
+- 后端全量: 3,984 通过, 33 跳过, 2 失败; 两条失败为 `test_redirected_management_directory_cannot_touch_outside_files` 的 `.runtime`/`.locks` 参数, 系本机 PATH 缺 PowerShell 的既有环境问题, 已用 stash 验证与本次改动无关
+- 前端: Vitest 298 项通过, `tsc --noEmit` 0 错误, 改动文件 ESLint 0 错误
+- 受影响模块分批复验: 会话/上下文组 381 通过, 平台组 609 通过, 调度/记录器组 169 通过
+- `pyright -p .pyrightcfg` 无新增错误: 被提取符号与新增共享模块均 0 error
+- 测试源码 48 个文件变更, 新增 182 行, 删除 633 行, 净减少 451 行; 新增 4 个共享夹具文件共 81 行
+

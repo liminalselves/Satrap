@@ -1,18 +1,13 @@
 """业务场景共享夹具与隔离构造器"""
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
-import sqlite3
-from aiocqhttp.exceptions import ApiNotAvailable
-import pytest
 from satrap.core.call_context import CallOrigin
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.service import GroupChatService
 from satrap.core.group_chat.types import MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage
-from satrap.core.platform import (PlatformAdapter, PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig,
-                                  current_adapter_manager, set_current_adapter_manager)
+from satrap.core.platform import PlatformAdapter, PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig, set_current_adapter_manager
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.event import PlatformMetadata
 

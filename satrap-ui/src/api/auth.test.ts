@@ -1,11 +1,11 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { AxiosError, type AxiosResponse, type AxiosAdapter } from 'axios';
+import { deferred } from '@/test/helpers';
 
 vi.mock('@/utils/constants', () => ({ getApiBaseUrl: () => 'http://backend', getControlApiUrl: () => 'http://control', getChatApiUrl: () => 'http://chat' }));
 let auth: typeof import('./auth');
 let sessionStore: typeof import('@/stores/useApiSessionStore').useApiSessionStore;
 const response = (status = 200) => ({ ok: status < 400, status } as Response);
-function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
 beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers();
   vi.stubGlobal('window', { location: { hash: '#token=synthetic-test-token', pathname: '/plugins', search: '?tab=config' }, history: { replaceState: vi.fn() } });

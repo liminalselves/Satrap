@@ -1,4 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { deferred } from '@/test/helpers';
 import { backendApi } from '@/api/backend';
 import { controlApi } from '@/api/control';
 import { useBackendStore } from './useBackendStore';
@@ -7,12 +8,6 @@ import type { BackendStatus, ControlResult } from '@/api/control';
 
 vi.mock('@/api/backend', () => ({ backendApi: { health: vi.fn(), reloadConfig: vi.fn(), shutdown: vi.fn() } }));
 vi.mock('@/api/control', () => ({ controlApi: { status: vi.fn(), start: vi.fn(), stop: vi.fn(), restart: vi.fn() } }));
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
-}
 
 beforeEach(() => {
   vi.resetAllMocks();

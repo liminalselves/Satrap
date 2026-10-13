@@ -1103,14 +1103,6 @@ def test_dispatch_business_error_exits_1(tmp_path: Path, capsys: pytest.CaptureF
     assert ei.value.code == 1
     assert "错误:" in capsys.readouterr().out
 
-def test_dispatch_unknown_action_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """未知操作以退出码 2 结束"""
-    args = _args(str(tmp_path / "data"), action="nope")
-    with pytest.raises(SystemExit) as ei:
-        dispatch(args)
-    assert ei.value.code == 2
-    assert "未知操作" in capsys.readouterr().out
-
 def test_dispatch_success_paths(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """create / list / lineage 成功路径不抛异常"""
     data_root = str(tmp_path / "data")

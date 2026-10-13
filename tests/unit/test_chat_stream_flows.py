@@ -15,7 +15,6 @@ import threading
 from pathlib import Path
 from typing import Any, Iterator
 import json
-import time
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.utils.TCBuilder import AsyncToolsManager, Tool, ToolsManager
 from satrap.display.recorder import _truncate_arguments

@@ -165,9 +165,6 @@ def test_notice_types_validation(value: object):
     with pytest.raises(ValueError, match="notice_types"):
         validate_wake_policy({"notice_types": value})
 
-@pytest.mark.usefixtures('_reset_current_hub')
-def test_notice_types_accepts_categories_and_specific_types():
-    validate_wake_policy({"notice_types": ["notice", "request.friend", "notice.group_upload"]})
 
 @pytest.mark.usefixtures('_reset_current_hub')
 @pytest.mark.asyncio
@@ -349,7 +346,6 @@ async def test_send_failures_are_logged_with_reason(caplog: pytest.LogCaptureFix
 async def test_send_fallback_branches_keep_error_diagnostics(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch):
     """E5: 三个发送兜底分支都保留原因码, 同时记录异常类型与目标会话"""
     from satrap.core.components import File, Node, Plain
-    from satrap.core.platform.receipt import SendReceipt
 
     async def _boom_chunk(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("chunk boom")

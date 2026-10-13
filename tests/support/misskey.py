@@ -1,10 +1,8 @@
 """业务场景共享夹具与隔离构造器"""
 from __future__ import annotations
 
-import pytest
 from typing import Any, cast
 from satrap.core.platform.misskey.adapter import MisskeyAdapter
-from satrap.core.components import File, Image
 from satrap.core.platform import PlatformConfig
 
 class FakeMisskeyAPI:

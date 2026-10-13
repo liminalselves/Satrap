@@ -13,7 +13,7 @@ import sqlite3
 import time
 import pytest
 from satrap.expend.plugins.account_requests.tools import get_tools, DEFINITIONS, AsyncAccountRequestTool
-from satrap.expend.plugins.group_admin.tools import get_tools as group_tools
+from satrap.expend.plugins.group_admin.tools import _DEFINITIONS as group_definitions, get_tools as group_tools
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig, current_adapter_manager
@@ -917,12 +917,20 @@ def test_migration_conservative_idempotent_and_removes_old_entries(tmp_path, mon
     assert [spec.to_config() for spec in parse_plugin_specs(canonical, catalog)] == canonical
 
 def test_plugins_do_not_import_each_other_and_old_tools_only_in_migration():
+    assert not set(group_definitions) & {
+        "group_admin_list_groups", "group_admin_get_group_info", "group_admin_list_members",
+        "group_admin_get_member", "group_admin_get_message", "group_admin_set_card",
+    }
+    assert "group_admin_set_group_nickname" in group_definitions
     root = Path(__file__).resolve().parents[2] / "satrap"
     for name in ("friend_manager", "group_admin", "group_chat"):
         for path in (root / "expend/plugins" / name).rglob("*.py"):
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     assert all(f"plugins.{other}" not in node.module for other in ("friend_manager", "group_admin", "group_chat") if other != name)
+                elif isinstance(node, ast.Import):
+                    assert all(f"plugins.{other}" not in item.name for item in node.names
+                               for other in ("friend_manager", "group_admin", "group_chat") if other != name)
     for path in root.rglob("*.py"):
         if path.name == "plugin_migrations.py":
             continue

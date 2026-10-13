@@ -13,24 +13,17 @@ from satrap.core.pipeline.command_entry import OPERATOR_ONLY_COMMANDS, extract_c
 from satrap.core.pipeline.command_entry import is_operator_only_command
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.components import At, AtAll, BaseMessageComponent, Image, Plain, Reply
-from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
-from satrap.core.platform import PlatformAdapter, PlatformConfig
+from satrap.core.platform.event import MessageEvent, PlatformMetadata
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
-from satrap.core.framework.providers import BindingState, BindingStatus
 from satrap.expend.command.session_commands import cmd_about, cmd_history, cmd_history_async, cmd_new, cmd_new_async
 from satrap.expend.command.session_commands import cmd_switch, cmd_switch_async
 from satrap.core.framework import AsyncSession, CommandHandler as _session_commands_CommandHandler, Session
 from satrap.edictum.plugin import collect_commands
 from satrap.core.type import CommandAction
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager, _summarize_arguments
+from support.providers import RunnableRegistry
+from support.adapters import RecorderAdapter
 
-class _RunnableRegistry:
-    """绑定判定恒为可运行的会话定义注册表替身"""
-
-    @staticmethod
-    def binding_status(*_args: object) -> BindingStatus:
-        """恒定答复可运行"""
-        return BindingStatus(BindingState.RUNNABLE)
 
 def _event(
     components: list[BaseMessageComponent],
@@ -153,31 +146,12 @@ def test_extract_does_not_touch_message_str():
     assert event.get_message_str() == message_str
     assert event.get_messages() == components
 
-class _RecorderAdapter(PlatformAdapter):
-    """记录 send_message 调用的测试适配器"""
-
-    def __init__(self, adapter_id: str = "rec1", settings: dict[str, Any] | None = None):
-        super().__init__(PlatformConfig(id=adapter_id, type="rec", settings=settings or {}))
-        self.sent: list[tuple[str, MessageChain, str]] = []
-
-    async def run(self) -> None:
-        return None
-
-    def meta(self) -> PlatformMetadata:
-        return PlatformMetadata(name=self.config.id, id=self.config.id)
-
-    async def send_message(
-        self, session_id: str, message: MessageChain, *, request_id: str = "",
-        purpose: str = "business", require_tracking: bool = False,
-    ) -> Any:
-        self.sent.append((session_id, message, purpose))
-        return None
 
 class _FakeSessionManager:
     """记录 handle_call_async 调用的假 SessionManager"""
 
     class_cfg_mgr = None
-    provider_registry = _RunnableRegistry()
+    provider_registry = RunnableRegistry()
 
     def __init__(self, response: str = "回复"):
         self.response = response
@@ -204,7 +178,7 @@ def _as_session_manager(fake: Any) -> SessionManager:
     return cast(SessionManager, fake)
 
 def _scheduler_event(
-    adapter: _RecorderAdapter,
+    adapter: RecorderAdapter,
     components: list[BaseMessageComponent],
     *,
     private: bool = False,
@@ -234,7 +208,7 @@ def _scheduler_event(
 @pytest.mark.asyncio
 async def test_command_freezes_text_and_keeps_window():
     """群命令送入会话的是冻结正文, 窗口里既有正文不被消费"""
-    adapter = _RecorderAdapter(settings={"context_scope": "group"})
+    adapter = RecorderAdapter(settings={"context_scope": "group"})
     manager = _FakeSessionManager(response="/help 回执")
     scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=cast(Any, _FakeUserManager()))
 
@@ -263,7 +237,7 @@ async def test_command_freezes_text_and_keeps_window():
 @pytest.mark.asyncio
 async def test_command_skips_window_observe_in_frequency_mode():
     """频率模式下命令不发生 observe: 窗口行数不变, 命令文本不入窗"""
-    adapter = _RecorderAdapter(settings={"wake_mode": "frequency", "context_scope": "group"})
+    adapter = RecorderAdapter(settings={"wake_mode": "frequency", "context_scope": "group"})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=cast(Any, _FakeUserManager()))
 
@@ -297,7 +271,7 @@ async def test_command_skips_window_observe_in_frequency_mode():
 @pytest.mark.asyncio
 async def test_body_with_media_is_not_a_command_and_still_resolves(monkeypatch: pytest.MonkeyPatch):
     """正文含媒体组件时按普通消息处理: 保守拒绝不改变媒体链路"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
     calls: list[str] = []
@@ -325,7 +299,7 @@ async def test_body_with_media_is_not_a_command_and_still_resolves(monkeypatch: 
 @pytest.mark.asyncio
 async def test_command_with_leading_reply_skips_resolution(monkeypatch: pytest.MonkeyPatch):
     """带首部引用(且引用链带图)的命令仍被识别, 且不触发引用, 附件, 媒体与下载"""
-    adapter = _RecorderAdapter(settings={"quote_lookup": True})
+    adapter = RecorderAdapter(settings={"quote_lookup": True})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
     calls: list[str] = []
@@ -378,7 +352,7 @@ async def test_manual_and_deadline_events_are_not_commands():
     from satrap.core.pipeline.manual_wake import ManualWakeTicket
     from satrap.core.pipeline.wake_timers import DeadlineTicket
 
-    adapter = _RecorderAdapter(settings={"wake_mode": "frequency"})
+    adapter = RecorderAdapter(settings={"wake_mode": "frequency"})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -395,7 +369,7 @@ async def test_manual_and_deadline_events_are_not_commands():
 @pytest.mark.asyncio
 async def test_unknown_command_still_reaches_model_without_window():
     """未知 /foo 不被平台层拒绝, 但该请求不含窗口块"""
-    adapter = _RecorderAdapter(settings={"wake_mode": "frequency"})
+    adapter = RecorderAdapter(settings={"wake_mode": "frequency"})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -411,7 +385,7 @@ async def test_unknown_command_still_reaches_model_without_window():
 @pytest.mark.asyncio
 async def test_group_command_without_mention_is_not_executed_or_rejected():
     """群内裸 /help 不唤醒也不外发, 与既有唤醒门行为一致"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -424,7 +398,7 @@ async def test_group_command_without_mention_is_not_executed_or_rejected():
 @pytest.mark.asyncio
 async def test_wake_word_woken_slash_message_is_not_command():
     """由唤醒词唤醒的 /help 按普通消息处理"""
-    adapter = _RecorderAdapter(settings={"wake_words": ["小撒"]})
+    adapter = RecorderAdapter(settings={"wake_words": ["小撒"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -437,7 +411,7 @@ async def test_wake_word_woken_slash_message_is_not_command():
 @pytest.mark.asyncio
 async def test_private_command_has_no_mention_in_body():
     """私聊 /help 与 @bot /help 都执行, 且命令名与参数不含 self 提及"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -451,7 +425,7 @@ async def test_private_command_has_no_mention_in_body():
 @pytest.mark.asyncio
 async def test_frozen_text_is_parsed_by_session_command_handler():
     """交接: 冻结正文进入会话后由 CommandHandler 解析出命令名与参数, 提及不进入参数"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
     handler = AsyncCommandHandler()
@@ -478,7 +452,7 @@ async def test_frozen_text_is_parsed_by_session_command_handler():
 @pytest.mark.asyncio
 async def test_command_skips_model_stage_record():
     """命令未调用模型: 不产生 model 阶段记录, 命中与拒绝都由 projection 的原因码区分"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     manager = _FakeSessionManager(response="/help 回执")
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -491,7 +465,7 @@ async def test_command_skips_model_stage_record():
     assert all(str(record["stage"]) != "model" for record in records)
     assert all("模型输出" not in str(record["reason"]) for record in records)
 
-def _feedback_texts(adapter: _RecorderAdapter) -> list[str]:
+def _feedback_texts(adapter: RecorderAdapter) -> list[str]:
     """错误反馈通道外发的文本"""
     return [
         "".join(getattr(component, "text", "") for component in message.components)
@@ -499,7 +473,7 @@ def _feedback_texts(adapter: _RecorderAdapter) -> list[str]:
     ]
 
 def _protected_event(
-    adapter: _RecorderAdapter,
+    adapter: RecorderAdapter,
     body: str = " /approve mode full",
     *,
     sender_id: str = "user-1",
@@ -533,7 +507,7 @@ def test_operator_name_set_has_single_seam():
 @pytest.mark.asyncio
 async def test_non_operator_is_refused_for_protected_commands():
     """非名单成员执行 /approve 时被拒绝: 不进会话, 不调模型, 收到固定文案"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -548,7 +522,7 @@ async def test_non_operator_is_refused_for_protected_commands():
 @pytest.mark.asyncio
 async def test_plan_off_is_refused_for_non_operator():
     """放宽写操作限制的 /plan off 与 /approve 同级保护"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -560,7 +534,7 @@ async def test_plan_off_is_refused_for_non_operator():
 @pytest.mark.asyncio
 async def test_operator_passes_both_protected_commands():
     """名单内成员可执行 /approve 与 /plan"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["user-1"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["user-1"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -575,7 +549,7 @@ async def test_operator_passes_both_protected_commands():
 async def test_operator_list_fails_closed(operators: Any):
     """名单缺失/为空/取值非法或大小写不匹配时一律拒绝, 不存在空名单表示不限制的语义"""
     settings: dict[str, Any] = {} if operators is None else {"command_operators": operators}
-    adapter = _RecorderAdapter(settings=settings)
+    adapter = RecorderAdapter(settings=settings)
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -587,7 +561,7 @@ async def test_operator_list_fails_closed(operators: Any):
 @pytest.mark.asyncio
 async def test_blank_entry_next_to_match_does_not_block():
     """名单项级校验由配置校验器负责: 与匹配项并存的空白项不影响该成员通过"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["user-1", "  "]})
+    adapter = RecorderAdapter(settings={"command_operators": ["user-1", "  "]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -598,7 +572,7 @@ async def test_blank_entry_next_to_match_does_not_block():
 @pytest.mark.asyncio
 async def test_admin_role_does_not_grant_operator_rights():
     """平台管理员身份不等于 Satrap 操作员"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -613,7 +587,7 @@ async def test_admin_role_does_not_grant_operator_rights():
 @pytest.mark.asyncio
 async def test_management_origin_is_not_subject_to_operator_gate():
     """管理面来源不进入平台授权判定: 已过管理面认证, 不继承为平台操作员"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -626,7 +600,7 @@ async def test_management_origin_is_not_subject_to_operator_gate():
 @pytest.mark.asyncio
 async def test_other_commands_are_not_gated():
     """边界钉住: /goal 与 /memory 本轮不加门, 以免保护范围被悄悄扩大"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -640,7 +614,7 @@ async def test_other_commands_are_not_gated():
 @pytest.mark.parametrize("name", ["approve", "plan"])
 async def test_disabled_command_is_still_refused_at_platform_entry(name: str):
     """P2: 会话停用状态属会话实例, 平台层仍按名字拒绝, 不因停用变成可执行"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
     handler = AsyncCommandHandler()
@@ -656,7 +630,7 @@ async def test_disabled_command_is_still_refused_at_platform_entry(name: str):
 @pytest.mark.asyncio
 async def test_private_chat_protected_command_is_gated():
     """私聊中的受保护命令同样受判"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -668,7 +642,7 @@ async def test_private_chat_protected_command_is_gated():
 @pytest.mark.asyncio
 async def test_unconfigured_operator_name_without_prefix_is_not_gated():
     """判定依据是命令名而不是正文文本: 无前缀的同一文本仍走普通管线"""
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
 
@@ -685,7 +659,7 @@ async def test_operator_refusal_is_rate_limited():
     """连续拒绝受同一限流键约束, 第二次先被限流"""
     from satrap.core.pipeline.rate_limiter import RateLimiter
 
-    adapter = _RecorderAdapter(settings={"command_operators": ["owner-9"]})
+    adapter = RecorderAdapter(settings={"command_operators": ["owner-9"]})
     manager = _FakeSessionManager()
     scheduler = PipelineScheduler(_as_session_manager(manager), rate_limiter=RateLimiter(rate=1.0, burst=1))
 

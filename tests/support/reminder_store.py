@@ -3,10 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-import base64
-import json
-import sqlite3
-import pytest
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.group_chat.reminders import ReminderStore
 from satrap.core.platform.scheduled import ScheduledTarget

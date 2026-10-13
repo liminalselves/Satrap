@@ -173,10 +173,10 @@ Chat 分支继承分支时的当前覆盖和私有知识库快照, 为私有库�
 
 ```text
 python -m pyright -p .pyrightcfg/pyrightconfig.json
-python -m pytest tests/unit/test_rag_service.py tests/unit/test_session_overrides.py tests/unit/test_plugin_resources.py
+python -m pytest tests/unit/test_knowledge_flows.py tests/unit/test_administrator_policy_flows.py tests/unit/test_plugin_installation_flows.py
 cd satrap-ui
-node e2e/rag-settings.mjs
-node e2e/rag-upload.mjs
+node e2e/knowledge-flows.mjs --case rag-settings
+node e2e/knowledge-flows.mjs --case rag-upload
 npm test
 npm run build
 ```

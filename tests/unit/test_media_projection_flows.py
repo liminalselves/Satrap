@@ -33,7 +33,6 @@ from satrap.core.pipeline.input_projection import QUOTE_TEXT_LIMIT
 from satrap.core.config.platform_policy import validate_wake_policy
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.components import Reply
-from satrap.core.framework.providers import BindingState, BindingStatus
 from typing import Callable
 from satrap.core.pipeline import attachments as _attachments_module, audio_convert
 from satrap.core.pipeline.attachments import AttachmentResult, asr_resolver_from_manager, render_attachments
@@ -49,6 +48,7 @@ from array import array
 from satrap.core.pipeline import audio_convert as _audio_convert_module
 from satrap.core.pipeline.audio_convert import AudioConvertError, AudioTooLong, convert_to_wav, probe_audio
 from satrap.core.pipeline.audio_convert import probe_duration
+from support.providers import RunnableRegistry
 
 def reference_selection(event: MessageEvent, quote_status: str) -> tuple[list[str], list[str], list[str]]:
     """按重构前的公开实现重算选中结果, 作为等价性基准"""
@@ -763,13 +763,6 @@ def test_file_authority_platform_contract(monkeypatch):
     assert paths.file_uri_to_path("file://server/share/a.png") == r"\\server\share\a.png"
     assert paths.file_uri_to_path("file://localhost/C:/a.png") == "C:/a.png"
 
-class _quote_projection_RunnableRegistry:
-    """绑定判定恒为可运行的会话定义注册表替身"""
-
-    @staticmethod
-    def binding_status(*_args: object) -> BindingStatus:
-        """恒定答复可运行"""
-        return BindingStatus(BindingState.RUNNABLE)
 
 def quoted(message_id: int = 5, group_id: int = 456, sender: int = 321, text: str = "原文", **extra: object) -> dict[str, object]:
     return {"message_id": message_id, "group_id": group_id, "message_type": "group", "self_id": 10000,
@@ -806,7 +799,7 @@ async def test_scheduler_passes_quote_to_session_and_quote_alone_reaches_model()
     adapter, event = await _quote_projection_make_event(segments=[{"type": "reply", "data": {"id": "5"}}, {"type": "at", "data": {"qq": "10000"}}])
     adapter._bot.get_msg.return_value = quoted(text="帮我看这个")
     manager = AsyncMock()
-    manager.provider_registry = _quote_projection_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     manager.handle_call_async.return_value = "好的"
     await PipelineScheduler(manager).execute(event)
     call = manager.handle_call_async.call_args.args[0]
@@ -817,7 +810,7 @@ async def test_scheduler_passes_quote_to_session_and_quote_alone_reaches_model()
 async def test_quote_lookup_happens_after_wake_and_not_for_unwoken_messages():
     adapter, event = await _quote_projection_make_event(segments=[{"type": "reply", "data": {"id": "5"}}, {"type": "text", "data": {"text": "没叫机器人"}}])
     manager = AsyncMock()
-    manager.provider_registry = _quote_projection_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     await PipelineScheduler(manager).execute(event)
     adapter._bot.get_msg.assert_not_awaited()
     manager.handle_call_async.assert_not_awaited()
@@ -914,7 +907,7 @@ async def test_quote_of_bot_message_is_labelled_and_not_treated_as_wake():
     adapter, event = await _quote_projection_make_event(segments=[{"type": "reply", "data": {"id": "5"}}, {"type": "text", "data": {"text": "继续"}}])
     adapter._bot.get_msg.return_value = quoted(sender=10000)
     manager = AsyncMock()
-    manager.provider_registry = _quote_projection_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     await PipelineScheduler(manager).execute(event)
     manager.handle_call_async.assert_not_awaited()
     projected = project_input(event, await resolve_quotes(event))
@@ -931,7 +924,7 @@ async def test_quote_self_wake_is_opt_in_and_uses_single_lookup():
     adapter, event = await _quote_projection_make_event(settings={"wake_on_quote_self": True}, segments=segments)
     adapter._bot.get_msg.return_value = quoted(sender=10000)
     manager = AsyncMock()
-    manager.provider_registry = _quote_projection_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     manager.handle_call_async.return_value = ""
     await PipelineScheduler(manager).execute(event)
     assert manager.handle_call_async.await_count == 1
@@ -945,7 +938,7 @@ async def test_quote_of_other_user_or_failed_lookup_does_not_wake():
     adapter, event = await _quote_projection_make_event(settings={"wake_on_quote_self": True}, segments=segments)
     adapter._bot.get_msg.return_value = quoted(sender=321)
     manager = AsyncMock()
-    manager.provider_registry = _quote_projection_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     await PipelineScheduler(manager).execute(event)
     manager.handle_call_async.assert_not_awaited()
     adapter, event = await _quote_projection_make_event(settings={"wake_on_quote_self": True}, segments=segments)
@@ -961,7 +954,7 @@ async def test_quote_self_wake_respects_whitelist_and_does_not_lookup_when_disab
     adapter.config.settings["group_whitelist"] = ["789"]
     adapter._bot.get_msg.return_value = quoted(sender=10000)
     manager = AsyncMock()
-    manager.provider_registry = _quote_projection_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     await PipelineScheduler(manager).execute(event)
     adapter._bot.get_msg.assert_not_awaited()
     manager.handle_call_async.assert_not_awaited()
@@ -1004,13 +997,6 @@ async def _attachments_make_event(segments: list[dict[str, object]], settings: d
         "message": [{"type": "at", "data": {"qq": "10000"}}, *segments]})
     return adapter, adapter._event_queue.get_nowait()
 
-class _attachments_RunnableRegistry:
-    """绑定判定恒为可运行的会话定义注册表替身"""
-
-    @staticmethod
-    def binding_status(*_args: object) -> BindingStatus:
-        """恒定答复可运行"""
-        return BindingStatus(BindingState.RUNNABLE)
 
 def record(url: str = "https://media.example.com/voice.amr.wav") -> dict[str, object]:
     return {"type": "record", "data": {"file": "voice.wav", "url": url}}
@@ -1268,7 +1254,7 @@ async def test_scheduler_passes_attachment_context_to_session(monkeypatch: pytes
 
     monkeypatch.setattr(_attachments_module, "_transcribe", transcribe)
     manager = AsyncMock()
-    manager.provider_registry = _attachments_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     manager.handle_call_async.return_value = "好的"
     scheduler = PipelineScheduler(manager)
     scheduler.asr_resolver = lambda name: asr_config()
@@ -1286,7 +1272,7 @@ async def test_unwoken_voice_message_never_downloads(monkeypatch: pytest.MonkeyP
     download, calls = fake_download({"https://media.example.com/voice.amr.wav": b"RIFF"})
     monkeypatch.setattr(_attachments_module, "safe_async_get", download)
     manager = AsyncMock()
-    manager.provider_registry = _attachments_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     scheduler = PipelineScheduler(manager)
     scheduler.asr_resolver = lambda name: asr_config()
     await scheduler.execute(event)

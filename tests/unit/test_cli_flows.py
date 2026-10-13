@@ -142,11 +142,6 @@ def _autodetect_fixture(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(common.ConfigLoader, "autodetect", staticmethod(lambda: BackendConfig()))
     monkeypatch.setattr(common.ConfigLoader, "merge_env", staticmethod(_passthrough))
 
-def test_load_cli_config_autodetect(monkeypatch: pytest.MonkeyPatch):
-    """无 config 参数时使用自动探测结果"""
-    _autodetect_fixture(monkeypatch)
-    cfg = common.load_cli_config(Namespace(config=None, api_host=None, api_port=None))
-    assert isinstance(cfg, BackendConfig)
 
 def test_load_cli_config_from_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """config 指向 yaml 文件时从文件加载"""

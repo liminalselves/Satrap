@@ -1,35 +1,14 @@
 from __future__ import annotations
+from typing import Any
 
 from pathlib import Path
 import pytest
-from typing import Any, cast
 import copy
 
-from satrap.core.APICall.LLMCall import AsyncLLM, LLM
-from satrap.core.utils.TCBuilder import AsyncToolsManager, ToolsManager
 from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.type import LLMCallResponse
-
-
-def _as_llm(fake: Any) -> LLM:
-    """同步 LLM 替身类型边界: 替身实现 LLM.call 调用面, cast 集中在此工厂"""
-    return cast(LLM, fake)
-
-
-def _as_async_llm(fake: Any) -> AsyncLLM:
-    """异步 LLM 替身类型边界: 替身实现 AsyncLLM.call 调用面, cast 集中在此工厂"""
-    return cast(AsyncLLM, fake)
-
-
-def _as_tools_manager(fake: Any) -> ToolsManager:
-    """同步工具管理器替身类型边界: 替身实现 ToolsManager 调用面, cast 集中在此工厂"""
-    return cast(ToolsManager, fake)
-
-
-def _as_async_tools_manager(fake: Any) -> AsyncToolsManager:
-    """异步工具管理器替身类型边界: 替身实现 AsyncToolsManager 调用面, cast 集中在此工厂"""
-    return cast(AsyncToolsManager, fake)
+from support.casts import _as_async_llm, _as_async_tools_manager, _as_llm, _as_tools_manager
 
 
 class _FakeTools:

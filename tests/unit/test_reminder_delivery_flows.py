@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -15,8 +16,7 @@ from satrap.core.config.platform_messages import MessageScope
 from satrap.core.group_chat.reminders import ReminderStore, ReminderRecorder, ReminderError
 from satrap.core.platform.scheduled import ScheduledTarget
 from satrap.core.platform.receipt import SendReceipt
-from support.reminder_store import SCOPE, allowed, create, setup_store, target
-from dataclasses import replace
+from support.reminder_store import SCOPE, create, setup_store, target
 from unittest.mock import AsyncMock
 import asyncio
 from satrap.core.group_chat.reminder_scheduler import ReminderScheduler, ReminderDelivery
@@ -436,7 +436,6 @@ async def test_result_record_failure_stops_next_segment_and_retains_known_ids(tm
 
 @pytest.mark.asyncio
 async def test_policy_change_between_segments_keeps_partial_result(tmp_path):
-    from dataclasses import replace
 
     store, now = setup_store(tmp_path)
     reminder = create(store)

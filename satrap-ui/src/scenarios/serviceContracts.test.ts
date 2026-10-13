@@ -128,11 +128,6 @@ describe("api/errorMessages", () => {
       expect(format(new ApiError('请刷新', 409, 'conflict'))).toBe('请刷新 (conflict)');
     });
 
-    it('RAG 请求超时和网络失败仍说明任务结果未知', () => {
-      expect(ragErrorMessage(new AxiosError('timeout', 'ETIMEDOUT'))).toContain('任务可能仍在执行');
-      expect(ragErrorMessage(new AxiosError('offline', 'ERR_NETWORK'))).toContain('任务结果未知');
-      expect(ragErrorMessage(123)).toBe('123');
-    });
   });
 });
 
@@ -156,8 +151,9 @@ describe("api/rag", () => {
       expect(ragErrorMessage(new AxiosError('Request failed', 'ERR_BAD_RESPONSE', undefined, undefined, response))).toBe('请求失败（HTTP 502），后端未返回具体原因');
     });
 
-    it('保留 Chat fetch 已解析的错误', () => {
+    it('保留已解析的错误和非对象输入', () => {
       expect(ragErrorMessage(new Error('重建索引失败: 向量维度不匹配'))).toBe('重建索引失败: 向量维度不匹配');
+      expect(ragErrorMessage(123)).toBe('123');
     });
   });
 });

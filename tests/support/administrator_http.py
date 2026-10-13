@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pytest
-from satrap.core.config.document import load_config_document, save_config_document
 
 def document():
     return {"platforms": [{"id": "ob", "type": "onebot", "instance_id": "a" * 32}], "extra": "保留原字段"}

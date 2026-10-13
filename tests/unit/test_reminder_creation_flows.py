@@ -9,7 +9,6 @@ import json
 import time
 import pytest
 from satrap.core.backend.http_api import BackendHTTPServer
-from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError as _reminder_host_ReminderError

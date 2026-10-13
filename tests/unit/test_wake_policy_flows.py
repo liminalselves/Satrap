@@ -513,10 +513,6 @@ class TestGeneratedContract:
         assert GENERATED.is_file(), "契约 JSON 缺失, 请运行 python scripts/sync_wake_policy_contract.py"
         assert GENERATED.read_bytes() == render(build_payload())
 
-    def test_generated_json_uses_lf_and_trailing_newline(self):
-        raw = GENERATED.read_bytes()
-        assert b"\r" not in raw
-        assert raw.endswith(b"\n")
 
     def test_generated_json_excludes_backend_only_message(self):
         payload = json.loads(GENERATED.read_text(encoding="utf-8"))
@@ -542,9 +538,6 @@ class TestSharedCases:
         with pytest.raises(ValueError):
             _validate_case(case)
 
-    def test_fixture_uses_json_values_only(self):
-        raw = FIXTURE.read_text(encoding="utf-8")
-        assert "NaN" not in raw and "Infinity" not in raw
 
     def test_text_length_counts_code_points(self):
         # 与前端 textLength 同一口径: 非 BMP 字符按 1 个码点计, 不按 UTF-16 码元

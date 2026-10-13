@@ -652,20 +652,10 @@ def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path: P
     assert second.startswith("dummy:misskey2:user-1:")
     assert first != second
 
-def test_pipeline_uses_source_adapter_binding(tmp_path: Path):
-    """类级 adapter_id 不应覆盖产生事件的适配器实例"""
-    scm = _session_class_mgr(tmp_path, {"adapter_id": "misskey2"})
-    sm = _session_manager(tmp_path, scm)
-    scheduler = PipelineScheduler(sm)
-
-    platform_id, extra = scheduler._resolve_route_adapter(_message_event("misskey1"))
-
-    assert platform_id == "misskey1"
-    assert extra == {"adapter_id": "misskey1"}
-
-def test_pipeline_records_source_adapter_in_session_params(tmp_path: Path):
-    """自动创建会话时应把事件来源适配器写入实例参数"""
-    scm = _session_class_mgr(tmp_path, {"adapter_id": "missing"})
+@pytest.mark.parametrize("configured", ["misskey2", "missing"])
+def test_pipeline_binds_source_adapter_over_class_config(tmp_path: Path, configured: str):
+    """类级 adapter_id 不覆盖事件来源适配器, 自动创建会话时写入来源实例参数"""
+    scm = _session_class_mgr(tmp_path, {"adapter_id": configured})
     sm = _session_manager(tmp_path, scm)
     scheduler = PipelineScheduler(sm)
 

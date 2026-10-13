@@ -11,10 +11,8 @@ import pytest
 from satrap.core.call_context import bind_call_origin
 from satrap.core.platform import set_current_adapter_manager
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
-from satrap.expend.plugins.group_admin.tools import get_tools
 from satrap.expend.plugins.friend_manager.tools import get_tools as friend_tools
 from satrap.expend.plugins.friend_manager import tools as friend_tools_module
-from satrap.core.platform import current_adapter_manager
 from satrap.core.framework.Base import Session
 from typing import Any, cast
 from support.administration import _setup_adapter, _origin
@@ -33,7 +31,7 @@ from satrap.core.platform.event import MessageEvent, PlatformMetadata, PlatformM
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.pipeline.request_diagnostics import REQUEST_CAPACITY, RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.type import MessageMember, PlatformMessageType
-from satrap.core.framework.providers import BindingState, BindingStatus
+from support.providers import RunnableRegistry
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
@@ -511,13 +509,6 @@ async def test_cancellation_after_protocol_call_started_remains_unknown(tmp_path
 
 _NOW = 1_760_000_000.0
 
-class _RunnableRegistry:
-    """绑定判定恒为可运行的会话定义注册表替身"""
-
-    @staticmethod
-    def binding_status(*_args: object) -> BindingStatus:
-        """恒定答复可运行"""
-        return BindingStatus(BindingState.RUNNABLE)
 
 class _StubAdapter(OneBotAdapter):
     """不发网络请求的 OneBot 适配器替身"""
@@ -553,7 +544,7 @@ def _scheduler(
 ) -> tuple[PipelineScheduler, Any, OneBotAdapter]:
     manager = Mock()
     manager.handle_call_async = AsyncMock(return_value=response)
-    manager.provider_registry = _RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     scheduler = PipelineScheduler(cast(Any, manager))
     instance = adapter if adapter is not None else _StubAdapter()
     scheduler.manual_wake_store = store if store is not None else ManualWakeStore(tmp_path / "wake.json")
@@ -773,7 +764,7 @@ class TestDiagnosticRoutes:
         backend._running = True
         manager = Mock()
         manager.handle_call_async = AsyncMock(return_value="")
-        manager.provider_registry = _RunnableRegistry()
+        manager.provider_registry = RunnableRegistry()
         scheduler = PipelineScheduler(cast(Any, manager))
         scheduler.manual_wake_store = ManualWakeStore(tmp_path / "wake.json")
         backend._scheduler = scheduler

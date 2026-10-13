@@ -11,7 +11,6 @@ from typing import NoReturn, cast
 import json
 import io
 from satrap.core.backend.static_ui import SPAStaticService
-from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import DisplayRecorder
 from satrap.core.backend import control_server
 from satrap.core.storage import StorageLayout
@@ -45,9 +44,6 @@ from setuptools import find_packages
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.Base import Session
 
-def test_control_server_uses_workspace_project_root():
-    """控制服务应从共享路径工具获取工作区根目录"""
-    assert control_server.PROJECT_ROOT == get_project_root()
 
 class _control_static_BufferWriter:
     """记录控制服务响应的测试写入器"""
@@ -1119,8 +1115,8 @@ async def test_approval_is_single_durable_request_and_sources_are_rechecked(tmp_
         await provider.release_session_async(session)
         set_current_adapter_manager(None)
 
-def test_tools_subpackage_imports():
-    """tools 子包各模块可导入且有核心符号"""
+def test_subpackage_and_top_level_reexports():
+    """tools 子包与顶层 satrap.expend 的再导出面保持可用"""
     from satrap.expend.tools import (   # noqa: F401
         AsyncCodeSandboxTool,
         AsyncFetchPageTool,
@@ -1135,22 +1131,20 @@ def test_tools_subpackage_imports():
         AsyncSubAgent,
         SubAgent,
     )
+    from satrap.expend import (   # noqa: F401
+        AsyncCodeSandboxTool as TopAsyncCodeSandboxTool,
+        AsyncFetchPageTool as TopAsyncFetchPageTool,
+        AsyncSearchTool as TopAsyncSearchTool,
+        CodeSandboxTool as TopCodeSandboxTool,
+        DataBaseRAG as TopDataBaseRAG,
+        FetchPageTool as TopFetchPageTool,
+        LiteVectorRAG as TopLiteVectorRAG,
+        Mem0Memory as TopMem0Memory,
+        SearchTool as TopSearchTool,
+    )
     from satrap.expend.tools.rag import LiteVectorRAG as LVR2
     assert LVR2 is LiteVectorRAG
-
-def test_top_level_reexports():
-    """顶层 from satrap.expend import X 保持可用"""
-    from satrap.expend import (   # noqa: F401
-        AsyncCodeSandboxTool,
-        AsyncFetchPageTool,
-        AsyncSearchTool,
-        CodeSandboxTool,
-        DataBaseRAG,
-        FetchPageTool,
-        LiteVectorRAG,
-        Mem0Memory,
-        SearchTool,
-    )
+    assert TopLiteVectorRAG is LiteVectorRAG
 
 def test_legacy_module_path_alias():
     """旧路径 satrap.expend.<mod> 经 sys.modules 别名兼容"""
@@ -1163,10 +1157,6 @@ def test_legacy_module_path_alias():
     new_rag = importlib.import_module("satrap.expend.tools.rag")
     assert legacy_rag.LiteVectorRAG is new_rag.LiteVectorRAG
 
-def test_mcp_package_placeholder():
-    """mcp 预留包可导入且为空实现"""
-    mcp_pkg = importlib.import_module("satrap.expend.mcp")
-    assert mcp_pkg.__doc__ is not None
 
 @pytest.fixture(scope="module")
 def packaged_modules() -> set[str]:

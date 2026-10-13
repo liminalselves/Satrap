@@ -11,7 +11,6 @@ from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.server_auth import ServerAuth
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
-from satrap.core.framework.providers import BindingState, BindingStatus
 from pathlib import Path
 from typing import Any, cast
 import contextlib
@@ -26,21 +25,15 @@ from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
 from satrap.cli import cmd_platform
 from satrap.cli.client import DaemonClient
 from satrap.main import _build_parser
+from support.providers import RunnableRegistry
 
-class _manual_wake_RunnableRegistry:
-    """绑定判定恒为可运行的会话定义注册表替身"""
-
-    @staticmethod
-    def binding_status(*_args: object) -> BindingStatus:
-        """恒定答复可运行"""
-        return BindingStatus(BindingState.RUNNABLE)
 
 def _manual_wake_runtime():
     """构造不连接外部平台的运行时"""
     backend = BackendManager()
     backend._running = True
     manager = AsyncMock()
-    manager.provider_registry = _manual_wake_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     manager.handle_call_async.return_value = ""
     backend._scheduler = PipelineScheduler(manager)
     backend._adapter_mgr = PlatformAdapterManager()
@@ -218,20 +211,13 @@ async def test_manual_wake_logs_acceptance_and_lookup_failure(caplog: pytest.Log
     assert any("手动唤醒已接受 request_id=log1 adapter=bot group=20 operator=op" in m for m in messages)
     assert any("手动唤醒回源失败 request_id=log2" in m for m in messages)
 
-class _manual_wake_store_RunnableRegistry:
-    """绑定判定恒为可运行的会话定义注册表替身"""
-
-    @staticmethod
-    def binding_status(*_args: object) -> BindingStatus:
-        """恒定答复可运行"""
-        return BindingStatus(BindingState.RUNNABLE)
 
 def _manual_wake_store_runtime(tmp_path: Path) -> tuple[BackendManager, OneBotAdapter, Any, ManualWakeStore]:
     """构造带持久化存储但不连接外部平台的运行时"""
     backend = BackendManager()
     backend._running = True
     manager = AsyncMock()
-    manager.provider_registry = _manual_wake_store_RunnableRegistry()
+    manager.provider_registry = RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     store = ManualWakeStore(tmp_path / "manual_wake_store.json")
@@ -1041,7 +1027,7 @@ class TestSendOutcomeAdjudication:
             raise asyncio.CancelledError()
 
         replacement_manager = AsyncMock(handle_call_async=cancelled)
-        replacement_manager.provider_registry = _manual_wake_store_RunnableRegistry()
+        replacement_manager.provider_registry = RunnableRegistry()
         scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("cancel0"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
@@ -1076,7 +1062,7 @@ class TestSendOutcomeAdjudication:
             return ""
 
         replacement_manager = AsyncMock(handle_call_async=send_two_then_cancel)
-        replacement_manager.provider_registry = _manual_wake_store_RunnableRegistry()
+        replacement_manager.provider_registry = RunnableRegistry()
         scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("cancel1"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
@@ -1107,7 +1093,7 @@ class TestSendOutcomeAdjudication:
             return ""
 
         replacement_manager = AsyncMock(handle_call_async=tool_then_hang)
-        replacement_manager.provider_registry = _manual_wake_store_RunnableRegistry()
+        replacement_manager.provider_registry = RunnableRegistry()
         scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("timeout"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
@@ -1130,7 +1116,7 @@ class TestSendOutcomeAdjudication:
             raise RuntimeError("llm down")
 
         replacement_manager = AsyncMock(handle_call_async=plain_failure)
-        replacement_manager.provider_registry = _manual_wake_store_RunnableRegistry()
+        replacement_manager.provider_registry = RunnableRegistry()
         scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("feedback"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
@@ -1158,7 +1144,7 @@ class TestSendOutcomeAdjudication:
             return ""
 
         replacement_manager = AsyncMock(handle_call_async=reply)
-        replacement_manager.provider_registry = _manual_wake_store_RunnableRegistry()
+        replacement_manager.provider_registry = RunnableRegistry()
         scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("notrack"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()

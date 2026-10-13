@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from io import BytesIO
 from PIL import Image
-import pytest
 
 def png() -> bytes:
     """生成实际可解码的测试图片"""

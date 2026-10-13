@@ -2,12 +2,6 @@
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
-from time import monotonic
-import base64
-import json
-from aiocqhttp.exceptions import ApiNotAvailable
-import pytest
-from satrap.core.platform.onebot.admin import AdminActionRejected
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform import PlatformConfig
 

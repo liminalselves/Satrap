@@ -25,18 +25,20 @@ python -m pytest --run-integration
 
 默认运行不会访问外部服务。需要 API 凭据的测试应通过环境变量或项目本地配置提供凭据, 并显式使用 `--run-integration`
 
-## 后端修复回归
+## 后端回归模块
 
-修复测试已按功能并入 `unit/`, 无需单独运行审计目录:
+测试已按业务域整合, 覆盖内容对应到 `unit/` 下的模块:
 
 | 模块 | 覆盖内容 |
 | --- | --- |
-| `test_satrap_coding_security.py` | Shell 逐次审批、计划模式、受保护文件与 UTF-8 执行 |
-| `test_storage_restore.py` | 归档损坏、文件发布失败、清理失败与幂等重试 |
-| `test_database_recovery.py` | 向量源数据事务、索引故障、跨进程恢复与旧格式迁移 |
-| `test_display_stream.py` | 本机 WebSocket 溢出隔离、快照与询问恢复 |
-| `test_async_worker.py` | 同步会话取消、线程池背压与 DNS 截止时间 |
-| 现有 coding tools / minihttp / display service / display recorder 模块 | 文件分页、参数解码、重试并发与历史批量查询 |
+| `test_coding_security_flows.py` | Shell 逐次审批、计划模式、受保护文件与 UTF-8 执行 |
+| `test_storage_flows.py` | 归档损坏、文件发布失败、清理失败与幂等重试, 向量源数据事务与跨进程恢复 |
+| `test_recovery_flows.py` | 状态存储、运行记录、可恢复引擎与恢复策略 |
+| `test_chat_stream_flows.py` | 本机 WebSocket 溢出隔离、快照与询问恢复 |
+| `test_plugin_runtime_flows.py` | 插件循环桥接、同步会话取消与线程池背压 |
+| `test_minihttp.py` / `test_display_service.py` | 文件分页、参数解码、重试并发与历史批量查询 |
+
+`tests/support/` 存放跨模块复用的隔离夹具与构造器, 不包含测试用例
 
 以下 PowerShell 命令强制 UTF-8, 使用自动清理的临时目录运行全部离线单元测试:
 
@@ -72,6 +74,6 @@ python -B tests/benchmark/benchmark_backend.py --output tests/benchmark/results/
 python -B tests/benchmark/benchmark_platform_ingress.py --output tests/benchmark/results/platform/local.json --repeats 3   # 平台入站/自动参与窗口/出站拆分/配置重载/手动唤醒幂等
 ```
 
-脚本自动清理临时负载, 拒绝覆盖已有输出。保留的 `baseline.json`、`after.json` 和 `after-stability.json` 为同机原始样本, 包含环境、脚本与源文件指纹; 只测热缓存、受控阻塞负载与 Python 分配峰值, 不代表公网延迟或进程 RSS。验收结论见[后端修复记录](../docs/backend-repair-report.md)。
+脚本自动清理临时负载, 拒绝覆盖已有输出。保留的 `baseline.json`、`after.json` 和 `after-stability.json` 为同机原始样本, 包含环境、脚本与源文件指纹; 只测热缓存、受控阻塞负载与 Python 分配峰值, 不代表公网延迟或进程 RSS。基准口径与测量结论见 [docs/development/history.md](../docs/development/history.md)。
 
-前端单元测试仍位于 `satrap-ui/src` 的对应模块; 在 `satrap-ui` 目录运行 `npm test`。浏览器回归位于 `satrap-ui/e2e/chat-reconnect.mjs`, 运行 `npm run test:e2e`, 需要已安装 Playwright Chromium。该用例使用本机临时 Vite 服务与受控 HTTP / WebSocket, 不访问用户服务, 结束后关闭浏览器和服务。
+前端单元测试按域组织在 `satrap-ui/src` 下 (api 客户端, stores 与 `src/scenarios/` 的集中场景模块); 在 `satrap-ui` 目录运行 `npm test`。浏览器回归为 `satrap-ui/e2e/` 下的 14 个场景模块, 总入口 `npm run test:e2e:all` 复用同一个 Chromium 与 Vite 服务跑完全部场景, 需要已安装 Playwright Chromium。用例使用本机临时 Vite 服务与受控 HTTP / WebSocket, 不访问用户服务, 结束后关闭浏览器和服务。

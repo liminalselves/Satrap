@@ -1,4 +1,5 @@
-import axios, { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosError, type AxiosResponse } from 'axios';
+import { response } from '@/test/helpers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ backend: 'http://backend', control: 'http://control', auth: vi.fn(), reauth: vi.fn() }));
@@ -6,7 +7,6 @@ vi.mock('@/utils/constants', () => ({ getApiBaseUrl: () => mocks.backend, getCon
 vi.mock('./auth', () => ({ ensureApiSession: mocks.auth, establishApiSession: mocks.reauth }));
 
 const originalCreate = axios.create.bind(axios);
-const response = (config: InternalAxiosRequestConfig, data: unknown) => ({ config, status: 200, statusText: 'OK', headers: {}, data });
 const final = { ok: true, runtime: [{ target: 'Chat', status: 'next_activation', sessions: [] }] };
 let adapter: ReturnType<typeof vi.fn>;
 let createPluginApplication: typeof import('./pluginApplications').createPluginApplication;

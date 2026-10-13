@@ -1,4 +1,5 @@
-import axios, { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosError, type AxiosResponse } from 'axios';
+import { response } from '@/test/helpers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ base: 'http://backend', auth: vi.fn(), reauth: vi.fn() }));
@@ -9,7 +10,6 @@ let RuntimeApplication: typeof import('./runtimeApplication').RuntimeApplication
 let adapter: ReturnType<typeof vi.fn>;
 const result = { ok: true, edictum_sessions: [] };
 const originalCreate = axios.create.bind(axios);
-const response = (config: InternalAxiosRequestConfig, data: unknown) => ({ config, status: 200, statusText: 'OK', headers: {}, data });
 function snapshot(id: string, status = 'running', value: unknown = null, phase = 'install') {
   return { operation_id: id, status, created_at: 1, elapsed_ms: 2,
     stage: { platform_id: '', session_id: '', status, phase, phase_elapsed_ms: 1, timings_ms: {} },

@@ -3,41 +3,17 @@ from __future__ import annotations
 import satrap.expend.tools.agent as agent_module
 from collections.abc import Callable
 import threading
-from pathlib import Path
 import pytest
 from typing import Any, cast
 import queue
 import json
 import time
 
-from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from satrap.core.utils.TCBuilder import ToolsManager, AsyncToolsManager
-from satrap.expend.tools.agent import AsyncSubAgent, AsyncSubAgentModel, SubAgent, SubAgentModel
+from satrap.core.APICall.LLMCall import LLM
+from satrap.core.utils.TCBuilder import ToolsManager
+from satrap.expend.tools.agent import AsyncSubAgent, SubAgent
 from satrap.core.type import LLMCallResponse
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TOOLKIT_PATH = PROJECT_ROOT / ".toolkit" / "apikey.txt"
-
-
-def _as_llm(fake: Any) -> LLM:
-    """LLM 替身类型边界: 替身实现 LLM.call 调用面, cast 集中在此工厂"""
-    return cast(LLM, fake)
-
-
-def _as_async_llm(fake: Any) -> AsyncLLM:
-    """AsyncLLM 替身类型边界: 替身实现 AsyncLLM.call 调用面, cast 集中在此工厂"""
-    return cast(AsyncLLM, fake)
-
-
-def _as_tools_manager(fake: Any) -> ToolsManager:
-    """ToolsManager 替身类型边界: 替身实现工具查询调用面, cast 集中在此工厂"""
-    return cast(ToolsManager, fake)
-
-
-def _as_async_tools_manager(fake: Any) -> AsyncToolsManager:
-    """AsyncToolsManager 替身类型边界: 替身实现工具查询调用面, cast 集中在此工厂"""
-    return cast(AsyncToolsManager, fake)
+from support.casts import _as_async_llm, _as_async_tools_manager, _as_llm, _as_tools_manager
 
 
 class _ThreadProcess:
@@ -140,50 +116,6 @@ class _ThreadMultiprocessing:
 def threaded_sub_agent_process_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """将同步子代理切换到线程承载的测试进程上下文"""
     monkeypatch.setattr(agent_module, "multiprocessing", _ThreadMultiprocessing())
-
-
-def _load_deepseek_config() -> dict[str, str]:
-    """
-    解析 .toolkit/apikey.txt 并返回 DeepSeek 配置块
-
-    文件包含多个由空行分隔的配置块
-    每个配置块由一组 `key: value` 键值对组成, 返回 base_url 包含 'deepseek.com' 的配置块
-
-    返回:
-    - dict[str, str]:  DeepSeek 配置块
-    """
-    if not TOOLKIT_PATH.exists():
-        return {}
-    text = TOOLKIT_PATH.read_text(encoding="utf-8")
-    blocks = text.strip().split("\n\n")
-    for block in blocks:
-        cfg: dict[str, str] = {}
-        for line in block.splitlines():
-            if ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            cfg[key.strip().lower()] = value.strip()
-        if "deepseek.com" in cfg.get("base url", ""):
-            return cfg.copy()
-    return {}
-
-
-def _build_deepseek_llm() -> tuple[LLM | None, AsyncLLM | None]:
-    """使用 .toolkit 中的 DeepSeek 配置创建同步和异步 LLM 实例"""
-    cfg = _load_deepseek_config()
-    api_key = cfg.get("api key", "")
-    base_url = cfg.get("base url", "")
-    model = cfg.get("model", "")
-    if not api_key or not model or not base_url:
-        print("[SKIP] DeepSeek API config not found in .toolkit/apikey.txt")
-        return None, None
-    if not model.startswith("deepseek"):
-        print(f"[SKIP] model '{model}' is not a DeepSeek model")
-        return None, None
-    print(f"  Using DeepSeek API: {model} @ {base_url}")
-    llm = LLM(api_key=api_key, base_url=base_url, model=model, temperature=0.7, max_tokens=4096)
-    async_llm = AsyncLLM(api_key=api_key, base_url=base_url, model=model, temperature=0.7, max_tokens=4096)
-    return llm, async_llm
 
 
 class _FakeTool:
@@ -468,75 +400,3 @@ async def test_async_sub_agent_invalid_type():
     result = await _run_async_sub_agent('"just a string"')
     assert "子代理1执行任务" in result
     assert "just a string" in result
-
-
-# ================================================================
-# DeepSeek API 集成测试 (缺少 toolkit 配置时跳过)
-# ================================================================
-
-
-@pytest.mark.integration
-@pytest.mark.requires_api
-def test_sub_agent_with_deepseek():
-    llm, _ = _build_deepseek_llm()
-    if llm is None:
-        pytest.skip(".toolkit/apikey.txt 中没有可用的 DeepSeek 配置")
-
-    tools_mgr = ToolsManager()
-    agent = SubAgent(llm, tools_mgr)
-    result = agent.execute('["What is 2+2?", "What is the capital of France?"]')
-    assert "子代理1执行任务" in result
-    assert "子代理2执行任务" in result
-    assert "2+2" in result or "4" in result or "capital" in result or "Paris" in result
-
-
-@pytest.mark.integration
-@pytest.mark.requires_api
-@pytest.mark.asyncio
-async def test_async_sub_agent_with_deepseek():
-    _, async_llm = _build_deepseek_llm()
-    if async_llm is None:
-        pytest.skip(".toolkit/apikey.txt 中没有可用的 DeepSeek 配置")
-
-    tools_mgr = AsyncToolsManager()
-    agent = AsyncSubAgent(async_llm, tools_mgr)
-    result = await agent.execute('["What is 2+2?", "What is the capital of France?"]')
-    assert "子代理1执行任务" in result
-    assert "子代理2执行任务" in result
-    assert "2+2" in result or "4" in result or "capital" in result or "Paris" in result
-
-
-@pytest.mark.integration
-@pytest.mark.requires_api
-@pytest.mark.asyncio
-async def test_async_sub_agent_parallelism_with_deepseek():
-    _, async_llm = _build_deepseek_llm()
-    if async_llm is None:
-        pytest.skip(".toolkit/apikey.txt 中没有可用的 DeepSeek 配置")
-
-    tools_mgr = AsyncToolsManager()
-    agent = AsyncSubAgent(async_llm, tools_mgr)
-    tasks = json.dumps([f"What is {i} + {i}?" for i in range(1, 5)])
-    result = await agent.execute(tasks)
-    for i in range(1, 5):
-        assert f"子代理{i}" in result
-        assert str(i) in result
-
-
-def test_sub_agent_model_forward_returns_string():
-    llm = _FakeLLM()
-    tools_manager = _FakeToolsManager()
-    model = SubAgentModel(_as_llm(llm), "test-id", _as_tools_manager(tools_manager))
-    result = model.forward("some task")
-    assert isinstance(result, str)
-    assert len(result) > 0
-
-
-@pytest.mark.asyncio
-async def test_async_sub_agent_model_forward_returns_string():
-    llm = _FakeAsyncLLM()
-    tools_manager = _FakeToolsManager()
-    model = await AsyncSubAgentModel.create(llm, "test-async-id", tools_manager)
-    result = await model.forward("some async task")
-    assert isinstance(result, str)
-    assert len(result) > 0

@@ -3,17 +3,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 from typing import Any
-import pytest
 from satrap.expend.plugins.group_admin.tools import AsyncGroupAdminTool, get_tools
 from satrap.core.call_context import CallOrigin
-from satrap.core.framework.Base import Session
-from satrap.core.platform import (
-    PlatformAdapterManager,
-    PlatformAdapterRegistry,
-    PlatformConfig,
-    current_adapter_manager,
-    set_current_adapter_manager,
-)
+from satrap.core.platform import PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig, set_current_adapter_manager
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 
 def _origin(chat_type: str = "GroupMessage", chat_id: str = "456", actor: str = "123") -> CallOrigin:

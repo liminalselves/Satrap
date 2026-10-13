@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-import json
 import time
-import pytest
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore, ArchiveMessage

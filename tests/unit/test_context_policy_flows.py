@@ -27,6 +27,7 @@ from satrap.core.pipeline.wake_window import PendingImage, WakeWindow
 from satrap.core.platform.event import MessageEvent
 from satrap.core.platform.identity import BotIdentity
 from satrap.core.type import UserCall
+from support.providers import RunnableRegistry
 
 class _NoCallAsyncLLM(AsyncLLM):
     """无需真实客户端的异步 LLM 替身"""
@@ -519,13 +520,6 @@ async def make_event(settings: dict[str, object], segments: list[dict[str, objec
     })
     return adapter, adapter._event_queue.get_nowait()
 
-class _RunnableRegistry:
-    """绑定判定恒为可运行的会话定义注册表替身"""
-
-    @staticmethod
-    def binding_status(*_args: object) -> BindingStatus:
-        """恒定答复可运行"""
-        return BindingStatus(BindingState.RUNNABLE)
 
 class TestProjectionBudget:
     """总额度记账的固定优先级: 正文保前缀 > 来源标记头 > 资料块内容"""
@@ -683,7 +677,7 @@ class TestWindowBlockBudget:
         from typing import cast
 
         manager = AsyncMock()
-        manager.provider_registry = _RunnableRegistry()
+        manager.provider_registry = RunnableRegistry()
         manager.handle_call_async.return_value = ""
         scheduler = PipelineScheduler(cast(SessionManager, manager))
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
@@ -716,7 +710,7 @@ class TestWindowBlockBudget:
         from typing import cast
 
         manager = AsyncMock()
-        manager.provider_registry = _RunnableRegistry()
+        manager.provider_registry = RunnableRegistry()
         manager.handle_call_async.return_value = ""
         scheduler = PipelineScheduler(cast(SessionManager, manager))
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
@@ -741,13 +735,6 @@ class TestWindowBlockBudget:
         projected = event.get_extra("input_projection")
         assert "window_budget_dropped" in projected.notes
 
-class RunnableRegistry:
-    """返回可运行会话定义的测试注册表"""
-
-    @staticmethod
-    def binding_status(*_args: object) -> BindingStatus:
-        """返回可运行的绑定状态"""
-        return BindingStatus(BindingState.RUNNABLE)
 
 def runtime(settings: dict[str, Any] | None = None) -> tuple[OneBotAdapter, PipelineScheduler, AsyncMock]:
     """构造使用真实 OneBot 解析和调度器的本地测试运行时"""

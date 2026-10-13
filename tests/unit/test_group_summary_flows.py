@@ -9,7 +9,6 @@ from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, P
 from satrap.core.group_chat.summaries import SummaryLimits, SummaryStore, _cursor
 from satrap.core.group_chat.types import GroupChatError
 from types import SimpleNamespace
-from dataclasses import replace
 import json
 from satrap.core.call_context import bind_call_origin, bind_tool_workflow
 from satrap.core.group_chat.reply import bind_reply_turn

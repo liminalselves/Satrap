@@ -7,16 +7,13 @@ import asyncio
 import json
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 import pytest
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
-from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 from satrap.core.framework.providers.edictum import EdictumProvider
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.type import SessionConfig
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
 from satrap.edictum.plugin_compatibility import PluginEnvironment

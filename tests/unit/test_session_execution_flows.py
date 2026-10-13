@@ -30,10 +30,10 @@ from satrap.core.utils.TCBuilder import Tool, AsyncTool as _provider_call_origin
 from satrap.edictum.config import EdictumConfigManager
 from satrap.core.type import LLMCallResponse, SessionConfig as _provider_call_origin_SessionConfig
 import re
+from satrap.core.components import PlatformComponentType
 from satrap.core.platform.event import MessageChain, MessageEvent, MessageEventResult, MessageSession, PlatformMetadata
-from satrap.core.components import BaseMessageComponent, PlatformComponentType
-from satrap.core.platform import PlatformAdapter, PlatformConfig
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
+from support.adapters import RecorderAdapter
 
 class _EchoSession(Session):
     """测试用同步会话"""
@@ -508,27 +508,8 @@ async def test_real_provider_tool_loop_uses_each_shared_session_actor(tmp_path, 
         else:
             provider.release_session(session)
 
-class _RecorderAdapter(PlatformAdapter):
-    """记录 send_message 调用的测试适配器"""
 
-    def __init__(self, adapter_id: str = "rec1"):
-        super().__init__(PlatformConfig(id=adapter_id, type="rec"))
-        self.sent: list[tuple[str, MessageChain]] = []
-
-    async def run(self) -> None:
-        return None
-
-    def meta(self) -> PlatformMetadata:
-        return PlatformMetadata(name=self.config.id, id=self.config.id)
-
-    async def send_message(
-        self, session_id: str, message: MessageChain, *, request_id: str = "",
-        purpose: str = "business", require_tracking: bool = False,
-    ) -> Any:
-        self.sent.append((session_id, message))
-        return None
-
-def _make_event(adapter: _RecorderAdapter, session_id: str = "s1") -> MessageEvent:
+def _make_event(adapter: RecorderAdapter, session_id: str = "s1") -> MessageEvent:
     message = PlatformMessage()
     message.type = PlatformMessageType.FRIEND_MESSAGE
     message.self_id = "bot"
@@ -608,7 +589,7 @@ def test_event_result_chain_building():
 
 def test_event_session_identifiers():
     """会话标识读写: unified_msg_origin / session_id"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter, session_id="s1")
     assert event.unified_msg_origin == "rec1:FriendMessage:s1"
     assert event.session_id == "s1"
@@ -622,7 +603,7 @@ def test_event_session_identifiers():
 
 def test_event_message_readers():
     """消息读取: 文本 / 发送者 / 平台 / 类型 / 群组"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
     assert event.get_message_str() == "你好"
     assert event.get_sender_id() == "user-1"
@@ -641,7 +622,7 @@ def test_event_message_outline():
     from satrap.core.components import BaseMessageComponent, Image, Plain
     from satrap.core.type import MessageMember as _MM
 
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
     msg = PlatformMessage()
     components: list[BaseMessageComponent] = [
@@ -658,7 +639,7 @@ def test_event_message_outline():
 
 def test_event_result_control():
     """事件结果控制: set_result / stop / continue / 快速构建"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
 
     event.set_result("纯文本结果")
@@ -692,7 +673,7 @@ def test_event_result_control():
 
 def test_event_request_llm_defaults():
     """LLM 请求"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
     req = event.request_llm(prompt="p", session_id="s1")
     assert req.prompt == "p"
@@ -704,7 +685,7 @@ def test_event_request_llm_defaults():
 @pytest.mark.asyncio
 async def test_event_send_records_and_flags():
     """发送消息记录到适配器并标记 has_send_operation"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
     assert event.has_send_operation() is False
 
@@ -716,7 +697,7 @@ async def test_event_send_records_and_flags():
 @pytest.mark.asyncio
 async def test_event_send_failure_silently_caught():
     """适配器发送失败被捕获, 不冒泡"""
-    class _BoomAdapter(_RecorderAdapter):
+    class _BoomAdapter(RecorderAdapter):
         async def send_message(
         self, session_id: str, message: MessageChain, *, request_id: str = "",
         purpose: str = "business", require_tracking: bool = False,
@@ -730,7 +711,7 @@ async def test_event_send_failure_silently_caught():
 
 def test_event_temporary_files():
     """临时文件跟踪与清理"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
 
     f1 = Path("_tmp_test_1.png")
@@ -748,7 +729,7 @@ def test_event_temporary_files():
 
 def test_event_extras():
     """扩展字段: set / get / 全部 / 清除"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
 
     event.set_extra("k1", "v1")
@@ -767,7 +748,7 @@ async def test_event_process_buffer(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("satrap.core.platform.event.asyncio.sleep", no_sleep)
 
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
     rest = await event.process_buffer("【A】【B】tail", re.compile(r"【[^】]+】"))
     assert rest == "tail"
@@ -777,7 +758,7 @@ async def test_event_process_buffer(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_event_process_buffer_stops_on_zero_width_match():
     """可匹配空串的正则不会发送空消息或进入死循环"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
 
     rest = await event.process_buffer("tail", re.compile(r".*?"))
@@ -787,7 +768,7 @@ async def test_event_process_buffer_stops_on_zero_width_match():
 
 def test_event_should_call_llm_flag():
     """call_llm 开关读写"""
-    adapter = _RecorderAdapter()
+    adapter = RecorderAdapter()
     event = _make_event(adapter)
     assert event.call_llm is True
     event.should_call_llm(False)

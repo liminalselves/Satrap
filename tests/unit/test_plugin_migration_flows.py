@@ -17,13 +17,11 @@ from typing import Any, cast
 from unittest.mock import AsyncMock
 from aiocqhttp.exceptions import ActionFailed
 import asyncio
-import ast
+from satrap.edictum import AsyncSimpleSession
 from satrap.core.call_context import bind_call_origin
 from satrap.core.group_chat.types import GroupChatLimits
 from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
-from satrap.edictum import SimpleSession, AsyncSimpleSession
 from satrap.expend.plugins.group_chat.tools import get_tools
-from satrap.expend.plugins.group_admin.tools import _DEFINITIONS
 from support.group_read import _setup
 from support.plugin_runtime import runtime
 
@@ -153,7 +151,6 @@ def test_tool_settings_returns_values_and_revision_from_same_read(config, tmp_pa
     assert result["tool_revision"] == 1
     assert result["tool_overrides"] == {"friend_manager_delete_friend": False}
 
-ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.fixture()
 def restore_manager():
@@ -161,20 +158,6 @@ def restore_manager():
     yield
     set_current_adapter_manager(previous)
 
-@pytest.mark.usefixtures('restore_manager')
-def test_old_tools_only_exist_in_config_migration_and_plugins_do_not_import_each_other():
-    assert not set(_DEFINITIONS) & {
-        "group_admin_list_groups", "group_admin_get_group_info", "group_admin_list_members",
-        "group_admin_get_member", "group_admin_get_message", "group_admin_set_card",
-    }
-    assert "group_admin_set_group_nickname" in _DEFINITIONS
-    for plugin, other in (("group_chat", "group_admin"), ("group_admin", "group_chat")):
-        for path in (ROOT / "satrap/expend/plugins" / plugin).rglob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if isinstance(node, ast.ImportFrom):
-                    assert not (node.module or "").startswith(f"satrap.expend.plugins.{other}")
-                elif isinstance(node, ast.Import):
-                    assert all(not item.name.startswith(f"satrap.expend.plugins.{other}") for item in node.names)
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.parametrize("enabled", [False, True])
@@ -425,7 +408,6 @@ def test_migration_preserves_global_group_restrictions(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_new_queries_support_another_platform_and_private_route_revocation(tmp_path):
     from satrap.core.call_context import CallOrigin
-    from satrap.core.config.platform_messages import MessageScope
     from satrap.core.group_chat.service import GroupChatService
     from satrap.core.group_chat.types import GroupRecord, GroupSnapshot, VerifiedGroup
     from satrap.core.platform import PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig

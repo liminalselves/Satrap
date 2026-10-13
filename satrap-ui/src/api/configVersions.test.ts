@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { AxiosError, type AxiosResponse } from 'axios';
+import { deferred } from '@/test/helpers';
 import { controlClient } from './control';
 import { getConfigVersions, VersionedConfigRead } from './configVersions';
 
@@ -12,11 +13,6 @@ function versions(token = 'a', state = 'available') {
 }
 function failed(status: number, data: unknown = {}) {
   return new AxiosError('failed', 'ERR_BAD_RESPONSE', undefined, undefined, { status, data } as AxiosResponse);
-}
-function deferred<T>() {
-  let resolve!: (data: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
 }
 beforeEach(() => { vi.resetAllMocks(); scope = 'http://control-a'; vi.mocked(controlClient.get).mockResolvedValue(versions()); });
 afterEach(() => vi.useRealTimers());
