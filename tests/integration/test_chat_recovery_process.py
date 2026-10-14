@@ -15,6 +15,8 @@ from uuid import uuid4
 import pytest
 
 
+pytestmark = pytest.mark.integration
+
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 

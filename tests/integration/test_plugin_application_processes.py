@@ -14,6 +14,11 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+import pytest
+
+
+pytestmark = pytest.mark.integration
+
 
 def test_plugin_application_across_actual_processes(tmp_path: Path) -> None:
     """
