@@ -27,7 +27,7 @@ class DeadlineTicket:
 class WakeTimers:
     """每路由最多一个计时任务, 使用窗口容量限制全局数量"""
 
-    def __init__(self, window: WakeWindow):
+    def __init__(self, window: WakeWindow) -> None:
         """
         初始化窗口计时器
 

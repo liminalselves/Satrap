@@ -54,7 +54,7 @@ def _sessions(row: dict[str, Any]) -> list[str]:
 class UserDirectoryService:
     """浏览和维护一个平台实例内的用户资料"""
 
-    def __init__(self, database: Path, platform: dict[str, Any]):
+    def __init__(self, database: Path, platform: dict[str, Any]) -> None:
         """
         初始化目录, 不创建数据库或数据目录
 

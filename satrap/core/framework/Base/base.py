@@ -178,7 +178,7 @@ class _SessionCore(Generic[_ContextT, _CommandT]):
 
     def register_command(
         self, name: str, handler: Callable[..., Any], intro: str = "None"
-    ):
+    ) -> None:
         """
         注册命令处理函数
 

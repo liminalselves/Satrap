@@ -54,7 +54,7 @@ def validate_policy(payload: object) -> LoggingPolicy:
 class LoggingPolicyStore:
     """独立的日志配置和清理结果管理, 不导入依赖 logger 的配置模块"""
 
-    def __init__(self, path: Path | None = None, root: Path | None = None):
+    def __init__(self, path: Path | None = None, root: Path | None = None) -> None:
         """
         初始化日志管理路径
 
@@ -226,7 +226,7 @@ class LoggingPolicyStore:
 class LogMaintenance:
     """在无日志消息时也检查日期, 热读取策略并定时清理"""
 
-    def __init__(self, handler: ManagedDailyHandler, store: LoggingPolicyStore, *, interval: float = 10, clock: Callable[[], float] = time.time):
+    def __init__(self, handler: ManagedDailyHandler, store: LoggingPolicyStore, *, interval: float = 10, clock: Callable[[], float] = time.time) -> None:
         """
         初始化可停止的维护线程
 

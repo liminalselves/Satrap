@@ -19,7 +19,7 @@ class CodeSandbox:
         env: str,
         execution_timeout: float = 30.0,
         allowed_env: Iterable[str] = (),
-    ):
+    ) -> None:
         """
         初始化沙箱
 

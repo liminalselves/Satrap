@@ -80,7 +80,7 @@ def report_failure(message: str) -> None:
 class LogFileLock:
     """独立的操作系统锁, 不导入依赖 logger 的存储模块"""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         """
         初始化锁路径
 
@@ -347,7 +347,7 @@ def cleanup_logs(root: Path, retention_days: int, *, today: date | None = None, 
 class ManagedDailyHandler(logging.Handler):
     """按日期及进程实例独立写入日志, 空闲时也可关闭旧日期文件"""
 
-    def __init__(self, root: Path, service: str = "process", *, clock: Callable[[], date] = date.today, file_path: Path | None = None):
+    def __init__(self, root: Path, service: str = "process", *, clock: Callable[[], date] = date.today, file_path: Path | None = None) -> None:
         """
         初始化租约和文件状态, 失败保持控制台日志可用
 

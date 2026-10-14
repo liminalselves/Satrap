@@ -165,7 +165,7 @@ def cmd_platform_remove(args: argparse.Namespace):
     info("平台实例变更需要重启后端后生效")
 
 
-def cmd_platform_wake(args: argparse.Namespace):
+def cmd_platform_wake(args: argparse.Namespace) -> None:
     """
     向运行中的后端提交 OneBot 群手动唤醒
 

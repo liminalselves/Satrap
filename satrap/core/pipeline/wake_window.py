@@ -89,7 +89,7 @@ class WakeWindow:
     """按来源路由隔离, 路由数, 正文及图片引用均有界"""
 
     def __init__(self, max_routes: int = 512, max_messages: int = 32, max_chars: int = 8192, ttl: float = 120,
-                 max_images: int = 32, max_images_per_message: int = 8):
+                 max_images: int = 32, max_images_per_message: int = 8) -> None:
         """
         初始化轻量窗口
 
