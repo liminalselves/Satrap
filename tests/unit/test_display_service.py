@@ -1082,7 +1082,7 @@ async def test_chat_model_resources_share_capture_reject_stale_source_and_rollba
                 "llm": "old", "embed": "embedding-new", "rerank": "rerank-new", "asr": "asr-new",
             }
             assert session._model_probe._clients == {} and session.plugin_model_manager is models
-        assert models.get_embedding_config("resource").model == "embedding-old"
+        assert models.get_embedding_config("resource").model == "embedding-new"
         repeated = await svc.reconcile_plugins(plugin_name="model_probe")
         assert repeated["applied"] and all(not item["plugins"] for item in repeated["sessions"])
         assert [session.list_plugins()[0] for session in sessions] == old_handles

@@ -275,8 +275,26 @@ async function shared_llm_editor(runtime) {
     await dialog.getByRole('button', { name: '创建', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(writes[3].config.context_strategy, 'summarize');
+    models['step-5'] = { name: 'step-5', model: 'external-step' };
+    models.default.summary_keep_recent_turns = 2;
+    models.default.context_strategy = 'summarize';
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await settings.getByText('step-5', { exact: true }).waitFor();
+    await settings.locator('.glass-card').filter({ hasText: 'default' }).getByTitle('编辑', { exact: true }).click();
+    dialog = page.getByRole('dialog', { name: '编辑模型: default', exact: true });
+    assert.equal(await dialog.getByLabel('保留最近轮数').inputValue(), '2');
+    await dialog.getByLabel('历史比例').fill('0.5');
+    models.default.history_ratio = 0.7;
+    models['step-5'].model = 'external-updated';
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await settings.getByText('external-updated', { exact: true }).waitFor();
+    assert.equal(await dialog.getByLabel('历史比例').inputValue(), '0.5');
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    delete models['step-5'];
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await settings.getByText('step-5', { exact: true }).waitFor({ state: 'hidden' });
     assert.deepEqual(errors, []);
-    console.log('PASS: 两端共用 LLM 字段, 默认值, 校验和预算; 配置回显, 密钥保留及 Chat 热加载');
+    console.log('PASS: 共用 LLM 表单; 外部新增, 修改与删除自动同步, 未保存输入保留, Chat 热加载');
   } finally {
     await runtime.closeContexts();
     await runtime.releaseServer(server);

@@ -17,7 +17,7 @@ import mimetypes, base64
 
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 
-from dataclasses import asdict, dataclass, field, replace as dataclass_replace
+from dataclasses import asdict, dataclass, field
 from functools import wraps
 import asyncio
 import hashlib
@@ -632,13 +632,10 @@ class ChatService:
         if not kwargs:
             return {"ok": False, "error": "没有可更新的字段"}
         try:
-            current = self._model_cfg.get_llm_config(name)
-            candidate = dataclass_replace(current, **kwargs)
-            resolve_context_policy(candidate)
+            self._model_cfg.update_named_config("llm", name, kwargs)
         except (TypeError, ValueError) as e:
             return {"ok": False, "error": str(e)}
-        self._model_cfg.update_llm_config(name, **kwargs)
-        refreshed = self._refresh_chat_model_runtimes(name, candidate)
+        refreshed = self._refresh_chat_model_runtimes(name, self._model_cfg.get_llm_config(name))
         return {"ok": True, **refreshed}
 
     def delete_model(self, name: str) -> dict[str, Any]:

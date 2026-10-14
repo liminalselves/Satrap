@@ -657,9 +657,9 @@ class ChatHTTPServer(MiniHTTPServer):
 # ---------- 入口 ----------
 
 async def _run(host: str, port: int) -> None:
-    model_cfg = ModelConfigManager()
-    plugins = ChatPluginRegistry()
     backend_config = ConfigLoader.autodetect()
+    model_cfg = ModelConfigManager(storage_path=backend_config.model_config_path)
+    plugins = ChatPluginRegistry()
     service = ChatService(
         model_cfg,
         plugins,

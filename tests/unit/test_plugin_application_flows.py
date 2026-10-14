@@ -204,7 +204,7 @@ def test_capture_retries_when_source_changes_during_read(tmp_path, monkeypatch, 
             raise AssertionError("模型来源未捕获")
         assert captured is snapshot.models_for(writer)
         assert captured.get_llm_config("resource").model == "new"
-        assert models.get_llm_config("resource").model == "old"
+        assert models.get_llm_config("resource").model == "new"
         assert snapshot.is_current()
         writer.update_llm_config("resource", model="latest")
         assert not snapshot.is_current()

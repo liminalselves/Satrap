@@ -239,7 +239,8 @@ def resolve_runtime_specs(session: Session | AsyncSession, specs: list[PluginSpe
                     continue
                 config[key] = field.validate(value)
         config = resolve_session_plugin_config(session, spec.name, entry.config_schema, config)
-        revision = model_reference_fingerprint(models, entry.config_schema, config) if models is not None else ""
+        revision = model_reference_fingerprint(models, entry.config_schema, config) if models is not None and spec.enabled else ""
+        # 停用或移除插件不构建资源, 不因模型文件损坏而阻止卸载
         resolved.append(replace(spec, config=config, resources_revision=revision, config_resolved=True,
                                 availability=entry.check_environment(getattr(session, "plugin_environment", PluginEnvironment()))))
     return resolved

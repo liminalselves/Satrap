@@ -1,7 +1,7 @@
 """模型配置共享领域服务"""
 from __future__ import annotations
 
-from dataclasses import fields, replace
+from dataclasses import fields
 from pathlib import Path
 from time import monotonic
 import asyncio
@@ -92,9 +92,6 @@ class ModelConfigService:
         cleaned = self._validate_payload(normalized, payload, allow_masked_key=True)
         requested_name = cleaned.pop("name", config_name)
         new_name = self._validate_name(str(requested_name or ""))
-        if normalized == "llm":
-            current = self.manager.get_llm_config(config_name)
-            resolve_context_policy(replace(current, **cleaned))
         self.manager.update_named_config(
             normalized,
             config_name,

@@ -410,8 +410,8 @@ export const chatApi = {
     }),
 
   // 模型配置管理
-  listModelsDetail: () =>
-    request<{ ok: boolean; models: Record<string, ModelConfigItem> }>('GET', '/api/chat/models/detail'),
+  listModelsDetail: (signal?: AbortSignal) =>
+    request<{ ok: boolean; models: Record<string, ModelConfigItem> }>('GET', '/api/chat/models/detail', undefined, signal),
 
   addModel: (config: ModelConfigItem) =>
     request<{ ok: boolean; error?: string; refreshed_conversations?: number; deferred_conversations?: number }>('POST', '/api/chat/models', config),

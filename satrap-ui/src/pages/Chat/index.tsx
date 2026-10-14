@@ -1,4 +1,6 @@
 import { useConfirm } from '@/hooks/useConfirm';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { restoreConversation, type Conversation as ConversationState } from './conversations';
 import { RunRecovery } from "./RunRecovery";
 import { LLMConfigModal } from '@/components/common/LLMConfigModal';
@@ -320,6 +322,9 @@ export function Chat() {
   const [showEntryChoice, setShowEntryChoice] = useState(false);
   // 待发送附件
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  useConfigWatch(['llm']);
+  const publishedModels = useConfigStore((state) => state.llmConfigs);
+  const modelReadVersion = useRef(0);
   // 模型详情 (设置弹窗管理用)
   const [modelsDetail, setModelsDetail] = useState<Record<string, ModelConfigItem>>({});
   // 模型编辑弹窗: null=关闭, ''=新增, 否则为编辑的模型名
@@ -695,6 +700,27 @@ export function Chat() {
     };
   }, [activeId, handleEvent]);
 
+  const handleModelSaved = useCallback(async (signal?: AbortSignal) => {
+    const version = ++modelReadVersion.current;
+    try {
+      const { models: detail } = await chatApi.listModelsDetail(signal);
+      if (signal?.aborted || version !== modelReadVersion.current) return;
+      const names = Object.keys(detail);
+      setModels(names);
+      setModelsDetail(detail);
+      if (names.length) setSettings((previous) => names.includes(previous.model) ? previous : { ...previous, model: names[0] });
+    } catch (error) {
+      if (!signal?.aborted) console.error('[Chat] 刷新模型列表失败:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!settingsOpen && !Object.keys(publishedModels).length) return;
+    const controller = new AbortController();
+    void handleModelSaved(controller.signal);
+    return () => controller.abort();
+  }, [publishedModels, settingsOpen, handleModelSaved]);   // 配置版本变化或打开设置时刷新, Chat 仍从自己的服务读取模型详情
+
   // 初始化: 健康检查 + 加载模型/插件/会话列表
   useEffect(() => {
     let cancelled = false;
@@ -703,22 +729,16 @@ export function Chat() {
         await chatApi.health();
         if (cancelled) return;
         setBackendOk(true);
-        const [{ models: modelList }, { plugins: pluginList }, { conversations: convList }, { models: detail }, { projects: projectList }] =
+        const [{ plugins: pluginList }, { conversations: convList }, { projects: projectList }] =
           await Promise.all([
-            chatApi.listModels(),
             chatApi.listPlugins(),
             chatApi.listConversations(),
-            chatApi.listModelsDetail(),
             chatApi.listProjects(),
+            handleModelSaved(),
           ]);
         if (cancelled) return;
-        setModels(modelList);
         setPlugins(pluginList);
-        setModelsDetail(detail);
         setProjects(projectList);
-        if (modelList.length > 0) {
-          setSettings((prev) => (modelList.includes(prev.model) ? prev : { ...prev, model: modelList[0] }));
-        }
         // 恢复历史会话
         const restored = convList.map((item) => restoreConversation<ChatMessage>(item));
         setConversations(restored);
@@ -734,7 +754,7 @@ export function Chat() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [handleModelSaved]);
 
   // 切换会话时按需加载历史
   useEffect(() => {
@@ -1361,16 +1381,7 @@ export function Chat() {
     try {
       const result = await chatApi.deleteModel(name);
       if (result.ok) {
-        setModelsDetail((prev) => {
-          const next = { ...prev };
-          delete next[name];
-          return next;
-        });
-        setModels((prev) => prev.filter((m) => m !== name));
-        // 如果删除的是当前选中模型, 切换到第一个可用模型
-        if (settings.model === name) {
-          setSettings((prev) => ({ ...prev, model: models.find((m) => m !== name) ?? 'default' }));
-        }
+        await handleModelSaved();
       } else {
         alert(result.error || '删除失败');
       }
@@ -1378,21 +1389,7 @@ export function Chat() {
       console.error('[Chat] 删除模型失败:', err);
       alert(`删除模型失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [settings.model, models, confirm]);
-
-  // 模型保存后刷新列表
-  const handleModelSaved = useCallback(async () => {
-    try {
-      const [{ models: modelList }, { models: detail }] = await Promise.all([
-        chatApi.listModels(),
-        chatApi.listModelsDetail(),
-      ]);
-      setModels(modelList);
-      setModelsDetail(detail);
-    } catch (err) {
-      console.error('[Chat] 刷新模型列表失败:', err);
-    }
-  }, []);
+  }, [handleModelSaved, confirm]);
 
   // 停止生成 (调用后端取消 + 解除前端流式标记)
   const handleAnswerUserInput = useCallback(async (answerValue: string) => {
