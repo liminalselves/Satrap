@@ -4,23 +4,28 @@ from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from satrap.core.config.session_overrides import SessionOverrideService, SessionOverrideStore
 from satrap.edictum.plugin_resources import model_reference_fingerprint, MODEL_TYPES, named_model_config
 from satrap.edictum.plugin_config import ConfigField, PluginConfigManager, schema_to_payload, validate_config_values
 
-from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
+from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
 from satrap.edictum.plugin_apply import PluginApplySnapshot
 from satrap.core.log import logger
 from satrap.core.config.model_snapshot import ModelConfigReader
+
+if TYPE_CHECKING:
+    from satrap.core.framework.Base import AsyncSession, Session
+    from satrap.core.rag import RagService
 
 
 class PluginInstallConfig(dict[str, Any]):
     """安装参数携带首次技能状态, 不混入插件业务配置字段"""
 
     def __init__(self, values: dict[str, Any], *, initial_skills: dict[str, bool] | None = None,
-                 model_snapshot: ModelConfigReader | None = None):
+                 model_snapshot: ModelConfigReader | None = None) -> None:
         """
         构建兼容字典的安装参数
 
@@ -41,7 +46,8 @@ class EffectivePluginConfig(PluginInstallConfig):
 class PluginSettingsService:
     """Chat 与平台插件共用的持久化配置入口"""
 
-    def __init__(self, database: str | Path, manager: PluginConfigManager | None = None, *, models: Any = None, rag: Any = None) -> None:
+    def __init__(self, database: str | Path, manager: PluginConfigManager | None = None, *,
+                 models: ModelConfigReader | None = None, rag: RagService | None = None) -> None:
         self.manager = manager or PluginConfigManager()
         self.models = models
         self.rag = rag
@@ -113,7 +119,7 @@ class PluginSettingsService:
             self.overrides.save(session_id, namespace, values, expected_revision=expected_revision)
         return self.get(session_id, name, schema, named)
 
-    def tool_settings(self, session_id: str, spec: Any, entry: Any) -> dict[str, Any]:
+    def tool_settings(self, session_id: str, spec: PluginSpec, entry: PluginCatalogEntry) -> dict[str, Any]:
         """
         在现有实例设置中展示迁移后的工具覆盖, 保留修改和恢复继承入口
 
@@ -135,7 +141,7 @@ class PluginSettingsService:
                 "tool_descriptions": {tool: entry.capabilities.get("tools", {}).get(tool, tool) for tool in FRIEND_SWITCHES.values()}}
 
 
-def validate_model_values(models: Any, schema: dict[str, ConfigField], values: dict[str, Any]) -> None:
+def validate_model_values(models: ModelConfigReader, schema: dict[str, ConfigField], values: dict[str, Any]) -> None:
     """保存时校验显式模型引用, 允许未启用插件暂存空字段"""
     if not isinstance(values, dict):
         raise ValueError("插件配置必须是对象")
@@ -145,7 +151,8 @@ def validate_model_values(models: Any, schema: dict[str, ConfigField], values: d
             named_model_config(models, definition.type, value)
 
 
-def validate_plugin_settings(name: str, schema: dict[str, ConfigField], values: dict[str, Any], *, models: Any = None, rag: Any = None) -> None:
+def validate_plugin_settings(name: str, schema: dict[str, ConfigField], values: dict[str, Any], *,
+                             models: ModelConfigReader | None = None, rag: RagService | None = None) -> None:
     """所有入口共用字段, 模型引用与领域关联校验"""
     checked = {
         key: value for key, value in values.items()
@@ -162,7 +169,7 @@ def validate_plugin_settings(name: str, schema: dict[str, ConfigField], values: 
             rag.validate_references(cleaned)
 
 
-def model_options(models: Any) -> dict[str, list[dict[str, str]]]:
+def model_options(models: ModelConfigReader) -> dict[str, list[dict[str, str]]]:
     """选择器只返回名称和模型标识, 不返回连接地址与凭据"""
     return {
         kind: [{"value": name, "label": name, "model": str(value.get("model") or "")}
@@ -172,7 +179,7 @@ def model_options(models: Any) -> dict[str, list[dict[str, str]]]:
 
 
 def resolve_session_plugin_config(
-    session: Any, name: str, schema: dict[str, ConfigField], base: dict[str, Any],
+    session: Session | AsyncSession, name: str, schema: dict[str, ConfigField], base: dict[str, Any],
 ) -> dict[str, Any]:
     """在调用方合并结果之上应用数据库覆盖, 独立会话可显式注入存储"""
     store = getattr(session, "plugin_override_store", None)
@@ -188,7 +195,8 @@ def resolve_session_plugin_config(
     return {**base, **validate_config_values(schema, values, session_override=True)}
 
 
-def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any, *, snapshot: PluginApplySnapshot | None = None) -> list[Any]:
+def resolve_runtime_specs(session: Session | AsyncSession, specs: list[PluginSpec], catalog: PluginCatalog, *,
+                          snapshot: PluginApplySnapshot | None = None) -> list[PluginSpec]:
     """
     把全局, 命名和会话配置合成为可比较的运行目标
 
@@ -208,7 +216,7 @@ def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any, *, snaps
         if migrate_memory_overrides(store, session.session_id) and not any(spec.name == "memory" for spec in specs):
             specs = [*specs, *parse_plugin_specs(["memory"], catalog, require_available=True)]
     models = getattr(session, "plugin_model_manager", None)
-    resolved: list[Any] = []
+    resolved: list[PluginSpec] = []
     for spec in specs:
         entry = catalog.get(spec.name)
         if entry is None:

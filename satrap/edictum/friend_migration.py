@@ -5,7 +5,7 @@ from satrap.core.storage.persist import atomic_write_json
 
 from copy import deepcopy
 from contextlib import closing
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 import json
 import time
 import traceback
@@ -15,6 +15,11 @@ from satrap.edictum.migration_keys import GLOBAL_RECEIPT
 from satrap.core.log import logger
 from satrap.core.storage.file_lock import FileLock, database_session_lock
 
+if TYPE_CHECKING:
+    from satrap.core.config.session_overrides import SessionOverrideStore
+    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin_spec import PluginSpec
+
 FRIEND_SWITCHES = {
     "request_handling_enabled": "friend_manager_handle_request",
     "delete_friend_enabled": "friend_manager_delete_friend",
@@ -22,7 +27,7 @@ FRIEND_SWITCHES = {
 }
 
 
-def legacy_bool(value: Any) -> bool:
+def legacy_bool(value: object) -> bool:
     """
     沿用旧布尔字段的解析规则, 无效值按旧默认关闭
 
@@ -36,7 +41,7 @@ def legacy_bool(value: Any) -> bool:
     return ConfigField("好友旧写开关", type="bool", default=False).validate(value) is True
 
 
-def migrate_friend_globals(manager: Any) -> dict[str, bool]:
+def migrate_friend_globals(manager: PluginConfigManager) -> dict[str, bool]:
     """
     原子清除全局旧字段, 保存尚未加载安装项需要的迁移基准
 
@@ -75,7 +80,7 @@ def migrate_friend_globals(manager: Any) -> dict[str, bool]:
         raise
 
 
-def migrate_friend_switch_specs(value: list[Any], manager: Any) -> list[Any]:
+def migrate_friend_switch_specs(value: list[Any], manager: PluginConfigManager) -> list[Any]:
     """
     合并旧工具状态与最终功能开关, 写入版本避免重复折叠
 
@@ -122,7 +127,7 @@ def migrate_friend_switch_specs(value: list[Any], manager: Any) -> list[Any]:
     return result
 
 
-def migrate_friend_overrides(store: Any, session_id: str, spec: Any) -> dict[str, bool]:
+def migrate_friend_overrides(store: SessionOverrideStore, session_id: str, spec: PluginSpec) -> dict[str, bool]:
     """
     在同一事务中将实例旧开关转换为工具覆盖, 保留原来最高层优先级
 

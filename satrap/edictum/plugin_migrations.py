@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from satrap.core.config.model_tool_authorization import config_ids
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.edictum.account_request_migration import migrate_account_request_specs
+
+if TYPE_CHECKING:
+    from satrap.edictum.plugin_catalog import PluginCatalog
 
 
 QUERY_MOVES = {
@@ -18,7 +21,7 @@ QUERY_MOVES = {
 }
 
 
-def migrate_group_tool_specs(value: list[Any], catalog: Any, migration_manager: Any = None) -> list[Any]:
+def migrate_group_tool_specs(value: list[Any], catalog: PluginCatalog, migration_manager: PluginConfigManager | None = None) -> list[Any]:
     """
     迁移旧群工具开关, 不意外启用新能力或丢弃群范围
 
@@ -108,7 +111,7 @@ FRIEND_MOVES = {
 FORWARD_MOVES = {"group_admin_get_forward": "message_forward_read", "group_admin_send_forward": "message_forward_compose"}
 
 
-def migrate_forward_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
+def migrate_forward_tool_specs(value: list[Any], catalog: PluginCatalog) -> list[Any]:
     """迁移旧转发工具并清除废弃范围字段, 原消息发送与跨对话功能不自动启用"""
     result = deepcopy(value)
     for item in result:
@@ -171,7 +174,7 @@ def migrate_forward_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
     return result
 
 
-def migrate_friend_tool_specs(value: list[Any], catalog: Any, migration_manager: Any = None) -> list[Any]:
+def migrate_friend_tool_specs(value: list[Any], catalog: PluginCatalog, migration_manager: PluginConfigManager | None = None) -> list[Any]:
     """
     迁移旧好友申请工具, 不启用新增查询或删除能力
 

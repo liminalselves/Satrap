@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from satrap.core.plugin_authorization import permission_id_list
 from satrap.edictum.plugin_config import PluginConfigManager
 
+if TYPE_CHECKING:
+    from satrap.edictum.plugin_catalog import PluginCatalog
 
-def migrate_account_request_specs(value: list[Any], catalog: Any,
+
+def migrate_account_request_specs(value: list[Any], catalog: PluginCatalog,
                                   manager: PluginConfigManager | None = None) -> list[Any]:
     """
     一次拆分账号邀请工具, 保留原开关和明确授权, 不注册旧执行别名

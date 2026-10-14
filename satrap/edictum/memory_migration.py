@@ -8,7 +8,7 @@ from copy import deepcopy
 from contextlib import closing
 import json
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 from satrap.core.log import logger
@@ -19,8 +19,13 @@ MEMORY_TOOLS = frozenset({"add_memory", "update_memory", "delete_memory", "list_
 
 from satrap.core.storage.file_lock import FileLock, database_session_lock
 
+if TYPE_CHECKING:
+    from satrap.core.config.session_overrides import SessionOverrideStore
+    from satrap.edictum.plugin_catalog import PluginCatalog
+    from satrap.edictum.plugin_config import PluginConfigManager
 
-def migrate_memory_globals(manager: Any) -> None:
+
+def migrate_memory_globals(manager: PluginConfigManager) -> None:
     """
     原子保存新全局配置后清理旧记忆字段, 中断后可重复执行
 
@@ -56,7 +61,7 @@ def migrate_memory_globals(manager: Any) -> None:
         raise
 
 
-def migrate_memory_overrides(store: Any, session_id: str) -> bool:
+def migrate_memory_overrides(store: SessionOverrideStore, session_id: str) -> bool:
     """
     在同一数据库事务中迁移会话覆盖, 新插件显式值优先
 
@@ -103,7 +108,7 @@ def migrate_memory_overrides(store: Any, session_id: str) -> bool:
         raise
 
 
-def migrate_memory_specs(value: list[Any], catalog: Any) -> list[Any]:
+def migrate_memory_specs(value: list[Any], catalog: PluginCatalog) -> list[Any]:
     """
     将旧基础插件中的记忆配置迁到独立插件
 
@@ -115,11 +120,11 @@ def migrate_memory_specs(value: list[Any], catalog: Any) -> list[Any]:
     - 迁移后的配置副本, 旧关闭状态保留, 缺少新插件时明确报错
     """
     result = deepcopy(value)
-    base: Any = next((item for item in result if isinstance(item, dict) and item.get("name") == "base_take"), None)
+    base = cast(dict[str, Any] | None, next((item for item in result if isinstance(item, dict) and item.get("name") == "base_take"), None))
     bare = "base_take" in result
     if base is None and not bare:
         return result
-    base = base if base is not None else {"name": "base_take"}
+    base = base if base is not None else cast(dict[str, Any], {"name": "base_take"})
     config = base.setdefault("config", {})
     caps = base.setdefault("capabilities", {})
     if not isinstance(config, dict) or not isinstance(caps, dict):
