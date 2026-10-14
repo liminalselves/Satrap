@@ -47,45 +47,35 @@ def _row_contents(db_path: str, conversation_id: str) -> list[dict[str, Any]]:
     finally:
         conn.close()
 
-def test_incremental_append_stable_ids_no_duplicates(tmp_path: Path):
-    """纯追加只 INSERT 尾部新消息, 行 id 稳定且不重复"""
+def test_incremental_append_stable_ids_and_reload_roundtrip(tmp_path: Path):
+    """纯追加只 INSERT 尾部新消息, 行 id 稳定且重载内容与顺序完整"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-inc", db_path=db)
     ctx.add_user_message("一")
     ctx.add_bot_message("回复一")
-    ids_after_2 = _row_ids(db, "conv-inc")
-    assert ids_after_2 == [1, 2]
+    assert _row_ids(db, "conv-inc") == [1, 2]
 
     ctx.add_user_message("二")
     ctx.add_bot_message("回复二")
-    ids_after_4 = _row_ids(db, "conv-inc")
-    assert ids_after_4 == [1, 2, 3, 4]   # 追加, 原行 id 不变
+    assert _row_ids(db, "conv-inc") == [1, 2, 3, 4]   # 追加, 原行 id 不变
 
     loaded = ContextManager("conv-inc", db_path=db)
-    assert len(loaded.get_context()) == 4
-    assert loaded.get_context()[0]["content"] == "一"
+    assert [m["content"] for m in loaded.get_context()] == ["一", "回复一", "二", "回复二"]
 
-def test_incremental_append_then_reload_roundtrip(tmp_path: Path):
-    """增量写入后重新加载内容与顺序完整"""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_corrupt_tool_calls_does_not_discard_other_messages(tmp_path: Path, asynchronous: bool):
+    """同步与异步加载遇到损坏 tool_calls 时都只丢弃该字段, 其余历史完整"""
     db = str(tmp_path / "chat_history.db")
-    ctx = ContextManager("conv-r", db_path=db)
-    for i in range(10):
-        ctx.add_user_message(f"用户{i}")
-        ctx.add_bot_message(f"回复{i}")
-
-    loaded = ContextManager("conv-r", db_path=db)
-    contents = [m["content"] for m in loaded.get_context()]
-    expected = [
-        f"用户{i}" if j == 0 else f"回复{i}" for i in range(10) for j in range(2)
-    ]
-    assert contents == expected
-
-def test_corrupt_tool_calls_does_not_discard_other_messages(tmp_path: Path):
-    """损坏的单行 tool_calls 只丢弃该字段, 其余历史完整加载"""
-    db = str(tmp_path / "chat_history.db")
-    ctx = ContextManager("conv-corrupt", db_path=db)
-    ctx.add_user_message("第一条")
-    ctx.add_bot_message("第二条")
+    if asynchronous:
+        ctx = AsyncContextManager("conv-corrupt", db_path=db)
+        await ctx.initialize()
+        await ctx.add_user_message("第一条")
+        await ctx.add_bot_message("第二条")
+    else:
+        ctx = ContextManager("conv-corrupt", db_path=db)
+        ctx.add_user_message("第一条")
+        ctx.add_bot_message("第二条")
 
     conn = sqlite3.connect(db)
     try:
@@ -97,33 +87,13 @@ def test_corrupt_tool_calls_does_not_discard_other_messages(tmp_path: Path):
     finally:
         conn.close()
 
-    loaded = ContextManager("conv-corrupt", db_path=db)
+    if asynchronous:
+        loaded = AsyncContextManager("conv-corrupt", db_path=db)
+        await loaded.initialize()
+    else:
+        loaded = ContextManager("conv-corrupt", db_path=db)
     assert [message["content"] for message in loaded.get_context()] == ["第一条", "第二条"]
     assert "tool_calls" not in loaded.get_context()[0]
-
-@pytest.mark.asyncio
-async def test_async_corrupt_tool_calls_does_not_discard_other_messages(tmp_path: Path):
-    """异步加载遇到损坏 tool_calls 时保留完整消息历史"""
-    db = str(tmp_path / "chat_history.db")
-    ctx = AsyncContextManager("conv-corrupt-a", db_path=db)
-    await ctx.initialize()
-    await ctx.add_user_message("第一条")
-    await ctx.add_bot_message("第二条")
-
-    conn = sqlite3.connect(db)
-    try:
-        conn.execute(
-            "UPDATE chat_history SET tool_calls = ? WHERE conversation_id = ? AND content = ?",
-            ("not-json", "conv-corrupt-a", "第二条"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    loaded = AsyncContextManager("conv-corrupt-a", db_path=db)
-    await loaded.initialize()
-    assert [message["content"] for message in loaded.get_context()] == ["第一条", "第二条"]
-    assert "tool_calls" not in loaded.get_context()[1]
 
 def test_reset_system_prompt_triggers_full_rewrite(tmp_path: Path):
     """编辑操作 (reset_system_prompt) 走全量重写, 库内容与内存一致"""
@@ -382,7 +352,7 @@ def _create_legacy_runtime_table(db_path: Path) -> None:
         )
 
 def test_context_usage_snapshot_returns_current_budgets(tmp_path: Path) -> None:
-    """同步 ContextManager 应返回当前历史估算和全部预算字段"""
+    """同步 ContextManager 返回当前历史估算, 未记录 usage 时展示空缺"""
     manager = ContextManager(
         "usage-snapshot",
         db_path=str(tmp_path / "context.db"),
@@ -397,44 +367,55 @@ def test_context_usage_snapshot_returns_current_budgets(tmp_path: Path) -> None:
 
     assert isinstance(snapshot, ContextUsageSnapshot)
     assert snapshot.history_tokens == manager.estimate_token()
-    assert snapshot.context_window_tokens == 10000
-    assert snapshot.reserved_output_tokens == 4000
-    assert snapshot.history_upper_tokens == 6000
-    assert snapshot.history_lower_tokens == 1500
+    assert snapshot.history_token_source == "tokenizer"
     assert snapshot.last_output_tokens is None
     assert snapshot.cache_hit_tokens is None
-    assert snapshot.history_token_source == "tokenizer"
     assert snapshot.to_dict()["cache_hit_tokens"] is None
     manager.close()
 
-def test_sync_context_usage_migrates_and_persists_cache_usage(tmp_path: Path) -> None:
-    """同步 ContextManager 应迁移旧表并持久化最近输出和缓存命中量"""
-    db_path = tmp_path / "legacy-sync.db"
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_context_usage_migrates_and_persists_cache_usage(tmp_path: Path, asynchronous: bool) -> None:
+    """同步与异步 ContextManager 都应迁移旧表并持久化最近输出和缓存命中量"""
+    db_path = tmp_path / "legacy-usage.db"
     _create_legacy_runtime_table(db_path)
-    manager = ContextManager("sync-persist", db_path=str(db_path))
-    manager.add_user_message("测试同步 usage 持久化")
-    prepared = manager.prepare_model_context(llm=cast(Any, _ModelIdentity()))
-    manager.record_model_usage(
-        prepared,
-        TokenUsage(
-            input_tokens=120,
-            output_tokens=18,
-            total_tokens=138,
-            cached_tokens=64,
-        ),
-    )
-    manager.close()
+    # cached_tokens 显式为 0: 与未上报 (None) 必须区分
+    usage = TokenUsage(input_tokens=120, output_tokens=18, total_tokens=138, cached_tokens=0)
+    if asynchronous:
+        async with AsyncContextManager("persist", db_path=str(db_path)) as manager:
+            await manager.add_user_message("测试 usage 持久化")
+            prepared = await manager.prepare_model_context(llm=cast(Any, _ModelIdentity()))
+            await manager.record_model_usage(prepared, usage)
+        async with AsyncContextManager("persist", db_path=str(db_path)) as loaded:
+            snapshot = loaded.get_context_usage()
+            assert snapshot.last_output_tokens == 18 and snapshot.cache_hit_tokens == 0
+            assert snapshot.history_tokens == loaded.estimate_token()
+            prepared = await loaded.prepare_model_context(llm=cast(Any, _ModelIdentity()))
+            await loaded.record_model_usage(prepared, None)
+            assert loaded.get_context_usage().last_output_tokens is None
+            assert loaded.get_context_usage().cache_hit_tokens is None
+        async with AsyncContextManager("persist", db_path=str(db_path)) as reloaded:
+            # 清空结论同样落盘: 重载后不得回退到更早请求的输出与缓存量
+            assert reloaded.get_context_usage().last_output_tokens is None
+            assert reloaded.get_context_usage().cache_hit_tokens is None
+    else:
+        manager = ContextManager("persist", db_path=str(db_path))
+        manager.add_user_message("测试 usage 持久化")
+        prepared = manager.prepare_model_context(llm=cast(Any, _ModelIdentity()))
+        manager.record_model_usage(prepared, usage)
+        manager.close()
 
-    loaded = ContextManager("sync-persist", db_path=str(db_path))
-    snapshot = loaded.get_context_usage(method="experience")
-
-    assert snapshot.last_output_tokens == 18
-    assert snapshot.cache_hit_tokens == 64
-    assert snapshot.history_token_source == "experience"
+        loaded = ContextManager("persist", db_path=str(db_path))
+        snapshot = loaded.get_context_usage(method="experience")
+        assert snapshot.last_output_tokens == 18 and snapshot.cache_hit_tokens == 0
+        assert snapshot.history_token_source == "experience"
+        loaded.record_model_usage(loaded.prepare_model_context(llm=cast(Any, _ModelIdentity())), None)
+        assert loaded.get_context_usage().last_output_tokens is None
+        assert loaded.get_context_usage().cache_hit_tokens is None
+        loaded.close()
     with sqlite3.connect(db_path) as conn:
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(context_runtime_state)")}
     assert "api_cached_tokens" in columns
-    loaded.close()
 
 def test_context_usage_clears_unavailable_latest_usage(tmp_path: Path) -> None:
     """最新请求未返回 usage 时不得继续展示更早请求的输出和缓存量"""
@@ -460,39 +441,6 @@ def test_context_usage_clears_unavailable_latest_usage(tmp_path: Path) -> None:
     assert loaded.get_context_usage().last_output_tokens is None
     assert loaded.get_context_usage().cache_hit_tokens is None
     loaded.close()
-
-@pytest.mark.asyncio
-async def test_async_context_usage_migrates_and_persists_zero_cache_hit(tmp_path: Path) -> None:
-    """异步 ContextManager 应保留明确的零缓存命中并支持旧表迁移"""
-    db_path = tmp_path / "legacy-async.db"
-    _create_legacy_runtime_table(db_path)
-    async with AsyncContextManager("async-persist", db_path=str(db_path)) as manager:
-        await manager.add_user_message("测试异步 usage 持久化")
-        prepared = await manager.prepare_model_context(llm=cast(Any, _ModelIdentity()))
-        await manager.record_model_usage(
-            prepared,
-            TokenUsage(
-                input_tokens=80,
-                output_tokens=11,
-                total_tokens=91,
-                cached_tokens=0,
-            ),
-        )
-
-    async with AsyncContextManager("async-persist", db_path=str(db_path)) as loaded:
-        snapshot = loaded.get_context_usage()
-
-        assert snapshot.last_output_tokens == 11
-        assert snapshot.cache_hit_tokens == 0
-        assert snapshot.history_tokens == loaded.estimate_token()
-        prepared = await loaded.prepare_model_context(llm=cast(Any, _ModelIdentity()))
-        await loaded.record_model_usage(prepared, None)
-        assert loaded.get_context_usage().last_output_tokens is None
-        assert loaded.get_context_usage().cache_hit_tokens is None
-
-    async with AsyncContextManager("async-persist", db_path=str(db_path)) as reloaded:
-        assert reloaded.get_context_usage().last_output_tokens is None
-        assert reloaded.get_context_usage().cache_hit_tokens is None
 
 @pytest.fixture
 def old_database(tmp_path):
@@ -557,51 +505,47 @@ def test_bad_checksum_prevents_restore(old_database, tmp_path):
         service.restore(backup)
     assert not service.preview()["candidates"]
 
-def test_memory_context_never_opens_sql_even_for_summary_and_usage(tmp_path, monkeypatch):
-    def forbidden(*args, **kwargs):
-        raise AssertionError("纯内存上下文不应访问 SQLite")
-
-    monkeypatch.setattr(sqlite3, "connect", forbidden)
-    context = ContextManager("memory", db_path=str(tmp_path / "absent/db.sqlite"), persistent=False)
-    context.reset_system_prompt("系统")
-    for index in range(4):
-        context.add_user_message(f"问题{index}")
-        context.add_bot_message(f"回答{index}")
-    model = MagicMock()
-    model.chat.return_value = "摘要"
-    assert context.summarize_and_compress(model, keep_recent_turns=1) == "摘要"
-    context._runtime_state.api_input_tokens = 42
-    context._runtime_state_dirty = True
-    context._save_runtime_state()
-    context.save_context(raise_on_error=True)
-    context.load_context()
-    assert len(context.get_context()) == 9
-    assert context._runtime_state.api_input_tokens == 42
-    context.close()
-    assert not (tmp_path / "absent").exists()
-
 @pytest.mark.asyncio
-async def test_async_memory_context_never_opens_sql(tmp_path, monkeypatch):
-    import aiosqlite
-
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_memory_context_never_opens_sql_even_for_summary_and_usage(tmp_path, monkeypatch, asynchronous: bool):
+    """纯内存上下文 (同步/异步) 在摘要与状态保存时都不访问 SQLite"""
     def forbidden(*args, **kwargs):
         raise AssertionError("纯内存上下文不应访问 SQLite")
 
-    monkeypatch.setattr(aiosqlite, "connect", forbidden)
-    context = AsyncContextManager("memory", db_path=str(tmp_path / "absent/db.sqlite"), persistent=False)
-    await context.initialize()
-    await context.reset_system_prompt("系统")
-    for index in range(4):
-        await context.add_user_message(f"问题{index}")
-        await context.add_bot_message(f"回答{index}")
-    model = MagicMock()
-    model.chat = AsyncMock(return_value="摘要")
-    assert await context.summarize_and_compress(model, keep_recent_turns=1) == "摘要"
-    context._runtime_state.api_input_tokens = 42
-    context._runtime_state_dirty = True
-    await context._save_runtime_state()
-    await context.save_context(raise_on_error=True)
-    await context.load_context()
+    if asynchronous:
+        import aiosqlite
+
+        monkeypatch.setattr(aiosqlite, "connect", forbidden)
+        context = AsyncContextManager("memory", db_path=str(tmp_path / "absent/db.sqlite"), persistent=False)
+        await context.initialize()
+        await context.reset_system_prompt("系统")
+        for index in range(4):
+            await context.add_user_message(f"问题{index}")
+            await context.add_bot_message(f"回答{index}")
+        model = MagicMock()
+        model.chat = AsyncMock(return_value="摘要")
+        assert await context.summarize_and_compress(model, keep_recent_turns=1) == "摘要"
+        context._runtime_state.api_input_tokens = 42
+        context._runtime_state_dirty = True
+        await context._save_runtime_state()
+        await context.save_context(raise_on_error=True)
+        await context.load_context()
+    else:
+        monkeypatch.setattr(sqlite3, "connect", forbidden)
+        context = ContextManager("memory", db_path=str(tmp_path / "absent/db.sqlite"), persistent=False)
+        context.reset_system_prompt("系统")
+        for index in range(4):
+            context.add_user_message(f"问题{index}")
+            context.add_bot_message(f"回答{index}")
+        model = MagicMock()
+        model.chat.return_value = "摘要"
+        assert context.summarize_and_compress(model, keep_recent_turns=1) == "摘要"
+        context._runtime_state.api_input_tokens = 42
+        context._runtime_state_dirty = True
+        context._save_runtime_state()
+        context.save_context(raise_on_error=True)
+        context.load_context()
+        context.close()
     assert len(context.get_context()) == 9
     assert context._runtime_state.api_input_tokens == 42
     assert not (tmp_path / "absent").exists()

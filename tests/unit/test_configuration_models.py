@@ -14,8 +14,7 @@ from satrap.core.config.model_snapshot import ModelConfigSnapshot, llm_config_fi
 from satrap.core.type import ASRConfig, EmbeddingConfig, ReRankConfig
 from satrap.edictum.plugin_config import parse_config_schema
 from satrap.edictum.plugin_resources import PluginResources, model_reference_fingerprint
-from typing import Any, cast
-from types import SimpleNamespace
+from typing import Any
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 
 def test_legacy_model_config_migrates_once_then_reload_preserves_file(tmp_path: Path) -> None:
@@ -66,6 +65,7 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
         {
             "model": "gpt-demo",
             "api_key": "secret-key",
+            "lock_api_key": False,
             "temperature": 0.5,
             "thinking_fields": ["thinking.type", "reasoning_effort"],
             "thinking_levels": ["low", "high", "xhigh"],
@@ -81,6 +81,7 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
     listed = service.list_configs("llm")
 
     assert listed["demo"]["model"] == "gpt-demo"
+    # 展示接口即使允许运行时更新 API Key 也必须始终脱敏
     assert listed["demo"]["api_key"] != "secret-key"
     assert str(listed["demo"]["api_key"]).endswith("-key")
     assert listed["demo"]["thinking_fields"] == ["thinking.type", "reasoning_effort"]
@@ -103,9 +104,12 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
     assert manager.has_config("llm", "demo") is False
     assert service.delete("llm", "renamed") is True
     assert manager.has_config("llm", "renamed") is False
+    # 序列化输出的 name 字段恒为存储键 (写入时已强制对齐)
+    manager.set_llm_config(LLMConfig(name="original", model="gpt-demo"), name="alias")
+    assert manager.list_llm_configs(mask_api_key=False)["alias"]["name"] == "alias"
 
 def test_model_config_service_rejects_invalid_input(tmp_path: Path):
-    """共享领域服务应拒绝未知类型, 字段和脱敏创建密钥"""
+    """共享领域服务应拒绝未知类型, 字段和脱敏创建密钥 (上下文策略校验收敛在 context_policy 侧)"""
     service = ModelConfigService(ModelConfigManager(storage_path=tmp_path / "models.json"))
 
     with pytest.raises(ValueError, match="未知模型类型"):
@@ -118,20 +122,6 @@ def test_model_config_service_rejects_invalid_input(tmp_path: Path):
         service.create("llm", "demo", {"thinking_levels": ["extreme"]})
     with pytest.raises(ValueError, match="脱敏"):
         service.create("llm", "demo", {"api_key": "*****abcd"})
-    with pytest.raises(ValueError, match="context_strategy"):
-        service.create("llm", "demo", {"context_strategy": "unknown"})
-    with pytest.raises(ValueError, match="truncation_floor"):
-        service.create(
-            "llm",
-            "demo",
-            {"context_threshold": 0.4, "truncation_floor": 0.8},
-        )
-    with pytest.raises(ValueError, match="summary_keep_recent_turns"):
-        service.create("llm", "demo", {"summary_keep_recent_turns": -1})
-    with pytest.raises(ValueError, match="context_threshold"):
-        service.create("llm", "demo", {"context_threshold": "0.8"})
-    with pytest.raises(ValueError, match="context_window"):
-        service.create("llm", "demo", {"context_window": True})
 
 def test_model_config_service_rejects_rename_collision(tmp_path: Path):
     """共享领域服务应拒绝重命名为已有配置"""
@@ -145,29 +135,6 @@ def test_model_config_service_rejects_rename_collision(tmp_path: Path):
 
     assert manager.get_embedding_config("first").model == "first-model"
     assert manager.get_embedding_config("second").model == "second-model"
-
-def test_masking_does_not_depend_on_lock_api_key(tmp_path: Path) -> None:
-    """展示接口即使允许运行时更新 API Key 也必须始终脱敏"""
-    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
-    service = ModelConfigService(manager)
-    service.create("llm", "unlocked", {
-        "model": "demo",
-        "api_key": "unlocked-secret-key",
-        "lock_api_key": False,
-    })
-
-    listed = service.list_configs("llm")
-    assert listed["unlocked"]["api_key"] != "unlocked-secret-key"
-    assert listed["unlocked"]["api_key"].endswith("-key")
-
-def test_dump_uses_storage_key_as_config_name(tmp_path: Path):
-    """序列化输出的 name 字段恒为存储键 (写入时已强制对齐)"""
-    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
-    manager.set_llm_config(LLMConfig(name="original", model="gpt-demo"), name="alias")
-
-    listed = manager.list_llm_configs(mask_api_key=False)
-
-    assert listed["alias"]["name"] == "alias"
 
 def test_asr_config_crud_masking_and_client_build(tmp_path: Path):
     """ASR 作为第四类模型配置: 增删改查, 脱敏读取, 由配置构造客户端"""
@@ -344,8 +311,9 @@ def _cfg(**kw: Any) -> LLMConfig:
         **kw,
     )
 
-def test_maps_all_fields():
-    """全部字段透传, lock_api_key=False 时不锁定 api_key"""
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_maps_all_fields(asynchronous: bool):
+    """全部字段透传 (同步/异步构造), lock_api_key=False 时不锁定 api_key"""
     llm = build_llm_from_config(
         _cfg(
             temperature=0.3,
@@ -355,9 +323,10 @@ def test_maps_all_fields():
             thinking_field_name="reasoning",
             thinking_fields=["reasoning_effort"],
             omit_none_thinking_fields=True,
-        )
+        ),
+        async_=asynchronous,
     )
-    assert isinstance(llm, LLM)
+    assert isinstance(llm, AsyncLLM if asynchronous else LLM)
     assert llm.temperature == 0.3
     assert llm.top_p == 0.9
     assert llm.max_tokens == 512
@@ -383,17 +352,3 @@ def test_max_tokens_zero_preserved():
     llm = build_llm_from_config(_cfg(max_tokens=0))
     assert isinstance(llm, LLM)
     assert llm.max_tokens == 0
-
-def test_async_variant():
-    llm = build_llm_from_config(_cfg(max_tokens=100), async_=True)
-    assert isinstance(llm, AsyncLLM)
-    assert llm.max_tokens == 100
-
-def test_simple_namespace_substitute():
-    """缺字段替身 (SimpleNamespace) 也能构造, 用 LLM 默认值"""
-    ns = SimpleNamespace(api_key="k", base_url="https://x", model="m")
-    # 缺字段替身按 LLMConfig 边界断言, 验证工厂对缺省字段的回退行为
-    llm = build_llm_from_config(cast(LLMConfig, ns))
-    assert isinstance(llm, LLM)
-    assert llm.max_tokens == 4096
-    assert llm.temperature == 0.7

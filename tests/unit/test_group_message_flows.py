@@ -608,6 +608,9 @@ async def test_prepare_is_atomic_sender_based_and_sends_only_once(tmp_path):
         send_mock(adapter).assert_not_awaited()
         again = await service.execute("group_chat_reply", {"components": COMPONENTS})
         assert again["error"]["code"] == "already_prepared"
+        # 并发重复准备同样只保留一个草稿
+        concurrent = await asyncio.gather(*(service.execute("group_chat_reply", {"components": COMPONENTS}) for _ in range(2)))
+        assert all(item["error"]["code"] == "already_prepared" for item in concurrent)
         assert await turn.commit("模型重复的最终文本")
         assert await turn.commit("再次调用宿主也不能重发")
     assert current_reply_turn() is None
@@ -634,15 +637,6 @@ async def test_invalid_components_never_leave_half_a_draft(tmp_path, components)
         result = await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "完整草稿"}]})
         assert result["ok"]
     send_mock(adapter).assert_not_awaited()
-
-@pytest.mark.usefixtures('restore_manager')
-@pytest.mark.asyncio
-async def test_prepare_concurrency_keeps_one_draft(tmp_path):
-    _, event, service = setup(tmp_path)
-    with owner(event):
-        results = await asyncio.gather(*(service.execute("group_chat_reply", {"components": COMPONENTS}) for _ in range(2)))
-        assert sum(result["ok"] for result in results) == 1
-        assert [result["error"]["code"] for result in results if not result["ok"]] == ["already_prepared"]
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio

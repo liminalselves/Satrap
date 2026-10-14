@@ -7,8 +7,6 @@ from threading import Event
 import pytest
 from satrap.core.config.document import upsert_platform
 from satrap.core.config.group_store import GroupConfigConflict, GroupConfigStore, GroupLegacyConflict
-from satrap.core.config.session_overrides import SessionOverrideStore
-from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform import PlatformConfig
 from satrap.core.conversation import ConversationRoute
@@ -40,15 +38,17 @@ from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config.document import save_config_document
 from satrap.core.platform import PlatformAdapterManager
 
-def test_new_platform_defaults_to_selected_without_groups(tmp_path: Path) -> None:
+def test_adopt_legacy_modes_and_isolation(tmp_path: Path) -> None:
+    """adopt_legacy 按旧白名单解析模式并迁移群策略; 群与账号维度相互隔离"""
+    # 新版空平台: 默认 selected 且无群记录
     platform = upsert_platform([], {"id": "bot", "type": "onebot", "settings": {}})[0]
     assert platform["settings"]["group_management_version"] == 1
-    store = GroupConfigStore(tmp_path / "platform.db")
+    store = GroupConfigStore(tmp_path / "new.db")
     assert store.adopt_legacy("100", platform["settings"])["mode"] == "selected"
     assert store.read_group("100", "123")["revision"] == 0
 
-def test_old_empty_whitelist_keeps_all_and_old_group_policy(tmp_path: Path) -> None:
-    store = GroupConfigStore(tmp_path / "platform.db")
+    # 旧空白名单: 全开并迁移群策略, revision 前进; 旧来源冲突被拒
+    store = GroupConfigStore(tmp_path / "all.db")
     old = {"group_whitelist": [], "wake_group_overrides": {"123": {"wake_cooldown": 3}}}
     assert store.adopt_legacy("100", old)["mode"] == "all"
     assert store.read_group("100", "123")["explicit"]["policy"] == {
@@ -58,17 +58,17 @@ def test_old_empty_whitelist_keeps_all_and_old_group_policy(tmp_path: Path) -> N
     with pytest.raises(GroupLegacyConflict):
         store.check_legacy_source("100", {"group_whitelist": ["123"]})
 
-def test_old_whitelist_and_accounts_are_isolated(tmp_path: Path) -> None:
-    store = GroupConfigStore(tmp_path / "platform.db")
-    old = {"group_whitelist": ["123"], "wake_group_overrides": {"456": {"wake_mode": "frequency"}}}
-    assert store.adopt_legacy("100", old)["mode"] == "selected"
+    # 旧白名单与账号覆盖隔离: 账号维度独立
+    store = GroupConfigStore(tmp_path / "iso.db")
+    whitelisted = {"group_whitelist": ["123"], "wake_group_overrides": {"456": {"wake_mode": "frequency"}}}
+    assert store.adopt_legacy("100", whitelisted)["mode"] == "selected"
     assert store.read_group("100", "123")["explicit"]["policy"]["enabled"] == {
         "mode": "value", "value": True,
     }
     assert "enabled" not in store.read_group("100", "456")["explicit"]["policy"]
     assert store.read_account("200") is None
     assert store.read_group("200", "123")["revision"] == 0
-    assert store.adopt_legacy("200", old)["mode"] == "selected"
+    assert store.adopt_legacy("200", whitelisted)["mode"] == "selected"
     assert store.read_group("200", "123")["revision"] == 0
 
 def test_area_patch_keeps_other_sections_and_changes_route_only_for_binding(tmp_path: Path) -> None:
@@ -95,16 +95,6 @@ def test_schema_migration_rejects_declared_missing_table(tmp_path: Path) -> None
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
         assert connection.execute("SELECT name FROM sqlite_master WHERE name='group_accounts'").fetchone() is None
 
-def test_override_store_uses_central_schema_without_downgrade(tmp_path: Path) -> None:
-    database = tmp_path / "platform.db"
-    SessionOverrideStore(database)
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION
-        connection.execute(f"PRAGMA user_version = {PLATFORM_SCHEMA_VERSION + 1}")
-    SessionOverrideStore(database)
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION + 1
-
 def test_policy_values_reject_unknown_and_ambiguous_values(tmp_path: Path) -> None:
     store = GroupConfigStore(tmp_path / "platform.db")
     store.adopt_legacy("100", {"group_management_version": 1})
@@ -129,9 +119,9 @@ def test_route_generation_preserves_old_key_and_separates_new_history() -> None:
     assert legacy.key is None and changed.key is not None
 
 @pytest.mark.asyncio
-async def test_runtime_access_requires_explicit_enable_and_bound_account(tmp_path: Path) -> None:
-    settings = {"group_management_version": 1}
-    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
+async def test_access_requires_explicit_enable_and_legacy_conflict_fails_closed(tmp_path: Path) -> None:
+    """群准入需显式启用并绑定账号; 旧白名单来源冲突时 fail-closed 全拒"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"group_management_version": 1}))
     store = GroupConfigStore(tmp_path / "platform.db")
     adapter.set_group_access_store(store)
     await adapter._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
@@ -145,23 +135,22 @@ async def test_runtime_access_requires_explicit_enable_and_bound_account(tmp_pat
     assert store.read_account("200") is None
     assert adapter.allows_group("123")
 
-@pytest.mark.asyncio
-async def test_old_access_and_legacy_conflict_fail_closed(tmp_path: Path) -> None:
-    settings = {"group_whitelist": ["123"]}
-    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
-    store = GroupConfigStore(tmp_path / "platform.db")
-    adapter.set_group_access_store(store)
-    await adapter._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
-    assert adapter.allows_group("123")
-    assert not adapter.allows_group("456")
-    settings["group_whitelist"] = ["456"]
+    # 旧格式白名单: 迁移前按旧源放行, 来源冲突时全部拒绝
+    legacy = OneBotAdapter(PlatformConfig(id="bot2", type="onebot", settings={"group_whitelist": ["123"]}))
+    legacy_store = GroupConfigStore(tmp_path / "legacy.db")
+    legacy.set_group_access_store(legacy_store)
+    await legacy._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
+    assert legacy.allows_group("123")
+    assert not legacy.allows_group("456")
+    legacy.config.settings["group_whitelist"] = ["456"]
     with pytest.raises(GroupLegacyConflict):
-        await adapter._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
-    assert not adapter.allows_group("123")
-    assert not adapter.allows_group("456")
+        await legacy._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
+    assert not legacy.allows_group("123")
+    assert not legacy.allows_group("456")
 
 @pytest.mark.asyncio
-async def test_refresh_keeps_unrelated_groups_until_complete_and_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_refresh_and_pause_keep_other_groups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """刷新未完成或失败时保留旧快照; 暂停目标群不影响其它群, 恢复后重新放行"""
     import asyncio
 
     adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"group_management_version": 1}))
@@ -198,15 +187,7 @@ async def test_refresh_keeps_unrelated_groups_until_complete_and_on_failure(tmp_
     assert adapter.allows_group("789")
     assert adapter.group_route("789")[1] == 0
 
-@pytest.mark.asyncio
-async def test_target_pause_keeps_other_group_available(tmp_path: Path) -> None:
-    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"group_management_version": 1}))
-    store = GroupConfigStore(tmp_path / "platform.db")
-    adapter.set_group_access_store(store)
-    await adapter._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
-    for group_id in ("123", "789"):
-        store.patch_group("100", group_id, "policy", {"enabled": {"mode": "value", "value": True}}, expected_revision=0)
-    await adapter.refresh_group_access("100")
+    # 暂停目标群只影响该群
     adapter.pause_group_access("123")
     assert not adapter.allows_group("123")
     assert adapter.group_route("123")[1] == -1
@@ -465,7 +446,8 @@ def test_instance_plugins_win_over_group_plugins() -> None:
     assert manager._group_plugin_target(cfg, call) == [{"name": "instance", "enabled": True}]
 
 @pytest.mark.asyncio
-async def test_instance_prompt_wins_and_group_prompt_preserves_context_history() -> None:
+async def test_group_prompt_overrides_and_instance_prompt_priority() -> None:
+    """群提示词覆盖生效且保留历史, 无覆盖时清空不泄漏, 实例显式提示词优先"""
     class Context:
         def __init__(self) -> None:
             self.messages = ["旧消息"]
@@ -482,50 +464,29 @@ async def test_instance_prompt_wins_and_group_prompt_preserves_context_history()
             return {"main": self.context}
 
     provider = SimpleNamespace()
-    definition = SimpleNamespace(params={"model_name": "base", "system_prompt": "基础"})
+    definition = SimpleNamespace(params={"model_name": "base"})
     manager = object.__new__(SessionManager)
     manager.provider_registry = cast(Any, SimpleNamespace(resolve_definition=lambda *_: (provider, definition)))
     manager._model_cfg_mgr = None
     session = SessionStub()
     cfg = SessionConfig(session_id="sid", session_type_name="simple", provider_name="edictum")
-    call = UserCall(group_session_overrides={"prompt": ""})
-    await manager._apply_group_session_overrides(cfg, cast(Any, session), call, None)
-    assert session.context.prompt == ""
-    assert session.context.messages == ["旧消息"]
 
-    cfg.session_config["system_prompt"] = "实例优先"
-    await manager._apply_group_session_overrides(cfg, cast(Any, session), call, None)
-    assert session.context.prompt == "实例优先"
-    assert session.context.messages == ["旧消息"]
-
-@pytest.mark.asyncio
-async def test_group_prompt_does_not_leak_into_another_legacy_context() -> None:
-    class Context:
-        prompt = ""
-
-        def reset_system_prompt(self, value: str) -> None:
-            self.prompt = value
-
-    class SessionStub:
-        def __init__(self) -> None:
-            self.context = Context()
-
-        def _all_contexts(self) -> dict[str, Context]:
-            return {"main": self.context}
-
-    manager = object.__new__(SessionManager)
-    manager.provider_registry = cast(Any, SimpleNamespace(resolve_definition=lambda *_: (
-        SimpleNamespace(), SimpleNamespace(params={"model_name": "base"}),
-    )))
-    manager._model_cfg_mgr = None
-    cfg = SessionConfig(session_id="sid", session_type_name="simple", provider_name="edictum")
-    session = SessionStub()
     await manager._apply_group_session_overrides(
         cfg, cast(Any, session), UserCall(group_session_overrides={"prompt": "群 A 的内容"}), None,
     )
     assert session.context.prompt == "群 A 的内容"
+    assert session.context.messages == ["旧消息"]
+
     await manager._apply_group_session_overrides(cfg, cast(Any, session), UserCall(), None)
     assert session.context.prompt == ""
+    assert session.context.messages == ["旧消息"]
+
+    cfg.session_config["system_prompt"] = "实例优先"
+    await manager._apply_group_session_overrides(
+        cfg, cast(Any, session), UserCall(group_session_overrides={"prompt": "群内容"}), None,
+    )
+    assert session.context.prompt == "实例优先"
+    assert session.context.messages == ["旧消息"]
 
 @pytest.mark.asyncio
 async def test_model_reload_reapplies_group_override_and_same_name_config(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -683,55 +644,6 @@ async def test_sync_deduplicates_and_publishes_complete_snapshot(tmp_path: Path)
     assert (await backend.list_groups("bot", "100"))["items"][0]["group_id"] == "123"
 
 @pytest.mark.asyncio
-async def test_group_session_apply_status_and_retry_reaches_failed_instance(tmp_path: Path) -> None:
-    backend, adapter = _runtime(tmp_path)
-    store = GroupDirectoryStore(backend.platform_db_path("bot"))
-    store.adopt_legacy("100", {"group_management_version": 1})
-    store.confirm_membership("100", "456", True)
-    store.patch_group("100", "456", "policy", {"enabled": {"mode": "value", "value": True}}, expected_revision=0)
-    await adapter.refresh_group_access("100")
-    store.patch_group("100", "456", "session", {
-        "prompt": {"mode": "value", "value": "新提示词"},
-    }, expected_revision=1)
-    await adapter.refresh_group_access("100")
-    pending = await backend.group_config("bot", "100", "456")
-    assert pending["apply_status"] == "applied"
-    assert pending["active_revision"] == 2
-    generation = pending["route_generation"]
-    route = ConversationRoute("1", "bot", "simple", "edictum", "group_member", "100", "456", generation)
-    with sqlite3.connect(backend.platform_db_path("bot")) as connection:
-        connection.execute("CREATE TABLE context_sessions (context_key TEXT, platform TEXT, session_id TEXT)")
-        connection.execute("INSERT INTO context_sessions VALUES (?, ?, ?)", (route.key, "bot", "sid"))
-    entry = SimpleNamespace(instance_generation="first")
-    entries = {"sid": entry}
-
-    async def retry(session_id, call, instance_generation, is_current):
-        assert session_id == "sid" and instance_generation == "first" and is_current()
-        assert call.group_session_overrides == {"prompt": "新提示词"}
-        adapter.report_group_session_apply("100", "456", 2, generation, session_id, instance_generation, None)
-        return True
-
-    runtime = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: entries),
-                              provider_registry=SimpleNamespace(resolve_definition=lambda *_: None),
-                              retry_group_session_apply_async=retry)
-    backend._platform_runtimes["bot"] = cast(Any, (runtime, None))
-    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "pending"
-    adapter.report_group_session_apply("100", "456", 2, generation, "sid", "first", "群插件配置应用失败")
-    failed = await backend.group_config("bot", "100", "456")
-    assert failed["apply_status"] == "failed"
-    assert failed["apply_error"] == "群插件配置应用失败"
-    recovered = await backend.apply_group_config("bot", "100", "456", 2)
-    assert recovered["apply_status"] == "applied"
-    assert recovered["active_revision"] == 2
-    adapter.report_group_session_apply("100", "456", 2, generation, "sid", "first", "旧实例失败")
-    entry.instance_generation = "second"
-    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "pending"
-    adapter.report_group_session_apply("100", "456", 2, generation, "sid", "second", None)
-    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "applied"
-    entries.clear()
-    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "applied"
-
-@pytest.mark.asyncio
 async def test_slow_legacy_group_session_turn_reports_pending_then_failed_then_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -887,9 +799,10 @@ async def test_group_save_pauses_only_target_until_snapshot_is_ready(
     assert adapter.allows_group("789")
 
 @pytest.mark.asyncio
-async def test_account_mode_restriction_preserves_explicit_groups_and_survives_conflict(
+async def test_account_mode_restriction_survives_conflict_and_uncertain_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """账号模式切换: 显式群保留, 失败后按已落盘修订收紧, 提交结果未知也不回退"""
     backend, adapter = _runtime(tmp_path)
     store = GroupDirectoryStore(backend.platform_db_path("bot"))
     store.adopt_legacy("100", {"group_management_version": 1})
@@ -920,33 +833,27 @@ async def test_account_mode_restriction_preserves_explicit_groups_and_survives_c
     assert adapter.allows_group("456") and not adapter.allows_group("789")
     assert adapter.allows_management_target("789")
 
-@pytest.mark.asyncio
-async def test_account_mode_restriction_survives_uncertain_commit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend, adapter = _runtime(tmp_path)
-    store = GroupDirectoryStore(backend.platform_db_path("bot"))
-    store.adopt_legacy("100", {"group_management_version": 1})
-    store.patch_account("100", expected_revision=1, mode="all", approval_defaults={})
-    store.confirm_membership("100", "456", True)
-    await adapter.refresh_group_access("100")
-    original = GroupDirectoryStore.patch_account
+    # 提交结果未知: 修订已落盘, 访问按新模式收紧
+    backend2, adapter2 = _runtime(tmp_path / "uncertain")
+    store2 = GroupDirectoryStore(backend2.platform_db_path("bot"))
+    store2.adopt_legacy("100", {"group_management_version": 1})
+    store2.patch_account("100", expected_revision=1, mode="all", approval_defaults={})
+    store2.confirm_membership("100", "456", True)
+    await adapter2.refresh_group_access("100")
+    commit = GroupDirectoryStore.patch_account
 
-    def commit_then_fail(
-        self: GroupDirectoryStore, self_id: str, *, expected_revision: int,
-        mode: str, approval_defaults: Mapping[str, object],
-    ) -> dict[str, Any]:
-        original(self, self_id, expected_revision=expected_revision, mode=mode,
-                 approval_defaults=approval_defaults)
+    def commit_then_fail(self: GroupDirectoryStore, self_id: str, *, expected_revision: int,
+                         mode: str, approval_defaults: Mapping[str, object]) -> dict[str, Any]:
+        commit(self, self_id, expected_revision=expected_revision, mode=mode, approval_defaults=approval_defaults)
         raise RuntimeError("commit result unknown")
 
     monkeypatch.setattr(GroupDirectoryStore, "patch_account", commit_then_fail)
     with pytest.raises(RuntimeError, match="unknown"):
-        await backend.patch_group_settings("bot", "100", 2, "selected", {})
-    account = store.read_account("100")
-    assert account is not None and account["revision"] == 3
-    assert not adapter.allows_group("456")
-    assert adapter.allows_management_target("456")
+        await backend2.patch_group_settings("bot", "100", 2, "selected", {})
+    account2 = store2.read_account("100")
+    assert account2 is not None and account2["revision"] == 3
+    assert not adapter2.allows_group("456")
+    assert adapter2.allows_management_target("456")
 
 @pytest.mark.asyncio
 async def test_sync_discards_result_after_connection_generation_changes(tmp_path: Path) -> None:

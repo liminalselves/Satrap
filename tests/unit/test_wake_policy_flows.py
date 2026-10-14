@@ -227,35 +227,31 @@ class TestPolicySources:
     """B6/B10: 有效阈值与字段来源必须在试算里可解释, 且与真实生效值一致"""
 
     @pytest.mark.asyncio
-    async def test_zero_talk_value_closes_automatic_and_deadline(self):
-        """反例: 试算的到期分支同样不得被 talk_value=0 绕过"""
-        settings: dict[str, object] = {"wake_mode": "frequency", "wake_talk_value": 0, "wake_max_wait": 30}
+    @pytest.mark.parametrize("extra, closed, value, source, overridden", [
+        ({"wake_talk_value": 0}, True, None, "talk_value", None),
+        ({"wake_talk_value": 0, "wake_message_threshold": 2}, False, 2, "explicit", True),
+    ], ids=["closed_by_zero", "explicit_over_zero"])
+    async def test_threshold_reporting_matches_effective_state(
+        self, extra: dict[str, object], closed: bool, value: object, source: str, overridden: object,
+    ):
+        """反例: talk_value=0 关闭时不得显示为可触发, 被显式阈值覆盖时必须标出被覆盖"""
+        settings: dict[str, object] = {"wake_mode": "frequency", "wake_max_wait": 30, **extra}
         payload: dict[str, object] = {
             "settings": settings, "steps": [{"text": "积压"}, {"text": "还在", "advance_seconds": 40}],
         }
         result = await dry_run_wake(payload)
         threshold = cast(dict[str, Any], _automatic(result)["threshold"])
-        assert threshold["closed"] is True and threshold["value"] is None
-        assert threshold["source"] == "talk_value" and "不补偿" in str(threshold["hint"])
-        for key in ("decision", "deadline_decision"):
-            decision = _decision(result, key)
-            assert decision["triggered"] is False and "wake_talk_value=0" in str(decision["reason"])
-
-    @pytest.mark.asyncio
-    async def test_explicit_threshold_overrides_talk_value_hint(self):
-        """反例: 显式阈值存在时不得把 talk_value=0 显示成关闭, 要显示被覆盖"""
-        settings: dict[str, object] = {
-            "wake_mode": "frequency", "wake_talk_value": 0, "wake_message_threshold": 2, "wake_max_wait": 30,
-        }
-        payload: dict[str, object] = {
-            "settings": settings, "steps": [{"text": "积压"}, {"text": "还在", "advance_seconds": 40}],
-        }
-        result = await dry_run_wake(payload)
-        threshold = cast(dict[str, Any], _automatic(result)["threshold"])
-        assert threshold["overridden"] is True and threshold["closed"] is False
-        assert threshold["value"] == 2 and threshold["source"] == "explicit"
-        assert "被显式 wake_message_threshold 覆盖" in str(threshold["hint"])
-        assert _decision(result, "deadline_decision")["rule"] == "max_wait"
+        assert threshold["closed"] is closed and threshold["value"] == value
+        assert threshold["source"] == source
+        if closed:
+            assert "不补偿" in str(threshold["hint"])
+            for key in ("decision", "deadline_decision"):
+                decision = _decision(result, key)
+                assert decision["triggered"] is False and "wake_talk_value=0" in str(decision["reason"])
+        else:
+            assert threshold["overridden"] is overridden
+            assert "被显式 wake_message_threshold 覆盖" in str(threshold["hint"])
+            assert _decision(result, "deadline_decision")["rule"] == "max_wait"
 
     @pytest.mark.asyncio
     async def test_sources_report_layer_and_match_resolved_values(self):
@@ -461,33 +457,26 @@ class _CountingAdapter(OneBotAdapter):
         return {"message_id": len(self.sent)}
 
 class TestFrozenSets:
-    def test_hot_keys_match_frozen(self):
+    def test_frozen_key_sets_match_policy_contract(self):
+        # 热更新键/覆盖作用域键/默认值表是前后端共享契约的冻结快照
         assert hot_reload_keys() == FROZEN_HOT_KEYS | {"message_archive_retention_days"}
-
-    def test_override_scope_keys_match_frozen(self):
         assert AUTOMATIC_KEYS == FROZEN_AUTOMATIC_KEYS
         assert GROUP_KEYS == FROZEN_GROUP_KEYS
-
-    def test_policy_defaults_match_frozen(self):
         assert POLICY_DEFAULTS == {**FROZEN_DEFAULTS, "message_archive_retention_days": 30}
-
-    def test_contract_covers_union_of_known_keys(self):
-        # 表覆盖校验字段, 覆盖范围, 默认值, 热更新与前端编辑字段的并集, 不局限于热更新键
-        assert FROZEN_HOT_KEYS | FROZEN_GROUP_KEYS | set(FROZEN_DEFAULTS) <= set(POLICY_FIELD_CONTRACT)
-        # 不在旧 hot_keys 内的字段也在表里, 但保持需要重启
-        for key in ("reply_with_quote", "quote_lookup", "notice_types"):
-            assert POLICY_FIELD_CONTRACT[key]["hot_reload"] is False
-        assert "group_whitelist" in POLICY_FIELD_CONTRACT
-        assert "context_scope" in POLICY_FIELD_CONTRACT
-
-    def test_scope_derivations_are_consistent(self):
         assert fields_with_scope("time") == AUTOMATIC_KEYS
         assert fields_with_scope("time", "group") == GROUP_KEYS
         assert fields_with_scope("platform") == {
             key for key, field in POLICY_FIELD_CONTRACT.items() if field["scope"] == "platform"
         }
 
-    def test_contract_entries_declare_consistent_ranges(self):
+    def test_contract_entries_cover_and_declare_consistent_ranges(self):
+        # 表覆盖校验字段/作用域/默认值/热更新与前端编辑字段的并集, 不局限于热更新键
+        assert FROZEN_HOT_KEYS | FROZEN_GROUP_KEYS | set(FROZEN_DEFAULTS) <= set(POLICY_FIELD_CONTRACT)
+        # 不在旧 hot_keys 内的字段也在表里, 但保持需要重启
+        for key in ("reply_with_quote", "quote_lookup", "notice_types"):
+            assert POLICY_FIELD_CONTRACT[key]["hot_reload"] is False
+        assert "group_whitelist" in POLICY_FIELD_CONTRACT
+        assert "context_scope" in POLICY_FIELD_CONTRACT
         kinds = {
             "int", "number", "bool", "enum", "text", "list", "notice_types",
             "words", "group_ids", "scope", "group_map", "time_rules",
@@ -507,22 +496,17 @@ class TestFrozenSets:
                 assert "max_length" in field or "max_items" in field, key
 
 class TestGeneratedContract:
-    def test_generated_json_matches_serialization_byte_for_byte(self):
+    def test_generated_json_matches_serialization_and_content(self):
         from scripts.sync_wake_policy_contract import build_payload, render
 
         assert GENERATED.is_file(), "契约 JSON 缺失, 请运行 python scripts/sync_wake_policy_contract.py"
         assert GENERATED.read_bytes() == render(build_payload())
-
-
-    def test_generated_json_excludes_backend_only_message(self):
         payload = json.loads(GENERATED.read_text(encoding="utf-8"))
         assert payload["version"] == 2
+        # 后端专属 message 字段不得进入前端契约
         for entry in payload["fields"]:
             assert "message" not in entry
-
-    def test_generated_json_carries_command_operators(self):
-        # 命令入口的操作员名单必须进入生成契约, 前端编辑器与表单字段由它构建
-        payload = json.loads(GENERATED.read_text(encoding="utf-8"))
+        # 命令入口操作员名单必须进入生成契约, 前端编辑器与表单字段由它构建
         entry = next(field for field in payload["fields"] if field["key"] == "command_operators")
         assert entry == {
             "key": "command_operators", "kind": "list", "scope": "platform",
@@ -585,7 +569,7 @@ class TestPolicyDefaultSingleSource:
     """运行时默认值只能来自契约: 改写 POLICY_DEFAULTS 后消费方行为随之改变"""
 
     @pytest.mark.asyncio
-    async def test_wake_window_cooldown_default(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_wake_window_decisions_follow_policy_defaults(self, monkeypatch: pytest.MonkeyPatch):
         adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"wake_mode": "frequency"}))
         window = WakeWindow()
         event = await _event(adapter)
@@ -599,37 +583,29 @@ class TestPolicyDefaultSingleSource:
         # 冷却不再拦截: 回到阈值判断 (默认阈值 3, 一条正文不触发)
         assert window.decide(event, snapshot, 1).rule == "frequency"
 
-    @pytest.mark.asyncio
-    async def test_wake_window_score_threshold_default(self, monkeypatch: pytest.MonkeyPatch):
-        adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"wake_mode": "necessity"}))
-        window = WakeWindow()
-        event = await _event(adapter)
-        snapshot = window.observe(event, 0)
+        necessity = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"wake_mode": "necessity"}))
+        nwin = WakeWindow()
+        nevent = await _event(necessity)
+        nsnapshot = nwin.observe(nevent, 0)
         monkeypatch.setitem(POLICY_DEFAULTS, "wake_score_threshold", 0.0)
-        assert window.decide(event, snapshot, 1).triggered is True
+        assert nwin.decide(nevent, nsnapshot, 1).triggered is True
         monkeypatch.setitem(POLICY_DEFAULTS, "wake_score_threshold", 1.0)
-        assert window.decide(event, snapshot, 1).triggered is False
+        assert nwin.decide(nevent, nsnapshot, 1).triggered is False
 
-    @pytest.mark.asyncio
-    async def test_wake_window_max_wait_default(self, monkeypatch: pytest.MonkeyPatch):
-        adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"wake_mode": "frequency"}))
-        window = WakeWindow()
-        event = await _event(adapter)
-        snapshot: tuple[PendingMessage, ...] = (
+        pending: tuple[PendingMessage, ...] = (
             PendingMessage(request_id="r1", actor_id="30", message_id="1", text="正文", received_at=0.0),
         )
         monkeypatch.setitem(POLICY_DEFAULTS, "wake_max_wait", 0)
-        assert window.decide(event, snapshot, 10, deadline=True).rule != "max_wait"
+        assert window.decide(event, pending, 10, deadline=True).rule != "max_wait"
         monkeypatch.setitem(POLICY_DEFAULTS, "wake_max_wait", 5)
-        assert window.decide(event, snapshot, 10, deadline=True).rule == "max_wait"
+        assert window.decide(event, pending, 10, deadline=True).rule == "max_wait"
 
-    def test_message_threshold_constant_follows_contract(self):
+    @pytest.mark.asyncio
+    async def test_other_consumers_follow_policy_defaults(self, monkeypatch: pytest.MonkeyPatch):
         from satrap.core.pipeline.wake_policy import DEFAULT_MESSAGE_THRESHOLD
 
         assert DEFAULT_MESSAGE_THRESHOLD == policy_default("wake_message_threshold")
 
-    @pytest.mark.asyncio
-    async def test_adapter_text_limit_default(self, monkeypatch: pytest.MonkeyPatch):
         adapter = _CountingAdapter({"self_id": "10"})
         monkeypatch.setitem(POLICY_DEFAULTS, "message_text_limit", 8)
         await adapter._send_message("group%20", MessageChain([Plain(text="x" * 32)]))
@@ -640,17 +616,13 @@ class TestPolicyDefaultSingleSource:
         assert split_calls > 1
         assert len(adapter.sent) == 1
 
-    @pytest.mark.asyncio
-    async def test_input_projection_text_limit_default(self, monkeypatch: pytest.MonkeyPatch):
-        adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={}))
-        event = await _event(adapter, "x" * 200)
+        projection_adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={}))
+        projection_event = await _event(projection_adapter, "x" * 200)
         monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 10)
-        assert len(project_input(event, "none").message) <= 10
+        assert len(project_input(projection_event, "none").message) <= 10
         monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 10000)
-        assert project_input(event, "none").message == "[用户 30, 消息 1] " + "x" * 200
+        assert project_input(projection_event, "none").message == "[用户 30, 消息 1] " + "x" * 200
 
-    @pytest.mark.asyncio
-    async def test_wake_mode_default_in_dry_run(self, monkeypatch: pytest.MonkeyPatch):
         payload: dict[str, object] = {"settings": {"self_id": "10"}, "group_id": "20", "steps": [{"text": "正文"}]}
         monkeypatch.setitem(POLICY_DEFAULTS, "wake_mode", "frequency")
         result = await dry_run_wake(payload)

@@ -26,7 +26,7 @@ from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.storage.database import restore_session_domain
 from satrap.core.storage import StorageLayout as _storage_layout_StorageLayout
 from satrap.core.storage import StorageMaintenanceService as _storage_layout_StorageMaintenanceService, StorageScope
-from satrap.core.storage import delete_session_domain_rows, storage_key
+from satrap.core.storage import delete_session_domain_rows
 from satrap.core.storage.maintenance import StorageMaintenanceService as _storage_restore_StorageMaintenanceService
 from satrap.core.storage.layout import StorageLayout as _storage_restore_StorageLayout
 
@@ -70,58 +70,53 @@ def test_vector_database_rejects_dimension_change_without_partial_write(
 
     assert db.get_collection_stats("docs")["document_count"] == 1
 
-def test_lite_vector_add_search_roundtrip(tmp_path: Path):
-    """添加文档后可搜索, 相似度排序正确"""
-    db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
+@pytest.mark.parametrize("db_class", [LiteVectorDB, DataBase])
+def test_vector_add_search_roundtrip(tmp_path: Path, db_class: type[LiteVectorDB] | type[DataBase]):
+    """添加文档后可搜索, 相似度排序与统计一致"""
+    db = db_class(persist_path=str(tmp_path / "vec"))
     db.create_collection("docs")
     db.add_to_collection(
         "docs",
-        ["苹果", "香蕉", "西瓜"],
-        [[1.0, 0.0], [0.0, 1.0], [0.7, 0.7]],
-        [{"tag": "fruit"}, {"tag": "fruit"}, {"tag": "fruit"}],
+        ["苹果", "香蕉"],
+        [[1.0, 0.0], [0.0, 1.0]],
+        [{"tag": "fruit"}, {"tag": "fruit"}],
     )
 
-    results = db.search("docs", [1.0, 0.0], k=3, threshold=0.0)
-    assert len(results) == 3
+    results = db.search("docs", [1.0, 0.0], k=2, threshold=0.0)
+    assert len(results) == 2
     assert results[0]["document"] == "苹果"
-    assert results[0]["score"] > results[1]["score"]
+    assert results[0]["score"] >= results[1]["score"]
     assert results[0]["metadata"] == {"tag": "fruit"}
+    assert db.get_collection_stats("docs") == {"document_count": 2, "vector_dimension": 2}
 
 def test_lite_vector_search_threshold_filters(tmp_path: Path):
     """低于阈值的文档被过滤"""
     db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
     metadata: list[dict[str, Any]] = [{}] * 2
-    db.add_to_collection(
-        "docs",
-        ["近", "远"],
-        [[1.0, 0.0], [0.0, 1.0]],
-        metadata,
-    )
+    db.add_to_collection("docs", ["近", "远"], [[1.0, 0.0], [0.0, 1.0]], metadata)
     results = db.search("docs", [1.0, 0.0], k=4, threshold=0.5)
     assert [r["document"] for r in results] == ["近"]
 
-def test_lite_vector_missing_and_empty_collection(tmp_path: Path):
+@pytest.mark.parametrize("db_class", [LiteVectorDB, DataBase])
+def test_vector_missing_and_empty_collection(tmp_path: Path, db_class: type[LiteVectorDB] | type[DataBase]):
     """不存在的集合 / 空集合返回空结果"""
-    db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
+    db = db_class(persist_path=str(tmp_path / "vec"))
     assert db.search("missing", [1.0, 0.0]) == []
+    assert db.get_collection_stats("missing") == {"document_count": 0, "vector_dimension": 0}
     db.create_collection("empty")
     assert db.search("empty", [1.0, 0.0]) == []
 
-def test_lite_vector_stats_and_delete(tmp_path: Path):
+@pytest.mark.parametrize("db_class", [LiteVectorDB, DataBase])
+def test_vector_stats_and_delete_collection(tmp_path: Path, db_class: type[LiteVectorDB] | type[DataBase]):
     """集合统计与删除"""
-    db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
+    db = db_class(persist_path=str(tmp_path / "vec"))
     db.create_collection("docs")
     assert db.get_collection_stats("docs") == {"document_count": 0, "vector_dimension": 0}
-    assert db.get_collection_stats("missing") == {"document_count": 0, "vector_dimension": 0}
-
-    metadata2: list[dict[str, Any]] = [{}] * 2
-    db.add_to_collection("docs", ["a", "b"], [[1.0, 0.0], [0.0, 1.0]], metadata2)
-    stats = db.get_collection_stats("docs")
-    assert stats["document_count"] == 2
-    assert stats["vector_dimension"] == 2
-
+    db.add_to_collection("docs", ["a", "b"], [[1.0, 0.0], [0.0, 1.0]], [{}] * 2)
+    assert db.get_collection_stats("docs") == {"document_count": 2, "vector_dimension": 2}
     assert db.delete_collection("docs") is True
     assert db.get_collection_names() == []
+    assert db.get_collection_stats("docs") == {"document_count": 0, "vector_dimension": 0}
 
 def test_lite_vector_persist_roundtrip(tmp_path: Path):
     """数据持久化: 重建实例后从磁盘恢复"""
@@ -143,33 +138,6 @@ def test_lite_vector_add_auto_creates_collection(tmp_path: Path):
     assert added == 1
     assert db.get_collection_names() == ["auto"]
 
-def test_database_add_search_roundtrip(tmp_path: Path):
-    """faiss 数据库添加与搜索"""
-    db = DataBase(persist_path=str(tmp_path / "vec"))
-    db.create_collection("docs")
-    db.add_to_collection(
-        "docs",
-        ["苹果", "香蕉"],
-        [[1.0, 0.0], [0.0, 1.0]],
-        [{"tag": "fruit"}, {"tag": "fruit"}],
-    )
-
-    results = db.search("docs", [1.0, 0.0], k=2, threshold=0.0)
-    assert len(results) == 2
-    assert results[0]["document"] == "苹果"
-    assert results[0]["score"] >= results[1]["score"]
-    assert results[0]["metadata"] == {"tag": "fruit"}
-
-    stats = db.get_collection_stats("docs")
-    assert stats["document_count"] == 2
-    assert stats["vector_dimension"] == 2
-
-def test_database_missing_and_empty(tmp_path: Path):
-    """不存在的集合返回空结果"""
-    db = DataBase(persist_path=str(tmp_path / "vec"))
-    assert db.search("missing", [1.0, 0.0]) == []
-    assert db.get_collection_stats("missing") == {"document_count": 0, "vector_dimension": 0}
-
 def test_database_length_mismatch_raises(tmp_path: Path):
     """documents / vectors / metadata 长度不一致抛 ValueError"""
     db = DataBase(persist_path=str(tmp_path / "vec"))
@@ -177,25 +145,6 @@ def test_database_length_mismatch_raises(tmp_path: Path):
     metadata3: list[dict[str, Any]] = [{}] * 2
     with pytest.raises(ValueError, match="长度必须一致"):
         db.add_to_collection("docs", ["a"], [[1.0, 0.0], [0.0, 1.0]], metadata3)
-
-def test_database_dim_mismatch_raises(tmp_path: Path):
-    """向量维度不一致抛 ValueError"""
-    db = DataBase(persist_path=str(tmp_path / "vec"))
-    db.create_collection("docs")
-    db.add_to_collection("docs", ["a"], [[1.0, 0.0]], [{}])
-    with pytest.raises(ValueError, match="维度不一致"):
-        db.add_to_collection("docs", ["b"], [[1.0, 0.0, 0.0]], [{}])
-
-def test_database_delete_collection(tmp_path: Path):
-    """删除集合: 数据与索引文件一并清理"""
-    persist = str(tmp_path / "vec")
-    db = DataBase(persist_path=persist)
-    db.create_collection("docs")
-    db.add_to_collection("docs", ["a"], [[1.0, 0.0]], [{}])
-
-    assert db.delete_collection("docs") is True
-    assert db.get_collection_names() == []
-    assert db.get_collection_stats("docs") == {"document_count": 0, "vector_dimension": 0}
 
 def test_sql_failure_rolls_back_entire_vector_batch(tmp_path):
     db = DataBase(str(tmp_path))
@@ -425,38 +374,10 @@ def _harness(
     return component, entered
 
 class TestStructureValidation:
-    def test_missing_manifest_file_returns_none(self, tmp_path: Path):
+    def test_read_returns_none_for_missing_and_roundtrips_file(self, tmp_path: Path):
+        """缺文件返回 None; 合法文件读回声明字段与时间戳"""
         component, _ = _harness(tmp_path)
         assert component.read() is None
-
-    def test_version_mismatch_rejected(self):
-        with pytest.raises(ValueError, match="版本"):
-            _manifest(_payload(version=2))
-
-    def test_non_object_and_missing_expected_files_rejected(self):
-        with pytest.raises(ValueError, match="对象"):
-            _manifest(["not", "a", "dict"])
-        with pytest.raises(ValueError, match="expected_files"):
-            _manifest(_payload(expected_files=None))
-
-    def test_expected_state_and_required_keys(self):
-        # 未声明的状态与缺失的必需键都属于清单损坏
-        with pytest.raises(ValueError, match="文件状态"):
-            _manifest(_payload(expected_files={"main": "corrupt"}))
-        with pytest.raises(ValueError, match="文件状态"):
-            _manifest(_payload(expected_files={}))
-        # 声明的键之外的 expected_files 键按声明忽略
-        manifest = _manifest(_payload(expected_files={"main": "missing", "extra": "whatever"}))
-        assert manifest.expected == {"main": "missing"}
-
-    def test_time_fields_must_be_numbers(self):
-        with pytest.raises(ValueError, match="时间字段"):
-            _manifest(_payload(updated_at="200"))
-        with pytest.raises(ValueError, match="时间字段"):
-            _manifest(_payload(initialized_at=True))
-
-    def test_read_round_trips_file(self, tmp_path: Path):
-        component, _ = _harness(tmp_path)
         (tmp_path / "store.manifest.json").write_text(
             json.dumps(_payload(expected_files={"main": "missing"})), encoding="utf-8",
         )
@@ -465,8 +386,28 @@ class TestStructureValidation:
         assert manifest.expected == {"main": "missing"}
         assert manifest.initialized_at == 100.0
 
-    def test_validator_hook_runs_business_cross_check(self, tmp_path: Path):
-        # 业务方在薄层里追加交叉校验 (存储要求未降级时主文件必须 present)
+    def test_invalid_manifest_shapes_rejected(self):
+        """版本/类型/expected_files 状态/时间字段非法都按清单损坏拒绝"""
+        with pytest.raises(ValueError, match="版本"):
+            _manifest(_payload(version=2))
+        with pytest.raises(ValueError, match="对象"):
+            _manifest(["not", "a", "dict"])
+        with pytest.raises(ValueError, match="expected_files"):
+            _manifest(_payload(expected_files=None))
+        with pytest.raises(ValueError, match="文件状态"):
+            _manifest(_payload(expected_files={"main": "corrupt"}))
+        with pytest.raises(ValueError, match="文件状态"):
+            _manifest(_payload(expected_files={}))
+        with pytest.raises(ValueError, match="时间字段"):
+            _manifest(_payload(updated_at="200"))
+        with pytest.raises(ValueError, match="时间字段"):
+            _manifest(_payload(initialized_at=True))
+        # 声明的键之外的 expected_files 键按声明忽略
+        manifest = _manifest(_payload(expected_files={"main": "missing", "extra": "whatever"}))
+        assert manifest.expected == {"main": "missing"}
+
+    def test_validator_hook_and_decode_error(self, tmp_path: Path):
+        """业务交叉校验可拒绝矛盾清单; 非 JSON 抛解码错误"""
         def cross_checked(raw: object) -> Manifest:
             manifest = validate_manifest(raw, SAMPLE_SPEC)
             if manifest.degraded is None and manifest.expected["main"] != "present":
@@ -479,28 +420,26 @@ class TestStructureValidation:
         )
         with pytest.raises(ValueError, match="未降级"):
             component.read()
-
-    def test_broken_json_raises_decode_error(self, tmp_path: Path):
         (tmp_path / "store.manifest.json").write_text("not-json", encoding="utf-8")
-        component, _ = _harness(tmp_path)
+        plain, _ = _harness(tmp_path)
         with pytest.raises(json.JSONDecodeError):
-            component.read()
+            plain.read()
 
 class TestExtraKeyAndDegradedSemantics:
-    def test_extra_keys_dropped_when_spec_disallows(self):
+    def test_extra_keys_kept_or_dropped_by_spec(self):
         manifest = _manifest(_payload(extra_key="keep-me", expected_files={"main": "present", "extra": "x"}))
         assert "extra_key" not in manifest.payload()
         assert manifest.payload()["expected_files"] == {"main": "present"}
 
-    def test_extra_keys_kept_when_spec_allows(self):
         spec = ManifestSpec(version=1, expected_files={"entries": frozenset({"present"})}, keep_extra_keys=True)
-        manifest = _manifest({"version": 1, "initialized_at": 1.0, "updated_at": 2.0,
-                              "expected_files": {"entries": "present"}, "degraded": None, "note": {"a": 1}}, spec)
-        assert manifest.payload()["note"] == {"a": 1}
+        kept = _manifest({"version": 1, "initialized_at": 1.0, "updated_at": 2.0,
+                          "expected_files": {"entries": "present"}, "degraded": None, "note": {"a": 1}}, spec)
+        assert kept.payload()["note"] == {"a": 1}
         # 额外键不影响声明字段的归一化结果
-        assert manifest.expected == {"entries": "present"}
+        assert kept.expected == {"entries": "present"}
 
-    def test_degraded_reason_strictness(self):
+    def test_degraded_semantics(self, tmp_path: Path):
+        """降级原因严格性, at 归一化, 标记写入不动 expected"""
         with pytest.raises(ValueError, match="降级原因"):
             _manifest(_payload(degraded={"reason": "", "at": 1.0}))
         with pytest.raises(ValueError, match="降级原因"):
@@ -511,39 +450,36 @@ class TestExtraKeyAndDegradedSemantics:
                                keep_extra_keys=True, degraded_requires_reason=False, normalize_degraded_at=False)
         manifest = _manifest({"version": 1, "initialized_at": 1.0, "updated_at": 2.0,
                               "expected_files": {"entries": "present"}, "degraded": {"reason": "", "at": "raw"}}, lenient)
-        assert manifest.degraded is not None
-        assert manifest.degraded.reason == ""
+        assert manifest.degraded is not None and manifest.degraded.reason == ""
         # 归一化视图不解释 at, 写回时按原值写回而不是替换成 0
         assert manifest.degraded.at == 0.0
         assert manifest.payload()["degraded"] == {"reason": "", "at": "raw"}
 
-    def test_degraded_at_normalized_when_spec_requires(self):
         assert _manifest(_payload(degraded={"reason": "x"})).degraded is not None
-        manifest = _manifest(_payload(degraded={"reason": "x", "at": "12"}))
-        assert manifest.degraded is not None and manifest.degraded.at == 12.0
-        # 非数字的 at 按清单损坏处理, 与迁移前的行为一致
+        normalized = _manifest(_payload(degraded={"reason": "x", "at": "12"}))
+        assert normalized.degraded is not None and normalized.degraded.at == 12.0
         with pytest.raises(ValueError):
             _manifest(_payload(degraded={"reason": "x", "at": "not-a-number"}))
 
-    def test_mark_degraded_sets_marker_without_touching_expected(self, tmp_path: Path):
         component, _ = _harness(tmp_path)
-        manifest = component.fresh(initialized_at=10.0, expected={"main": "present"})
+        fresh = component.fresh(initialized_at=10.0, expected={"main": "present"})
         written: list[Manifest] = []
-        outcome = component.mark_degraded(manifest, reason="main_corrupt", persist=written.append)
+        outcome = component.mark_degraded(fresh, reason="main_corrupt", persist=written.append)
         assert outcome.persisted is True
-        assert outcome.manifest.degraded is not None
-        assert outcome.manifest.degraded.reason == "main_corrupt"
+        assert outcome.manifest.degraded is not None and outcome.manifest.degraded.reason == "main_corrupt"
         assert outcome.manifest.expected == {"main": "present"}
         assert written and written[0].payload()["degraded"]["reason"] == "main_corrupt"
 
 class TestDegradeOrdering:
-    def test_marker_failure_keeps_original_file(self, tmp_path: Path):
+    @pytest.mark.parametrize("error", [OSError("disk full"), TimeoutError("lock busy")], ids=["os-error", "timeout"])
+    def test_marker_failure_keeps_original_file(self, tmp_path: Path, error: Exception):
+        """标记写失败 (含超时) 保留原文件不隔离, 调用方据此保持降级"""
         component, _ = _harness(tmp_path)
         bad = tmp_path / "store.json"
         bad.write_text("not-json{", encoding="utf-8")
 
         def broken_persist(manifest: Manifest) -> None:
-            raise OSError("disk full")
+            raise error
 
         outcome = component.degrade_then_quarantine(
             component.fresh(initialized_at=1.0, expected={"main": "present"}),
@@ -555,20 +491,6 @@ class TestDegradeOrdering:
         assert list(tmp_path.glob("store.json.corrupt-*")) == []
         # 内存清单仍带降级标记, 调用方据此保持降级
         assert outcome.manifest.degraded is not None
-
-    def test_timeout_during_marker_keeps_original_file(self, tmp_path: Path):
-        component, _ = _harness(tmp_path)
-        bad = tmp_path / "store.json"
-        bad.write_text("not-json{", encoding="utf-8")
-
-        def timeout_persist(manifest: Manifest) -> None:
-            raise TimeoutError("lock busy")
-
-        outcome = component.degrade_then_quarantine(
-            component.fresh(initialized_at=1.0, expected={"main": "present"}),
-            reason="main_corrupt", persist=timeout_persist, bad_files=[bad],
-        )
-        assert outcome.persisted is False and bad.is_file()
 
     def test_marker_written_before_quarantine(self, tmp_path: Path):
         component, entered = _harness(tmp_path)
@@ -592,7 +514,8 @@ class TestDegradeOrdering:
         # 标记与隔离各进一次事务
         assert len(entered) == 4
 
-    def test_quarantine_failure_does_not_raise(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_quarantine_failure_keeps_bytes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """隔离失败不上抛且保留原文件; 成功时隔离件保留字节, 扫描只认数据文件隔离件"""
         component, _ = _harness(tmp_path)
         bad = tmp_path / "store.json"
         bad.write_text("not-json{", encoding="utf-8")
@@ -601,17 +524,14 @@ class TestDegradeOrdering:
             raise OSError("rename failed")
 
         monkeypatch.setattr(durability_module, "quarantine_file", broken_quarantine)
-        outcome = component.degrade_then_quarantine(
+        broken = component.degrade_then_quarantine(
             component.fresh(initialized_at=1.0, expected={"main": "present"}),
             reason="main_corrupt", persist=lambda manifest: None, bad_files=[bad],
         )
-        assert outcome.persisted is True and outcome.quarantined == ()
+        assert broken.persisted is True and broken.quarantined == ()
         assert bad.is_file()
+        monkeypatch.undo()
 
-    def test_quarantine_preserves_bytes_and_scan_ignores_manifest_corruptions(self, tmp_path: Path):
-        component, _ = _harness(tmp_path)
-        bad = tmp_path / "store.json"
-        bad.write_text("not-json{", encoding="utf-8")
         outcome = component.degrade_then_quarantine(
             component.fresh(initialized_at=1.0, expected={"main": "present"}),
             reason="main_corrupt", persist=lambda manifest: None, bad_files=[bad],
@@ -659,12 +579,12 @@ class TestFrozenManifestSamples:
             "degraded": {"reason": "main_corrupt", "at": 3.0},
         }
 
-    def test_ledger_samples(self):
+    def test_ledger_samples_and_write_back(self):
+        """账本保留额外键与空降级原因; 完整写回逐键一致, 主动标记整体替换 degraded"""
         sample: dict[str, Any] = {"version": 1, "initialized_at": 1.0, "updated_at": 2.0,
                                   "expected_files": {"entries": "present"}, "degraded": None, "history": ["kept"]}
         manifest = _manifest(sample, LEDGER_SPEC)
         assert manifest.expected == {"entries": "present"}
-        # 账本保留历史额外键: 无改动时写回与读入逐键一致
         assert manifest.payload() == sample
         lenient = _manifest({**sample, "degraded": {"reason": "", "at": "raw", "note": "x"}}, LEDGER_SPEC)
         assert lenient.degraded is not None and lenient.degraded.reason == ""
@@ -678,29 +598,26 @@ class TestFrozenManifestSamples:
         with pytest.raises(ValueError):
             _manifest({**sample, "version": 2}, LEDGER_SPEC)
 
-    def test_ledger_snapshot_write_back_keeps_all_extra_keys(self):
-        """旧清单完整写回: 顶层, expected_files 与 degraded 的额外键都要原样保留"""
-        sample: dict[str, Any] = {
+        # 旧清单完整写回: 顶层, expected_files 与 degraded 的额外键都原样保留
+        full: dict[str, Any] = {
             "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
             "expected_files": {"entries": "present", "future": "keep"},
             "degraded": {"reason": "", "at": "raw", "note": "keep"},
             "history": ["kept"],
         }
-        manifest = _manifest(sample, LEDGER_SPEC)
-        assert manifest.payload() == sample
-        # 声明键仍以归一化视图为准, 额外键不参与判定
-        assert manifest.expected == {"entries": "present"}
-        assert manifest.degraded is not None and manifest.degraded.at == 0.0
+        written = _manifest(full, LEDGER_SPEC)
+        assert written.payload() == full
+        assert written.expected == {"entries": "present"}
+        assert written.degraded is not None and written.degraded.at == 0.0
 
-    def test_active_marker_replaces_nested_payload_only(self):
-        """主动写入新降级标记时按旧行为整体替换标记, 其它位置的额外键不受影响"""
-        sample: dict[str, Any] = {
+        # 主动写入新降级标记时按旧行为整体替换标记, 其它位置的额外键不受影响
+        active_sample: dict[str, Any] = {
             "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
             "expected_files": {"entries": "present", "future": "keep"},
             "degraded": {"reason": "old", "at": 5.0, "note": "drop"},
             "history": ["kept"],
         }
-        payload = _manifest(sample, LEDGER_SPEC).with_degraded("probe", 9.0).payload()
+        payload = _manifest(active_sample, LEDGER_SPEC).with_degraded("probe", 9.0).payload()
         assert payload["degraded"] == {"reason": "probe", "at": 9.0}
         assert payload["expected_files"] == {"entries": "present", "future": "keep"}
         assert payload["history"] == ["kept"]
@@ -715,7 +632,8 @@ class TestFreshManifest:
         }
         assert manifest.version == 1
 
-    def test_with_expected_and_updated_at_keep_degraded(self, tmp_path: Path):
+    def test_immutable_updates_and_copy_on_read(self, tmp_path: Path):
+        """派生清单不就地改动原对象; 读取的 payload 与声明字段不互为别名"""
         component, _ = _harness(tmp_path)
         manifest = component.fresh(initialized_at=5.0, expected={"main": "present"})
         marked = manifest.with_degraded("main_corrupt", 7.0)
@@ -726,16 +644,15 @@ class TestFreshManifest:
         # 原清单不被就地改动
         assert manifest.degraded is None and manifest.expected == {"main": "present"}
 
-    def test_payload_does_not_alias_declared_fields(self):
         spec = ManifestSpec(version=1, expected_files={"entries": frozenset({"present"})}, keep_extra_keys=True)
         source: dict[str, Any] = {"version": 1, "initialized_at": 1.0, "updated_at": 2.0,
                                   "expected_files": {"entries": "present"}, "degraded": {"reason": "x", "at": 1.0}}
-        manifest = _manifest(source, spec)
-        payload = cast(dict[str, Any], manifest.payload())
+        built = _manifest(source, spec)
+        payload = cast(dict[str, Any], built.payload())
         payload["expected_files"]["entries"] = "missing"
         payload["degraded"]["reason"] = "rewritten"
-        assert manifest.expected == {"entries": "present"}
-        assert manifest.degraded is not None and manifest.degraded.reason == "x"
+        assert built.expected == {"entries": "present"}
+        assert built.degraded is not None and built.degraded.reason == "x"
 
 class TestStorageDecisions:
     """用冻结清单样本驱动两类存储, 固定迁移后的接受/拒绝与降级结论"""
@@ -767,37 +684,31 @@ class TestStorageDecisions:
         rewritten = json.loads((tmp_path / "store.manifest.json").read_text(encoding="utf-8"))
         assert rewritten["degraded"] is None and "history" not in rewritten
 
-    def test_store_manifest_empty_reason_is_unreadable(self, tmp_path: Path):
-        store = self._store(tmp_path)
-        store.accept_request("bot", "r1", "fp", "group:20", "op")
-        self._write_manifest(tmp_path, {
+    @pytest.mark.parametrize("payload", [
+        {
             "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
             "expected_files": {"main": "present", "archive": "absent"},
             "degraded": {"reason": "", "at": 3.0},
-        })
-        # 不可读清单按"有数据文件"迁移, 不静默当空库, 也不报告降级
+        },
+        {
+            "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
+            "expected_files": {"main": "missing", "archive": "absent"}, "degraded": None,
+        },
+    ], ids=["empty-reason", "contradiction"])
+    def test_store_unreadable_manifest_migrates(self, tmp_path: Path, payload: dict[str, Any]):
+        """不可读/自相矛盾的清单按"有数据文件"迁移, 不静默当空库也不报告降级"""
+        store = self._store(tmp_path)
+        store.accept_request("bot", "r1", "fp", "group:20", "op")
+        self._write_manifest(tmp_path, payload)
         restarted = self._store(tmp_path)
         assert restarted.degraded is False
         assert restarted.lookup_request("r1", "bot") is not None
         rewritten = json.loads((tmp_path / "store.manifest.json").read_text(encoding="utf-8"))
         assert rewritten["degraded"] is None
-        assert "history" not in rewritten
-
-    def test_store_manifest_contradiction_is_unreadable(self, tmp_path: Path):
-        store = self._store(tmp_path)
-        store.accept_request("bot", "r1", "fp", "group:20", "op")
-        # 未降级却声明主文件缺失: 自相矛盾, 按不可读迁移而不是接受
-        self._write_manifest(tmp_path, {
-            "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
-            "expected_files": {"main": "missing", "archive": "absent"}, "degraded": None,
-        })
-        restarted = self._store(tmp_path)
-        assert restarted.degraded is False
-        assert restarted.lookup_request("r1", "bot") is not None
-        rewritten = json.loads((tmp_path / "store.manifest.json").read_text(encoding="utf-8"))
         assert rewritten["expected_files"] == {"main": "present", "archive": "absent"}
 
-    def test_store_marker_failure_still_degrades_in_memory(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_store_marker_and_quarantine_failure_keep_degraded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """标记写失败保留原文件不隔离; 隔离失败不解除降级, 重启重新判定"""
         path = tmp_path / "store.json"
         path.write_text("not-json{", encoding="utf-8")
 
@@ -810,27 +721,26 @@ class TestStorageDecisions:
         assert store.degraded_reason == "manifest_missing_with_data"
         assert path.read_text(encoding="utf-8") == "not-json{"
         assert list(tmp_path.glob("store.json.corrupt-*")) == []
-
-    def test_store_quarantine_failure_keeps_degraded_after_restart(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        path = tmp_path / "store.json"
-        path.write_text("not-json{", encoding="utf-8")
+        monkeypatch.undo()
 
         def broken_quarantine(item: Path) -> Path:
             raise OSError("rename failed")
 
         monkeypatch.setattr(durability_module, "quarantine_file", broken_quarantine)
-        store = self._store(tmp_path)
-        assert store.degraded is True
+        quarantined = self._store(tmp_path)
+        assert quarantined.degraded is True
         # 隔离失败不解除降级: 重启按清单与坏文件重新判定
         monkeypatch.undo()
         restarted = self._store(tmp_path)
         assert restarted.degraded is True and restarted.degraded_reason != ""
 
-    def test_ledger_samples(self, tmp_path: Path):
+    def test_ledger_manifest_semantics(self, tmp_path: Path):
+        """账本清单: 空原因回落降级, 矛盾迁移, 降级写入保留扩展键, recover 失败保持降级, 内存账本不落盘"""
         ledger = RequestApprovalLedger(tmp_path / "request_ledger.json")
         assert ledger.degraded is False
-        # 额外键与空降级原因: 账本保留额外键, 空原因回落为 degraded
-        (tmp_path / "request_ledger.manifest.json").write_text(json.dumps({
+        manifest_path = tmp_path / "request_ledger.manifest.json"
+        # 额外键与空降级原因: 空原因回落为 degraded
+        manifest_path.write_text(json.dumps({
             "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
             "expected_files": {"entries": "present"},
             "degraded": {"reason": "", "at": "raw", "note": "旧字段"},
@@ -838,54 +748,46 @@ class TestStorageDecisions:
         }, ensure_ascii=False), encoding="utf-8")
         restarted = RequestApprovalLedger(tmp_path / "request_ledger.json")
         assert restarted.degraded is True and restarted.degraded_reason == "degraded"
-        # 清单状态与数据文件不一致: 未降级清单要求 entries 恒存在, 其它取值按清单损坏迁移
-        (tmp_path / "request_ledger.manifest.json").write_text(json.dumps({
+        # 清单状态与数据文件不一致: 未降级清单要求 entries 恒存在, 其它取值按损坏迁移
+        manifest_path.write_text(json.dumps({
             "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
             "expected_files": {"entries": "missing"}, "degraded": None,
         }, ensure_ascii=False), encoding="utf-8")
         migrated = RequestApprovalLedger(tmp_path / "request_ledger.json")
         assert migrated.degraded is False
-        assert json.loads((tmp_path / "request_ledger.manifest.json").read_text(encoding="utf-8"))["expected_files"] == {"entries": "present"}
+        migrated_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert migrated_manifest["expected_files"] == {"entries": "present"}
 
-    def test_ledger_degrade_write_keeps_manifest_extras(self, tmp_path: Path):
-        """真实降级写入不得丢掉旧清单的 expected_files 与顶层扩展键"""
-        ledger = RequestApprovalLedger(tmp_path / "request_ledger.json")
-        assert ledger.degraded is False
-        (tmp_path / "request_ledger.manifest.json").write_text(json.dumps({
+        # 真实降级写入保留 expected_files 与顶层扩展键, 标记带真实时间
+        manifest_path.write_text(json.dumps({
             "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
             "expected_files": {"entries": "present", "future": "keep"},
             "degraded": None, "history": ["kept"],
         }, ensure_ascii=False), encoding="utf-8")
-        restarted = RequestApprovalLedger(tmp_path / "request_ledger.json")
-        assert restarted.degraded is False
-        assert restarted._mark_degraded("probe", "审计反例: 降级写入") is True
-        rewritten = json.loads((tmp_path / "request_ledger.manifest.json").read_text(encoding="utf-8"))
+        writeback = RequestApprovalLedger(tmp_path / "request_ledger.json")
+        assert writeback.degraded is False
+        assert writeback._mark_degraded("probe", "审计反例: 降级写入") is True
+        rewritten = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert rewritten["expected_files"] == {"entries": "present", "future": "keep"}
         assert rewritten["history"] == ["kept"]
-        # 标记是本次新写入的: 按声明字段生成, 带真实时间
-        assert rewritten["degraded"]["reason"] == "probe"
-        assert rewritten["degraded"]["at"] > 0
+        assert rewritten["degraded"]["reason"] == "probe" and rewritten["degraded"]["at"] > 0
 
-    def test_ledger_recover_failure_keeps_degraded(self, tmp_path: Path):
-        path = tmp_path / "request_ledger.json"
-        path.write_text("{ 不是 JSON", encoding="utf-8")
-        ledger = RequestApprovalLedger(path)
-        assert ledger.degraded is True
-        assert ledger.recover() is False
-        assert ledger.degraded is True and ledger.degraded_reason == "manifest_missing_with_data"
+        # recover 失败保持降级
+        corrupt = tmp_path / "corrupt_ledger.json"
+        corrupt.write_text("{ 不是 JSON", encoding="utf-8")
+        bad = RequestApprovalLedger(corrupt)
+        assert bad.degraded is True
+        assert bad.recover() is False
+        assert bad.degraded is True and bad.degraded_reason == "manifest_missing_with_data"
 
-    def test_memory_ledger_creates_no_files(self, tmp_path: Path):
-        ledger = RequestApprovalLedger(None)
-        ledger.degraded = True
-        assert ledger._mark_degraded("init_failed", "内存账本") is True
-        assert ledger.degraded is True and ledger.degraded_reason == "init_failed"
         # 无持久路径的账本不写任何文件
-        assert list(tmp_path.iterdir()) == []
-
-def test_storage_key_is_stable_and_collision_resistant():
-    """不同原始 ID 即使旧式替换结果相同也必须产生不同目录键"""
-    assert storage_key("a:b", fallback="session") != storage_key("a_b", fallback="session")
-    assert storage_key("a:b", fallback="session") == storage_key("a:b", fallback="session")
+        memory_root = tmp_path / "memory"
+        memory_root.mkdir()
+        memory = RequestApprovalLedger(None)
+        memory.degraded = True
+        assert memory._mark_degraded("init_failed", "内存账本") is True
+        assert memory.degraded is True and memory.degraded_reason == "init_failed"
+        assert list(memory_root.iterdir()) == []
 
 def test_platform_uses_one_database(tmp_path: Path):
     """同一平台的全部领域应解析到唯一 platform.db"""

@@ -54,63 +54,42 @@ def test_edictum_types(_cmd_edictum_offline_env: BackendConfig, capsys: pytest.C
     out = capsys.readouterr().out
     assert "simple" in out
 
-def test_edictum_create_list_show(_cmd_edictum_offline_env: BackendConfig, capsys: pytest.CaptureFixture[str]):
-    """创建后可列出并查看详情"""
+def test_edictum_cli_crud_smoke(_cmd_edictum_offline_env: BackendConfig, capsys: pytest.CaptureFixture[str]):
+    """CLI 全链路冒烟: 创建/列出/查看/改名/启停/删除与错误路径经真实服务"""
     cmd_edictum.cmd_edictum_create(_cmd_edictum_args(action="create", name="assistant", type="simple", description="demo"))
     capsys.readouterr()
 
     cmd_edictum.cmd_edictum_list(_cmd_edictum_args())
-    out = capsys.readouterr().out
-    assert "assistant" in out
+    assert "assistant" in capsys.readouterr().out
 
-    cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="assistant"))
-    detail = json.loads(capsys.readouterr().out)
-    assert detail["edictum_type"] == "simple"
-    assert detail["description"] == "demo"
-
-def test_edictum_create_duplicate_raises(_cmd_edictum_offline_env: BackendConfig):
-    """重名创建抛业务错误"""
-    cmd_edictum.cmd_edictum_create(_cmd_edictum_args(action="create", name="dup", type="simple"))
+    # 重名创建经服务拒绝
     with pytest.raises(Exception, match="已存在"):
-        cmd_edictum.cmd_edictum_create(_cmd_edictum_args(action="create", name="dup", type="simple"))
+        cmd_edictum.cmd_edictum_create(_cmd_edictum_args(action="create", name="assistant", type="simple"))
 
-def test_edictum_update_and_rename(_cmd_edictum_offline_env: BackendConfig, capsys: pytest.CaptureFixture[str]):
-    """更新描述与改名"""
-    cmd_edictum.cmd_edictum_create(_cmd_edictum_args(action="create", name="old-name", type="simple"))
+    # 改名后旧名不可查, 新名保留更新后的描述
+    cmd_edictum.cmd_edictum_update(
+        _cmd_edictum_args(action="update", name="assistant", rename="platform-assistant", description="updated"),
+    )
     capsys.readouterr()
-    cmd_edictum.cmd_edictum_update(_cmd_edictum_args(action="update", name="old-name", rename="new-name", description="updated"))
-    capsys.readouterr()
-
     with pytest.raises(CliError, match="未找到"):
-        cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="old-name"))
-    cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="new-name"))
-    detail = json.loads(capsys.readouterr().out)
-    assert detail["description"] == "updated"
-
-def test_edictum_enable_disable(_cmd_edictum_offline_env: BackendConfig, capsys: pytest.CaptureFixture[str]):
-    """启停切换 enabled 字段"""
-    cmd_edictum.cmd_edictum_create(_cmd_edictum_args(action="create", name="toggle", type="simple"))
+        cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="assistant"))
+    cmd_edictum.cmd_edictum_disable(_cmd_edictum_args(action="disable", name="platform-assistant"))
     capsys.readouterr()
-    cmd_edictum.cmd_edictum_disable(_cmd_edictum_args(action="disable", name="toggle"))
-    capsys.readouterr()
-    cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="toggle"))
+    cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="platform-assistant"))
     detail = json.loads(capsys.readouterr().out)
+    assert detail["edictum_type"] == "simple" and detail["description"] == "updated"
     assert detail["enabled"] is False
-    cmd_edictum.cmd_edictum_enable(_cmd_edictum_args(action="enable", name="toggle"))
+    cmd_edictum.cmd_edictum_enable(_cmd_edictum_args(action="enable", name="platform-assistant"))
     capsys.readouterr()
-    cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="toggle"))
-    detail = json.loads(capsys.readouterr().out)
-    assert detail["enabled"] is True
+    cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="platform-assistant"))
+    assert json.loads(capsys.readouterr().out)["enabled"] is True
 
-def test_edictum_delete(_cmd_edictum_offline_env: BackendConfig, capsys: pytest.CaptureFixture[str]):
-    """删除后不可再查; 删除不存在配置抛 CliError"""
-    cmd_edictum.cmd_edictum_create(_cmd_edictum_args(action="create", name="gone", type="simple"))
-    capsys.readouterr()
-    cmd_edictum.cmd_edictum_delete(_cmd_edictum_args(action="delete", name="gone"))
+    # 删除后不可再查, 重复删除同样报错
+    cmd_edictum.cmd_edictum_delete(_cmd_edictum_args(action="delete", name="platform-assistant"))
     with pytest.raises(CliError, match="未找到"):
-        cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="gone"))
+        cmd_edictum.cmd_edictum_show(_cmd_edictum_args(action="show", name="platform-assistant"))
     with pytest.raises(CliError, match="未找到"):
-        cmd_edictum.cmd_edictum_delete(_cmd_edictum_args(action="delete", name="gone"))
+        cmd_edictum.cmd_edictum_delete(_cmd_edictum_args(action="delete", name="platform-assistant"))
 
 def test_edictum_runtime_requires_backend(_cmd_edictum_offline_env: BackendConfig):
     """preview/apply 离线时统一报错"""
@@ -188,17 +167,15 @@ def test_plugin_capability_toggle(registry: ChatPluginRegistry):
     cmd_plugin.cmd_plugin_capability(_cmd_plugin_args(action="capability", name=name, kind=kind, cap=cap, state="on"))
     assert registry.capability_enabled(name, kind, cap) is True
 
-def test_plugin_capability_rejects_bad_kind(registry: ChatPluginRegistry):
-    """非法能力类别抛 CliError"""
+@pytest.mark.parametrize("overrides, match", [
+    ({"kind": "bogus", "cap": "x"}, "非法能力类别"),
+    ({"kind": "tools", "cap": "x", "state": "maybe"}, "非法状态"),
+])
+def test_plugin_capability_rejects_invalid(registry: ChatPluginRegistry, overrides: dict[str, Any], match: str):
+    """非法能力类别或状态抛 CliError"""
     name = str(_first_available(registry)["name"])
-    with pytest.raises(CliError, match="非法能力类别"):
-        cmd_plugin.cmd_plugin_capability(_cmd_plugin_args(action="capability", name=name, kind="bogus", cap="x"))
-
-def test_plugin_capability_rejects_bad_state(registry: ChatPluginRegistry):
-    """非法状态抛 CliError"""
-    name = str(_first_available(registry)["name"])
-    with pytest.raises(CliError, match="非法状态"):
-        cmd_plugin.cmd_plugin_capability(_cmd_plugin_args(action="capability", name=name, kind="tools", cap="x", state="maybe"))
+    with pytest.raises(CliError, match=match):
+        cmd_plugin.cmd_plugin_capability(_cmd_plugin_args(action="capability", name=name, **overrides))
 
 def test_plugin_config_view_and_set(registry: ChatPluginRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
     """配置查看返回 schema + 当前值, --set 经 schema 校验后落盘"""

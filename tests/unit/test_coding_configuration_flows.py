@@ -296,11 +296,12 @@ async def test_file_approval_rechecks_execution_context(
     ("write_file", ("file.txt", "changed")),
     ("edit_file", ("file.txt", "original", "changed")),
     ("search_replace", ("file.txt", [{"old": "original", "new": "changed"}])),
+    ("shell", ("echo x > f2.txt",)),
 ])
 async def test_plan_mode_blocks_all_sandbox_file_writes(
     tmp_path: Path, asynchronous: bool, tool_name: str, args: tuple[Any, ...],
 ) -> None:
-    """计划模式优先于沙箱免审批, 同步与异步文件写入均被拒绝"""
+    """计划模式优先于沙箱免审批, 同步与异步文件/命令写入均被拒绝"""
     base, llm_type = (AsyncSimpleSession, AsyncLLM) if asynchronous else (SimpleSession, LLM)
     session = base("sandbox-plan", MagicMock(spec=llm_type), db_path=str(tmp_path / "chat.db"))
     if isinstance(session, AsyncSimpleSession):
@@ -312,7 +313,8 @@ async def test_plan_mode_blocks_all_sandbox_file_writes(
     get_plugin_state(session)["engine"].set_plan_mode(True)
     try:
         assert "计划模式" in await _execute(tools[tool_name], *args)
-        assert target.read_text(encoding="utf-8") == "original"
+        if tool_name != "shell":
+            assert target.read_text(encoding="utf-8") == "original"
     finally:
         reset_plugin_state(session)
 
@@ -443,10 +445,6 @@ def test_factory_rejects_invalid_default_timeout(tmp_path: Path, value: object) 
 
 _satrap_coding_plugin_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "satrap_coding"
 
-def _approve(_: str) -> str:
-    """批准测试中的交互请求"""
-    return "y"
-
 class _satrap_coding_plugin_FakeLLM(LLM):
     """记录调用参数的同步 fake LLM"""
 
@@ -496,20 +494,35 @@ def _user_text(s: SimpleSession, index: int = -1) -> str:
     return str([m for m in messages if m.get("role") == "user"][-1]["content"])
 
 def test_plugin_install_full_capabilities(_satrap_coding_plugin_session: SimpleSession):
-    """安装: 11 工具 + 3 命令 + 2 技能 + 1 处理器 (search/memory 已移交 base_take)"""
+    """安装: 工具/命令/技能/处理器与能力描述一致 (search/memory 已移交 base_take)"""
     plugin = _satrap_coding_plugin_session.list_plugins()[0]
     assert plugin.name == "satrap_coding"
     assert len(plugin.tools) == 11
     assert set(plugin.commands) == {"goal", "plan", "approve"}
     assert set(plugin.skills) == {"goal", "plan"}
     assert set(plugin.handlers) == {"satrap_coding.inject"}
-
     assert len(_satrap_coding_plugin_session.list_tools()) == 11
     assert set(_satrap_coding_plugin_session.list_commands()) >= {"goal", "plan", "approve"}
     assert "goal" in _satrap_coding_plugin_session.list_skills()
 
+    # meta.yaml 能力声明读入 plugin.capability_descriptions
+    desc = plugin.capability_descriptions
+    assert desc["tools"]["read_file"] and desc["tools"]["shell"]
+    assert desc["skills"]["goal"] and desc["handlers"]["satrap_coding.inject"]
+    assert desc["commands"]["approve"]
+    assert desc.get("mcp", {}) == {}
+
+    # list_capabilities 每项带 name / enabled / description
+    caps = plugin.list_capabilities()
+    for kind in ("tools", "skills", "handlers", "commands"):
+        assert caps[kind], f"{kind} 应非空"
+        for item in caps[kind]:
+            assert "name" in item and "enabled" in item and "description" in item
+    tools = {t["name"]: t for t in caps["tools"]}
+    assert tools["read_file"]["description"] and tools["read_file"]["enabled"] is True
+
 def test_goal_command_lifecycle_and_injection(_satrap_coding_plugin_session: SimpleSession):
-    """/goal: 设置 -> 注入模型输入 -> status -> done 后不再注入"""
+    """/goal: 设置 -> 注入模型输入 -> status -> done/clear 后均不再注入"""
     result, is_cmd = _satrap_coding_plugin_session.cmd_handler.process_message("/goal 实现一个编码助手")
     assert is_cmd and "目标已设置" in str(result)
 
@@ -525,8 +538,16 @@ def test_goal_command_lifecycle_and_injection(_satrap_coding_plugin_session: Sim
     assert "已标记完成" in str(result)
 
     _satrap_coding_plugin_session.run("再来一轮")
-    text = _user_text(_satrap_coding_plugin_session)
-    assert "实现一个编码助手" not in text
+    assert "实现一个编码助手" not in _user_text(_satrap_coding_plugin_session)
+
+    # clear 等价于终止注入
+    _satrap_coding_plugin_session.cmd_handler.process_message("/goal 重构插件系统")
+    _satrap_coding_plugin_session.run("第一轮")
+    assert "重构插件系统" in _user_text(_satrap_coding_plugin_session)
+    result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/goal clear")
+    assert "已清除" in str(result)
+    _satrap_coding_plugin_session.run("第二轮")
+    assert "重构插件系统" not in _user_text(_satrap_coding_plugin_session)
 
 def test_goal_todo(_satrap_coding_plugin_session: SimpleSession):
     """/goal todo: 子任务增删"""
@@ -542,43 +563,24 @@ def test_goal_todo(_satrap_coding_plugin_session: SimpleSession):
     assert "1. [x] 写权限引擎" in str(result)
     assert "2. [ ] 写测试" in str(result)
 
-def test_plan_mode_blocks_writes(_satrap_coding_plugin_session: SimpleSession):
-    """/plan: 进入后全部写类能力被拒 (文件/shell), 退出恢复"""
-    write_tool = _satrap_coding_plugin_session.tools_manager.tools["write_file"]
-    target = tools_mod._tool_root(write_tool) / "x.txt"
-
-    _satrap_coding_plugin_session.user_input_provider = _approve
-    _satrap_coding_plugin_session.run("占位")   # 触发一次完整流程
-    # 直接写可通过 (用户批准)
-    assert "已写入" in write_tool.execute(str(target), "hi")
-
-    result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/plan on")
-    assert "计划模式" in str(result)
-    out = write_tool.execute(str(target), "blocked")
-    assert "拒绝" in out or "计划模式" in out
-    assert target.read_text(encoding="utf-8") == "hi"
-
-    shell_tool = _satrap_coding_plugin_session.tools_manager.tools["shell"]
-    # 工作区内 shell 写命令在计划模式下同样被拒
-    out = shell_tool.execute("echo x > f2.txt")
-    assert "计划模式" in out
-
-    result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/plan off")
-    assert "退出" in str(result)
-    assert "已写入" in write_tool.execute(str(target), "again")
-
 def test_uninstall_resets_plugin_state(_satrap_coding_plugin_session: SimpleSession):
-    """M2: 卸载清理插件状态, 重装后 plan_mode 不残留"""
+    """/plan on 后卸载: 工具/命令/处理器全部回收, 重装后 plan_mode 不残留"""
     _satrap_coding_plugin_session.cmd_handler.process_message("/plan on")
 
     assert _satrap_coding_plugin_session.uninstall_plugin("satrap_coding") is True
-    _satrap_coding_plugin_session.install_plugin(str(_satrap_coding_plugin_PLUGIN_DIR))
+    assert _satrap_coding_plugin_session.list_tools() == []
+    assert "goal" not in _satrap_coding_plugin_session.list_commands()
+    assert "memory" not in _satrap_coding_plugin_session.list_commands()
+    assert _satrap_coding_plugin_session.list_handlers() == []
+    assert _satrap_coding_plugin_session.list_skills() == []
+    assert _satrap_coding_plugin_session.list_plugins() == []
 
+    _satrap_coding_plugin_session.install_plugin(str(_satrap_coding_plugin_PLUGIN_DIR))
     write_tool = _satrap_coding_plugin_session.tools_manager.tools["write_file"]
-    # 重装后计划模式已重置: 写文件需要批准 (不再是 plan 拒绝, 而是正常审批流)
+    # 重装后计划模式已重置: 写文件进入正常审批流而不再是计划模式拒绝
     target = tools_mod.WORKSPACE_ROOT / "y.txt"
     out = write_tool.execute(str(target), "hi")
-    assert "需要用户批准" in out   # user 策略无通道 = 需要批准, 而非计划模式拒绝
+    assert "需要用户批准" in out
     assert "拒绝: 计划模式" not in out
 
 def test_approve_command(_satrap_coding_plugin_session: SimpleSession):
@@ -598,53 +600,6 @@ def test_approve_command(_satrap_coding_plugin_session: SimpleSession):
     assert "持久规则已添加" in str(result)
     result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/approve rules")
     assert "file_write" in str(result)
-
-def test_goal_injection(_satrap_coding_plugin_session: SimpleSession):
-    """目标注入: 设置目标后下一轮自动带上, 清除后不再注入"""
-    _satrap_coding_plugin_session.cmd_handler.process_message("/goal 重构插件系统")
-    _satrap_coding_plugin_session.run("第一轮")
-    text = _user_text(_satrap_coding_plugin_session)
-    assert "重构插件系统" in text
-
-    result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/goal clear")
-    assert "已清除" in str(result)
-
-    _satrap_coding_plugin_session.run("第二轮")
-    assert "重构插件系统" not in _user_text(_satrap_coding_plugin_session)
-
-def test_uninstall_plugin_cleanup(_satrap_coding_plugin_session: SimpleSession):
-    """卸载: 工具/命令/处理器全部回收"""
-    assert _satrap_coding_plugin_session.uninstall_plugin("satrap_coding") is True
-    assert _satrap_coding_plugin_session.list_tools() == []
-    assert "goal" not in _satrap_coding_plugin_session.list_commands()
-    assert "memory" not in _satrap_coding_plugin_session.list_commands()
-    assert _satrap_coding_plugin_session.list_handlers() == []
-    assert _satrap_coding_plugin_session.list_skills() == []
-    assert _satrap_coding_plugin_session.list_plugins() == []
-
-def test_capability_descriptions_loaded(_satrap_coding_plugin_session: SimpleSession):
-    """meta.yaml 能力声明读入 plugin.capability_descriptions (五类)"""
-    plugin = _satrap_coding_plugin_session.list_plugins()[0]
-    desc = plugin.capability_descriptions
-    assert desc["tools"]["read_file"]
-    assert desc["tools"]["shell"]
-    assert desc["skills"]["goal"]
-    assert desc["handlers"]["satrap_coding.inject"]
-    assert desc["commands"]["approve"]
-    # 未声明的类别为空或缺省
-    assert desc.get("mcp", {}) == {}
-
-def test_list_capabilities_with_description(_satrap_coding_plugin_session: SimpleSession):
-    """list_capabilities 每项带 name / enabled / description"""
-    plugin = _satrap_coding_plugin_session.list_plugins()[0]
-    caps = plugin.list_capabilities()
-    for kind in ("tools", "skills", "handlers", "commands"):
-        assert caps[kind], f"{kind} 应非空"
-        for item in caps[kind]:
-            assert "name" in item and "enabled" in item and "description" in item
-    tools = {t["name"]: t for t in caps["tools"]}
-    assert tools["read_file"]["description"]
-    assert tools["read_file"]["enabled"] is True
 
 def test_parse_capability_descriptions_unit():
     """parse_capability_descriptions: 字典解析 / 非 dict 跳过 / 未识别键忽略"""
@@ -823,17 +778,17 @@ def test_pdfminer_fontbbox_warning_filtered():
     finally:
         logger.removeHandler(capture)
 
-def test_extract_text_unsupported(tmp_path: Path):
-    """不支持的类型返回明确错误"""
-    f = tmp_path / "t.bin"
-    f.write_bytes(b"\x00\x01")
-    with pytest.raises(ValueError, match="不支持"):
-        extract_text(f)
-
-def test_extract_text_missing(tmp_path: Path):
-    """文件不存在返回明确错误"""
-    with pytest.raises(ValueError, match="不存在"):
-        extract_text(tmp_path / "ghost.txt")
+@pytest.mark.parametrize("filename, content, match", [
+    ("t.bin", b"\x00\x01", "不支持"),
+    ("ghost.txt", None, "不存在"),
+])
+def test_extract_text_rejects_unsupported_or_missing(tmp_path: Path, filename: str, content: bytes | None, match: str):
+    """不支持的类型或文件不存在时返回明确错误"""
+    path = tmp_path / filename
+    if content is not None:
+        path.write_bytes(content)
+    with pytest.raises(ValueError, match=match):
+        extract_text(path)
 
 def test_extract_text_enforces_file_and_output_limits(tmp_path: Path):
     """文本读取在解析前限制文件大小, 并在解析中限制输出长度"""

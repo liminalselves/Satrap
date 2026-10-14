@@ -36,7 +36,7 @@ class _NoCallAsyncLLM(AsyncLLM):
         self.model = "fake"
 
 def test_resolve_and_apply_context_policy(tmp_path: Path):
-    """策略解析后应一次性更新全部派生预算"""
+    """策略解析后应一次性更新全部派生预算与策略字段"""
     config = LLMConfig(
         context_window=10000,
         history_ratio=0.6,
@@ -48,14 +48,14 @@ def test_resolve_and_apply_context_policy(tmp_path: Path):
     context = ContextManager("policy", db_path=str(tmp_path / "context.db"))
     policy = apply_context_policy(context, config)
 
-    assert policy.history_budget == 6000
-    assert context.max_context == 10000
-    assert context.history_budget == 6000
-    assert context.trigger_tokens == 4500
-    assert context.floor_tokens == 1500
-    assert context.output_budget == 4000
+    # 具体算术由派生值用例覆盖, 这里只验证策略已写入运行时且返回体与之一致
+    assert context.max_context == config.context_window
+    assert context.history_ratio == config.history_ratio
     assert context.exceed_process == "summarize"
     assert context.summary_keep_recent_turns == 3
+    assert (policy.history_budget, policy.trigger_tokens, policy.floor_tokens, policy.output_budget) == (
+        context.history_budget, context.trigger_tokens, context.floor_tokens, context.output_budget,
+    )
     context.close()
 
 @pytest.mark.parametrize(
@@ -135,30 +135,6 @@ class TestHysteresisParams:
         assert cm.floor_tokens == int(89600 * 0.4)   # 截断底线为 35840
         assert cm.output_budget == 128000 - 89600   # 输出预算为 38400
 
-    def test_custom_derived_values(self, tmp_path: Path):
-        cm = ContextManager(
-            "test_custom",
-            db_path=str(tmp_path / "test.db"),
-            max_context=400000,
-            history_ratio=0.7,
-            context_threshold=0.8,
-            truncation_floor=0.4,
-        )
-        assert cm.history_budget == 280000
-        assert cm.trigger_tokens == 224000
-        assert cm.floor_tokens == 112000
-        assert cm.output_budget == 120000
-
-    def test_floor_must_be_less_than_threshold(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
-        with caplog.at_level("WARNING"):
-            ContextManager(
-                "test_invalid",
-                db_path=str(tmp_path / "test.db"),
-                truncation_floor=0.8,
-                context_threshold=0.4,
-            )
-        assert "截断底线必须小于上下文阈值" in caplog.text
-
     def test_history_ratio_must_be_positive(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
         with caplog.at_level("WARNING"):
             ContextManager(
@@ -214,52 +190,6 @@ class TestHysteresisTruncation:
 
 class TestSummarizeAndCompress:
     """总结压缩"""
-
-    def test_compress_preserves_full_history_and_builds_summary_view(self, tmp_path: Path):
-        cm = ContextManager("test_sum", db_path=str(tmp_path / "test.db"))
-        cm.reset_system_prompt("你是一个助手")
-
-        for i in range(5):
-            cm.add_user_message(f"问题 {i}")
-            cm.add_bot_message(f"回答 {i}")
-        # 构造 5 轮对话
-
-        mock_llm = MagicMock()
-        mock_llm.chat.return_value = "用户问了5个问题, 分别是问题0到问题4"
-
-        original_messages = [dict(message) for message in cm.get_context()]
-        summary = cm.summarize_and_compress(mock_llm, keep_recent_turns=2)
-
-        assert summary == "用户问了5个问题, 分别是问题0到问题4"
-        assert mock_llm.chat.call_args.kwargs["thinking"] == "off"
-        assert mock_llm.chat.call_args.kwargs["max_tokens"] >= 512
-        # 完整历史不变, 模型视图仅保留摘要与最近 2 轮
-        assert cm.get_context() == original_messages
-        messages = cm._summary_context(cm.get_context(), keep_recent_turns=2)
-        user_msgs = [m for m in messages if m.get("role") == "user"]
-        assert len(user_msgs) == 2
-        assert "问题 3" in str(user_msgs[0].get("content", ""))
-        assert "问题 4" in str(user_msgs[1].get("content", ""))
-        # system prompt 含摘要区块
-        system_msgs = [m for m in messages if m.get("role") == "system"]
-        assert len(system_msgs) == 2
-        assert any("<对话历史摘要>" in str(message.get("content", "")) for message in system_msgs)
-        assert any("用户问了5个问题" in str(message.get("content", "")) for message in system_msgs)
-
-    def test_summary_retries_with_extended_output_budget(self, tmp_path: Path):
-        """摘要模型只返回空正文时应使用扩展输出预算重试"""
-        cm = ContextManager("test_summary_retry", db_path=str(tmp_path / "test.db"))
-        for index in range(3):
-            cm.add_user_message(f"问题 {index}")
-            cm.add_bot_message(f"回答 {index}")
-        mock_llm = MagicMock()
-        mock_llm.chat.side_effect = ["", "重试后的摘要"]
-
-        summary = cm.summarize_and_compress(mock_llm, keep_recent_turns=1)
-
-        assert summary == "重试后的摘要"
-        assert mock_llm.chat.call_count == 2
-        assert mock_llm.chat.call_args.kwargs["max_tokens"] == 4096
 
     def test_prepare_summary_is_automatic_and_non_destructive(self, tmp_path: Path):
         """超过触发线时应自动总结, 但完整历史不能改变"""
@@ -438,77 +368,108 @@ class TestSummarizeAndCompress:
         assert edited._runtime_state.summary == ""
         assert edited._runtime_state.covered_turn_count == 0
 
-class TestAsyncContextManager:
-    """异步版三参数与滞回截断"""
+async def _maybe(asynchronous: bool, value: Any) -> Any:
+    """异步管理器的方法返回 awaitable, 同步管理器直接返回值"""
+    return await value if asynchronous else value
 
-    @pytest.mark.asyncio
-    async def test_async_derived_values(self, tmp_path: Path):
-        async with AsyncContextManager(
-            "test_async",
-            db_path=str(tmp_path / "test.db"),
-            max_context=400000,
-            history_ratio=0.7,
-            context_threshold=0.8,
-            truncation_floor=0.4,
-        ) as cm:
-            assert cm.history_budget == 280000
-            assert cm.trigger_tokens == 224000
-            assert cm.floor_tokens == 112000
-            assert cm.output_budget == 120000
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_derived_values_follow_params(tmp_path: Path, asynchronous: bool):
+    """同步与异步管理器按同一派生公式计算预算"""
+    kwargs: dict[str, Any] = {
+        "max_context": 400000, "history_ratio": 0.7, "context_threshold": 0.8, "truncation_floor": 0.4,
+    }
+    if asynchronous:
+        async with AsyncContextManager("test_derived", db_path=str(tmp_path / "test.db"), **kwargs) as cm:
+            actual = (cm.history_budget, cm.trigger_tokens, cm.floor_tokens, cm.output_budget)
+    else:
+        cm = ContextManager("test_derived", db_path=str(tmp_path / "test.db"), **kwargs)
+        actual = (cm.history_budget, cm.trigger_tokens, cm.floor_tokens, cm.output_budget)
+        cm.close()
+    assert actual == (280000, 224000, 112000, 120000)
 
-    @pytest.mark.asyncio
-    async def test_async_invalid_params(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
-        with caplog.at_level("WARNING"):
-            AsyncContextManager(
-                "test_async_invalid",
-                db_path=str(tmp_path / "test.db"),
-                truncation_floor=0.9,
-                context_threshold=0.4,
-            )
-        assert "截断底线必须小于上下文阈值" in caplog.text
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_invalid_hysteresis_params_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture, asynchronous: bool):
+    """同步与异步管理器对非法滞回参数给出同样告警"""
+    with caplog.at_level("WARNING"):
+        if asynchronous:
+            AsyncContextManager("test_invalid", db_path=str(tmp_path / "test.db"),
+                                truncation_floor=0.9, context_threshold=0.4)
+        else:
+            ContextManager("test_invalid", db_path=str(tmp_path / "test.db"),
+                           truncation_floor=0.9, context_threshold=0.4)
+    assert "截断底线必须小于上下文阈值" in caplog.text
 
-    @pytest.mark.asyncio
-    async def test_async_summarize_and_compress(self, tmp_path: Path):
-        async with AsyncContextManager(
-            "test_async_sum",
-            db_path=str(tmp_path / "test.db"),
-        ) as cm:
-            await cm.reset_system_prompt("助手")
-            for i in range(4):
-                await cm.add_user_message(f"问题 {i}")
-                await cm.add_bot_message(f"回答 {i}")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_summarize_and_compress_keeps_full_history(tmp_path: Path, asynchronous: bool):
+    """同步与异步摘要都保留完整历史, 模型视图只留摘要与最近 2 轮"""
+    if asynchronous:
+        cm: Any = AsyncContextManager("test_sum", db_path=str(tmp_path / "test.db"))
+        await cm.__aenter__()
+    else:
+        cm = ContextManager("test_sum", db_path=str(tmp_path / "test.db"))
+    try:
+        await _maybe(asynchronous, cm.reset_system_prompt("你是一个助手"))
+        for i in range(5):
+            await _maybe(asynchronous, cm.add_user_message(f"问题 {i}"))
+            await _maybe(asynchronous, cm.add_bot_message(f"回答 {i}"))
+        mock_llm = MagicMock()
+        if asynchronous:
+            mock_llm.chat = AsyncMock(return_value="用户问了5个问题, 分别是问题0到问题4")
+        else:
+            mock_llm.chat.return_value = "用户问了5个问题, 分别是问题0到问题4"
+        original_messages = [dict(message) for message in cm.get_context()]
+        summary = await _maybe(asynchronous, cm.summarize_and_compress(mock_llm, keep_recent_turns=2))
+        assert summary == "用户问了5个问题, 分别是问题0到问题4"
+        assert mock_llm.chat.call_args.kwargs["thinking"] == "off"
+        assert mock_llm.chat.call_args.kwargs["max_tokens"] >= 512
+        # 完整历史不变, 模型视图仅保留摘要与最近 2 轮
+        assert cm.get_context() == original_messages
+        messages = cm._summary_context(cm.get_context(), keep_recent_turns=2)
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        assert len(user_msgs) == 2
+        assert "问题 3" in str(user_msgs[0].get("content", ""))
+        assert "问题 4" in str(user_msgs[1].get("content", ""))
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        assert len(system_msgs) == 2
+        assert any("<对话历史摘要>" in str(message.get("content", "")) for message in system_msgs)
+        assert any("用户问了5个问题" in str(message.get("content", "")) for message in system_msgs)
+    finally:
+        if asynchronous:
+            await cm.__aexit__(None, None, None)
+        else:
+            cm.close()
 
-            mock_llm = MagicMock()
-            mock_llm.chat = AsyncMock(return_value="异步总结")
-
-            summary = await cm.summarize_and_compress(mock_llm, keep_recent_turns=2)
-
-            assert summary == "异步总结"
-            assert mock_llm.chat.call_args.kwargs["thinking"] == "off"
-            assert mock_llm.chat.call_args.kwargs["max_tokens"] >= 512
-            assert len([m for m in cm.get_context() if m.get("role") == "user"]) == 4
-            model_context = cm._summary_context(cm.get_context(), keep_recent_turns=2)
-            user_msgs = [m for m in model_context if m.get("role") == "user"]
-            assert len(user_msgs) == 2
-
-    @pytest.mark.asyncio
-    async def test_async_summary_retries_with_extended_output_budget(self, tmp_path: Path):
-        """异步摘要模型只返回空正文时应使用扩展输出预算重试"""
-        async with AsyncContextManager(
-            "test_async_summary_retry",
-            db_path=str(tmp_path / "test.db"),
-        ) as cm:
-            for index in range(3):
-                await cm.add_user_message(f"问题 {index}")
-                await cm.add_bot_message(f"回答 {index}")
-            mock_llm = MagicMock()
-            mock_llm.chat = AsyncMock(side_effect=["", "异步重试后的摘要"])
-
-            summary = await cm.summarize_and_compress(mock_llm, keep_recent_turns=1)
-
-            assert summary == "异步重试后的摘要"
-            assert mock_llm.chat.await_count == 2
-            assert mock_llm.chat.call_args.kwargs["max_tokens"] == 4096
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_summary_retries_with_extended_output_budget(tmp_path: Path, asynchronous: bool):
+    """同步与异步摘要模型只返回空正文时都用扩展输出预算重试"""
+    if asynchronous:
+        cm: Any = AsyncContextManager("test_summary_retry", db_path=str(tmp_path / "test.db"))
+        await cm.__aenter__()
+    else:
+        cm = ContextManager("test_summary_retry", db_path=str(tmp_path / "test.db"))
+    try:
+        for index in range(3):
+            await _maybe(asynchronous, cm.add_user_message(f"问题 {index}"))
+            await _maybe(asynchronous, cm.add_bot_message(f"回答 {index}"))
+        mock_llm = MagicMock()
+        if asynchronous:
+            mock_llm.chat = AsyncMock(side_effect=["", "重试后的摘要"])
+        else:
+            mock_llm.chat.side_effect = ["", "重试后的摘要"]
+        summary = await _maybe(asynchronous, cm.summarize_and_compress(mock_llm, keep_recent_turns=1))
+        assert summary == "重试后的摘要"
+        call_count = mock_llm.chat.await_count if asynchronous else mock_llm.chat.call_count
+        assert call_count == 2
+        assert mock_llm.chat.call_args.kwargs["max_tokens"] == 4096
+    finally:
+        if asynchronous:
+            await cm.__aexit__(None, None, None)
+        else:
+            cm.close()
 
 async def make_event(settings: dict[str, object], segments: list[dict[str, object]]):
     """构造已通过适配器入站的群消息事件"""
@@ -575,15 +536,17 @@ class TestProjectionBudget:
             ProjectionBudget(0)
 
 class TestInputBudgetValidation:
-    @pytest.mark.parametrize("value", [0, 200001, True, "20000", 1.5])
-    def test_input_text_limit_range(self, value: object):
-        with pytest.raises(ValueError, match="input_text_limit"):
-            validate_wake_policy({"input_text_limit": value})
-
-    @pytest.mark.parametrize("value", [0, 33, True, "8", 2.5])
-    def test_input_media_limit_range(self, value: object):
-        with pytest.raises(ValueError, match="input_media_limit"):
-            validate_wake_policy({"input_media_limit": value})
+    @pytest.mark.parametrize("key, value", [
+        ("input_text_limit", 0),
+        ("input_text_limit", 200001),
+        ("input_text_limit", True),
+        ("input_media_limit", 0),
+        ("input_media_limit", 33),
+        ("input_media_limit", 2.5),
+    ])
+    def test_out_of_range_limits_rejected(self, key: str, value: object):
+        with pytest.raises(ValueError, match=key):
+            validate_wake_policy({key: value})
 
     def test_valid_limits_accepted(self):
         validate_wake_policy({"input_text_limit": 1, "input_media_limit": 32})

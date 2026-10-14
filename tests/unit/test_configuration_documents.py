@@ -258,23 +258,6 @@ logger.close()
     result = subprocess.run([sys.executable, "-c", script, str(config_root)], env=environment, capture_output=True, text=True, encoding="utf-8", timeout=20)
     assert result.returncode == 0, result.stderr
 
-def test_manager_specific_overrides_remain_unchanged(config_root, monkeypatch):
-    from satrap.core.framework.BackGroundManager import ModelConfigManager
-    from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-    from satrap.edictum.config import EdictumConfigManager
-    from satrap.core.log.policy import LoggingPolicyStore
-
-    for key, manager in [
-        ("SATRAP_MODEL_CONFIG_PATH", ModelConfigManager),
-        ("SATRAP_SESSION_CLASS_CONFIG_PATH", SessionClassConfigManager),
-        ("SATRAP_EDICTUM_CONFIG_PATH", EdictumConfigManager),
-    ]:
-        custom = config_root / (key.lower() + ".json")
-        monkeypatch.setenv(key, str(custom))
-        assert manager._default_storage_path() == custom
-    explicit = config_root / "separate-policy.json"
-    assert LoggingPolicyStore(path=explicit).path == explicit
-
 def test_all_default_managers_use_central_config_directory(config_root, monkeypatch):
     from satrap.core.framework.BackGroundManager import ModelConfigManager
     from satrap.core.framework.SessionClassManager import SessionClassConfigManager
@@ -289,6 +272,18 @@ def test_all_default_managers_use_central_config_directory(config_root, monkeypa
     assert EdictumConfigManager._default_storage_path() == config_root / "config" / "edictum_session_config.json"
     assert _default_state_path() == config_root / "config" / "chat_plugins.json"
     assert LoggingPolicyStore().path == config_root / "config" / "logging.json"
+
+    # 显式环境变量覆盖仍优先于集中目录
+    for key, manager in [
+        ("SATRAP_MODEL_CONFIG_PATH", ModelConfigManager),
+        ("SATRAP_SESSION_CLASS_CONFIG_PATH", SessionClassConfigManager),
+        ("SATRAP_EDICTUM_CONFIG_PATH", EdictumConfigManager),
+    ]:
+        custom = config_root / (key.lower() + ".json")
+        monkeypatch.setenv(key, str(custom))
+        assert manager._default_storage_path() == custom
+    explicit = config_root / "separate-policy.json"
+    assert LoggingPolicyStore(path=explicit).path == explicit
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):

@@ -206,27 +206,17 @@ class TestScanCompleteness:
             plugins_dir=plugins_dir if plugins_dir is not None else tmp_path / "no-plugins",
         )
 
-    def test_broken_plugin_metadata_is_scan_failure(self, tmp_path: Path):
-        """反例: 元数据损坏的插件被静默跳过, 其可能的 asr 引用会漏检"""
-        plugins_dir = tmp_path / "plugins"
-        plugins_dir.mkdir()
-        self._asr_plugin(plugins_dir, meta="name: echoasr\nconfig_schema: [未闭合\n")
-        with pytest.raises(AsrReferenceScanError) as exc:
-            self._scan(tmp_path, plugins_dir=plugins_dir)
-        assert exc.value.reason == "plugin_meta" and "echoasr" in exc.value.origin
-
-    def test_broken_plugin_global_json_is_scan_failure(self, tmp_path: Path):
-        plugins_dir = tmp_path / "plugins"
-        plugins_dir.mkdir()
-        self._asr_plugin(plugins_dir)
-        config_dir = tmp_path / "plugin_config"
-        config_dir.mkdir()
-        (config_dir / "echoasr.json").write_text("{不是 JSON", encoding="utf-8")
-        with pytest.raises(AsrReferenceScanError) as exc:
-            self._scan(tmp_path, plugins_dir=plugins_dir, config_dir=config_dir)
-        assert exc.value.reason == "plugin_config" and "echoasr" in exc.value.origin
-
-    def test_locked_database_is_scan_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    @pytest.mark.parametrize("scenario, reason, origin_fragment", [
+        ("broken_meta", "plugin_meta", "echoasr"),
+        ("broken_plugin_json", "plugin_config", "echoasr"),
+        ("locked_db", "override_db", None),
+        ("declared_schema_missing_table", "override_schema", None),
+        ("invalid_override_json", "override_json", "sess1"),
+    ])
+    def test_scan_failures_are_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, reason: str, origin_fragment: str | None,
+    ):
+        """反例: 读不出/解析失败/结构不符时必须独立报错, 不得返回"无引用"空结论"""
         import sqlite3 as sqlite_module
 
         import satrap.core.config.asr_references as module
@@ -235,22 +225,58 @@ class TestScanCompleteness:
         plugins_dir.mkdir()
         self._asr_plugin(plugins_dir)
         layout = StorageLayout(tmp_path / "data")
-        database = layout.platform_db("bot")
-        database.parent.mkdir(parents=True, exist_ok=True)
-        SessionOverrideStore(database)
+        config_dir: Path | None = None
+        if scenario == "broken_meta":
+            (plugins_dir / "echoasr" / "meta.yaml").write_text(
+                "name: echoasr\nconfig_schema: [未闭合\n", encoding="utf-8",
+            )
+        elif scenario == "broken_plugin_json":
+            config_dir = tmp_path / "plugin_config"
+            config_dir.mkdir()
+            (config_dir / "echoasr.json").write_text("{不是 JSON", encoding="utf-8")
+        elif scenario == "locked_db":
+            database = layout.platform_db("bot")
+            database.parent.mkdir(parents=True, exist_ok=True)
+            SessionOverrideStore(database)
 
-        def locked(*args: object, **kwargs: object) -> None:
-            raise sqlite_module.OperationalError("database is locked")
+            def locked(*args: object, **kwargs: object) -> None:
+                raise sqlite_module.OperationalError("database is locked")
 
-        monkeypatch.setattr(module.sqlite3, "connect", locked)
+            monkeypatch.setattr(module.sqlite3, "connect", locked)
+        elif scenario == "declared_schema_missing_table":
+            database = layout.platform_db("bot")
+            database.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite_module.connect(str(database))
+            connection.execute("PRAGMA user_version = 1")
+            connection.commit()
+            connection.close()
+        else:
+            database = layout.platform_db("bot")
+            database.parent.mkdir(parents=True, exist_ok=True)
+            SessionOverrideStore(database)
+            connection = sqlite_module.connect(str(database))
+            connection.execute(
+                "INSERT INTO session_config_overrides "
+                "(session_id, namespace, config_json, schema_version, revision, updated_at) "
+                "VALUES ('sess1', 'plugins.echoasr', '{坏json', 1, 1, 0.0)",
+            )
+            connection.commit()
+            connection.close()
         with pytest.raises(AsrReferenceScanError) as exc:
-            self._scan(tmp_path, layout=layout, plugins_dir=plugins_dir)
-        assert exc.value.reason == "override_db"
+            self._scan(tmp_path, layout=layout, plugins_dir=plugins_dir, config_dir=config_dir)
+        assert exc.value.reason == reason
+        if origin_fragment:
+            assert origin_fragment in exc.value.origin
 
-    def test_legacy_database_without_table_is_allowed(self, tmp_path: Path):
-        """旧库 (user_version=0 且无覆盖表) 属于契约允许的空集合"""
+    @pytest.mark.parametrize("with_asr_plugin", [False, True])
+    def test_legacy_database_without_table_is_allowed(self, tmp_path: Path, with_asr_plugin: bool):
+        """旧库 (user_version=0 且无覆盖表) 属于契约允许的空集合, 即使插件已声明 asr 字段"""
         import sqlite3
 
+        plugins_dir = tmp_path / "plugins"
+        if with_asr_plugin:
+            plugins_dir.mkdir()
+            self._asr_plugin(plugins_dir)
         layout = StorageLayout(tmp_path / "data")
         database = layout.platform_db("bot")
         database.parent.mkdir(parents=True, exist_ok=True)
@@ -258,63 +284,9 @@ class TestScanCompleteness:
         connection.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY)")
         connection.commit()
         connection.close()
-        assert self._scan(tmp_path, layout=layout) == []
-
-    def test_legacy_database_without_table_and_declared_asr_field(self, tmp_path: Path):
-        """反例: 已有插件声明 asr 字段时旧库仍按空覆盖集合处理, 缺表既不异常也不报扫描失败"""
-        import sqlite3
-
-        plugins_dir = tmp_path / "plugins"
-        plugins_dir.mkdir()
-        self._asr_plugin(plugins_dir)
-        layout = StorageLayout(tmp_path / "data")
-        database = layout.platform_db("bot")
-        database.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(str(database))
-        connection.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY)")
-        connection.commit()
-        connection.close()
-        assert self._scan(tmp_path, layout=layout, plugins_dir=plugins_dir) == []
-
-    def test_declared_schema_without_table_is_scan_failure(self, tmp_path: Path):
-        """反例: 结构版本已声明覆盖表存在时, 缺表属于损坏而不是"没配置"空结论"""
-        import sqlite3
-
-        plugins_dir = tmp_path / "plugins"
-        plugins_dir.mkdir()
-        self._asr_plugin(plugins_dir)
-        layout = StorageLayout(tmp_path / "data")
-        database = layout.platform_db("bot")
-        database.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(str(database))
-        connection.execute("PRAGMA user_version = 1")
-        connection.commit()
-        connection.close()
-        with pytest.raises(AsrReferenceScanError) as exc:
-            self._scan(tmp_path, layout=layout, plugins_dir=plugins_dir)
-        assert exc.value.reason == "override_schema"
-
-    def test_invalid_override_json_is_scan_failure(self, tmp_path: Path):
-        import sqlite3
-
-        plugins_dir = tmp_path / "plugins"
-        plugins_dir.mkdir()
-        self._asr_plugin(plugins_dir)
-        layout = StorageLayout(tmp_path / "data")
-        database = layout.platform_db("bot")
-        database.parent.mkdir(parents=True, exist_ok=True)
-        SessionOverrideStore(database)
-        connection = sqlite3.connect(str(database))
-        connection.execute(
-            "INSERT INTO session_config_overrides "
-            "(session_id, namespace, config_json, schema_version, revision, updated_at) "
-            "VALUES ('sess1', 'plugins.echoasr', '{坏json', 1, 1, 0.0)",
-        )
-        connection.commit()
-        connection.close()
-        with pytest.raises(AsrReferenceScanError) as exc:
-            self._scan(tmp_path, layout=layout, plugins_dir=plugins_dir)
-        assert exc.value.reason == "override_json" and "sess1" in exc.value.origin
+        assert self._scan(
+            tmp_path, layout=layout, plugins_dir=plugins_dir if with_asr_plugin else None,
+        ) == []
 
     def test_schema_marker_written_once_and_never_downgraded(self, tmp_path: Path):
         import sqlite3

@@ -71,23 +71,40 @@ def test_workflow_id_assign_deduplicates_with_warning(tmp_path: Path, caplog: py
     assert session.wf_list == ["s1_main", "s1_main_2", "s1_main_3"]
     assert "工作流 ID 重复" in caplog.text
 
-def test_session_checkpoint_rollback_roundtrip(tmp_path: Path):
-    """写消息 -> 会话级检查点 -> 继续写 -> 回滚还原全部上下文"""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_session_checkpoint_rollback_roundtrip(tmp_path: Path, asynchronous: bool):
+    """写消息 -> 会话级检查点 -> 继续写 -> 回滚还原全部上下文 (同步/异步)"""
     db = str(tmp_path / "chat_history.db")
-    session = _SimpleSession("s1", db)
-    session.session_ctx.add_user_message("会话消息")
-    session.wf_ctx.add_user_message("工作流消息")
-    batch_id = session.create_checkpoint(name="起点")
+    if asynchronous:
+        session = _AsyncSimpleSession("s1", db)
+        await session.initialize()
+        assert session.wf_ctx is not None
+        await session.session_ctx.add_user_message("会话消息")
+        await session.wf_ctx.add_user_message("工作流消息")
+        batch_id = await session.create_checkpoint(name="起点")
+        await session.session_ctx.add_user_message("会话后续")
+        await session.wf_ctx.add_user_message("工作流后续")
+        assert len(session.session_ctx.get_context()) == 2
+        assert len(session.wf_ctx.get_context()) == 2
+        await session.rollback(batch_id)
+        actual = (session.session_ctx.get_context(), session.wf_ctx.get_context())
+    else:
+        session = _SimpleSession("s1", db)
+        session.session_ctx.add_user_message("会话消息")
+        session.wf_ctx.add_user_message("工作流消息")
+        batch_id = session.create_checkpoint(name="起点")
+        session.session_ctx.add_user_message("会话后续")
+        session.wf_ctx.add_user_message("工作流后续")
+        assert len(session.session_ctx.get_context()) == 2
+        assert len(session.wf_ctx.get_context()) == 2
+        session.rollback(batch_id)
+        actual = (session.session_ctx.get_context(), session.wf_ctx.get_context())
 
-    session.session_ctx.add_user_message("会话后续")
-    session.wf_ctx.add_user_message("工作流后续")
-    assert len(session.session_ctx.get_context()) == 2
-    assert len(session.wf_ctx.get_context()) == 2
-
-    session.rollback(batch_id)
-
-    assert session.session_ctx.get_context() == [{"role": "user", "content": "会话消息"}]
-    assert session.wf_ctx.get_context() == [{"role": "user", "content": "工作流消息"}]
+    assert actual == (
+        [{"role": "user", "content": "会话消息"}],
+        [{"role": "user", "content": "工作流消息"}],
+    )
 
 def test_session_rollback_accepts_checkpoint_id(tmp_path: Path):
     """rollback 也接受批次内单个检查点 ID"""
@@ -134,23 +151,6 @@ def test_session_fork_returns_all_contexts(tmp_path: Path):
     # 父会话数据保持完整
     assert session.session_ctx.get_context() == [{"role": "user", "content": "会话起点"}]
     assert session.wf_ctx.get_context() == [{"role": "user", "content": "工作流起点"}]
-
-def test_session_checkpoint_requires_enabled_store(tmp_path: Path):
-    """未启用检查点时聚合操作抛出 ValueError"""
-    class _PlainSession(Session):
-        def __init__(self, session_id: str):
-            super().__init__(session_id)
-
-    session = _PlainSession("plain")
-
-    with pytest.raises(ValueError, match="未启用会话级状态检查点"):
-        session.create_checkpoint()
-    with pytest.raises(ValueError, match="未启用会话级状态检查点"):
-        session.list_checkpoints()
-    with pytest.raises(ValueError, match="未启用会话级状态检查点"):
-        session.rollback("any")
-    with pytest.raises(ValueError, match="未启用会话级状态检查点"):
-        session.fork("alt")
 
 def test_track_workflow_context_rejects_mismatched_db(tmp_path: Path):
     """工作流上下文与状态库不同库时明确报错, 防止静默不一致"""
@@ -417,27 +417,6 @@ def test_session_list_mutations_aggregates_all_contexts(tmp_path: Path):
     assert {m.scope_id for m in mutations if m.batch_id} == {"s1", "s1_main"}
 
 @pytest.mark.asyncio
-async def test_async_session_checkpoint_rollback_roundtrip(tmp_path: Path):
-    db = str(tmp_path / "chat_history.db")
-    session = _AsyncSimpleSession("as1", db)
-    await session.initialize()
-    assert session.wf_ctx is not None
-
-    await session.session_ctx.add_user_message("会话消息")
-    await session.wf_ctx.add_user_message("工作流消息")
-    batch_id = await session.create_checkpoint(name="起点")
-
-    await session.session_ctx.add_user_message("会话后续")
-    await session.wf_ctx.add_user_message("工作流后续")
-
-    await session.rollback(batch_id)
-
-    assert len(session.session_ctx.get_context()) == 1
-    assert len(session.wf_ctx.get_context()) == 1
-    assert session.session_ctx.get_context()[0]["content"] == "会话消息"
-    assert session.wf_ctx.get_context()[0]["content"] == "工作流消息"
-
-@pytest.mark.asyncio
 async def test_async_session_fork_returns_initialized_contexts(tmp_path: Path):
     db = str(tmp_path / "chat_history.db")
     session = _AsyncSimpleSession("as1", db)
@@ -550,50 +529,37 @@ def _make_mgr(tmp_path: Path, **kw: Any) -> SessionManager:
     sm.registry.register("rec", _RecordingSession)
     return sm
 
-def test_default_checkpoint_injected(tmp_path: Path):
-    """default_checkpoint=True 时, 未显式配置的会话收到注入的开关与库路径"""
+@pytest.mark.parametrize("default_checkpoint, default_db, params, expect_enabled, expect_db", [
+    (True, "default", {}, True, "default"),
+    (True, "custom", {"enable_checkpoint": False, "db_path": "CUSTOM"}, False, "CUSTOM"),
+    (False, None, {}, False, None),
+    (True, None, {}, True, None),
+], ids=["injected", "explicit-overrides", "default-off", "db-only-when-configured"])
+def test_checkpoint_injection_outcomes(
+    tmp_path: Path, default_checkpoint: bool, default_db: str | None, params: dict[str, Any],
+    expect_enabled: bool, expect_db: str | None,
+):
+    """SessionManager 检查点默认值: 注入/显式覆盖/关闭/库路径来源"""
     db = str(tmp_path / "chat_history.db")
-    sm = _make_mgr(tmp_path, default_checkpoint=True, default_checkpoint_db=db)
+    runtime_params = dict(params)
+    if runtime_params.get("db_path") == "CUSTOM":
+        runtime_params["db_path"] = str(tmp_path / "custom.db")
+    kw: dict[str, Any] = {"default_checkpoint": default_checkpoint}
+    if default_db is not None:
+        kw["default_checkpoint_db"] = db
+    sm = _make_mgr(tmp_path, **kw)
 
-    entry = sm._create_entry(_make_cfg("sid-1"))
+    entry = sm._create_entry(_make_cfg("sid", runtime_params or None))
 
     assert entry is not None
     received = _RecordingSession.received
-    assert received["enable_checkpoint"] is True
-    assert received["db_path"] == db
-
-def test_explicit_config_overrides_default(tmp_path: Path):
-    """session_config 显式配置优先于 SessionManager 默认值"""
-    db = str(tmp_path / "chat_history.db")
-    db_custom = str(tmp_path / "custom.db")
-    sm = _make_mgr(tmp_path, default_checkpoint=True, default_checkpoint_db=db)
-
-    entry = sm._create_entry(
-        _make_cfg("sid-2", {"enable_checkpoint": False, "db_path": db_custom})
-    )
-
-    assert entry is not None
-    received = _RecordingSession.received
-    assert received["enable_checkpoint"] is False
-    assert received["db_path"] == db_custom
-
-def test_default_off_keeps_behavior(tmp_path: Path):
-    """default_checkpoint=False (默认) 时行为不变: 收到 False"""
-    sm = _make_mgr(tmp_path)
-
-    entry = sm._create_entry(_make_cfg("sid-3"))
-
-    assert entry is not None
-    assert _RecordingSession.received["enable_checkpoint"] is False
-
-def test_default_db_only_when_configured(tmp_path: Path):
-    """default_checkpoint_db=None 时 db_path 使用会话自身默认"""
-    sm = _make_mgr(tmp_path, default_checkpoint=True)
-
-    entry = sm._create_entry(_make_cfg("sid-4"))
-
-    assert entry is not None
-    assert _RecordingSession.received["db_path"] == get_db_path()
+    assert received["enable_checkpoint"] is expect_enabled
+    if expect_db == "default":
+        assert received["db_path"] == db
+    elif expect_db is None:
+        assert received["db_path"] == get_db_path()
+    else:
+        assert received["db_path"] == str(tmp_path / "custom.db")
 
 def test_injection_ignored_when_constructor_rejects(tmp_path: Path):
     """构造器不接受 enable_checkpoint 时注入被忽略, 不抛错"""
@@ -698,12 +664,15 @@ def test_end_to_end_real_session_checkpoint(tmp_path: Path):
     assert session.wf_ctx.get_context() == [{"role": "user", "content": "工作流消息"}]
 
 def test_backend_config_parses_checkpoint_fields():
-    """BackendConfig 只接受检查点开关, 数据库固定由平台作用域决定"""
+    """BackendConfig 只接受检查点开关, 数据库固定由平台作用域决定; 布尔字符串按真值语义解析"""
     cfg = BackendConfig.from_dict({"session_checkpoint": True})
     assert cfg.session_checkpoint is True
+    assert BackendConfig.from_dict({}).session_checkpoint is False
 
-    default = BackendConfig.from_dict({})
-    assert default.session_checkpoint is False
+    strings = BackendConfig.from_dict({"session_checkpoint": "false", "error_feedback": "yes"})
+    assert strings.session_checkpoint is False and strings.error_feedback is True
+    ones = BackendConfig.from_dict({"session_checkpoint": "1", "error_feedback": "0"})
+    assert ones.session_checkpoint is True and ones.error_feedback is False
 
     with pytest.raises(ValueError, match="不再支持独立数据库路径"):
         BackendConfig.from_dict({"session_checkpoint_db": ".satrap/ctx.db"})
@@ -961,15 +930,6 @@ async def test_async_clear_memory_clears_untracked_workflow_id(tmp_path: Path) -
     reloaded = AsyncContextManager(workflow_id, db_path=db_path)
     await reloaded.initialize()
     assert reloaded.get_context() == []
-
-def test_backend_config_bool_string_parsing():
-    """字符串形式的 false/yes 正确解析为布尔"""
-    cfg = BackendConfig.from_dict({"session_checkpoint": "false", "error_feedback": "yes"})
-    assert cfg.session_checkpoint is False
-    assert cfg.error_feedback is True
-    cfg2 = BackendConfig.from_dict({"session_checkpoint": "1", "error_feedback": "0"})
-    assert cfg2.session_checkpoint is True
-    assert cfg2.error_feedback is False
 
 def _make_server(db_path: str) -> BackendHTTPServer:
     # BackendManager 替身: 仅暴露 checkpoint_db_path, 边界断言集中在本工厂

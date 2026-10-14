@@ -340,20 +340,33 @@ class TestMutationContext:
         assert row[1] == "用户手动保存"
 
 class TestContextManagerCheckpoint:
-    def test_checkpoint_rollback_roundtrip(self, tmp_path: Path):
-        """写消息 -> 检查点 -> 继续写 -> 回滚还原"""
-        ctx = ContextManager(
-            "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
-        )
-        ctx.add_user_message("你好")
-        ctx.add_bot_message("你好呀")
-        cp = ctx.create_checkpoint(name="起点")
-
-        ctx.add_user_message("第二句")
-        ctx.add_bot_message("第二句回复")
-        assert len(ctx.get_context()) == 4
-
-        ctx.rollback(cp.checkpoint_id)
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_checkpoint_rollback_roundtrip(self, tmp_path: Path, asynchronous: bool):
+        """写消息 -> 检查点 -> 继续写 -> 回滚还原 (同步/异步)"""
+        if asynchronous:
+            ctx = AsyncContextManager(
+                "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
+            )
+            await ctx.initialize()
+            await ctx.add_user_message("你好")
+            await ctx.add_bot_message("你好呀")
+            cp = await ctx.create_checkpoint(name="起点")
+            await ctx.add_user_message("第二句")
+            await ctx.add_bot_message("第二句回复")
+            assert len(ctx.get_context()) == 4
+            await ctx.rollback(cp.checkpoint_id)
+        else:
+            ctx = ContextManager(
+                "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
+            )
+            ctx.add_user_message("你好")
+            ctx.add_bot_message("你好呀")
+            cp = ctx.create_checkpoint(name="起点")
+            ctx.add_user_message("第二句")
+            ctx.add_bot_message("第二句回复")
+            assert len(ctx.get_context()) == 4
+            ctx.rollback(cp.checkpoint_id)
 
         assert len(ctx.get_context()) == 2
         assert ctx.get_context()[0]["content"] == "你好"
@@ -400,26 +413,6 @@ class TestContextManagerCheckpoint:
             ctx.fork("bad_end")
 
 class TestAsyncContextManagerCheckpoint:
-    async def test_checkpoint_rollback_roundtrip(self, tmp_path: Path):
-        """异步版: 写消息 -> 检查点 -> 继续写 -> 回滚还原"""
-        ctx = AsyncContextManager(
-            "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
-        )
-        await ctx.initialize()
-        await ctx.add_user_message("你好")
-        await ctx.add_bot_message("你好呀")
-        cp = await ctx.create_checkpoint(name="起点")
-
-        await ctx.add_user_message("第二句")
-        await ctx.add_bot_message("第二句回复")
-        assert len(ctx.get_context()) == 4
-
-        await ctx.rollback(cp.checkpoint_id)
-
-        assert len(ctx.get_context()) == 2
-        assert ctx.get_context()[0]["content"] == "你好"
-        assert ctx.get_context()[1]["content"] == "你好呀"
-
     async def test_fork_returns_initialized_context(self, tmp_path: Path):
         """异步版: fork 返回已初始化新分支, 父对话保持完整"""
         ctx = AsyncContextManager(

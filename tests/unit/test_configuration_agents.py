@@ -98,13 +98,15 @@ def test_edictum_cold_config_rejects_unknown_type_and_fields(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="未知 Edictum 配置字段"):
         service.create({"name": "bad", "edictum_type": "missing", "mystery": 1})
 
-def test_constructed_readers_share_normalization_but_not_mutable_data(tmp_path, monkeypatch):
-    registry = create_default_edictum_type_registry()
+def test_normalization_is_read_only_and_copies_are_independent(tmp_path, monkeypatch):
+    """旧格式读取只归一化内存: 每快照一次不回写; 读者与冷注册均返回独立副本"""
     path = tmp_path / 'edictum.json'
-    writer = EdictumConfigManager(registry, path)
-    writer.create('agent', {'edictum_type': 'async_simple', 'params': {}})
-    calls = []
+    original = json.dumps({' agent ': {'edictum_type': 'async_simple', 'params': {}}})
+    path.write_text(original, encoding='utf-8')
+    fingerprint = path.stat()
+    registry = create_default_edictum_type_registry()
     normalize = EdictumConfigManager._normalize_entry
+    calls = []
 
     def counted(self, entry, catalog=None):
         calls.append(1)
@@ -117,12 +119,33 @@ def test_constructed_readers_share_normalization_but_not_mutable_data(tmp_path, 
     second_config = second.get_config('agent')
     assert second_config is not None and second_config['description'] == ''
     assert calls == [1]
+    # 读取不改动来源: 内容与指纹保持
+    assert path.read_text(encoding='utf-8') == original
+    current = path.stat()
+    assert (current.st_mtime_ns, current.st_ctime_ns, current.st_size, current.st_ino) == (
+        fingerprint.st_mtime_ns, fingerprint.st_ctime_ns, fingerprint.st_size, fingerprint.st_ino)
     second.reload()
     assert calls == [1, 1]
     second.update('agent', {'description': 'saved'})
     assert len(calls) == 4
-    saved = EdictumConfigManager(registry, path).get_config('agent')
-    assert saved is not None and saved['description'] == 'saved'
+    persisted = json.loads(path.read_text(encoding='utf-8'))
+    assert list(persisted) == ['agent']
+    assert persisted['agent']['description'] == 'saved'
+
+    # 冷注册返回独立副本: 入参与返回值的后续修改均不影响存储
+    scan_path = tmp_path / "trusted_sessions"
+    scan_path.mkdir()
+    (scan_path / "future.py").write_text("raise RuntimeError('不应在冷配置阶段导入')\n", encoding="utf-8")
+    manager = SessionClassConfigManager(storage_path=tmp_path / "session-classes.json", session_scan_paths=[str(scan_path)])
+    source_params = {"model_name": "default"}
+    created = manager.register_config_entry("copy-check", "trusted_sessions.future.FutureSession", params=source_params)
+    source_params["model_name"] = "mutated"
+    created["params"]["model_name"] = "mutated"
+    stored = manager.get_config("copy-check")
+    assert stored is not None and stored["params"] == {"model_name": "default"}
+    stored["params"]["model_name"] = "mutated"
+    reloaded = manager.get_config("copy-check")
+    assert reloaded is not None and reloaded["params"] == {"model_name": "default"}
 
 def test_external_edit_damage_recovery_and_type_revocation(tmp_path):
     registry = create_default_edictum_type_registry()
@@ -164,34 +187,6 @@ def test_metadata_change_invalidates_normalized_config(tmp_path):
     after = EdictumConfigManager(registry, path, plugin_catalog=catalog)
     after_config = after.get_config('agent')
     assert after_config is not None and after_config['plugins'][0]['capabilities']['tools'] == {'first': True, 'second': True}
-
-def test_legacy_normalization_is_read_only_and_runs_once_per_snapshot(tmp_path, monkeypatch):
-    """旧格式读取只归一化内存, 不改变来源指纹或触发快照重试"""
-    path = tmp_path / 'edictum.json'
-    original = json.dumps({' agent ': {'edictum_type': 'async_simple', 'params': {}}})
-    path.write_text(original, encoding='utf-8')
-    fingerprint = path.stat()
-    registry = create_default_edictum_type_registry()
-    normalize = EdictumConfigManager._normalize_entry
-    calls = []
-
-    def counted(self, entry, catalog=None):
-        calls.append(1)
-        return normalize(self, entry, catalog)
-
-    monkeypatch.setattr(EdictumConfigManager, '_normalize_entry', counted)
-    first = EdictumConfigManager(registry, path)
-    second = EdictumConfigManager(registry, path)
-    assert first.get_config('agent') == second.get_config('agent')
-    assert calls == [1]
-    assert path.read_text(encoding='utf-8') == original
-    current = path.stat()
-    assert (current.st_mtime_ns, current.st_ctime_ns, current.st_size, current.st_ino) == (
-        fingerprint.st_mtime_ns, fingerprint.st_ctime_ns, fingerprint.st_size, fingerprint.st_ino)
-    second.update('agent', {'description': 'saved'})
-    persisted = json.loads(path.read_text(encoding='utf-8'))
-    assert list(persisted) == ['agent']
-    assert persisted['agent']['description'] == 'saved'
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -385,33 +380,3 @@ def test_session_class_config_rejects_untrusted_module_without_import(tmp_path: 
         service.create({"name": "evil", "class_path": "evil_session.EvilSession"})
 
     assert not marker.exists()
-
-def test_register_config_entry_returns_independent_params_copy(tmp_path: Path):
-    """冷注册应返回独立副本, 入参与返回值的后续修改均不影响存储"""
-    storage_path = tmp_path / "session-classes.json"
-    scan_path = tmp_path / "trusted_sessions"
-    scan_path.mkdir()
-    (scan_path / "future.py").write_text("raise RuntimeError('不应在冷配置阶段导入')\n", encoding="utf-8")
-    manager = SessionClassConfigManager(
-        storage_path=storage_path,
-        session_scan_paths=[str(scan_path)],
-    )
-
-    source_params = {"model_name": "default"}
-    created = manager.register_config_entry(
-        "copy-check",
-        "trusted_sessions.future.FutureSession",
-        params=source_params,
-    )
-
-    source_params["model_name"] = "mutated"
-    created["params"]["model_name"] = "mutated"
-
-    stored = manager.get_config("copy-check")
-    assert stored is not None
-    assert stored["params"] == {"model_name": "default"}
-
-    stored["params"]["model_name"] = "mutated"
-    reloaded = manager.get_config("copy-check")
-    assert reloaded is not None
-    assert reloaded["params"] == {"model_name": "default"}
