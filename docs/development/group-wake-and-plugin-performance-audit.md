@@ -48,7 +48,7 @@
 - 使用 `LOG_STREAM_PRODUCTION=1` 单独验证生产日志: 本轮突发到末条约 716.2 ms, 筛选约 14.6 ms, 没有观测到长任务; 单轮固定夹具不是持续负载 P95, 不换算速度倍率
 - 最新串行生产 Chat 夹具: 100/500/1000 消息首开约 497/517/839 ms, 阅读锚点偏移 -0.203/-0.203/-0.25 px, 底部间隙均为 0; 采样环境不同, 不以与旧记录的差值宣称优化倍率
 - 跨进程验证运行命令为 `python -m pytest tests/integration/test_plugin_application_processes.py --run-integration`; 不加开关会跳过, 跳过不计作通过
-- 原用户配置规模的最终只读复测通过: `python tests/fixtures/plugin_read_scale_probe.py --report docs/development/group-wake-and-plugin-read-measurement.json`; 当前配置副本为 9 插件, 3 命名配置, 11 处引用, 与第 2 节初始规模相同, 元数据各解析一次共 9 次, 命名归一化共 3 次, 并发阶段均新增 0 次
+- 原用户配置规模的最终只读复测通过: `python tests/manual/plugin_read_scale_probe.py --report docs/development/group-wake-and-plugin-read-measurement.json`; 当前配置副本为 9 插件, 3 命名配置, 11 处引用, 与第 2 节初始规模相同, 元数据各解析一次共 9 次, 命名归一化共 3 次, 并发阶段均新增 0 次
 - 最终实际 HTTP 首读/暖读中位数: 插件总览 201.910/15.605 ms, 好友参数 5.479/5.888 ms, 命名配置 19.234/7.176 ms, 原管理员接口 47.387/46.683 ms, 独立配置快照 29.659/18.635 ms; 每接口 1 次首读和 5 次暖读, 不把单项首读称为独立进程冷启动
 - 6 个原参数读取各增加 200 ms 慢存储时, 30 次状态查询 P95 33.084 ms/最大 33.765 ms; 源配置内容摘要与修改时间逐一核验不变, 保存入口另加拒绝守卫; 只保留统计的 JSON 报告已入库
 - 该同规模复测执行当前原 HTTP 和领域读取实现, 将原配置路径映射到临时副本, 健康/管理员状态由隔离后端返回, 没有适配器或模型连接; 数据可与初始规模定位结果对应, 不把连接环境差异换算为速度倍率
