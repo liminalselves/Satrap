@@ -2708,7 +2708,7 @@ class ChatService:
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
         store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-        record = store.execute("add", title=title, content=content, tags=tag_list, importance=importance)
+        record = cast(dict[str, Any], store.execute("add", title=title, content=content, tags=tag_list, importance=importance))
         if not record.get("ok"):
             return {"ok": False, "error": record.get("error", "添加失败")}
         return {"ok": True, "memory": record}
@@ -2728,7 +2728,7 @@ class ChatService:
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
         store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
-        record = store.execute("update", memory_id, **fields)
+        record = cast(dict[str, Any], store.execute("update", memory_id, **fields))
         if not record.get("ok"):
             return {"ok": False, "error": record.get("error", "更新失败")}
         return {"ok": True, "memory": record}
@@ -2747,7 +2747,7 @@ class ChatService:
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
         store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
-        result = store.execute("delete", memory_id)
+        result = cast(dict[str, Any], store.execute("delete", memory_id))
         if not result.get("ok"):
             return {"ok": False, "error": result.get("error", "删除失败")}
         return {"ok": True}

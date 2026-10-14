@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import asyncio
 import secrets
 import time
@@ -15,8 +15,11 @@ from satrap.core.friends.store import FriendStore
 from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_group_action_preflight
 from satrap.core.log import logger
 
+if TYPE_CHECKING:
+    from satrap.core.platform import PlatformAdapter
 
-def text_id(value: Any, label: str = "ID") -> str:
+
+def text_id(value: object, label: str = "ID") -> str:
     """
     校验通用平台 ID, 不假设平台使用数字
 
@@ -32,7 +35,7 @@ def text_id(value: Any, label: str = "ID") -> str:
     return value
 
 
-def page_limit(value: Any) -> int:
+def page_limit(value: object) -> int:
     """
     校验分页上限
 
@@ -42,7 +45,7 @@ def page_limit(value: Any) -> int:
     返回:
     - 1 到 100 的整数
     """
-    if type(value) is not int or not 1 <= value <= 100:
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 100:
         raise FriendError("invalid_parameters", "limit 必须为 1 到 100 的整数")
     return value
 
@@ -50,7 +53,7 @@ def page_limit(value: Any) -> int:
 class FriendService:
     """按平台实例隔离的查询快照, 账号保护与写动作协调器"""
 
-    def __init__(self, adapter_id: str, path: Path, adapter: Callable[[], Any],
+    def __init__(self, adapter_id: str, path: Path, adapter: Callable[[], PlatformAdapter | None],
                  source_check: Callable[[ModelActionAuthorization, str], str], protected: Callable[[], list[str]]) -> None:
         """
         注入宿主平台与当前授权复核
@@ -69,7 +72,7 @@ class FriendService:
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._cursors: dict[str, tuple[str, int]] = {}
         self._request_cursors: dict[str, tuple[tuple[object, ...], str, float, dict[str, Any] | None]] = {}
-        self._sources: dict[tuple[str, str], tuple[ModelActionAuthorization, str, Any, object, float]] = {}
+        self._sources: dict[tuple[str, str], tuple[ModelActionAuthorization, str, PlatformAdapter, object, float]] = {}
 
     async def store(self) -> FriendStore:
         """
@@ -84,7 +87,7 @@ class FriendService:
                 self._store = await asyncio.to_thread(FriendStore, self.path)
             return self._store
 
-    def context(self, account: str, capability: str | None = None) -> Any:
+    def context(self, account: str, capability: str | None = None) -> PlatformAdapter:
         """
         校验当前账号和能力
 
@@ -110,7 +113,7 @@ class FriendService:
                                   cap.get("reason") or "当前平台不支持此操作")
         return adapter
 
-    def check_connection(self, account: str, adapter: Any, generation: object) -> None:
+    def check_connection(self, account: str, adapter: PlatformAdapter, generation: object) -> None:
         """
         等待后拒绝旧适配器和旧连接
 
@@ -482,7 +485,7 @@ class FriendService:
         source, fingerprint, adapter, generation, _ = origin
         return await self.execute(account, action_id, "pending", adapter, generation, source, fingerprint)
 
-    async def execute(self, account: str, action_id: str, expected: str, adapter: Any, generation: object,
+    async def execute(self, account: str, action_id: str, expected: str, adapter: PlatformAdapter, generation: object,
                       source: ModelActionAuthorization | None, fingerprint: str) -> dict[str, Any]:
         """
         原子占用后执行一次, 超时和取消保守结算为未知

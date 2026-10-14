@@ -24,6 +24,8 @@ from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.platform.event import MessageEvent
+    from satrap.core.utils.TCBuilder.async_manager import AsyncToolsManager
+    from satrap.core.utils.TCBuilder.manager import ToolsManager
 
 from satrap.core.platform.event import MessageChain
 from satrap.core.framework.Base import AsyncSession
@@ -47,7 +49,7 @@ class ReplyTurn:
         self.failed = False
         self.submitted = False
         self.workflow: object | None = None
-        self.workflow_manager: Any = None
+        self.workflow_manager: AsyncToolsManager | ToolsManager | None = None
         self.operation_owner = self.origin.request_id + ":" + uuid.uuid4().hex
         self.draft: MessageChain | None = None
         self._verify: Callable[[], Awaitable[MessageChain]] | None = None
@@ -263,8 +265,8 @@ def buffer_session_reply(session: object) -> Iterator[None]:
     - 会话执行上下文, 完成后恢复原回调
     """
     turn = current_reply_turn()
-    workflow: Any = getattr(session, "_wf", None)
-    manager: Any = getattr(workflow, "tools_manager", None)
+    workflow: object | None = getattr(session, "_wf", None)
+    manager: AsyncToolsManager | ToolsManager | None = getattr(workflow, "tools_manager", None)
     tools: Mapping[str, Any] = getattr(manager, "tools", {})
     if turn is not None and not turn.event.is_private_chat():
         turn.workflow, turn.workflow_manager = workflow, manager
@@ -273,7 +275,7 @@ def buffer_session_reply(session: object) -> Iterator[None]:
     if (turn is None or turn.origin.conversation_kind not in {"", "group"}
             or turn.event.is_private_chat() or reply is None
             or not getattr(reply, "deferred_platform_reply", False)
-            or not manager.is_tool_enabled("group_chat_reply")):
+            or manager is None or not manager.is_tool_enabled("group_chat_reply")):
         yield
         return
     turn.enabled, turn.workflow = True, workflow

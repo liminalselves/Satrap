@@ -3,7 +3,7 @@ from __future__ import annotations
 import traceback
 import sqlite3
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 import asyncio
 import json
@@ -15,11 +15,16 @@ from satrap.core.memory.scoped import MemoryError, ScopedMemories
 from satrap.core.platform import current_adapter_manager
 from satrap.core.config.platform_messages import MessageScope
 
+if TYPE_CHECKING:
+    from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+    SessionType = SimpleSession | AsyncSimpleSession
+
 
 class MemoryService:
     """管理绑定范围的记忆操作, 在入口统一处理权限与存储失败"""
 
-    def __init__(self, store: MemoryStore, *, session: object | None = None, budget: int = 6000) -> None:
+    def __init__(self, store: MemoryStore, *, session: SessionType | None = None, budget: int = 6000) -> None:
         """
         绑定存储与可选的主会话
 
@@ -32,7 +37,7 @@ class MemoryService:
         self.session = session
         self.budget = max(1000, min(20000, budget))
 
-    def execute(self, operation: str, *args: Any, **kwargs: Any) -> Any:
+    def execute(self, operation: str, *args: object, **kwargs: object) -> object:
         """
         执行记忆操作并将失败转换为明确结果
 
@@ -42,7 +47,7 @@ class MemoryService:
         - kwargs: 操作的命名参数
 
         返回:
-        - 存储返回值, 拒绝或异常时返回 ok=false 的错误结果
+        - 存储返回值, 拒绝或异常时返回 ok=false 的错误结果; 使用前必须自行收窄
         """
         try:
             if operation not in {"add", "update", "delete", "get", "list_all", "clear", "set_mode", "to_context_block"}:

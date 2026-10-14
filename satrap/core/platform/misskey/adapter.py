@@ -583,7 +583,7 @@ class MisskeyAdapter(PlatformAdapter):
     async def send_message(
         self, session_id: str, message: MessageChain, *, request_id: str = "",
         purpose: str = "business", require_tracking: bool = False,
-    ) -> Any:
+    ) -> SendReceipt | dict[str, Any] | None:
         """
         持有受控图片至发送任务实际结束, 调用方取消不会提前释放文件
 
@@ -654,7 +654,7 @@ class MisskeyAdapter(PlatformAdapter):
     async def _send_message(
         self, session_id: str, message: MessageChain, *, request_id: str = "",
         purpose: str = "business", require_tracking: bool = False,
-    ) -> Any:
+    ) -> dict[str, Any] | None:
         """
         按 session_id 发送完整消息链
 
@@ -736,7 +736,7 @@ class MisskeyAdapter(PlatformAdapter):
                                    reply_id=fields.get("reply_id"), renote_id=fields.get("renote_id"))
         return result
 
-    def _archive_sent_message(self, session_id: str, self_id: str, result: Any, text: str,
+    def _archive_sent_message(self, session_id: str, self_id: str, result: dict[str, Any] | None, text: str,
                               file_ids: list[str], *, reply_id: str | None = None,
                               renote_id: str | None = None) -> None:
         """

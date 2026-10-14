@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import asyncio
 import hashlib
 import json
@@ -17,6 +17,11 @@ from satrap.core.group_chat.reminder_management import annotate_reminder_sources
 from satrap.core.platform import current_adapter_manager
 from satrap.core.log import logger
 
+if TYPE_CHECKING:
+    from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+    SessionType = SimpleSession | AsyncSimpleSession
+
 
 REMINDER_ARGUMENTS = {
     "group_chat_create_reminder": {"text", "due_at", "after_seconds", "mention_user_ids"},
@@ -27,7 +32,7 @@ REMINDER_ARGUMENTS = {
 
 
 async def execute_reminder_tool(
-    operation: str, arguments: Mapping[str, object], *, session: Any,
+    operation: str, arguments: Mapping[str, object], *, session: SessionType,
     config: Mapping[str, object], authorize: Callable[[str], None],
 ) -> dict[str, Any]:
     """
@@ -124,9 +129,9 @@ async def execute_reminder_tool(
             origin = context.origin
             runtime = host.backend.get_platform_runtime(context.scope.adapter_id)
             source_cfg = runtime[0].store.get(session.session_id) if runtime else None
-            source = {"session_id": session.session_id, "config_name": (source_cfg.session_type_name or "") if source_cfg else "",
+            source: dict[str, Any] = {"session_id": session.session_id, "config_name": (source_cfg.session_type_name or "") if source_cfg else "",
                       "route_generation": origin.agent_route_generation, "instance_id": context.adapter.config.instance_id}
-            metadata = {"scope": {"adapter_id": context.scope.adapter_id, "self_id": context.scope.self_id,
+            metadata: dict[str, Any] = {"scope": {"adapter_id": context.scope.adapter_id, "self_id": context.scope.self_id,
                                   "conversation_kind": "group", "chat_id": context.scope.chat_id}, "source_agent": source,
                         "creator_kind": "model", "creator_user_id": actor, "mention_user_ids": mentions}
             policy = await asyncio.to_thread(host.policy, metadata)

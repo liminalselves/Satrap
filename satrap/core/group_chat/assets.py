@@ -25,6 +25,7 @@ from PIL import Image as PillowImage
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.group_chat.summaries import _digest
 from satrap.core.group_chat.types import GroupChatError
+from satrap.core.platform.event import MessageChain
 
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -239,7 +240,7 @@ def lease_file(path: Path) -> AssetLease:
         return AssetLease(path)
 
 
-def fork_message_leases(message: Any) -> list[AssetLease]:
+def fork_message_leases(message: MessageChain) -> list[AssetLease]:
     """
     在进入发送队列之前冻结全部媒体文件的持有权
 

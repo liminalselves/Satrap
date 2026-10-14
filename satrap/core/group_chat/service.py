@@ -10,7 +10,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, TypeVar
+from typing import Any, ParamSpec, TypeVar, cast
 import asyncio
 import base64
 import hashlib
@@ -37,6 +37,7 @@ from satrap.core.log import logger
 
 
 T = TypeVar("T")
+P = ParamSpec("P")
 _ARGUMENTS = {
     "group_chat_list_groups": frozenset(),
     "group_chat_get_group_info": frozenset(),
@@ -226,8 +227,16 @@ class GroupChatService:
                                  "当前平台不支持该能力" if state == "unsupported" else "当前平台能力暂不可用",
                                  retryable=state == "unavailable")
 
-    async def _archive(self, context: _ReadContext, callback: Callable[..., T], *args: Any,
-                       argument_errors: bool = False, **kwargs: Any) -> T:
+    async def _archive(self, context: _ReadContext, callback: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        """在工作线程读取平台档案, 将存储失败与无匹配结果区分"""
+        return await self._archive_run(context, callback, *args, **kwargs)
+
+    async def _archive_errors(self, context: _ReadContext, callback: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        """与 _archive 相同, 但查询筛选校验失败返回 invalid_argument"""
+        return await self._archive_run(context, callback, *args, argument_errors=True, **kwargs)
+
+    async def _archive_run(self, context: _ReadContext, callback: Callable[..., T], *args: Any,
+                           argument_errors: bool = False, **kwargs: Any) -> T:
         """
         在工作线程读取平台档案, 将存储失败与无匹配结果区分
 
@@ -329,9 +338,9 @@ class GroupChatService:
                 native = capabilities.get("sticker", {}).get("state") == "supported"
                 if not native:
                     self._capability(context, "image")
-                return await self._archive(context, library_for(self._store(context)).list, scope=context.scope,
+                return await self._archive_errors(context, library_for(self._store(context)).list, scope=context.scope,
                                            adapter_type=context.adapter.config.type, formats=context.adapter.group_chat_media_formats(), native=native,
-                                           **dict(arguments), argument_errors=True)
+                                           **cast(dict[str, Any], dict(arguments)))
             if operation in {"group_chat_prepare_summary", "group_chat_read_summary_sources", "group_chat_save_summary",
                              "group_chat_get_summary", "group_chat_list_summaries"}:
                 return await self._summary(context, operation, arguments, bounds)
@@ -372,7 +381,7 @@ class GroupChatService:
                 for key in ("start_time", "end_time"):
                     if key in params:
                         params[key] = _query_time(params[key])
-            return await self._archive(context, store.query, context.scope, argument_errors=True, **params)
+            return await self._archive_errors(context, store.query, context.scope, **cast(dict[str, Any], params))
         except GroupChatError as exc:
             code, message, retryable = exc.code, str(exc), exc.retryable
         except ValueError as exc:
@@ -555,9 +564,9 @@ class GroupChatService:
             raise GroupChatError("unsupported", "当前 Agent 未启用群摘要")
         store = SummaryStore(self._store(context))
         if operation == "group_chat_get_summary":
-            return await self._archive(context, store.get, context.scope, _id(arguments.get("summary_id")), argument_errors=True)
+            return await self._archive_errors(context, store.get, context.scope, _id(arguments.get("summary_id")))
         if operation == "group_chat_list_summaries":
-            return await self._archive(context, store.list, context.scope, **dict(arguments), argument_errors=True)
+            return await self._archive_errors(context, store.list, context.scope, **cast(dict[str, Any], dict(arguments)))
 
         turn = current_reply_turn()
         if turn is None or turn.origin is not context.origin:
@@ -580,17 +589,17 @@ class GroupChatService:
                         active += await asyncio.to_thread(SummaryStore(adapter.message_archive).active_count)
                 await self._revalidate(context)
                 turn.require_main_tool(operation)
-                return await self._archive(context, store.prepare, context.scope, turn.operation_owner, start_time=start,
-                                           end_time=end, keyword=arguments.get("keyword"),
-                                           include_bot=arguments.get("include_bot", False), limits=limits, allow_new=active < 20, argument_errors=True)
+                return await self._archive_errors(context, store.prepare, context.scope, turn.operation_owner, start_time=start,
+                                           end_time=end, keyword=cast("str | None", arguments.get("keyword")),
+                                           include_bot=cast(bool, arguments.get("include_bot", False)), limits=limits, allow_new=active < 20)
         if operation == "group_chat_read_summary_sources":
-            return await self._archive(context, store.read_sources, context.scope, turn.operation_owner,
-                                       _id(arguments.get("snapshot_id")), arguments.get("cursor"), limits=limits, argument_errors=True)
+            return await self._archive_errors(context, store.read_sources, context.scope, turn.operation_owner,
+                                       _id(arguments.get("snapshot_id")), cast(str, arguments.get("cursor")), limits=limits)
         await self._revalidate(context)
         turn.require_main_tool(operation)
-        result = await self._archive(context, store.save, context.scope, turn.operation_owner,
-                                     _id(arguments.get("snapshot_id")), arguments.get("title"), arguments.get("points"),
-                                     limits=limits, argument_errors=True)
+        result = await self._archive_errors(context, store.save, context.scope, turn.operation_owner,
+                                     _id(arguments.get("snapshot_id")), cast(str, arguments.get("title")), arguments.get("points"),
+                                     limits=limits)
         logger.info(f"[群摘要] 保存完成, 平台={context.scope.adapter_id}, 摘要={result['summary']['summary_id']}, 轮次={context.origin.request_id}")
         return result
 

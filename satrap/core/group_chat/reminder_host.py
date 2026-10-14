@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 import hashlib
 import json
 import asyncio
@@ -31,6 +31,10 @@ from satrap.edictum.plugin_config import PluginConfigManager, validate_config_va
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.edictum.plugin_spec import parse_plugin_specs
 
+if TYPE_CHECKING:
+    from satrap.core.backend.BackendManager import BackendManager
+    from satrap.core.framework.providers.edictum import EdictumProvider
+
 
 @dataclass(frozen=True)
 class ReminderPolicy:
@@ -45,7 +49,7 @@ class ReminderPolicy:
 class ReminderHost:
     """公共提醒宿主, 调度器和后续工具/管理入口共用当前权限解析"""
 
-    def __init__(self, backend: Any) -> None:
+    def __init__(self, backend: BackendManager) -> None:
         """
         绑定当前后端生命周期
 
@@ -140,7 +144,8 @@ class ReminderHost:
         provider = manager.provider_registry.get("edictum")
         if provider is None:
             return ReminderPolicy("paused", "agent_unavailable")
-        provider.config_manager.reload()
+        edictum = cast("EdictumProvider", provider)
+        edictum.config_manager.reload()
         resolved = manager.provider_registry.resolve_definition(str(binding.get("config_name", "")), "edictum")
         if resolved is None or not resolved[1].enabled:
             return ReminderPolicy("paused", "agent_disabled")
@@ -158,12 +163,12 @@ class ReminderHost:
             plugins = session_cfg.session_config["plugins"]
         if not isinstance(plugins, list):
             raise ValueError("当前 Agent 的插件配置不是列表")
-        spec = next((item for item in parse_plugin_specs(plugins, provider.plugin_catalog) if item.name == "group_chat"), None)
+        spec = next((item for item in parse_plugin_specs(plugins, edictum.plugin_catalog) if item.name == "group_chat"), None)
         if spec is None or not spec.enabled:
             return ReminderPolicy("paused", "group_chat_disabled")
         if not spec.capabilities.get("tools", {}).get("group_chat_create_reminder", False):
             return ReminderPolicy("paused", "reminder_capability_disabled")
-        entry = provider.plugin_catalog.get("group_chat")
+        entry = edictum.plugin_catalog.get("group_chat")
         if entry is None or not entry.check_environment(PluginEnvironment("platform", adapter.config.type)).allowed:
             return ReminderPolicy("paused", "group_chat_unavailable")
         config = PluginConfigManager().resolve("group_chat", entry.config_schema, spec.config)

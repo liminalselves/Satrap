@@ -30,6 +30,9 @@ if TYPE_CHECKING:
     )
     from satrap.core.pipeline.scheduler import PipelineScheduler
     from satrap.core.call_context import CallOrigin
+    from satrap.core.friends.service import FriendService
+    from satrap.core.config.administrator_groups import AdministratorService
+    from satrap.core.group_chat.reminder_host import ReminderHost
     from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
     from satrap.core.platform.scheduled import ScheduledTarget, ScheduledRecorder
     from satrap.core.platform.receipt import SendReceipt
@@ -151,7 +154,7 @@ class PlatformAdapter(ABC):
         self._agent_route_memory: dict[tuple[str, str, str], tuple[tuple[object, ...], int]] = {}
         self.event_handler = event_handler
         self.started = False
-        self.friend_host: Any = None
+        self.friend_host: FriendService | None = None
 
         self.client_self_id = uuid.uuid4().hex
         validate_event_limits(config.settings)
@@ -1091,7 +1094,7 @@ class PlatformAdapter(ABC):
     async def send_message(
         self, session_id: str, message: MessageChain, *, request_id: str = "",
         purpose: str = "business", require_tracking: bool = False,
-    ) -> Any:
+    ) -> SendReceipt:
         """
         发送完整的消息链, 默认实现: 提取 Plain 组件拼接文本后调用 send_text
 
@@ -1306,8 +1309,8 @@ class PlatformAdapterManager:
         """
         self.registry = registry or PlatformAdapterRegistry()
         self._adapters: Dict[str, PlatformAdapter] = {}
-        self.reminder_host: Any = None
-        self.administrator_service: Any = None
+        self.reminder_host: ReminderHost | None = None
+        self.administrator_service: AdministratorService | None = None
 
     def add_adapter(self, config: PlatformConfig, event_handler: EventHandler | None = None) -> Optional[PlatformAdapter]:
         """
