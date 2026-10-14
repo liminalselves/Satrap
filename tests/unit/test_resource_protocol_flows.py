@@ -81,24 +81,26 @@ def test_prepare_audio_input_rejects_bad_inputs(tmp_path: Path):
         prepare_audio_input(big)
     assert ".silk" not in ALLOWED_AUDIO_SUFFIXES and ".mp3" in ALLOWED_AUDIO_SUFFIXES
 
-def test_sync_transcribe_builds_openai_request(monkeypatch: pytest.MonkeyPatch):
-    asr, _, calls = _pair(monkeypatch, language="zh", prompt="提示")
-    result = asr.transcribe(b"audio-bytes", filename="voice.ogg")
-    assert isinstance(result, ASRResponse)
-    assert (result.text, result.model, result.language, result.duration) == ("你好", "whisper-1", "zh", 1.5)
-    request = calls[0][0]
-    assert request["file"][0] == "voice.ogg" and request["file"][2] == "audio/ogg"
-    assert request["model"] == "whisper-1" and request["response_format"] == "json"
-    assert request["language"] == "zh" and request["prompt"] == "提示"
-
 @pytest.mark.asyncio
-async def test_async_transcribe_parity_with_sync(monkeypatch: pytest.MonkeyPatch):
-    _, async_asr, calls = _pair(monkeypatch, language="zh")
-    result = await async_asr.transcribe(b"audio-bytes", filename="voice.ogg", model="other-model")
-    assert result is not None and result.text == "你好" and result.model == "other-model"
-    request = calls[1][0]
-    assert request["model"] == "other-model" and request["language"] == "zh"
-    assert "prompt" not in request
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_transcribe_builds_request_and_parity(monkeypatch: pytest.MonkeyPatch, asynchronous: bool):
+    """同步转录取全字段构造请求; 异步版与同步语义一致且可覆盖模型"""
+    if asynchronous:
+        _, async_asr, calls = _pair(monkeypatch, language="zh")
+        result = await async_asr.transcribe(b"audio-bytes", filename="voice.ogg", model="other-model")
+        assert result is not None and result.text == "你好" and result.model == "other-model"
+        request = calls[1][0]
+        assert request["model"] == "other-model" and request["language"] == "zh"
+        assert "prompt" not in request
+    else:
+        asr, _, calls = _pair(monkeypatch, language="zh", prompt="提示")
+        result = asr.transcribe(b"audio-bytes", filename="voice.ogg")
+        assert isinstance(result, ASRResponse)
+        assert (result.text, result.model, result.language, result.duration) == ("你好", "whisper-1", "zh", 1.5)
+        request = calls[0][0]
+        assert request["file"][0] == "voice.ogg" and request["file"][2] == "audio/ogg"
+        assert request["model"] == "whisper-1" and request["response_format"] == "json"
+        assert request["language"] == "zh" and request["prompt"] == "提示"
 
 def test_optional_parameters_omitted_when_empty(monkeypatch: pytest.MonkeyPatch):
     asr, _, calls = _pair(monkeypatch)
@@ -111,24 +113,21 @@ def test_dict_response_shape_and_empty_text_kept(monkeypatch: pytest.MonkeyPatch
     result = asr.transcribe(b"audio-bytes", filename="voice.mp3")
     assert result is not None and result.text == "" and result.language == "en" and result.duration == 0.0
 
-def test_api_error_suppressed_or_raised(monkeypatch: pytest.MonkeyPatch):
-    import httpx
-    error = APIError("boom", request=httpx.Request("POST", "http://x"), body=None)
-    asr, _, _ = _pair(monkeypatch, error=error)
-    assert asr.transcribe(b"audio-bytes", filename="voice.mp3") is None
-    strict, _, _ = _pair(monkeypatch, error=error, suppress_error=False)
-    with pytest.raises(APIError):
-        strict.transcribe(b"audio-bytes", filename="voice.mp3")
-
 @pytest.mark.asyncio
-async def test_async_api_error_suppressed_or_raised(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_api_error_suppressed_or_raised(monkeypatch: pytest.MonkeyPatch, asynchronous: bool):
     import httpx
     error = APIError("boom", request=httpx.Request("POST", "http://x"), body=None)
-    _, async_asr, _ = _pair(monkeypatch, error=error)
-    assert await async_asr.transcribe(b"audio-bytes", filename="voice.mp3") is None
-    _, strict, _ = _pair(monkeypatch, error=error, suppress_error=False)
-    with pytest.raises(APIError):
-        await strict.transcribe(b"audio-bytes", filename="voice.mp3")
+    client, async_client, _ = _pair(monkeypatch, error=error)
+    strict, async_strict, _ = _pair(monkeypatch, error=error, suppress_error=False)
+    if asynchronous:
+        assert await async_client.transcribe(b"audio-bytes", filename="voice.mp3") is None
+        with pytest.raises(APIError):
+            await async_strict.transcribe(b"audio-bytes", filename="voice.mp3")
+    else:
+        assert client.transcribe(b"audio-bytes", filename="voice.mp3") is None
+        with pytest.raises(APIError):
+            strict.transcribe(b"audio-bytes", filename="voice.mp3")
 
 def test_invalid_input_suppressed_or_raised(monkeypatch: pytest.MonkeyPatch):
     asr, _, calls = _pair(monkeypatch)
@@ -245,90 +244,40 @@ def _async_embedding(
     cast(Any, embedding).client = SimpleNamespace(embeddings=endpoint)
     return embedding
 
-def test_parse_embedding_response_returns_empty_for_missing_response():
-    assert parse_embedding_response(None) == []
+@pytest.mark.parametrize("response, expected", [
+    (None, []),
+    (SimpleNamespace(data=[SimpleNamespace(index=1, embedding=[0.1, 0.2, 0.3]), SimpleNamespace(index=0, embedding=[0.4, 0.5, 0.6])]),
+     [[0.4, 0.5, 0.6], [0.1, 0.2, 0.3]]),
+    ({"data": [{"index": 1, "embedding": [1.0]}, {"index": 0, "embedding": [0.0]}]}, [[0.0], [1.0]]),
+])
+def test_parse_embedding_response_variants(response: Any, expected: list[list[float]]):
+    """缺失响应返回空; 对象与映射项均按 index 排序"""
+    assert parse_embedding_response(response) == expected
 
-def test_parse_embedding_response_orders_object_items_by_index():
-    response = SimpleNamespace(
-        data=[
-            SimpleNamespace(index=1, embedding=[0.1, 0.2, 0.3]),
-            SimpleNamespace(index=0, embedding=[0.4, 0.5, 0.6]),
-        ],
-    )
-
-    assert parse_embedding_response(response) == [
-        [0.4, 0.5, 0.6],
-        [0.1, 0.2, 0.3],
-    ]
-
-def test_parse_embedding_response_supports_mapping_items():
-    response: dict[str, Any] = {
-        "data": [
-            {"index": 1, "embedding": [1.0]},
-            {"index": 0, "embedding": [0.0]},
-        ],
-    }
-
-    assert parse_embedding_response(response) == [[0.0], [1.0]]
-
-def test_sync_embedding_preserves_failed_batch_positions_and_continues():
-    """中间批次失败时保留空位并继续处理后续批次"""
-    endpoint = _SyncEmbeddingEndpoint([
-        _response((0, [1.0, 0.0]), (1, [0.0, 1.0])),
-        RuntimeError("batch failed"),
-        _response((0, [0.5, 0.5])),
-    ])
-    embedding = _sync_embedding(endpoint)
-
-    result = embedding.embed(["a", "b", "c", "d", "e"])
-
-    assert result == [[1.0, 0.0], [0.0, 1.0], [], [], [0.5, 0.5]]
-    assert endpoint.inputs == [["a", "b"], ["c", "d"], ["e"]]
-
-def test_sync_embedding_preserves_missing_response_index():
-    """部分响应缺失时使用空向量保留原输入位置"""
-    endpoint = _SyncEmbeddingEndpoint([
-        _response((2, [0.0, 1.0]), (0, [1.0, 0.0])),
-    ])
-    embedding = _sync_embedding(endpoint, max_batch_size=3)
-
-    assert embedding.embed(["a", "b", "c"]) == [[1.0, 0.0], [], [0.0, 1.0]]
-
-def test_sync_embedding_rejects_duplicate_response_index():
-    """重复 index 对应的位置失效且不影响其他有效项"""
-    endpoint = _SyncEmbeddingEndpoint([
-        _response((0, [1.0, 0.0]), (0, [0.5, 0.5]), (1, [0.0, 1.0])),
-    ])
-    embedding = _sync_embedding(endpoint)
-
-    assert embedding.embed(["a", "b"]) == [[], [0.0, 1.0]]
-
-def test_sync_embedding_rejects_dimension_change_between_batches():
-    """后续批次的异常维度使用空向量占位"""
-    endpoint = _SyncEmbeddingEndpoint([
-        _response((0, [1.0, 0.0])),
-        _response((0, [1.0])),
-    ])
-    embedding = _sync_embedding(endpoint, max_batch_size=1)
-
-    assert embedding.embed(["a", "b"]) == [[1.0, 0.0], []]
-
-def test_sync_embedding_return_false_rejects_partial_result():
-    """return_false 启用时部分响应使整个调用返回 False"""
-    endpoint = _SyncEmbeddingEndpoint([
-        _response((0, [1.0, 0.0])),
-    ])
-    embedding = _sync_embedding(endpoint, return_false=True)
-
-    assert embedding.embed(["a", "b"]) is False
-
-def test_sync_embedding_unsuppressed_error_is_raised():
-    """关闭异常抑制时向调用方传播批次异常"""
-    endpoint = _SyncEmbeddingEndpoint([RuntimeError("batch failed")])
-    embedding = _sync_embedding(endpoint, suppress_error=False)
-
-    with pytest.raises(RuntimeError, match="batch failed"):
-        embedding.embed(["a"])
+@pytest.mark.parametrize("scenario", ["failed_middle_batch", "missing_index", "duplicate_index", "dimension_change", "return_false"])
+def test_sync_embedding_batch_anomalies(scenario: str):
+    """同步批处理异常: 失败批次留空位继续, 缺失/重复 index 与维度变化占空, return_false 整体拒绝"""
+    if scenario == "failed_middle_batch":
+        endpoint = _SyncEmbeddingEndpoint([
+            _response((0, [1.0, 0.0]), (1, [0.0, 1.0])),
+            RuntimeError("batch failed"),
+            _response((0, [0.5, 0.5])),
+        ])
+        embed = _sync_embedding(endpoint)
+        assert embed.embed(["a", "b", "c", "d", "e"]) == [[1.0, 0.0], [0.0, 1.0], [], [], [0.5, 0.5]]
+        assert endpoint.inputs == [["a", "b"], ["c", "d"], ["e"]]
+    elif scenario == "missing_index":
+        endpoint = _SyncEmbeddingEndpoint([_response((2, [0.0, 1.0]), (0, [1.0, 0.0]))])
+        assert _sync_embedding(endpoint, max_batch_size=3).embed(["a", "b", "c"]) == [[1.0, 0.0], [], [0.0, 1.0]]
+    elif scenario == "duplicate_index":
+        endpoint = _SyncEmbeddingEndpoint([_response((0, [1.0, 0.0]), (0, [0.5, 0.5]), (1, [0.0, 1.0]))])
+        assert _sync_embedding(endpoint).embed(["a", "b"]) == [[], [0.0, 1.0]]
+    elif scenario == "dimension_change":
+        endpoint = _SyncEmbeddingEndpoint([_response((0, [1.0, 0.0])), _response((0, [1.0]))])
+        assert _sync_embedding(endpoint, max_batch_size=1).embed(["a", "b"]) == [[1.0, 0.0], []]
+    else:
+        endpoint = _SyncEmbeddingEndpoint([_response((0, [1.0, 0.0]))])
+        assert _sync_embedding(endpoint, return_false=True).embed(["a", "b"]) is False
 
 @pytest.mark.asyncio
 async def test_async_embedding_preserves_failed_batch_positions_and_continues():
@@ -344,6 +293,14 @@ async def test_async_embedding_preserves_failed_batch_positions_and_continues():
 
     assert result == [[1.0, 0.0], [0.0, 1.0], [], [], [0.5, 0.5]]
     assert endpoint.inputs == [["a", "b"], ["c", "d"], ["e"]]
+
+def test_sync_embedding_unsuppressed_error_is_raised():
+    """关闭异常抑制时向调用方传播批次异常"""
+    endpoint = _SyncEmbeddingEndpoint([RuntimeError("batch failed")])
+    embedding = _sync_embedding(endpoint, suppress_error=False)
+
+    with pytest.raises(RuntimeError, match="batch failed"):
+        embedding.embed(["a"])
 
 def test_embedding_rejects_non_positive_batch_size():
     """同步和异步构造方法均拒绝非正批次大小"""

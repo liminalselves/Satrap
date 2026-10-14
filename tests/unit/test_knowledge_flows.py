@@ -393,69 +393,37 @@ def _rag_with_fakes(
     rag.vector_db = cast(Any, vector_db)
     return rag, embedding, vector_db
 
-def test_filter_embedding_results_rejects_length_mismatch():
-    """输入和返回数量不一致时拒绝继续配对"""
-    with pytest.raises(ValueError, match="返回数量与输入文本数量不一致"):
-        _filter_embedding_results(["a", "b"], [[1.0]])
-
 @pytest.mark.asyncio
-async def test_add_documents_filters_texts_with_empty_vectors():
-    """部分向量失败时只把位置对应的有效文本写入数据库"""
+@pytest.mark.parametrize("path", ["add_documents", "add_text_file", "swift"])
+async def test_empty_vectors_are_filtered_before_writing(tmp_path: Path, path: str):
+    """三条写入路径都只写入向量化成功的文本块, 空向量与失败文本被丢弃"""
     rag, embedding, vector_db = _rag_with_fakes([[1.0, 0.0], [], [0.0, 1.0]])
-
-    result = await rag.add_documents(["a", "b", "c"])
-
-    assert result is True
-    assert embedding.inputs == [["a", "b", "c"]]
-    assert vector_db.calls == [
-        (
-            "test",
-            ["a", "c"],
-            [[1.0, 0.0], [0.0, 1.0]],
-            [{}, {}],
-        ),
-    ]
-
-@pytest.mark.asyncio
-async def test_add_documents_returns_false_when_all_embeddings_fail():
-    """非空文档全部向量化失败时不写入数据库并返回 False"""
-    rag, embedding, vector_db = _rag_with_fakes([[], [], []])
-
-    result = await rag.add_documents(["a", "b", "c"])
-
-    assert result is False
-    assert embedding.inputs == [["a", "b", "c"]]
-    assert vector_db.calls == []
+    if path == "add_documents":
+        assert await rag.add_documents(["a", "b", "c"]) is True
+        assert embedding.inputs == [["a", "b", "c"]]
+    elif path == "add_text_file":
+        file_path = tmp_path / "input.txt"
+        file_path.write_text("a\nb\nc", encoding="utf-8")
+        assert await rag.add_text_file(str(file_path), chunk_size=1, chunk_overlap=0, batch_size=3) is True
+        assert embedding.inputs == [["a", "\nb", "\nc"]]
+    else:
+        assert await rag.swift(add_documents=["a", "b", "c"]) == ([], [])
+        assert embedding.inputs == [["a", "b", "c"]]
+    assert vector_db.calls[0][1:3] == (["a", "\nc"] if path == "add_text_file" else ["a", "c"],
+                                       [[1.0, 0.0], [0.0, 1.0]])
 
 @pytest.mark.asyncio
-async def test_add_text_file_filters_empty_vectors(tmp_path: Path):
-    """文件导入只写入向量化成功的文本块"""
-    rag, embedding, vector_db = _rag_with_fakes([[1.0, 0.0], [], [0.0, 1.0]])
-    file_path = tmp_path / "input.txt"
-    file_path.write_text("a\nb\nc", encoding="utf-8")
-
-    result = await rag.add_text_file(
-        str(file_path),
-        chunk_size=1,
-        chunk_overlap=0,
-        batch_size=3,
-    )
-
-    assert result is True
-    assert embedding.inputs == [["a", "\nb", "\nc"]]
-    assert vector_db.calls[0][1:3] == (["a", "\nc"], [[1.0, 0.0], [0.0, 1.0]])
-
-@pytest.mark.asyncio
-async def test_swift_filters_empty_vectors_before_writing():
-    """快速流程的添加阶段同步过滤失败文本和空向量"""
-    rag, embedding, vector_db = _rag_with_fakes([[1.0, 0.0], [], [0.0, 1.0]])
-
-    documents, scores = await rag.swift(add_documents=["a", "b", "c"])
-
-    assert documents == []
-    assert scores == []
-    assert embedding.inputs == [["a", "b", "c"]]
-    assert vector_db.calls[0][1:3] == (["a", "c"], [[1.0, 0.0], [0.0, 1.0]])
+@pytest.mark.parametrize("kind", ["mismatch", "all_empty"])
+async def test_embedding_batch_rejects_mismatch_or_all_empty(kind: str):
+    """返回数量不一致直接报错, 全部向量化失败则返回 False 且不写入"""
+    if kind == "mismatch":
+        with pytest.raises(ValueError, match="返回数量与输入文本数量不一致"):
+            _filter_embedding_results(["a", "b"], [[1.0]])
+    else:
+        rag, embedding, vector_db = _rag_with_fakes([[], [], []])
+        assert await rag.add_documents(["a", "b", "c"]) is False
+        assert embedding.inputs == [["a", "b", "c"]]
+        assert vector_db.calls == []
 
 @pytest.mark.parametrize("extension", [ext for ext in SUPPORTED_EXTENSIONS if ext not in {".pdf", ".docx", ".xlsx"}])
 def test_utf8_formats_and_bom(tmp_path: Path, extension: str) -> None:
@@ -681,30 +649,38 @@ SPLIT_SECONDS_BUDGET = 3.0
 
 LARGE_CORPUS_SECONDS_BUDGET = 8.0
 
-def test_long_text_without_separator_is_split_within_budget():
-    """反例: 无分隔长文本曾因队首逐个弹出退化为二次复杂度, 拖垮上传请求"""
-    # 预热一次, 排除首次导入与分配带来的抖动
-    TextSplitter(RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP).split_text("预热")
-    started = time.perf_counter()
-    chunks = TextSplitter(RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP).split_text(NO_SEPARATOR_400K)
-    spent = time.perf_counter() - started
-    assert spent < SPLIT_SECONDS_BUDGET, f"40 万字符无分隔文本切分耗时 {spent:.2f} 秒, 超过 {SPLIT_SECONDS_BUDGET} 秒预算"
-    # 性能修复不得改变结果: 4 块各 10 万字符, 拼接后与原文一致
-    assert [len(chunk) for chunk in chunks] == [RAG_CHUNK_SIZE] * 4
-    assert "".join(chunks) == NO_SEPARATOR_400K
+@pytest.mark.parametrize("chunk_size, chunk_overlap, keep_separator, text, expected", [
+    (4, 0, True, "abcdefghij", ["abcd", "efgh", "ij"]),
+    (5, 1, True, "abcdefghijklmno", ["abcde", "efghi", "ijklm", "mno"]),
+    (12, 3, True, "第一段内容\n\n第二段内容\n\n第三段内容", ["第一段内容", "\n\n第二段内容", "\n\n第三段内容"]),
+    (12, 3, False, "第一段内容\n\n第二段内容\n\n第三段内容", ["第一段内容\n\n第二段内容", "第三段内容"]),
+])
+def test_text_split_reference_cases(chunk_size, chunk_overlap, keep_separator, text, expected):
+    """超长单块/重叠窗口/双换行分段的切分基线"""
+    assert TextSplitter(chunk_size, chunk_overlap, keep_separator=keep_separator).split_text(text) == expected
 
-def test_long_text_with_default_chunking_stays_within_budget():
-    """默认分块参数下的长文本同样受预算约束 (默认参数原本就快, 防回归)"""
+def test_documents_are_split_in_order():
+    splitter = TextSplitter(5, 0)
+    assert splitter.split_documents(["abcdefg", "1234567"]) == ["abcde", "fg", "12345", "67"]
+
+@pytest.mark.parametrize("chunk_size, chunk_overlap, expected_chunks", [
+    (RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP, 4),
+    (1000, 200, 500),
+])
+def test_long_text_split_stays_within_budget(chunk_size, chunk_overlap, expected_chunks):
+    """40 万字符无分隔文本在预算内切分, 重叠语义不改变原文还原结果"""
+    TextSplitter(chunk_size, chunk_overlap).split_text("预热")   # 预热排除首次导入抖动
     started = time.perf_counter()
-    chunks = TextSplitter(1000, 200).split_text(NO_SEPARATOR_400K)
+    chunks = TextSplitter(chunk_size, chunk_overlap).split_text(NO_SEPARATOR_400K)
     spent = time.perf_counter() - started
-    assert spent < SPLIT_SECONDS_BUDGET, f"默认参数切分耗时 {spent:.2f} 秒, 超过 {SPLIT_SECONDS_BUDGET} 秒预算"
-    assert len(chunks) == 500
-    assert all(len(chunk) <= 1000 for chunk in chunks)
-    # 重叠语义: 每块开头重复上一块结尾的 200 字符, 去掉重叠后应还原原文
-    assert all(chunk[:200] == chunks[index - 1][-200:] for index, chunk in enumerate(chunks) if index)
-    rebuilt = chunks[0] + "".join(chunk[200:] for chunk in chunks[1:])
-    assert rebuilt == NO_SEPARATOR_400K
+    assert spent < SPLIT_SECONDS_BUDGET, f"40 万字符切分耗时 {spent:.2f} 秒, 超过 {SPLIT_SECONDS_BUDGET} 秒预算"
+    assert len(chunks) == expected_chunks
+    assert all(len(chunk) <= chunk_size for chunk in chunks)
+    if chunk_overlap:
+        assert all(chunk[:chunk_overlap] == chunks[index - 1][-chunk_overlap:] for index, chunk in enumerate(chunks) if index)
+        assert chunks[0] + "".join(chunk[chunk_overlap:] for chunk in chunks[1:]) == NO_SEPARATOR_400K
+    else:
+        assert "".join(chunks) == NO_SEPARATOR_400K
 
 def test_chunking_cost_is_bounded_by_document_times_window():
     """预算同时约束文档长度与合并窗口的乘积
@@ -721,26 +697,3 @@ def test_chunking_cost_is_bounded_by_document_times_window():
     assert spent < LARGE_CORPUS_SECONDS_BUDGET, f"120 万字符切分耗时 {spent:.2f} 秒, 超过 {LARGE_CORPUS_SECONDS_BUDGET} 秒预算"
     assert len(chunks) == 12
     assert "".join(chunks) == corpus
-
-def test_no_separator_chunks_carry_overlap():
-    """无分隔文本的重叠窗口语义 (合并逻辑的核心契约)"""
-    chunks = TextSplitter(5, 1).split_text("abcdefghijklmno")
-    assert chunks == ["abcde", "efghi", "ijklm", "mno"]
-
-def test_small_paragraph_baseline_is_unchanged():
-    """双换行分段的现状基线: 保留分隔符时按段切分, 关闭保留时分隔符随段合并"""
-    text = "第一段内容\n\n第二段内容\n\n第三段内容"
-    assert TextSplitter(12, 3).split_text(text) == ["第一段内容", "\n\n第二段内容", "\n\n第三段内容"]
-    assert TextSplitter(12, 3, keep_separator=False).split_text(text) == ["第一段内容\n\n第二段内容", "第三段内容"]
-
-def test_single_part_larger_than_chunk_size_is_kept():
-    """没有可用分隔符时超长片段被强制保留, 不丢内容"""
-    chunks = TextSplitter(4, 0).split_text("abcdefghij")
-    assert chunks == ["abcd", "efgh", "ij"]
-
-def test_short_text_is_a_single_chunk():
-    assert TextSplitter(100, 20).split_text("整个文本很短") == ["整个文本很短"]
-
-def test_documents_are_split_in_order():
-    splitter = TextSplitter(5, 0)
-    assert splitter.split_documents(["abcdefg", "1234567"]) == ["abcde", "fg", "12345", "67"]

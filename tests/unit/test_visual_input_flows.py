@@ -158,32 +158,30 @@ def test_build_multimodal_content_compresses_toolkit_image_when_available():
     payload = data_url.split(",", 1)[1]
     assert len(base64.b64decode(payload)) <= 4 * 1024 * 1024
 
-def test_context_manager_persists_multimodal_content(tmp_path: Path):
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_context_manager_persists_multimodal_content(tmp_path: Path, asynchronous: bool):
+    """同步与异步上下文均把多模态内容持久化并按图片计费"""
     db_path = tmp_path / "history.db"
-    ctx = ContextManager("vision", db_path=str(db_path))
-    ctx.add_user_message("图片里有什么", img_urls=[_tiny_png_data_url()])
+    if asynchronous:
+        ctx = AsyncContextManager("vision", db_path=str(db_path))
+        await ctx.initialize()
+        await ctx.add_user_message("图片里有什么", img_urls=[_tiny_png_data_url()])
+        loaded: ContextManager | AsyncContextManager = AsyncContextManager("vision", db_path=str(db_path))
+        await loaded.initialize()
+    else:
+        ctx = ContextManager("vision", db_path=str(db_path))
+        ctx.add_user_message("图片里有什么", img_urls=[_tiny_png_data_url()])
+        loaded = ContextManager("vision", db_path=str(db_path))
 
-    loaded = ContextManager("vision", db_path=str(db_path))
     message = loaded.get_context()[0]
-
     assert message["role"] == "user"
     assert isinstance(message["content"], list)
-    assert message["content"][0]["text"] == "图片里有什么"
-    assert loaded.estimate_token(method="experience") >= DEFAULT_IMAGE_TOKEN_COST
-
-@pytest.mark.asyncio
-async def test_async_context_manager_persists_multimodal_content(tmp_path: Path):
-    db_path = tmp_path / "history.db"
-    ctx = AsyncContextManager("vision", db_path=str(db_path))
-    await ctx.initialize()
-    await ctx.add_user_message("图片里有什么", img_urls=[_tiny_png_data_url()])
-
-    loaded = AsyncContextManager("vision", db_path=str(db_path))
-    await loaded.initialize()
-    message = loaded.get_context()[0]
-
-    assert isinstance(message["content"], list)
-    assert message["content"][1]["type"] == "image_url"
+    if asynchronous:
+        assert message["content"][1]["type"] == "image_url"
+    else:
+        assert message["content"][0]["text"] == "图片里有什么"
+        assert loaded.estimate_token(method="experience") >= DEFAULT_IMAGE_TOKEN_COST
 
 def test_context_manager_loads_legacy_text_rows(tmp_path: Path):
     db_path = tmp_path / "legacy.db"
@@ -226,28 +224,10 @@ def _make_llm(fake_completions: _FakeCompletions) -> LLM:
     llm.supports_visual_input = True
     return llm
 
-def test_llm_call_appends_images_to_last_user_message():
-    fake = _FakeCompletions()
-    llm = _make_llm(fake)
-
-    response = llm.call(
-        [{"role": "user", "content": "第一张"}, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "第二张"}],
-        img_urls=[_tiny_png_data_url()],
-    )
-
-    assert isinstance(response, LLMCallResponse)
-    assert fake.kwargs is not None
-    messages = fake.kwargs["messages"]
-    assert messages[0]["content"] == "第一张"
-    assert isinstance(messages[-1]["content"], list)
-    assert messages[-1]["content"][1]["type"] == "image_url"
-
-@pytest.mark.asyncio
-async def test_async_llm_call_appends_images_to_last_user_message():
-    fake = _FakeAsyncCompletions()
+def _make_async_llm(fake_completions: _FakeAsyncCompletions) -> AsyncLLM:
+    """异步 LLM 替身工厂: 边界断言集中在此"""
     llm = AsyncLLM.__new__(AsyncLLM)
-    # 测试替身非真实 OpenAI 客户端, 边界断言集中在构造点
-    llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=fake)))
+    llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=fake_completions)))
     llm.model = "mock"
     llm.temperature = 0.7
     llm.top_p = 0.95
@@ -258,12 +238,32 @@ async def test_async_llm_call_appends_images_to_last_user_message():
     llm.thinking_fields = None
     llm.omit_none_thinking_fields = False
     llm.supports_visual_input = True
+    return llm
 
-    response = await llm.call([{"role": "user", "content": "看图"}], img_urls=[_tiny_png_data_url()])
-
-    assert isinstance(response, LLMCallResponse)
-    assert fake.kwargs is not None
-    assert fake.kwargs["messages"][0]["content"][1]["type"] == "image_url"
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_llm_call_appends_images_to_last_user_message(asynchronous: bool):
+    """同步与异步 LLM 都把图片追加到最后一条 user 消息"""
+    if asynchronous:
+        fake = _FakeAsyncCompletions()
+        response = await _make_async_llm(fake).call(
+            [{"role": "user", "content": "看图"}], img_urls=[_tiny_png_data_url()],
+        )
+        assert isinstance(response, LLMCallResponse)
+        assert fake.kwargs is not None
+        assert fake.kwargs["messages"][0]["content"][1]["type"] == "image_url"
+    else:
+        fake = _FakeCompletions()
+        response = _make_llm(fake).call(
+            [{"role": "user", "content": "第一张"}, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "第二张"}],
+            img_urls=[_tiny_png_data_url()],
+        )
+        assert isinstance(response, LLMCallResponse)
+        assert fake.kwargs is not None
+        messages = fake.kwargs["messages"]
+        assert messages[0]["content"] == "第一张"
+        assert isinstance(messages[-1]["content"], list)
+        assert messages[-1]["content"][1]["type"] == "image_url"
 
 def _load_toolkit_config() -> dict[str, str]:
     if os.getenv("SATRAP_RUN_TOOLKIT_VISION") != "1":
@@ -284,12 +284,10 @@ def _load_toolkit_config() -> dict[str, str]:
         pytest.skip(".toolkit/apikey.txt 字段不完整")
     return values
 
-def test_normalize_openai_base_url_for_toolkit_endpoint():
+def test_normalize_openai_base_url_variants() -> None:
+    """归一化常见端点路径; 远程默认要求 HTTPS, 回环/显式例外放行, 其它协议或带凭据拒绝"""
     assert normalize_openai_base_url("https://api.siliconflow.cn/v1/chat/completions") == "https://api.siliconflow.cn/v1"
     assert normalize_openai_base_url("https://api.siliconflow.cn/v1/audio/transcriptions") == "https://api.siliconflow.cn/v1"
-
-def test_normalize_openai_base_url_enforces_transport_security() -> None:
-    """远程 API 默认要求 HTTPS, 回环 HTTP 和显式例外仍可使用"""
     assert normalize_openai_base_url("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1"
     assert normalize_openai_base_url("http://localhost:11434/v1") == "http://localhost:11434/v1"
     assert normalize_openai_base_url("http://model.internal/v1", allow_insecure=True) == "http://model.internal/v1"

@@ -496,11 +496,14 @@ def add_preference(repository, *, owner="user:a", source="m1", key="preferred_na
     return repository.mutate("create", {"kind": "member_preference", "key": key, "title": "称呼", "content": "称呼我为小明", "source_message_ids": [source]},
                              actor=owner, current_message=source, operation_id=operation)
 
-def test_preference_owner_and_revision_are_enforced(memories):
+def test_owner_identity_revision_and_listing_are_enforced(memories):
+    """所有者由宿主注入: 模块不能冒充, 更新需本人且版本最新, 列表按查看者收窄"""
     repository, _ = memories
-    result = add_preference(repository)
-    record = result["memory"]
+    record = add_preference(repository)["memory"]
     assert record["owner_user_id"] == "user:a" and record["revision"] == 1
+    spoof = repository.mutate("create", {"kind": "member_preference", "key": "name", "title": "称呼", "content": "小明", "owner_user_id": "user:b", "source_message_ids": ["m1"]},
+                              actor="user:a", current_message="m1", operation_id="owner-spoof")
+    assert spoof["memory"]["owner_user_id"] == "user:a"
     values = {"memory_id": record["memory_id"], "content": "简短回答", "source_message_ids": ["m3"], "expected_revision": 1}
     with pytest.raises(MemoryError, match="本人"):
         repository.mutate("update", values, actor="user:b", current_message="m3", operation_id="bad-owner")
@@ -509,14 +512,25 @@ def test_preference_owner_and_revision_are_enforced(memories):
     assert changed["memory"]["revision"] == 2
     with pytest.raises(MemoryError, match="已更新"):
         repository.mutate("update", values, actor="user:a", current_message="m2", operation_id="stale-update")
+    add_preference(repository, owner="user:b", source="m3", operation="other")
+    assert {item["owner_user_id"] for item in repository.list(viewer="user:a")["items"]} == {"user:a"}
 
-def test_source_must_include_current_request_and_belong_to_owner(memories):
+def test_source_and_delete_must_bind_to_current_request_and_owner(memories):
+    """来源必须属于本人且包含本轮; 删除只作用于本轮请求且不删归档历史"""
     repository, _ = memories
     values = {"kind": "member_preference", "key": "style", "title": "风格", "content": "简洁", "source_message_ids": ["m1"]}
     with pytest.raises(MemoryError, match="本轮"):
         repository.mutate("create", values, actor="user:a", current_message="m2", operation_id="old-source")
     with pytest.raises(MemoryError, match="发言"):
         repository.mutate("create", values, actor="user:b", current_message="m1", operation_id="wrong-source")
+    memory = add_preference(repository)["memory"]
+    delete_values = {"memory_id": memory["memory_id"], "expected_revision": 1, "request_message_id": "m1"}
+    with pytest.raises(MemoryError, match="本轮"):
+        repository.mutate("delete", delete_values, actor="user:a", current_message="m2", operation_id="old-delete")
+    delete_values["request_message_id"] = "m2"
+    assert repository.mutate("delete", delete_values, actor="user:a", current_message="m2", operation_id="delete")["status"] == "deleted"
+    assert repository.archive.get(repository.scope, "m1")["text"] == "明确要求记住"
+    assert repository.list()["items"] == []
 
 def test_idempotency_does_not_duplicate_or_overwrite(memories):
     repository, _ = memories
@@ -561,17 +575,6 @@ def test_source_deleted_keeps_saved_memory_but_blocks_pending_approval(memories)
         repository.decide(pending["proposal_id"], True, 0)
     assert repository.proposals()["items"][0]["state"] == "pending"
 
-def test_delete_is_current_request_only_and_does_not_delete_history(memories):
-    repository, _ = memories
-    memory = add_preference(repository)["memory"]
-    values = {"memory_id": memory["memory_id"], "expected_revision": 1, "request_message_id": "m1"}
-    with pytest.raises(MemoryError, match="本轮"):
-        repository.mutate("delete", values, actor="user:a", current_message="m2", operation_id="old-delete")
-    values["request_message_id"] = "m2"
-    assert repository.mutate("delete", values, actor="user:a", current_message="m2", operation_id="delete")["status"] == "deleted"
-    assert repository.archive.get(repository.scope, "m1")["text"] == "明确要求记住"
-    assert repository.list()["items"] == []
-
 def test_expired_proposal_and_foreign_scope_cursor(memories):
     repository, clock = memories
     add_preference(repository)
@@ -587,19 +590,6 @@ def test_expired_proposal_and_foreign_scope_cursor(memories):
                                  actor="user:a", current_message="m1", operation_id="rule")
     clock[0] += 86401
     assert repository.decide(proposal["proposal_id"], True, 0)["status"] == "expired"
-
-def test_model_default_listing_only_contains_own_preferences(memories):
-    repository, _ = memories
-    add_preference(repository)
-    add_preference(repository, owner="user:b", source="m3", operation="other")
-    assert len(repository.list()["items"]) == 2
-    assert {item["owner_user_id"] for item in repository.list(viewer="user:a")["items"]} == {"user:a"}
-
-def test_model_cannot_supply_owner_identity(memories):
-    repository, _ = memories
-    result = repository.mutate("create", {"kind": "member_preference", "key": "name", "title": "称呼", "content": "小明", "owner_user_id": "user:b", "source_message_ids": ["m1"]},
-                               actor="user:a", current_message="m1", operation_id="owner-spoof")
-    assert result["memory"]["owner_user_id"] == "user:a"
 
 def reference_rows(repository: ScopedMemories, *, kind: str = "", user_id: str = "", keyword: str = "", viewer: str = "") -> list[sqlite3.Row]:
     """改动前的逐行筛选参照实现, 仅用于对照 SQL 侧筛选"""

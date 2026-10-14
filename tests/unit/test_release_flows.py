@@ -210,8 +210,8 @@ def test_recovery_cleans_owned_orphans_and_keeps_foreign_services(launcher, monk
     assert requested == ["http://127.0.0.1:29871/stop"]
     assert verified == [[29871, 29872, 29870]]
 
-def test_port_residue_reports_owner_without_exposing_command(launcher, monkeypatch):
-    """停止后的残留检查输出进程名和 PID, 不泄漏命令行密钥"""
+def test_port_residue_checks(launcher, monkeypatch):
+    """残留检查: 报告占用者名与 PID 但不泄漏命令行密钥; 释放延迟可重试; 端口未释放时 stop 必须失败"""
     monkeypatch.setattr(launcher, "busy_ports", lambda ports: [29870])
     monkeypatch.setattr(launcher, "process_snapshot", lambda: [{"ProcessId": 42, "Name": "python.exe", "CommandLine": "--token secret"}])
     monkeypatch.setattr(launcher, "listener_snapshot", lambda: [{"LocalPort": 29870, "OwningProcess": 42}])
@@ -219,8 +219,11 @@ def test_port_residue_reports_owner_without_exposing_command(launcher, monkeypat
         launcher.check_ports([29870])
     assert "secret" not in str(error.value)
 
-def test_stopped_launcher_does_not_report_success_with_occupied_ports(launcher, monkeypatch):
-    """目录锁已释放但端口仍被占用时, stop 必须报告失败"""
+    checks = iter([[29872], []])   # 允许子进程退出后的短暂端口释放延迟
+    monkeypatch.setattr(launcher, "busy_ports", lambda ports: next(checks))
+    monkeypatch.setattr(launcher.time, "sleep", lambda duration: None)
+    launcher.check_ports([29872], timeout=5)
+
     launcher.STATE.write_text('{"ports":[29871,29872,29870]}', encoding="utf-8")
     monkeypatch.setattr(launcher, "process_snapshot", lambda: [])
     monkeypatch.setattr(launcher, "busy_ports", lambda ports: [29872])
@@ -228,13 +231,6 @@ def test_stopped_launcher_does_not_report_success_with_occupied_ports(launcher, 
     with pytest.raises(RuntimeError, match="29872"):
         launcher.stop()
     assert launcher.STATE.exists()
-
-def test_port_release_check_retries_before_success(launcher, monkeypatch):
-    """允许子进程退出后的短暂端口释放延迟"""
-    checks = iter([[29872], []])
-    monkeypatch.setattr(launcher, "busy_ports", lambda ports: next(checks))
-    monkeypatch.setattr(launcher.time, "sleep", lambda duration: None)
-    launcher.check_ports([29872], timeout=5)
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 进程身份复核验证")
 def test_native_cleanup_rechecks_creation_time_before_termination(launcher, monkeypatch):
@@ -273,14 +269,34 @@ def test_concurrent_token_migration_preserves_existing_credential(state_root):
     assert not (state_root / "api-token").exists()
     assert (state_root / "credentials" / "api-token").read_text(encoding="utf-8") == token
 
-@pytest.mark.parametrize("name", ["control_server.pid", "backend.pid", "release-instance.json", "release-stop"])
-def test_runtime_records_migrate_without_content_changes(state_root, name):
+def test_runtime_path_migration_and_credential_paths(state_root, tmp_path, monkeypatch):
+    """运行时记录迁移到 runtime 子目录; 目录覆盖时不迁移项目文件; 凭据迁移失败保留旧令牌"""
     content = json.dumps({"pid": 123, "runtime_id": "test-instance"}).encode("utf-8")
-    old = state_root / name
-    old.write_bytes(content)
-    path = runtime_paths.get_runtime_path(name)
-    assert path == state_root / "runtime" / name
-    assert path.read_bytes() == content and not old.exists()
+    for name in ("control_server.pid", "release-instance.json"):
+        old = state_root / name
+        old.write_bytes(content)
+        path = runtime_paths.get_runtime_path(name)
+        assert path == state_root / "runtime" / name
+        assert path.read_bytes() == content and not old.exists()
+
+    (state_root / "api-token").write_bytes(b"old-credential")
+    (state_root / "backend.pid").write_bytes(b"123")
+    monkeypatch.setenv("SATRAP_CREDENTIALS_ROOT", str(tmp_path / "secrets"))
+    monkeypatch.setenv("SATRAP_RUNTIME_ROOT", str(tmp_path / "processes"))
+    assert runtime_paths.get_credential_path() == tmp_path / "secrets" / "api-token"
+    assert runtime_paths.get_runtime_path("backend.pid") == tmp_path / "processes" / "backend.pid"
+    assert (state_root / "api-token").exists() and (state_root / "backend.pid").exists()
+
+    monkeypatch.delenv("SATRAP_CREDENTIALS_ROOT")
+    monkeypatch.delenv("SATRAP_RUNTIME_ROOT")
+    token = "do-not-replace-credential-" + "b" * 32
+    (state_root / "api-token").write_text(token, encoding="utf-8")
+    errors: list[str] = []
+    monkeypatch.setattr(managed.LogFileLock, "acquire", lambda self, timeout=0: False)
+    monkeypatch.setattr(managed, "report_failure", errors.append)
+    path = runtime_paths.get_credential_path()
+    assert path == state_root / "api-token" and load_or_create_api_token(path) == token
+    assert errors and token not in errors[0]
 
 def test_held_legacy_backend_lock_is_not_bypassed(state_root, monkeypatch):
     old = state_root / "backend.lock"
@@ -308,22 +324,3 @@ def test_held_legacy_backend_lock_is_not_bypassed(state_root, monkeypatch):
     assert second.acquire("127.0.0.1", 19870)
     second.release()
 
-def test_credential_migration_failure_keeps_old_token(state_root, monkeypatch):
-    token = "do-not-replace-credential-" + "b" * 32
-    legacy = state_root / "api-token"
-    legacy.write_text(token, encoding="utf-8")
-    errors = []
-    monkeypatch.setattr(managed.LogFileLock, "acquire", lambda self, timeout=0: False)
-    monkeypatch.setattr(managed, "report_failure", errors.append)
-    path = runtime_paths.get_credential_path()
-    assert path == legacy and load_or_create_api_token(path) == token
-    assert errors and token not in errors[0]
-
-def test_directory_overrides_do_not_migrate_project_files(state_root, tmp_path, monkeypatch):
-    (state_root / "api-token").write_bytes(b"old-credential")
-    (state_root / "backend.pid").write_bytes(b"123")
-    monkeypatch.setenv("SATRAP_CREDENTIALS_ROOT", str(tmp_path / "secrets"))
-    monkeypatch.setenv("SATRAP_RUNTIME_ROOT", str(tmp_path / "processes"))
-    assert runtime_paths.get_credential_path() == tmp_path / "secrets" / "api-token"
-    assert runtime_paths.get_runtime_path("backend.pid") == tmp_path / "processes" / "backend.pid"
-    assert (state_root / "api-token").exists() and (state_root / "backend.pid").exists()

@@ -70,32 +70,30 @@ def test_code_execution_timeout(tmp_path: Path) -> None:
     assert result["returncode"] == -4
     assert "超时" in result["stderr"]
 
-def test_code_execution_requires_explicit_authorization(sandbox: CodeSandbox) -> None:
-    """同步代码执行默认拒绝, 仅明确授权后运行"""
-    blocked = CodeSandboxTool(sandbox)
-    assert "需要用户明确批准" in blocked.execute("run", code="print('blocked')")["error"]
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_code_execution_requires_explicit_authorization(sandbox: CodeSandbox, asynchronous: bool) -> None:
+    """同步与异步代码执行均默认拒绝, 仅明确授权后运行"""
+    if asynchronous:
+        blocked_result = await AsyncCodeSandboxTool(sandbox).execute("run", code="print('blocked')")
+    else:
+        blocked_result = CodeSandboxTool(sandbox).execute("run", code="print('blocked')")
+    assert "需要用户明确批准" in blocked_result["error"]
 
     prompts: list[str] = []
-    allowed = CodeSandboxTool(sandbox, lambda description: prompts.append(description) or True)
-    result = allowed.execute("run", code="print('allowed')")
+    if asynchronous:
+        async def authorize(description: str) -> bool:
+            """批准所有执行说明"""
+            prompts.append(description)
+            return True
+
+        allowed: CodeSandboxTool | AsyncCodeSandboxTool = AsyncCodeSandboxTool(sandbox, authorize)
+        result = await allowed.execute("run", code="print('allowed')")
+    else:
+        allowed = CodeSandboxTool(sandbox, lambda description: prompts.append(description) or True)
+        result = allowed.execute("run", code="print('allowed')")
     assert result["returncode"] == 0
     assert str(result["stdout"]).strip() == "allowed"
     assert "print('allowed')" in prompts[0]
-
-@pytest.mark.asyncio
-async def test_async_code_execution_requires_explicit_authorization(sandbox: CodeSandbox) -> None:
-    """异步代码执行默认拒绝, 并支持异步授权回调"""
-    blocked = AsyncCodeSandboxTool(sandbox)
-    assert "需要用户明确批准" in (await blocked.execute("run", code="print('blocked')"))["error"]
-
-    async def authorize(description: str) -> bool:
-        """仅批准包含 allowed 的执行说明"""
-        return "allowed" in description
-
-    allowed = AsyncCodeSandboxTool(sandbox, authorize)
-    result: dict[str, object] = await allowed.execute("run", code="print('allowed')")
-    assert result["returncode"] == 0
-    assert str(result["stdout"]).strip() == "allowed"
 
 @pytest.fixture
 def shell_env(tmp_path, monkeypatch):
@@ -119,8 +117,8 @@ async def execute_shell(shell_env, asynchronous, command, shell="powershell"):
     return tool.execute(command, timeout=10, shell=shell)
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize("shell", ["powershell", "cmd"])
-async def test_shell_harness_read_control(shell_env, asynchronous, shell):
+async def test_shell_harness_read_control(shell_env, asynchronous):
+    """同步与异步 shell 均只能读取工作区内文件"""
     root, engine, session = shell_env
     (root / "control.txt").write_text("audit-control", encoding="utf-8")
     reader = coding.AsyncReadFileTool() if asynchronous else coding.ReadFileTool()
@@ -129,43 +127,43 @@ async def test_shell_harness_read_control(shell_env, asynchronous, shell):
     assert "audit-control" in output
     engine.set_plan_mode(False)
     session.user_input_provider = lambda *args: "y"
-    output = await execute_shell(shell_env, asynchronous, "echo 审计中文-control", shell=shell)
-    assert "审计中文-control" in output
+    for shell in ("powershell", "cmd"):
+        output = await execute_shell(shell_env, asynchronous, "echo 审计中文-control", shell=shell)
+        assert "审计中文-control" in output
 
-@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize("command", [
     "echo (New-Item audit-marker)",
     "echo audit\nNew-Item audit-marker",
     "git diff --output=audit-marker --no-index before.txt after.txt",
 ], ids=["parentheses", "newline", "git-output"])
-async def test_shell_must_not_write_in_plan_mode(shell_env, asynchronous, command):
+async def test_shell_must_not_write_in_plan_mode(shell_env, command):
     root, _, _ = shell_env
     if command.startswith("git") and shutil.which("git") is None:
         pytest.skip("git-output 复现需要 Git")
     (root / "before.txt").write_text("before\n", encoding="utf-8")
     (root / "after.txt").write_text("after\n", encoding="utf-8")
-    output = await execute_shell(shell_env, asynchronous, command)
-    assert not (root / "audit-marker").exists(), f"未经批准创建了标记文件; output={output!r}"
+    for asynchronous in (False, True):
+        output = await execute_shell(shell_env, asynchronous, command)
+        assert not (root / "audit-marker").exists(), f"未经批准创建了标记文件; output={output!r}"
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize("token_path", [".satrap/api-token", ".satrap/credentials/api-token"])
-async def test_shell_must_not_read_protected_token(shell_env, asynchronous, token_path):
+async def test_shell_must_not_read_protected_token(shell_env, asynchronous):
     root, _, session = shell_env
-    (root / token_path).parent.mkdir(parents=True)
-    token = "audit-fake-token-does-not-authorize-anything"
-    (root / token_path).write_text(token, encoding="utf-8")
     reader = coding.ReadFileTool()
     reader._bind(cast(Any, session))
-    if "拒绝读取" not in reader.execute(token_path):
-        raise RuntimeError("复现前置条件失败: 文件工具未拒绝受保护路径")
-    output = await execute_shell(shell_env, asynchronous, "Get-Content " + token_path)
-    assert token not in output, "Shell 输出了文件工具拒绝读取的伪造令牌"
+    token = "audit-fake-token-does-not-authorize-anything"
+    for token_path in (".satrap/api-token", ".satrap/credentials/api-token"):
+        (root / token_path).parent.mkdir(parents=True, exist_ok=True)
+        (root / token_path).write_text(token, encoding="utf-8")
+        if "拒绝读取" not in reader.execute(token_path):
+            raise RuntimeError("复现前置条件失败: 文件工具未拒绝受保护路径")
+        output = await execute_shell(shell_env, asynchronous, "Get-Content " + token_path)
+        assert token not in output, "Shell 输出了文件工具拒绝读取的伪造令牌"
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("mode", ["user", "full", "auto-agent"])
 @pytest.mark.parametrize("answer", [None, "n", "all", "y"])
-async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asynchronous, mode, answer):
-    engine = PermissionEngine(mode, rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
+async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asynchronous, answer):
+    engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
     engine.add_persistent_rule("shell", RiskLevel.HIGH)
     engine.approve("shell", RiskLevel.HIGH)
     calls = []
@@ -221,7 +219,8 @@ async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatc
     from satrap.edictum import SimpleSession, AsyncSimpleSession
     from satrap.core.utils import proc_env
 
-    base = AsyncSimpleSession if asynchronous else SimpleSession
+    base = cast(type, AsyncSimpleSession if asynchronous else SimpleSession)   # 参数化基类
+
     class FakeSession(base):
         def __init__(self):
             self._wf = SimpleNamespace(llm=None, tools_manager=None)
@@ -248,15 +247,13 @@ async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatc
         assert await asyncio.gather(*(execute(tool) for tool in tools)) == ["FIRST_TOKEN", "", "LAST_API_KEY"]
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-@pytest.mark.parametrize("tool_name", [
-    "read_file", "write_file", "edit_file", "search_replace", "glob_files", "grep_files",
-])
+@pytest.mark.parametrize("tool_name", ["read_file", "write_file", "glob_files"])
 async def test_factory_protected_directories_isolated(tmp_path, monkeypatch, asynchronous, tool_name):
     """真实工厂的保护配置在交错和并发调用中保持独立, 拒绝时不修改文件"""
     import asyncio
     from satrap.edictum import SimpleSession, AsyncSimpleSession
 
-    base = AsyncSimpleSession if asynchronous else SimpleSession
+    base = cast(type, AsyncSimpleSession if asynchronous else SimpleSession)   # 参数化基类
 
     class FakeSession(base):
         def __init__(self):

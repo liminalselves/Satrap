@@ -469,35 +469,13 @@ async def test_manual_request_state_outcome_is_consumed(
     )
 
 
-def test_resolve_route_adapter_no_requested_uses_source():
-    """入站路由应使用事件来源适配器并写入会话配置"""
-    sm = _FakeSessionManager()
+@pytest.mark.parametrize("configured", [None, "ghost", "rec1"])
+def test_resolve_route_adapter_binds_event_source(configured: str | None):
+    """入站路由以事件来源适配器为准, 类级 adapter_id 存在与否都不改变结果"""
+    sm = _FakeSessionManager() if configured is None else _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr(configured))
     sched = PipelineScheduler(_as_session_manager(sm))
 
-    adapter = RecorderAdapter()
-    platform_id, extra = sched._resolve_route_adapter(_message_event(adapter))
-    assert platform_id == "rec1"
-    assert extra == {"adapter_id": "rec1"}
-
-
-def test_resolve_route_adapter_requested_missing_falls_back():
-    """会话类中的旧 adapter_id 不应覆盖实际事件来源"""
-    sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("ghost"))
-    sched = PipelineScheduler(_as_session_manager(sm))
-
-    adapter = RecorderAdapter()
-    platform_id, extra = sched._resolve_route_adapter(_message_event(adapter))
-    assert platform_id == "rec1"
-    assert extra == {"adapter_id": "rec1"}
-
-
-def test_resolve_route_adapter_requested_exists():
-    """存在同名 adapter_id 参数时仍应绑定事件来源适配器"""
-    sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("rec1"))
-    sched = PipelineScheduler(_as_session_manager(sm))
-
-    adapter = RecorderAdapter()
-    platform_id, extra = sched._resolve_route_adapter(_message_event(adapter))
+    platform_id, extra = sched._resolve_route_adapter(_message_event(RecorderAdapter()))
     assert platform_id == "rec1"
     assert extra == {"adapter_id": "rec1"}
 
@@ -867,52 +845,40 @@ def _projection_rows(scheduler: PipelineScheduler, event: MessageEvent) -> list[
 
 
 @pytest.mark.asyncio
-async def test_disabled_binding_rejects_before_window_and_timers(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+@pytest.mark.parametrize("state", ["disabled", "invalid", "runnable"])
+async def test_binding_gate_state_before_window_and_timers(
+    state: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ):
-    """定义被禁用: 消息在入窗与排程前被拒, 不建会话不调模型, 日志止于 DEBUG"""
+    """调度器入口绑定门: 禁用静默 DEBUG, 失效 WARNING, 均在入窗排程前拒绝; 可运行时行为不变"""
     import logging
 
-    harness = _gate_harness({"dummy": False})
+    harness = _gate_harness({"runnable": {"dummy": True}, "disabled": {"dummy": False}, "invalid": {}}[state])
     harness.adapter.config.settings.update({"wake_mode": "frequency", "wake_message_threshold": 5})
     observes, schedules = _spy_window_paths(harness.scheduler, monkeypatch)
     event = _group_event(harness.adapter)
     with caplog.at_level(logging.DEBUG):
         await harness.scheduler.execute(event)
 
+    if state == "runnable":
+        assert observes == ["s1"] and schedules == ["s1"]
+        assert [item.text for item in harness.scheduler.wake_window.peek(event)] == ["hello"]
+        assert harness.manager.calls == []
+        return
+
     assert harness.manager.calls == [] and harness.users.resolved == []
     assert observes == [] and schedules == []
     assert event.get_extra("input_projection") is None
     # 被拒正文不得进入窗口, 重新启用后不会被补进模型
     assert harness.scheduler.wake_window.peek(event) == ()
-    assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_disabled")]
-    assert any(record.levelno == logging.DEBUG and "会话定义已禁用" in record.getMessage() for record in caplog.records)
-    # 定义被禁用是正常配置状态: 不得逐条 WARNING
-    assert [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING] == []
-
-
-@pytest.mark.asyncio
-async def test_invalid_binding_rejects_with_warning(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
-):
-    """绑定失效: 消息被拒且不落回默认会话类, 配置错误以 WARNING 暴露原始原因"""
-    import logging
-
-    harness = _gate_harness({})
-    harness.adapter.config.settings.update({"wake_mode": "frequency", "wake_message_threshold": 5})
-    observes, schedules = _spy_window_paths(harness.scheduler, monkeypatch)
-    event = _group_event(harness.adapter)
-    with caplog.at_level(logging.WARNING):
-        await harness.scheduler.execute(event)
-
-    assert harness.manager.calls == [] and harness.users.resolved == []
-    assert observes == [] and schedules == []
-    assert harness.scheduler.wake_window.peek(event) == ()
-    assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_invalid")]
-    assert "会话定义不可用 provider=session_class, name=dummy" in str(_diagnostic_rows(harness.scheduler, event)[0]["reason"])
-    assert any(
-        record.levelno == logging.WARNING and "会话绑定不可用" in record.getMessage() for record in caplog.records
-    )
+    if state == "disabled":
+        assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_disabled")]
+        assert any(record.levelno == logging.DEBUG and "会话定义已禁用" in record.getMessage() for record in caplog.records)
+        # 定义被禁用是正常配置状态: 不得逐条 WARNING
+        assert [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING] == []
+    else:
+        assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_invalid")]
+        assert "会话定义不可用 provider=session_class, name=dummy" in str(_diagnostic_rows(harness.scheduler, event)[0]["reason"])
+        assert any(record.levelno == logging.WARNING and "会话绑定不可用" in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -978,28 +944,29 @@ async def test_manual_and_deadline_sources_are_rejected_when_binding_disabled():
 
 
 @pytest.mark.asyncio
-async def test_binding_gate_reads_shared_registry_judgment(monkeypatch: pytest.MonkeyPatch):
-    """闸门读取注册表的共享判定: 判定恒失效时即使定义存在也拒绝"""
-    harness = _gate_harness({"dummy": True})
-    harness.manager.provider_registry = SessionProviderRegistry()
-    calls: list[tuple[str, str | None]] = []
+@pytest.mark.parametrize("source", ["shared_registry", "real_registry"])
+async def test_binding_gate_reads_registry_judgment(
+    source: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """闸门读取注册表共享判定: 恒失效即使定义存在也拒绝; 真实注册表下禁用即拒收, 启用即恢复"""
+    if source == "shared_registry":
+        harness = _gate_harness({"dummy": True})
+        harness.manager.provider_registry = SessionProviderRegistry()
+        calls: list[tuple[str, str | None]] = []
 
-    def spy(self: SessionProviderRegistry, definition_name: str, provider_name: str | None = None) -> BindingStatus:
-        calls.append((definition_name, provider_name))
-        return BindingStatus(BindingState.INVALID, "共享判定失效")
+        def spy(self: SessionProviderRegistry, definition_name: str, provider_name: str | None = None) -> BindingStatus:
+            calls.append((definition_name, provider_name))
+            return BindingStatus(BindingState.INVALID, "共享判定失效")
 
-    monkeypatch.setattr(SessionProviderRegistry, "binding_status", spy)
-    event = _group_event(harness.adapter)
-    await harness.scheduler.execute(event)
+        monkeypatch.setattr(SessionProviderRegistry, "binding_status", spy)
+        event = _group_event(harness.adapter)
+        await harness.scheduler.execute(event)
 
-    assert calls == [("dummy", "session_class")]
-    assert harness.manager.calls == [] and harness.users.resolved == []
-    assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_invalid")]
+        assert calls == [("dummy", "session_class")]
+        assert harness.manager.calls == [] and harness.users.resolved == []
+        assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_invalid")]
+        return
 
-
-@pytest.mark.asyncio
-async def test_gate_uses_real_registry_disabled_definition(tmp_path: Path):
-    """端到端: 真实 SessionManager 与 SessionClassProvider 下, 定义禁用即拒收, 重新启用即恢复"""
     from satrap.core.framework.Base import Session
     from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 
@@ -1042,17 +1009,3 @@ async def test_gate_uses_real_registry_disabled_definition(tmp_path: Path):
     accepted.is_wake = True
     await scheduler.execute(accepted)
     assert [call.message for call in manager.calls] == ["[用户 User (ID user-1), 消息 msg-1] 恢复后消息"]
-
-
-@pytest.mark.asyncio
-async def test_runnable_binding_keeps_wake_window_behavior(monkeypatch: pytest.MonkeyPatch):
-    """可运行绑定下的入窗与排程行为不变 (与拒绝用例同型装配)"""
-    harness = _gate_harness({"dummy": True})
-    harness.adapter.config.settings.update({"wake_mode": "frequency", "wake_message_threshold": 5})
-    observes, schedules = _spy_window_paths(harness.scheduler, monkeypatch)
-    event = _group_event(harness.adapter)
-    await harness.scheduler.execute(event)
-
-    assert observes == ["s1"] and schedules == ["s1"]
-    assert [item.text for item in harness.scheduler.wake_window.peek(event)] == ["hello"]
-    assert harness.manager.calls == []

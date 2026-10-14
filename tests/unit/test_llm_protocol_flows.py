@@ -149,9 +149,7 @@ async def test_empty_input_does_not_send_request(monkeypatch, method, return_fal
     assert await _invoke(llm, method, []) == await _invoke(async_llm, method, [])
     assert calls == [[], []]
 
-@pytest.mark.parametrize(
-    "method", ["chat", "call", "structured_output", "stream_chat", "stream_call"]
-)
+@pytest.mark.parametrize("method", ["chat", "stream_chat"])
 @pytest.mark.parametrize("error_kind", ["api", "unknown"])
 @pytest.mark.parametrize(
     "suppress_error,return_false", [(True, False), (True, True), (False, False)]

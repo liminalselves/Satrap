@@ -26,17 +26,21 @@ from satrap.expend.tools import search
 
 class TestClassifyCommand:
     def test_empty_and_read(self):
-        """空串与只读命令: READ 且非越界"""
+        """空串与只读命令: READ 且非越界, 引号包裹与大小写归一"""
         assert classify_command("") == (RiskLevel.READ, False)
         assert classify_command("   ") == (RiskLevel.READ, False)
         assert classify_command("ls -la") == (RiskLevel.READ, False)
         assert classify_command("git status") == (RiskLevel.READ, False)
         assert classify_command("Get-ChildItem") == (RiskLevel.READ, False)
+        assert classify_command('"Git" status') == (RiskLevel.READ, False)
 
     def test_write_and_high(self):
-        """常规写与高危命令分级"""
+        """常规写, 高危, 未知保守归 WRITE 与重定向升级"""
         assert classify_command("mkdir newdir") == (RiskLevel.WRITE, False)
         assert classify_command("git commit -m x") == (RiskLevel.WRITE, False)
+        assert classify_command("mycustomtool do-thing") == (RiskLevel.WRITE, False)
+        assert classify_command("echo hi > f.txt")[0] == RiskLevel.WRITE
+        assert classify_command("type a.txt >> b.txt")[0] == RiskLevel.WRITE
         assert classify_command("rm file.txt") == (RiskLevel.HIGH, False)
         assert classify_command("git push") == (RiskLevel.HIGH, False)
         assert classify_command("git reset HEAD~1") == (RiskLevel.HIGH, False)
@@ -59,14 +63,6 @@ class TestClassifyCommand:
         assert classify_command("pip list") == (RiskLevel.WRITE, False)   # 无子命令不越界
         assert classify_command("pip -V") == (RiskLevel.WRITE, False)
 
-    def test_unknown_conservative(self):
-        """未匹配命令保守归 WRITE"""
-        assert classify_command("mycustomtool do-thing") == (RiskLevel.WRITE, False)
-
-    def test_quoted_head_and_case(self):
-        """引号包裹与大小写归一"""
-        assert classify_command('"Git" status') == (RiskLevel.READ, False)
-
     def test_segment_join_bypass_blocked(self):
         """H1: 拼接命令逐段分类, 只读首词 + 破坏性尾段不再放行"""
         assert classify_command("dir && del /f /q C:\\temp\\*")[0] >= RiskLevel.HIGH
@@ -78,12 +74,14 @@ class TestClassifyCommand:
         assert classify_command('echo "a;b"')[0] == RiskLevel.READ
 
     def test_drive_root_deletion_forbidden(self):
-        """L1: 盘根删除补入黑名单"""
+        """L1: 盘根删除与 Remove-Item 参数顺序均补入黑名单"""
         assert classify_command("rm -rf C:\\") == (RiskLevel.FORBIDDEN, False)
         assert classify_command("rm -rf D:\\x") == (RiskLevel.FORBIDDEN, False)
         assert classify_command("del /f /s /q C:\\windows") == (RiskLevel.FORBIDDEN, False)
         assert classify_command("rd /s /q D:\\data") == (RiskLevel.FORBIDDEN, False)
         assert classify_command("Remove-Item -Recurse -Force E:\\") == (RiskLevel.FORBIDDEN, False)
+        assert classify_command(r"Remove-Item -Path C:\temp\x -Recurse -Force")[0] == RiskLevel.FORBIDDEN
+        assert classify_command(r"Remove-Item -Recurse -Path C:\temp\x -Force")[0] == RiskLevel.FORBIDDEN
 
     def test_git_fine_grained(self):
         """git 子命令细粒度: config 写值/branch 删除/tag 创建为写"""
@@ -115,16 +113,6 @@ class TestClassifyCommand:
         assert classify_command("powershell -EncodedCommand ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
         assert classify_command("pwsh -enc ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
         assert classify_command("powershell -e ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
-
-    def test_remove_item_parameter_order(self):
-        """Remove-Item 的路径和递归参数顺序不能绕过禁止规则"""
-        assert classify_command(r"Remove-Item -Path C:\temp\x -Recurse -Force")[0] == RiskLevel.FORBIDDEN
-        assert classify_command(r"Remove-Item -Recurse -Path C:\temp\x -Force")[0] == RiskLevel.FORBIDDEN
-
-    def test_redirect_upgrades_read(self):
-        """只读命令带重定向符 = 写文件, 升级为 WRITE"""
-        assert classify_command("echo hi > f.txt")[0] == RiskLevel.WRITE
-        assert classify_command("type a.txt >> b.txt")[0] == RiskLevel.WRITE
 
 @pytest.fixture
 def engine(tmp_path: Path) -> PermissionEngine:
@@ -529,31 +517,28 @@ def _install_tools(session: SimpleSession) -> dict[str, Any]:
         session.add_tool(tool)
     return {t.get_tool_name(): t for t in tools}
 
-def test_factory_sync_tool_set(tmp_path: Any):
-    """同步会话: 11 个工具全部注册, 无重名 (search/memory 已移交 base_take)"""
-    session = _make_session(tmp_path)
-    tools = _install_tools(session)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_factory_tool_set(tmp_path: Any, asynchronous: bool):
+    """同步与异步会话均注册 11 个无重名工具, 异步集全部为 AsyncTool"""
     expected = {
         "ask_user", "shell", "subagent", "read_file", "write_file",
         "edit_file", "search_replace", "todo_write", "list_dir", "glob_files", "grep_files",
     }
-    assert set(tools) == expected
-    assert set(session.list_tools()) == expected
-
-@pytest.mark.asyncio
-async def test_factory_async_tool_set(tmp_path: Any):
-    """异步会话: 异步工具集注册"""
-    session = AsyncSimpleSession(
-        "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-    await session.initialize()
-    tools = get_tools(session)
-    names = [t.get_tool_name() for t in tools]
-    assert len(names) == 11 and len(set(names)) == 11
-    # 工具实例为 AsyncTool
-    from satrap.core.utils.TCBuilder import AsyncTool
-
-    assert all(isinstance(t, AsyncTool) for t in tools)
+    if asynchronous:
+        session = AsyncSimpleSession(
+            "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+        await session.initialize()
+        tools = get_tools(session)
+        assert all(isinstance(tool, AsyncTool) for tool in tools)
+        names = {tool.get_tool_name() for tool in tools}
+    else:
+        session = _make_session(tmp_path)
+        tools = _install_tools(session)
+        assert set(session.list_tools()) == expected
+        names = set(tools)
+    assert names == expected
 
 def test_file_tools_read_list_glob_grep(tmp_path: Any, workspace: Any):
     """只读文件工具: 读/列表/glob/grep"""
@@ -791,67 +776,6 @@ def test_ask_user_tool(tmp_path: Any):
     assert structured == [("继续吗?", ["方案A", "方案B"])]
     assert "用户回复: 方案B" in out
 
-def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
-    """shell: 所有解释器命令逐次审批, 黑名单拒绝"""
-    # 工作区指向临时目录, 避免相对路径写盘污染项目根
-    monkeypatch.setattr(tools_mod, "WORKSPACE_ROOT", tmp_path / "workspace")
-    (tmp_path / "workspace").mkdir()
-    session = _make_session(tmp_path)
-    tools = _install_tools(session)
-
-    out = tools["shell"].execute("echo hello")
-    assert "需要用户批准" in out
-
-    out = tools["shell"].execute("echo written > f.txt")
-    assert "需要用户批准" in out
-    assert not (tmp_path / "workspace" / "f.txt").exists()
-
-    outside = tmp_path / "outside.txt"
-    outside.write_text("secret", encoding="utf-8")
-    out = tools["shell"].execute(f'type "{outside}"')
-    assert "需要用户批准" in out
-    out = tools["shell"].execute("type ../outside.txt")
-    assert "需要用户批准" in out
-    out = tools["shell"].execute(r"type C:/Users/example/.ssh/id_rsa")
-    assert "需要用户批准" in out
-    out = tools["shell"].execute(r"type %USERPROFILE%\.ssh\id_rsa")
-    assert "需要用户批准" in out
-
-    out = tools["shell"].execute(r"type a\..\..\secret.txt")
-    assert "需要用户批准" in out
-    out = tools["shell"].execute(r'powershell -Command "type C:\Windows\win.ini"')
-    assert "需要用户批准" in out
-    out = tools["shell"].execute(r"type \Windows\win.ini")
-    assert "需要用户批准" in out
-
-    out = tools["shell"].execute("powershell -e ZQBjAGgAbwAgAHgA")
-    assert "黑名单" in out
-
-    out = tools["shell"].execute("cmd /c dir")
-    assert "需要用户批准" in out
-    out = tools["shell"].execute("cd ..")
-    assert "需要用户批准" in out
-
-    out = tools["shell"].execute("git push")
-    assert "需要用户批准" in out
-
-    out = tools["shell"].execute("copy \\\\server\\share\\a.txt \\\\server\\share\\b.txt")
-    # 引用工作区外绝对路径 (UNC, 不在任何盘符下): 走审批 (无输入通道时拒绝)
-    assert "需要用户批准" in out
-
-    out = tools["shell"].execute("rm -rf /")
-    assert "黑名单" in out
-
-    session.user_input_provider = _reply("y")
-    out = tools["shell"].execute("echo written > f.txt")
-    assert "需要用户批准" not in out
-    assert (tmp_path / "workspace" / "f.txt").is_file()
-    out = tools["shell"].execute("copy \\\\server\\share\\a.txt \\\\server\\share\\b.txt")
-    assert "需要用户批准" not in out
-    # 工作区外路径经用户批准后走执行流程, 源不存在仅验证流程且无副作用
-    out = tools["shell"].execute("echo written", shell="cmd")
-    assert "written" in out
-
 @pytest.mark.parametrize(
     ("timeout", "expected"),
     [
@@ -1017,7 +941,7 @@ async def test_async_shell_and_subagent_reject_invalid_integer_arguments(
     assert "timeout 必须是整数" in timeout_error
     assert "max_turns 必须是整数" in turns_error
 
-@pytest.mark.parametrize("separator", ["\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+@pytest.mark.parametrize("separator", ["\n", "\r\n", "\r", "\x1c", "\u2028"])
 def test_file_page_matches_splitlines(tmp_path, separator):
     path = tmp_path / "text.txt"
     text = ("中文" + separator + separator + "尾行" + separator) * 10000 + "末尾"

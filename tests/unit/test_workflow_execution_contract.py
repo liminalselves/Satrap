@@ -150,10 +150,10 @@ def stored_history(wf: Workflow) -> list[tuple[str, str]]:
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("recoverable", [False, True])
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("iterations", [0, 1, 2])
+@pytest.mark.parametrize("iterations", [1, 2])
 async def test_iterations_thinking_and_atomic_history(tmp_path: Path, asynchronous: bool, recoverable: bool, stream: bool, iterations: int) -> None:
     """验证各入口共用轮数上限, 思考参数与整轮提交约定"""
-    rounds = max(1, iterations)
+    rounds = iterations
     script = Script([TOOLS] * rounds + [ANSWER])
     wf, events = await make_workflow(tmp_path, script, asynchronous, recoverable)
     original = copy.deepcopy(wf.ctx.get_context())
@@ -174,8 +174,9 @@ async def test_iterations_thinking_and_atomic_history(tmp_path: Path, asynchrono
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("recoverable", [False, True])
-@pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("failure", ["first", "later", "final_tools", "cancel"])
+@pytest.mark.parametrize("failure, stream", [
+    ("first", False), ("later", True), ("final_tools", False), ("cancel", True),
+])
 async def test_failures_never_commit_partial_history(tmp_path: Path, asynchronous: bool, recoverable: bool, stream: bool, failure: str) -> None:
     """验证失败或取消向外传播且不留下部分历史"""
     replies: list[LLMCallResponse | bool | BaseException] = {

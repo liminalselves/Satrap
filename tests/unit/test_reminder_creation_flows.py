@@ -429,17 +429,19 @@ def test_explicit_offsets_and_local_time_return_utc_deadlines():
     expected_local = local.astimezone().timestamp()
     assert resolve_reminder_time({"due_at": "2026-10-04T09:00:00"}, expected_local - 60) == expected_local
 
-def test_local_dst_fold_is_refused_with_explicit_candidates(monkeypatch):
-    fields = (2026, 11, 1, 1, 30, 0)
-    first = datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc).timestamp()
-    second = first + 3600
-    monkeypatch.setattr(time, "mktime", lambda value: first if value[-1] == 1 else second)
-    monkeypatch.setattr(time, "localtime", lambda value: time.struct_time((*fields, 0, 0, int(value == first))))
-    with pytest.raises(ValueError, match="夏令时歧义"):
-        resolve_reminder_time({"due_at": "2026-11-01T01:30:00"}, first - 60)
-
-def test_local_dst_gap_is_refused(monkeypatch):
-    monkeypatch.setattr(time, "mktime", lambda value: 12345)
-    monkeypatch.setattr(time, "localtime", lambda value: time.struct_time((2026, 3, 8, 3, 30, 0, 0, 0, 1)))
-    with pytest.raises(ValueError, match="不存在"):
-        resolve_reminder_time({"due_at": "2026-03-08T02:30:00"}, 1000)
+@pytest.mark.parametrize("case", ["fold", "gap"])
+def test_local_dst_ambiguity_is_refused(monkeypatch, case):
+    """本地时间落入夏令时重叠 (歧义) 或空洞 (不存在) 时均拒绝并给出明确错误"""
+    if case == "fold":
+        fields = (2026, 11, 1, 1, 30, 0)
+        first = datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc).timestamp()
+        second = first + 3600
+        monkeypatch.setattr(time, "mktime", lambda value: first if value[-1] == 1 else second)
+        monkeypatch.setattr(time, "localtime", lambda value: time.struct_time((*fields, 0, 0, int(value == first))))
+        with pytest.raises(ValueError, match="夏令时歧义"):
+            resolve_reminder_time({"due_at": "2026-11-01T01:30:00"}, first - 60)
+    else:
+        monkeypatch.setattr(time, "mktime", lambda value: 12345)
+        monkeypatch.setattr(time, "localtime", lambda value: time.struct_time((2026, 3, 8, 3, 30, 0, 0, 0, 1)))
+        with pytest.raises(ValueError, match="不存在"):
+            resolve_reminder_time({"due_at": "2026-03-08T02:30:00"}, 1000)

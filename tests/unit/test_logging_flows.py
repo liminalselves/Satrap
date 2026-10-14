@@ -463,35 +463,24 @@ def test_failure_diagnostics_cannot_raise_even_when_both_channels_fail(monkeypat
     managed.report_failure("全部通道故障")
 
 @pytest.mark.asyncio
-async def test_standard_log_stream_keeps_history_and_pushes_live_entries() -> None:
-    """订阅应原子获取历史日志并收到后续实时日志"""
+@pytest.mark.parametrize("history_limit", [2, 0])
+async def test_standard_log_stream_history_and_live_entries(history_limit: int) -> None:
+    """订阅原子获取历史日志 (limit=0 时为空) 并收到后续实时日志"""
     stream = StandardLogStream(history_size=3)
     stream.publish("first", "INFO")
     stream.publish("second", "WARNING")
     stream.publish("third", "ERROR")
 
-    subscription = stream.subscribe(history_limit=2, queue_size=2)
-    assert [entry.content for entry in subscription.history] == ["second", "third"]
-
-    stream.publish("live", "DEBUG")
-    entry = await asyncio.wait_for(subscription.queue.get(), timeout=1)
-    assert (entry.content, entry.level) == ("live", "DEBUG")
-
-    stream.unsubscribe(subscription.subscription_id)
-    stream.publish("after unsubscribe", "INFO")
-    assert subscription.queue.empty()
-
-@pytest.mark.asyncio
-async def test_standard_log_stream_zero_history_returns_no_entries() -> None:
-    """历史条数为零时不应错误返回全部历史"""
-    stream = StandardLogStream()
-    stream.publish("history", "INFO")
-
-    subscription = stream.subscribe(history_limit=0)
+    subscription = stream.subscribe(history_limit=history_limit, queue_size=2)
     try:
-        assert subscription.history == ()
+        assert [entry.content for entry in subscription.history] == (["second", "third"] if history_limit else [])
+        stream.publish("live", "DEBUG")
+        entry = await asyncio.wait_for(subscription.queue.get(), timeout=1)
+        assert (entry.content, entry.level) == ("live", "DEBUG")
     finally:
         stream.unsubscribe(subscription.subscription_id)
+    stream.publish("after unsubscribe", "INFO")
+    assert subscription.queue.empty()
 
 @pytest.mark.asyncio
 async def test_satrap_standard_logger_publishes_to_live_stream() -> None:

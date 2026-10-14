@@ -664,17 +664,6 @@ def test_pipeline_binds_source_adapter_over_class_config(tmp_path: Path, configu
     assert platform_id == "misskey1"
     assert extra == {"adapter_id": "misskey1"}
 
-def test_backend_resolves_explicit_same_name_and_default_session_types(tmp_path: Path):
-    """平台会话类应按显式配置, 同名兼容和全局默认的顺序解析"""
-    backend = BackendManager(BackendConfig(default_session_type="fallback"))
-    manager = SessionClassConfigManager(storage_path=tmp_path / "session_classes.json")
-    manager.register("misskey", _EchoSession)
-    backend._session_cls_cfg = manager
-
-    assert backend._resolve_platform_session_type("misskey", "assistant") == "assistant"
-    assert backend._resolve_platform_session_type("misskey", "") == "misskey"
-    assert backend._resolve_platform_session_type("onebot", "") == "fallback"
-
 @pytest.mark.asyncio
 async def test_backend_awaits_platform_start_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """平台初始化应在当前事件循环中等待 start_all 且只调用一次"""
@@ -723,16 +712,22 @@ async def test_backend_propagates_platform_start_failure(
         # 启动失败前 hub 已登记, 由 stop 负责清除
         await backend.stop()
 
-def test_configured_adapter_ids_reads_backend_config_platforms():
-    """CLI 创建会话时可从配置中读取 adapter_id 候选"""
-    config = BackendConfig(
-        platforms=[
-            {"id": "misskey1", "type": "misskey", "settings": {}},
-            {"id": "misskey2", "type": "misskey", "settings": {}},
-        ],
-    )
+def test_backend_resolves_explicit_same_name_and_default_session_types(tmp_path: Path):
+    """平台会话类按显式配置, 同名兼容和全局默认的顺序解析; CLI 可从配置读出 adapter 候选"""
+    backend = BackendManager(BackendConfig(default_session_type="fallback"))
+    manager = SessionClassConfigManager(storage_path=tmp_path / "session_classes.json")
+    manager.register("misskey", _EchoSession)
+    backend._session_cls_cfg = manager
 
-    assert _configured_adapter_ids(config) == {"misskey1", "misskey2"}
+    assert backend._resolve_platform_session_type("misskey", "assistant") == "assistant"
+    assert backend._resolve_platform_session_type("misskey", "") == "misskey"
+    assert backend._resolve_platform_session_type("onebot", "") == "fallback"
+
+    configured = BackendConfig(platforms=[
+        {"id": "misskey1", "type": "misskey", "settings": {}},
+        {"id": "misskey2", "type": "misskey", "settings": {}},
+    ])
+    assert _configured_adapter_ids(configured) == {"misskey1", "misskey2"}
 
 def test_backend_isolates_same_session_id_between_platform_databases(tmp_path: Path):
     """两个平台可拥有同名会话, 其数据库和私有目录必须完全隔离"""

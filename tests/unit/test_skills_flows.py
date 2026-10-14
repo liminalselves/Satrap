@@ -93,34 +93,37 @@ def _skills_write_folder_skill(tmp_path: Path, name: str = "demo", skill_md: str
         (skill_dir / "meta.yaml").write_text(meta, encoding="utf-8")
     return skill_dir
 
-def test_skill_from_file_with_front_matter(tmp_path: Path):
-    skill = Skill.from_file(str(_write_skill(tmp_path)))
-    assert skill.name == "coding-agent"
-    assert skill.description == "代码助手"
-    assert skill.tool_names == ["code_sandbox", "search"]
-    assert "使用沙箱验证代码" in skill.instructions
+@pytest.mark.parametrize("text, filename, expected_name, expected_body", [
+    (SKILL_MD, "coding-agent.md", "coding-agent", None),
+    ("仅正文内容", "plain_skill.md", "plain_skill", "仅正文内容"),
+])
+def test_skill_from_file_variants(tmp_path: Path, text: str, filename: str, expected_name: str, expected_body: str | None):
+    """有/无 front matter 的技能文件均能解析出名与正文"""
+    skill = Skill.from_file(str(_write_skill(tmp_path, text=text, filename=filename)))
+    assert skill.name == expected_name
+    if expected_body is None:
+        assert skill.description == "代码助手"
+        assert skill.tool_names == ["code_sandbox", "search"]
+        assert "使用沙箱验证代码" in skill.instructions
+    else:
+        assert skill.instructions == expected_body
+        assert skill.tool_names == []
 
-def test_skill_from_file_without_front_matter(tmp_path: Path):
-    path = _write_skill(tmp_path, text="仅正文内容", filename="plain_skill.md")
-    skill = Skill.from_file(str(path))
-    assert skill.name == "plain_skill"
-    assert skill.instructions == "仅正文内容"
-    assert skill.tool_names == []
-
-def test_skill_to_text_contains_markers():
+def test_skill_text_and_front_matter():
+    """skill.to_text 带标记; 无 front matter 时元数据为空"""
     skill = Skill(name="demo", instructions="指令", tool_names=["t1"], description="简介")
     text = skill.to_text()
-    assert "<skill:demo>" in text
-    assert "</skill:demo>" in text
-    assert "指令" in text
-    assert "t1" in text
+    assert "<skill:demo>" in text and "</skill:demo>" in text
+    assert "指令" in text and "t1" in text
 
-def test_parse_front_matter_no_match():
     meta, body = _parse_front_matter("hello\nworld")
-    assert meta == {}
-    assert body == "hello\nworld"
+    assert meta == {} and body == "hello\nworld"
 
-def test_scan_loads_all_skill_files(tmp_path: Path):
+def test_scan_files_and_missing_dir(tmp_path: Path):
+    """扫描加载全部技能文件; 目录缺失返回空"""
+    missing = SkillsManager(skills_dir=str(tmp_path / "nope"), include_preset=False)
+    assert missing.scan() == []
+
     _write_skill(tmp_path, filename="a.md")
     _write_skill(tmp_path, text="---\nname: b\n---\nbody", filename="b.md")
     (tmp_path / "ignore.txt").write_text("x", encoding="utf-8")
@@ -130,10 +133,6 @@ def test_scan_loads_all_skill_files(tmp_path: Path):
     assert {s.name for s in found} == {"coding-agent", "b"}
     assert manager.has_skill("b")
     assert sorted(manager.list_skills()) == ["b", "coding-agent"]
-
-def test_scan_missing_directory_returns_empty(tmp_path: Path):
-    manager = SkillsManager(skills_dir=str(tmp_path / "nope"), include_preset=False)
-    assert manager.scan() == []
 
 def test_scan_loads_folder_skill_with_meta_and_tools(tmp_path: Path):
     skill_dir = _skills_write_folder_skill(
@@ -159,17 +158,12 @@ def test_scan_loads_folder_skill_with_meta_and_tools(tmp_path: Path):
     assert "stopwatch" in skill.tool_names   # 自带工具名自动并入
     assert "code_sandbox" in skill.tool_names
 
-def test_scan_folder_skill_name_falls_back_to_dirname(tmp_path: Path):
+def test_scan_folder_name_fallback_and_mixed_sources(tmp_path: Path):
+    """无 front matter 的文件夹技能落到目录名; 文件夹与单文件技能可混合扫描"""
     _skills_write_folder_skill(tmp_path, name="plain_folder", skill_md="# 仅正文")
-    manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
-    skill = manager.scan()[0]
-    assert skill.name == "plain_folder"
-
-def test_scan_mixes_folder_and_single_file_skills(tmp_path: Path):
-    _skills_write_folder_skill(tmp_path, name="folder_skill")
     _write_skill(tmp_path, filename="single.md", text="---\nname: single\n---\nbody")
     manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
-    assert sorted(s.name for s in manager.scan()) == ["coding-agent", "single"]
+    assert sorted(s.name for s in manager.scan()) == ["plain_folder", "single"]
 
 def test_scan_folder_skill_auto_collects_tool_classes(tmp_path: Path):
     tools_py = """\
@@ -250,10 +244,6 @@ def test_scan_skips_untrusted_tools_code(tmp_path: Path):
     assert skill.tools == []
     assert skill.mcp_clients == []
     assert not marker.exists()
-
-def test_preset_dir_points_to_expend_skills():
-    from satrap.core.utils.skills import SKILLS_PRESET_DIR
-    assert SKILLS_PRESET_DIR.replace("\\", "/").endswith("satrap/expend/skills")
 
 def _make_sync_workflow(tmp_path: Path):
     class DummyTool(Tool):
@@ -385,59 +375,57 @@ def _skills_dirs_write_folder_skill(tmp_path: Path, name: str, skill_md: str, me
     return skill_dir
 
 def test_default_user_dir_and_preset_merge():
-    """默认扫描 = 官方预设 + .satrap/skills, 官方技能带 satrap-skill-id"""
+    """默认扫描 = 官方预设 + .satrap/skills; 预设目录指向 expend/skills, 官方技能带 satrap-skill-id"""
+    assert SKILLS_PRESET_DIR.replace("\\", "/").endswith("satrap/expend/skills")
     mgr = SkillsManager()   # 不传目录: 使用默认用户目录
     assert mgr.skills_dir == DEFAULT_USER_SKILLS_DIR
 
     loaded = mgr.scan()
-    names = {s.name for s in loaded}
-    assert "web-research" in names   # 官方预设技能
-
+    assert "web-research" in {s.name for s in loaded}   # 官方预设技能
     for s in loaded:
         if s.source is not None and s.source.startswith(SKILLS_PRESET_DIR):
             assert s.skill_id == s.name
-    # 官方技能解析出 satrap-skill-id
-
     assert mgr.get_skill("web-research") is not None
 
-def test_preset_meta_skill_id_from_disk():
-    """官方 meta.yaml 的 satrap-skill-id 真实可读"""
-    mgr = SkillsManager(skills_dir=str(Path("nope-dir")))
-    mgr.scan()
-    s = mgr.get_skill("web-research")
-    assert s is not None
-    assert s.skill_id == "web-research"
+def test_preset_skill_id_and_dir_scoping(tmp_path: Path):
+    """官方 meta.yaml 的 satrap-skill-id 真实可读; include_preset=False 与显式目录都只扫用户目录"""
+    preset = SkillsManager(skills_dir=str(Path("nope-dir")))
+    preset.scan()
+    s = preset.get_skill("web-research")
+    assert s is not None and s.skill_id == "web-research"
     assert s.source is not None and s.source.startswith(SKILLS_PRESET_DIR)
 
-def test_same_name_no_id_official_wins(tmp_path: Path):
-    """用户同名技能 (无 meta id) 不覆盖官方"""
-    _skills_dirs_write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD)
-    mgr = SkillsManager(skills_dir=str(tmp_path))   # include_preset 默认 True
-    mgr.scan()
+    _skills_dirs_write_folder_skill(tmp_path, "my-skill", USER_SAME_NAME_MD, meta="satrap-skill-id: my-skill\n")
+    user_only = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
+    user_only.scan()
+    assert user_only.list_skills() == ["my-skill"]
 
-    s = mgr.get_skill("web-research")
-    assert s is not None
-    assert "用户指令正文" not in s.instructions   # 官方版本生效
-    assert s.source is not None and s.source.startswith(SKILLS_PRESET_DIR)
+    explicit = SkillsManager(skills_dir=str(tmp_path / "empty"), include_preset=False)
+    explicit.scan()
+    assert explicit.list_skills() == []
+    explicit.scan(str(tmp_path))
+    assert explicit.list_skills() == ["my-skill"]
 
-def test_same_name_different_id_coexist(tmp_path: Path):
-    """同名技能携带不同 satrap-skill-id 时共存, 各按 id 可寻"""
-    meta = "author: user\nsatrap-skill-id: my-web-research\n"
+@pytest.mark.parametrize("meta, expected", [
+    (None, ["web-research"]),
+    ("author: user\nsatrap-skill-id: my-web-research\n", ["my-web-research", "web-research"]),
+])
+def test_same_name_resolution(tmp_path: Path, meta: str | None, expected: list[str]):
+    """用户同名技能无 id 时官方生效; 带不同 satrap-skill-id 时共存并按 id 可寻"""
     _skills_dirs_write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD, meta)
     mgr = SkillsManager(skills_dir=str(tmp_path))
     mgr.scan()
 
-    assert sorted(mgr.list_skills()) == ["my-web-research", "web-research"]
-
+    assert sorted(mgr.list_skills()) == expected
     official = mgr.get_skill("web-research")
-    mine = mgr.get_skill("my-web-research")
     assert official is not None and official.skill_id == "web-research"
-    assert mine is not None and mine.skill_id == "my-web-research"
-    assert "用户指令正文" in mine.instructions
-
-    by_name = mgr.get_skill("web-research")
-    # 按 name 查找返回官方 (官方优先)
-    assert by_name is not None and by_name.skill_id == "web-research"
+    assert official.source is not None and official.source.startswith(SKILLS_PRESET_DIR)
+    if meta is None:
+        assert "用户指令正文" not in official.instructions
+    else:
+        mine = mgr.get_skill("my-web-research")
+        assert mine is not None and mine.skill_id == "my-web-research"
+        assert "用户指令正文" in mine.instructions
 
 def test_same_name_sequential_activate_no_cross_strip(tmp_path: Path):
     """同名不同 id 技能在同一 workflow 顺序激活, 标记互不相同且停用不误伤"""
@@ -458,26 +446,6 @@ def test_same_name_sequential_activate_no_cross_strip(tmp_path: Path):
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:user-web>" not in system_text
     assert "<skill:web-research>" in system_text   # 官方版本未被误伤
-
-def test_include_preset_false_scans_user_only(tmp_path: Path):
-    """include_preset=False 时仅扫用户目录"""
-    _skills_dirs_write_folder_skill(
-        tmp_path, "my-skill", USER_SAME_NAME_MD,
-        meta="satrap-skill-id: my-skill\n",
-    )
-    mgr = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
-    mgr.scan()
-    assert mgr.list_skills() == ["my-skill"]
-
-def test_scan_explicit_dir_scans_only_that_dir(tmp_path: Path):
-    """scan(显式目录) 只扫指定目录 (不合并官方)"""
-    mgr = SkillsManager(skills_dir=str(tmp_path / "empty"), include_preset=False)
-    mgr.scan()
-    assert mgr.list_skills() == []
-
-    _skills_dirs_write_folder_skill(tmp_path, "solo", USER_SAME_NAME_MD, meta="satrap-skill-id: solo\n")
-    mgr.scan(str(tmp_path))
-    assert mgr.list_skills() == ["solo"]
 
 def _make_workflow(tmp_path: Path):
     """最小 workflow stub: ctx + tools_manager"""
@@ -539,7 +507,8 @@ def _make_adapter(session: FakeSession | None = None, name: str = "read_file", s
     session = session or FakeSession()
     return MCPToolAdapter(session, _make_mcp_tool(name=name, schema=schema))
 
-def test_adapter_tool_definition_preserves_full_schema():
+def test_adapter_tool_definition_preserves_or_defaults_schema():
+    """完整 JSON schema 原样透出并映射参数; 空 schema 归一为 object"""
     schema: dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -558,37 +527,31 @@ def test_adapter_tool_definition_preserves_full_schema():
     assert fn["parameters"] == schema
     assert adapter.params_dict == {"query": ("string", "查询词"), "limit": ("integer", "数量")}
 
-def test_adapter_empty_schema_defaults_to_object():
-    adapter = _make_adapter(schema={})
-    assert adapter.get_tool_defined()["function"]["parameters"] == {"type": "object", "properties": {}}
+    empty = _make_adapter(schema={})
+    assert empty.get_tool_defined()["function"]["parameters"] == {"type": "object", "properties": {}}
 
-async def test_adapter_execute_returns_text_content():
-    session = FakeSession(content=[SimpleNamespace(type="text", text="hello mcp")])
-    adapter = _make_adapter(session)
-    result = await adapter.execute(path="/tmp/a.txt")
-    assert result == "hello mcp"
-    assert session.calls == [("read_file", {"path": "/tmp/a.txt"})]
-
-async def test_adapter_execute_empty_content():
-    adapter = _make_adapter(FakeSession(content=[]))
-    assert await adapter.execute(path="x") == "OK"
-
-async def test_adapter_execute_error_content_returns_error_dict():
-    session = FakeSession(
-        content=[SimpleNamespace(type="text", text="file not found")],
-        is_error=True,
-    )
-    result = await _make_adapter(session).execute(path="x")
-    assert result["ok"] is False
-    assert result["error_type"] == "mcp_error"
-    assert "file not found" in result["error"]
-    assert result["tool_name"] == "read_file"
-
-async def test_adapter_execute_exception_returns_error_dict():
-    session = FakeSession(error=RuntimeError("boom"))
-    result = await _make_adapter(session).execute(path="x")
-    assert result["ok"] is False
-    assert "boom" in result["error"]
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["text", "empty", "error_content", "exception"])
+async def test_adapter_execute_outcomes(case: str):
+    """MCP 适配器 execute: 文本, 空内容, 远端错误与抛出异常分别归一"""
+    if case == "text":
+        session = FakeSession(content=[SimpleNamespace(type="text", text="hello mcp")])
+        result = await _make_adapter(session).execute(path="/tmp/a.txt")
+        assert result == "hello mcp"
+        assert session.calls == [("read_file", {"path": "/tmp/a.txt"})]
+    elif case == "empty":
+        assert await _make_adapter(FakeSession(content=[])).execute(path="x") == "OK"
+    elif case == "error_content":
+        session = FakeSession(content=[SimpleNamespace(type="text", text="file not found")], is_error=True)
+        result = await _make_adapter(session).execute(path="x")
+        assert result["ok"] is False
+        assert result["error_type"] == "mcp_error"
+        assert "file not found" in result["error"]
+        assert result["tool_name"] == "read_file"
+    else:
+        result = await _make_adapter(FakeSession(error=RuntimeError("boom"))).execute(path="x")
+        assert result["ok"] is False
+        assert "boom" in result["error"]
 
 def test_adapter_prefix_applied_to_name():
     adapter = _make_adapter(name="read_file")
@@ -658,48 +621,32 @@ def _stop_loop(loop: asyncio.AbstractEventLoop, thread: threading.Thread) -> Non
     loop.call_soon_threadsafe(loop.stop)
     thread.join(timeout=5)
 
-def test_sync_adapter_executes_via_background_loop():
-    """同步适配器: 通过后台事件循环桥接异步 MCP 调用"""
+@pytest.mark.parametrize("case", ["text", "error", "timeout"])
+def test_sync_adapter_outcomes(case: str):
+    """同步适配器: 经后台事件循环桥接异步调用, 远端异常与超时归为错误字典"""
     loop, thread = _background_loop()
     try:
-        session = FakeSession(content=[SimpleNamespace(type="text", text="sync ok")])
-        inner = MCPToolAdapter(session, _make_mcp_tool())
-        adapter = SyncMCPToolAdapter(inner, loop)
-        assert adapter.get_tool_defined()["function"]["name"] == "read_file"
+        if case == "text":
+            session = FakeSession(content=[SimpleNamespace(type="text", text="sync ok")])
+            adapter = SyncMCPToolAdapter(MCPToolAdapter(session, _make_mcp_tool()), loop)
+            assert adapter.get_tool_defined()["function"]["name"] == "read_file"
+            assert adapter.execute(path="/tmp/a.txt") == "sync ok"
+            assert session.calls == [("read_file", {"path": "/tmp/a.txt"})]
+        elif case == "error":
+            adapter = SyncMCPToolAdapter(MCPToolAdapter(FakeSession(error=RuntimeError("boom")), _make_mcp_tool()), loop)
+            result = adapter.execute(path="x")
+            assert result["ok"] is False and "boom" in result["error"]
+        else:
+            class SlowSession:
+                async def list_tools(self):
+                    return SimpleNamespace(tools=[])
 
-        result = adapter.execute(path="/tmp/a.txt")
-        assert result == "sync ok"
-        assert session.calls == [("read_file", {"path": "/tmp/a.txt"})]
-    finally:
-        _stop_loop(loop, thread)
+                async def call_tool(self, name: str, arguments: dict[str, Any] | None = None):
+                    await asyncio.sleep(30)
 
-def test_sync_adapter_error_returns_error_dict():
-    """同步适配器: 远端异常返回错误字典而非抛出"""
-    loop, thread = _background_loop()
-    try:
-        session = FakeSession(error=RuntimeError("boom"))
-        adapter = SyncMCPToolAdapter(MCPToolAdapter(session, _make_mcp_tool()), loop)
-        result = adapter.execute(path="x")
-        assert result["ok"] is False
-        assert "boom" in result["error"]
-    finally:
-        _stop_loop(loop, thread)
-
-def test_sync_adapter_timeout_returns_error_dict():
-    """同步适配器: 调用超时返回错误字典而非抛出"""
-    class SlowSession:
-        async def list_tools(self):
-            return SimpleNamespace(tools=[])
-
-        async def call_tool(self, name: str, arguments: dict[str, Any] | None = None):
-            await asyncio.sleep(30)
-
-    loop, thread = _background_loop()
-    try:
-        adapter = SyncMCPToolAdapter(MCPToolAdapter(SlowSession(), _make_mcp_tool()), loop, timeout=0.1)
-        result = adapter.execute(path="x")
-        assert result["ok"] is False
-        assert "超时" in result["error"]
+            adapter = SyncMCPToolAdapter(MCPToolAdapter(SlowSession(), _make_mcp_tool()), loop, timeout=0.1)
+            result = adapter.execute(path="x")
+            assert result["ok"] is False and "超时" in result["error"]
     finally:
         _stop_loop(loop, thread)
 
