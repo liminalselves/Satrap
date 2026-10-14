@@ -68,6 +68,8 @@ class TestForwardParsing:
         components, text = onebot_segments_to_components([{"type": "forward", "data": {"id": "f1"}}])
         assert isinstance(components[0], Forward) and components[0].id == "f1" and components[0].nodes is None
         assert text == "[转发]"
+        resolved = Forward(id="f", nodes=[Node([Plain("x")])])
+        assert resolved.nodes is not None and cast(Plain, resolved.nodes[0].content[0]).text == "x"
 
     def test_inline_content_is_parsed_without_lookup(self):
         segment = {"type": "forward", "data": {"id": "f1", "content": [
@@ -279,20 +281,17 @@ class TestOutboundForward:
         assert checked == [True] and receipt.status == "failed" and receipt.reason == "preflight_rejected"
         adapter._bot.send_group_forward_msg.assert_not_awaited()
 
-    def test_split_turns_merges_adjacent_and_preserves_order(self):
+    def test_split_turns_merges_adjacent_and_diverts_files_without_merging(self):
+        from satrap.core.components import File
+
         node_a, node_b = Node([Plain("一")]), Node([Plain("二")])
         turns = split_forward_turns([Plain("A"), node_a, Nodes([node_b]), Plain("C")])
         assert [kind for kind, _ in turns] == ["normal", "forward", "normal"]
         assert turns[1][1] == [node_a, node_b]
         assert split_forward_turns([]) == []
         assert [kind for kind, _ in split_forward_turns([node_a])] == ["forward"]
-
-    def test_split_turns_diverts_files_without_merging(self):
-        from satrap.core.components import File
-
-        node = Node([Plain("一")])
         file_a, file_b = File(name="a.bin"), File(name="b.bin")
-        turns = split_forward_turns([Plain("A"), file_a, file_b, node, Plain("B"), file_a])
+        turns = split_forward_turns([Plain("A"), file_a, file_b, node_a, Plain("B"), file_a])
         assert [kind for kind, _ in turns] == ["normal", "file", "file", "forward", "normal", "file"]
         assert turns[1][1] == [file_a] and turns[2][1] == [file_b]
         assert turns[5][1] == [file_a]
@@ -334,24 +333,6 @@ class TestOutboundForward:
         adapter._bot.send_private_forward_msg.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_unsupported_forward_degrades_to_segmented_send(self):
-        adapter = self._adapter()
-        adapter._bot.send_group_forward_msg.side_effect = ActionFailed({"retcode": 10002})
-        adapter._bot.send_group_msg.return_value = {"message_id": 5}
-        receipt = await adapter.send_message("group%456", MessageChain([Nodes([Node([Plain("甲")]), Node([Plain("乙")])])]))
-        assert receipt.status == "success" and receipt.message_ids == ("5",)
-        sent_texts = [seg["data"]["text"] for seg in adapter._bot.send_group_msg.await_args.kwargs["message"]]
-        assert sent_texts == ["甲", "乙"]
-
-    @pytest.mark.asyncio
-    async def test_business_rejection_is_not_degraded_and_stops_following_turns(self):
-        adapter = self._adapter()
-        adapter._bot.send_group_forward_msg.side_effect = ActionFailed({"retcode": 1200})
-        receipt = await adapter.send_message("group%456", MessageChain([Nodes([Node([Plain("甲")])]), Plain("后续")]))
-        assert receipt.status == "failed" and receipt.reason == "action_rejected"
-        adapter._bot.send_group_msg.assert_not_awaited()
-
-    @pytest.mark.asyncio
     async def test_forward_without_message_id_is_unknown(self):
         adapter = self._adapter()
         adapter._bot.send_group_forward_msg.return_value = {}
@@ -369,11 +350,6 @@ class TestOutboundForward:
 def test_forward_lookup_must_be_boolean(value: object):
     with pytest.raises(ValueError, match="forward_lookup"):
         validate_wake_policy({"forward_lookup": value})
-
-def test_forward_component_keeps_resolved_nodes():
-    forward = Forward(id="f", nodes=[Node([Plain("x")])])
-    assert forward.nodes is not None and cast(Plain, forward.nodes[0].content[0]).text == "x"
-    assert Forward(id="g").nodes is None
 
 @pytest.fixture()
 def cleanup():
@@ -509,17 +485,31 @@ async def test_preview_truncation_does_not_change_original_forward_payload():
 
 @pytest.mark.usefixtures('cleanup')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["merge", "existing_forward"])
-async def test_unsupported_original_forward_never_degrades_to_text(mode):
+async def test_forward_degradation_branches_keep_safety():
+    """链式转发仅在不支持时降级为分段文本, 业务拒绝与原件转发都不得降级为文本"""
     adapter = setup()
-    adapter._bot.get_msg.return_value = message("group", "456", forward=True)
-    error = ActionFailed({"retcode": 10002})
-    adapter._bot.send_group_forward_msg.side_effect = error
-    adapter._bot.forward_group_single_msg.side_effect = error
+    adapter._bot.send_group_forward_msg.side_effect = ActionFailed({"retcode": 10002})
+    adapter._bot.send_group_msg.return_value = {"message_id": 5}
+    receipt = await adapter.send_message("group%456", MessageChain([Nodes([Node([Plain("甲")]), Node([Plain("乙")])])]))
+    assert receipt.status == "success" and receipt.message_ids == ("5",)
+    assert [seg["data"]["text"] for seg in adapter._bot.send_group_msg.await_args.kwargs["message"]] == ["甲", "乙"]
+
+    rejected = setup()
+    rejected._bot.send_group_forward_msg.side_effect = ActionFailed({"retcode": 1200})
+    receipt2 = await rejected.send_message("group%456", MessageChain([Nodes([Node([Plain("甲")])]), Plain("后续")]))
+    assert receipt2.status == "failed" and receipt2.reason == "action_rejected"
+    rejected._bot.send_group_msg.assert_not_awaited()
+
     source = {"conversation_kind": "group", "conversation_id": "456"}
-    result = await OneBotForwarding(adapter, _origin(), lambda: None).send(["77"], mode, source, source)
-    assert result["status"] == "failed"
-    adapter._bot.send_group_msg.assert_not_awaited()
+    for mode in ("merge", "existing_forward"):
+        original = setup()
+        original._bot.get_msg.return_value = message("group", "456", forward=True)
+        error = ActionFailed({"retcode": 10002})
+        original._bot.send_group_forward_msg.side_effect = error
+        original._bot.forward_group_single_msg.side_effect = error
+        result = await OneBotForwarding(original, _origin(), lambda: None).send(["77"], mode, source, source)
+        assert result["status"] == "failed"
+        original._bot.send_group_msg.assert_not_awaited()
 
 @pytest.mark.usefixtures('cleanup')
 @pytest.mark.asyncio
@@ -583,7 +573,8 @@ async def test_sync_and_async_tools_have_same_definitions_and_send_original_refe
         assert call.kwargs["messages"] == [{"type": "node", "data": {"id": "77"}}]
 
 @pytest.mark.usefixtures('cleanup')
-def test_migration_only_requires_missing_forward_plugin_for_explicit_legacy_tools():
+def test_migrate_forward_tool_specs_is_idempotent_and_guarded(tmp_path):
+    """旧转发工具迁移幂等, 缺插件时拒绝, 新配置不被误迁移, 不启用私聊或原件发送能力"""
     catalog: Any = SimpleNamespace(get=lambda _: None)
     ordinary = [{"name": "group_admin", "capabilities": {"tools": {"group_admin_ban": True}}}]
     assert migrate_forward_tool_specs(ordinary, catalog) == ordinary
@@ -591,26 +582,20 @@ def test_migration_only_requires_missing_forward_plugin_for_explicit_legacy_tool
     with pytest.raises(ValueError, match="旧转发工具迁移需要可用的 message_forward 插件"):
         migrate_forward_tool_specs(legacy, catalog)
 
-@pytest.mark.usefixtures('cleanup')
-def test_migration_does_not_enable_new_private_or_original_send_capabilities(tmp_path):
-    catalog = PluginCatalog(user_dir=tmp_path / "plugins")
+    real_catalog = PluginCatalog(user_dir=tmp_path / "plugins")
+    for value in [["group_admin"], [{"name": "group_admin", "config": {"write_tools_enabled": True}}]]:
+        assert migrate_forward_tool_specs(value, real_catalog) == value
     original = [{"name": "group_admin", "enabled": True, "config": {"allowed_callers": "123", "write_tools_enabled": True},
                  "capabilities": {"tools": {"group_admin_get_forward": True, "group_admin_send_forward": True}}}]
-    migrated = migrate_forward_tool_specs(original, catalog)
+    migrated = migrate_forward_tool_specs(original, real_catalog)
     forward = next(item for item in migrated if item.get("name") == "message_forward")
     assert "allow_private" not in forward["config"] and "allowed_groups" not in forward["config"]
     assert forward["config"]["cross_conversation_enabled"] is False
     assert forward["capabilities"]["tools"]["message_forward_compose"] is True
     assert forward["capabilities"]["tools"]["message_forward_send"] is False
     assert not forward["capabilities"]["commands"]["forward"]
-    assert migrate_forward_tool_specs(migrated, catalog) == migrated
+    assert migrate_forward_tool_specs(migrated, real_catalog) == migrated
     assert "group_admin_get_forward" in original[0]["capabilities"]["tools"]
-
-@pytest.mark.usefixtures('cleanup')
-def test_new_group_admin_configuration_does_not_install_forward_plugin(tmp_path):
-    catalog = PluginCatalog(user_dir=tmp_path / "plugins")
-    for value in [["group_admin"], [{"name": "group_admin", "config": {"write_tools_enabled": True}}]]:
-        assert migrate_forward_tool_specs(value, catalog) == value
 
 @pytest.mark.usefixtures('cleanup')
 @pytest.mark.asyncio

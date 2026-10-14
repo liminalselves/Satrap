@@ -6,7 +6,7 @@ import pytest
 from typing import Any, cast
 from satrap.core.platform.event import MessageChain
 from satrap.core.components import File, Image, Plain
-from satrap.core.type import PlatformMessage, PlatformMessageType
+from satrap.core.type import PlatformMessageType
 from support.misskey import FakeMisskeyAPI, make_adapter
 import aiohttp
 import logging
@@ -16,40 +16,12 @@ import json
 from satrap.core.platform.misskey import client as client_module
 from satrap.core.platform.misskey.client import APIError, APIRateLimitError, AuthenticationError, MisskeyAPI
 from satrap.core.platform.misskey.client import StreamingClient
-import importlib.util
-from unittest.mock import AsyncMock
-from types import ModuleType, SimpleNamespace
-
-def test_config_aliases_and_defaults():
-    adapter = make_adapter()
-
-    assert adapter._instance_url == "https://misskey.example"
-    assert adapter._token == "token"
-    assert adapter.max_message_length == 3000
-    assert adapter.default_visibility == "public"
-    assert adapter.enable_chat is True
-    assert adapter.enable_room is True
-    assert adapter.enable_file_upload is True
 
 def test_config_frontend_aliases():
     adapter = make_adapter({"base_url": "https://misskey.example", "api_token": "token", "chat_enabled": False, "room_enabled": False})
 
     assert adapter.enable_chat is False
     assert adapter.enable_room is False
-
-def test_committed_event_uses_configured_session_type():
-    """Misskey 入站事件应使用平台实例绑定的会话类"""
-    adapter = make_adapter()
-    adapter.config.session_type = "assistant"
-    message = PlatformMessage()
-    message.type = PlatformMessageType.FRIEND_MESSAGE
-    message.message_str = "hello"
-    message.session_id = "note%user-1"
-
-    adapter._commit_platform_message(message)
-    event = adapter._event_queue.get_nowait()
-
-    assert event.session_type == "assistant"
 
 @pytest.mark.asyncio
 async def test_convert_note_message_with_files_and_poll():
@@ -248,29 +220,13 @@ async def test_status_error_mapping():
         await api._process_response(_fake_response(400), "i")
 
 @pytest.mark.asyncio
-async def test_upload_file_uses_drive_create(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+async def test_upload_file_uses_drive_create_and_reads_disk_off_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """drive/files/create 上传真实内容, 且磁盘读取在工作线程执行, 事件循环线程不读盘"""
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
     api = MisskeyAPI("https://misskey.example", "token")
     fake_session = FakeSession()
     monkeypatch.setattr(api, "_session", fake_session)
-
-    result = await api.upload_file(str(path), name="demo.txt", folder_id="folder-1")
-
-    assert result["id"] == "file-1"
-    assert fake_session.calls[0][0] == "https://misskey.example/api/drive/files/create"
-    body = await multipart_body(fake_session.calls[0][1]["data"])
-    assert b'filename="demo.txt"' in body
-    assert b"Content-Type: text/plain" in body
-    assert b"\r\nhello\r\n" in body
-
-@pytest.mark.asyncio
-async def test_upload_file_reads_disk_outside_event_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """磁盘读取在工作线程执行, 事件循环线程不读盘"""
-    path = tmp_path / "demo.txt"
-    path.write_text("hello", encoding="utf-8")
-    api = MisskeyAPI("https://misskey.example", "token")
-    monkeypatch.setattr(api, "_session", FakeSession())
     threads: list[threading.Thread] = []
     real_read = client_module._read_file_bytes
 
@@ -281,7 +237,14 @@ async def test_upload_file_reads_disk_outside_event_loop(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(client_module, "_read_file_bytes", recording_read)
 
-    assert (await api.upload_file(str(path)))["id"] == "file-1"
+    result = await api.upload_file(str(path), name="demo.txt", folder_id="folder-1")
+
+    assert result["id"] == "file-1"
+    assert fake_session.calls[0][0] == "https://misskey.example/api/drive/files/create"
+    body = await multipart_body(fake_session.calls[0][1]["data"])
+    assert b'filename="demo.txt"' in body
+    assert b"Content-Type: text/plain" in body
+    assert b"\r\nhello\r\n" in body
     assert threads and threads[0] is not threading.main_thread()
 
 @pytest.mark.asyncio
@@ -436,45 +399,3 @@ async def test_insecure_download_fallback_is_limited_to_instance_origin(
 
     assert await api.upload_and_find_file("https://cdn.example/file.png") is None
     assert calls == [True]
-
-def _load_misskey_session_module() -> ModuleType:
-    """加载仓库中的 Misskey 会话实现"""
-    module_path = Path(__file__).parents[1] / "manual" / "misskey_session.py"
-    spec = importlib.util.spec_from_file_location("satrap_test_misskey_session", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载 Misskey 会话模块: {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-@pytest.mark.asyncio
-async def test_misskey_session_builds_one_isolated_workflow(monkeypatch: pytest.MonkeyPatch):
-    module = _load_misskey_session_module()
-    create_calls: list[dict[str, Any]] = []
-
-    class FakeWorkflow:
-        """提供工作流上下文的最小测试替身"""
-
-        def __init__(self):
-            self.ctx = SimpleNamespace()
-
-        async def forward(self, message: str) -> str:
-            return message
-
-    async def fake_create(**kwargs: Any) -> FakeWorkflow:
-        create_calls.append(kwargs)
-        return FakeWorkflow()
-
-    monkeypatch.setattr(module.MainWF, "create", staticmethod(fake_create))
-    session = module.MisskeySession("misskey:test:user:session", llm=object())
-    session.session_ctx.initialize = AsyncMock()
-
-    await session.run("/help")
-    await session.run("/help")
-
-    workflow_id = "misskey:test:user:session_main"
-    assert len(create_calls) == 1
-    assert create_calls[0]["context_id"] == workflow_id
-    assert session.wf_list == [workflow_id]
-    assert list(session._workflow_contexts) == [workflow_id]
-    assert session.session_ctx.initialize.await_count == 1

@@ -203,16 +203,6 @@ async def echo_server() -> Any:
 
 
 @pytest.mark.asyncio
-async def test_json_get_and_query_param(echo_server: int):
-    """GET 返回 JSON, query 参数经 _query_param 解析"""
-    port = echo_server
-    status, data = await _json_get(port, "/api/echo?x=hello%20world")
-    assert status == 200
-    assert data["ok"] is True
-    assert data["q"] == "hello world"
-
-
-@pytest.mark.asyncio
 async def test_unknown_route_404(echo_server: int):
     """未知路由返回 404 JSON"""
     port = echo_server
@@ -300,55 +290,37 @@ async def test_websocket_rejects_missing_authentication(echo_server: int):
 
 
 @pytest.mark.asyncio
-async def test_connection_limit_rejects_excess_client_and_releases_counter():
-    """总连接达到上限时返回 503 并在断开后释放配额"""
-    server = _EchoServer(max_connections=1)
+@pytest.mark.parametrize("kind", ["connection", "websocket"])
+async def test_excess_limit_is_rejected_and_counter_released(kind: str):
+    """总连接或 WebSocket 达到上限时返回 503 并在断开后释放配额"""
+    if kind == "connection":
+        server = _EchoServer(max_connections=1)
+        counter = "_active_connections"
+    else:
+        server = _EchoServer(max_websocket_connections=1, hold_websocket=True)
+        counter = "_active_websockets"
     port = await _start_server(server)
     first_reader, first_writer = await asyncio.open_connection("127.0.0.1", port)
     try:
-        first_writer.write(b"GET /api/echo HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+        first_writer.write(b"GET /api/echo HTTP/1.1\r\nHost: 127.0.0.1\r\n" if kind == "connection" else _websocket_request())
         await first_writer.drain()
-        await _wait_for_counter(server, "_active_connections", 1)
-
-        response = await _raw_request(port, _websocket_request())
-        assert b"503 Service Unavailable" in response
-        assert b"service unavailable" in response
-        assert server._active_connections == 1
-    finally:
-        first_writer.close()
-        await first_writer.wait_closed()
-        await first_reader.read()
-        await _wait_for_counter(server, "_active_connections", 0)
-        await server.stop()
-
-
-@pytest.mark.asyncio
-async def test_websocket_limit_rejects_excess_upgrade_and_releases_counter():
-    """WebSocket 达到独立上限时拒绝新升级并在断开后释放配额"""
-    server = _EchoServer(
-        max_websocket_connections=1,
-        hold_websocket=True,
-    )
-    port = await _start_server(server)
-    first_reader, first_writer = await asyncio.open_connection("127.0.0.1", port)
-    try:
-        first_writer.write(_websocket_request())
-        await first_writer.drain()
-        first_head = await first_reader.readuntil(b"\r\n\r\n")
-        assert b"101 Switching Protocols" in first_head
-        await _wait_for_counter(server, "_active_websockets", 1)
+        if kind == "websocket":
+            first_head = await first_reader.readuntil(b"\r\n\r\n")
+            assert b"101 Switching Protocols" in first_head
+        await _wait_for_counter(server, counter, 1)
 
         response = await _raw_request(
             port,
             _websocket_request(key="c2Vjb25kIHNhbXBsZSBub25jZQ=="),
         )
         assert b"503 Service Unavailable" in response
-        assert server._active_websockets == 1
+        assert b"service unavailable" in response
+        assert getattr(server, counter) == 1
     finally:
         first_writer.close()
         await first_writer.wait_closed()
         await first_reader.read()
-        await _wait_for_counter(server, "_active_websockets", 0)
+        await _wait_for_counter(server, counter, 0)
         await server.stop()
 
 
@@ -511,26 +483,8 @@ async def test_chat_server_health_route(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_chat_server_lists_conversations_from_service_database(tmp_path: Path):
-    """会话列表接口必须读取 ChatService 当前平台数据库"""
-    server = _make_chat_server(tmp_path)
-    recorder = DisplayRecorder(
-        db_path=server.service._display_db_path,
-        conversation_id="conversation-1",
-    )
-    recorder.save_meta("default")
-    recorder.close()
-
-    status, data = await server._route("GET", "/api/chat/conversations", b"")
-
-    assert status == 200
-    assert [item["conversation_id"] for item in data["conversations"]] == ["conversation-1"]
-    await server.service.close()
-
-
-@pytest.mark.asyncio
 async def test_chat_server_manages_history_and_trash(tmp_path: Path):
-    """Chat 热管理接口应查询、回收并恢复完整历史"""
+    """Chat 热管理接口应查询、回收并恢复完整历史, 会话列表读当前平台数据库"""
     server = _make_chat_server(tmp_path)
     recorder = DisplayRecorder(
         db_path=server.service._display_db_path,
@@ -540,6 +494,10 @@ async def test_chat_server_manages_history_and_trash(tmp_path: Path):
     recorder.start_turn("历史测试")
     recorder.end_turn("完成")
     recorder.close()
+
+    status, conversations = await server._route("GET", "/api/chat/conversations", b"")
+    assert status == 200
+    assert [item["conversation_id"] for item in conversations["conversations"]] == ["history-1"]
 
     status, listed = await server._route(
         "GET",

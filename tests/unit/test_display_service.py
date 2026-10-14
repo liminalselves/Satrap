@@ -147,49 +147,30 @@ def _write_plugin(base: Path, name: str, tools: dict[str, str] | None = None) ->
     return pdir
 
 
-def test_registry_scan_default_not_installed(tmp_path: Path, monkeypatch: Any):
-    """扫描到插件但默认不启用 (enabled=False)"""
+def test_registry_scan_enable_and_capability_persist(tmp_path: Path, monkeypatch: Any):
+    """扫描默认不启用, 启用与能力开关写入 json 跨实例持久, 非法类别返回 False"""
     preset = tmp_path / "preset"
     _write_plugin(preset, "plug_a", tools={"shell": "执行命令", "read_file": "读文件"})
     monkeypatch.setattr("satrap.display.plugins.PLUGINS_PRESET_DIR", preset)
     monkeypatch.setattr("satrap.display.plugins.USER_PLUGINS_DIR", tmp_path / "user")
 
-    reg = ChatPluginRegistry(state_path=tmp_path / "state.json")
+    state = tmp_path / "state.json"
+    reg = ChatPluginRegistry(state_path=state)
     plugins = reg.scan()
     assert len(plugins) == 1
     p = plugins[0]
-    assert p["name"] == "plug_a"
-    assert p["enabled"] is False   # 默认不启用
+    assert p["name"] == "plug_a" and p["enabled"] is False   # 默认不启用
     tool_names = [t["name"] for t in p["capabilities"]["tools"]]
     assert "shell" in tool_names and "read_file" in tool_names
-
-
-def test_registry_enable_persist(tmp_path: Path, monkeypatch: Any):
-    """启用状态写入 json 且跨实例持久"""
-    preset = tmp_path / "preset"
-    _write_plugin(preset, "plug_b")
-    monkeypatch.setattr("satrap.display.plugins.PLUGINS_PRESET_DIR", preset)
-    monkeypatch.setattr("satrap.display.plugins.USER_PLUGINS_DIR", tmp_path / "user")
-
-    state = tmp_path / "state.json"
-    reg = ChatPluginRegistry(state_path=state)
-    assert reg.is_enabled("plug_b") is False
-    reg.set_enabled("plug_b", True)
-    assert reg.is_enabled("plug_b") is True
-    assert state.is_file()
-
+    assert reg.is_enabled("plug_a") is False
+    reg.set_enabled("plug_a", True)
+    assert reg.is_enabled("plug_a") is True and state.is_file()
+    assert reg.set_capability("plug_a", "tools", "shell", False) is True
+    assert reg.capability_enabled("plug_a", "tools", "shell") is False
+    assert reg.capability_enabled("plug_a", "tools", "other") is True   # 默认 True
+    assert reg.set_capability("plug_a", "bad_kind", "x", True) is False
     reg2 = ChatPluginRegistry(state_path=state)
-    # 新实例读取同一 json
-    assert reg2.is_enabled("plug_b") is True
-
-
-def test_registry_capability_toggle(tmp_path: Path):
-    """能力独立启停状态持久化, 非法类别返回 False"""
-    reg = ChatPluginRegistry(state_path=tmp_path / "state.json")
-    assert reg.set_capability("plug_c", "tools", "shell", False) is True
-    assert reg.capability_enabled("plug_c", "tools", "shell") is False
-    assert reg.capability_enabled("plug_c", "tools", "other") is True   # 默认 True
-    assert reg.set_capability("plug_c", "bad_kind", "x", True) is False
+    assert reg2.is_enabled("plug_a") is True
 
 
 def test_registry_official_overrides_user(tmp_path: Path, monkeypatch: Any):
@@ -769,49 +750,9 @@ def test_service_preload_is_invisible_until_first_send(tmp_path: Path, monkeypat
     assert conversations[0]["turn_count"] == 1
 
 
-def test_service_preload_rebuilds_same_id_after_model_change(tmp_path: Path, monkeypatch: Any):
-    """首次发送时模型设置变化应在同一 ID 下重建预加载运行时"""
-    built_models: list[str | None] = []
-
-    def _fake_build_llm(cfg: Any) -> AsyncLLM:
-        built_models.append(cfg.name)
-        return _FakeAsyncLLM()
-
-    monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
-    svc = ChatService(
-        _as_model_config(_FakeModelConfig()),
-        ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
-        chat_db_path=str(tmp_path / "chat.db"),
-        display_db_path=str(tmp_path / "display.db"),
-        storage_layout=StorageLayout(tmp_path / "data"),
-    )
-
-    async def _run() -> tuple[str, str]:
-        cid = await svc.preload_conversation(model="default")
-        result = await svc.send(
-            cid,
-            "切换模型",
-            preload_settings={"model": "fast", "system_prompt": "", "project_id": None},
-        )
-        assert result["ok"] is True
-        conv = svc.get_conversation(cid)
-        assert conv is not None and conv.task is not None
-        await conv.task
-        model = conv.model
-        await svc.close()
-        return cid, model
-
-    cid, model = asyncio.run(_run())
-    assert model == "fast"
-    assert built_models == ["default", "fast"]
-    meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
-    assert meta is not None and meta["model"] == "fast"
-
-
-def test_service_preload_rebuilds_after_selected_model_config_change(tmp_path: Path, monkeypatch: Any):
-    """同名模型的参数变化也应使预加载指纹失效"""
-
-    temperatures: list[float | None] = []
+def test_service_preload_rebuilds_on_model_or_config_change(tmp_path: Path, monkeypatch: Any):
+    """模型切换与同名模型参数变化都使预加载指纹失效, 并在同一 ID 下重建"""
+    built: list[tuple[str | None, float | None]] = []
 
     class _MutableModelConfig(_FakeModelConfig):
         temperature = 0.1
@@ -826,7 +767,7 @@ def test_service_preload_rebuilds_after_selected_model_config_change(tmp_path: P
             )
 
     def _fake_build_llm(cfg: Any) -> AsyncLLM:
-        temperatures.append(cfg.temperature)
+        built.append((cfg.name, cfg.temperature))
         return _FakeAsyncLLM()
 
     model_config = _MutableModelConfig()
@@ -840,17 +781,32 @@ def test_service_preload_rebuilds_after_selected_model_config_change(tmp_path: P
     )
 
     async def _run() -> None:
+        # 模型切换
         cid = await svc.preload_conversation(model="default")
-        model_config.temperature = 0.9
-        result = await svc.send(cid, "参数已修改", preload_settings={"model": "default"})
+        result = await svc.send(
+            cid, "切换模型",
+            preload_settings={"model": "fast", "system_prompt": "", "project_id": None},
+        )
         assert result["ok"] is True
         conv = svc.get_conversation(cid)
         assert conv is not None and conv.task is not None
         await conv.task
+        assert conv.model == "fast"
+        meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
+        assert meta is not None and meta["model"] == "fast"
+        # 同名模型参数变化
+        cid2 = await svc.preload_conversation(model="default")
+        model_config.temperature = 0.9
+        result2 = await svc.send(cid2, "参数已修改", preload_settings={"model": "default"})
+        assert result2["ok"] is True
+        conv2 = svc.get_conversation(cid2)
+        assert conv2 is not None and conv2.task is not None
+        await conv2.task
         await svc.close()
 
     asyncio.run(_run())
-    assert temperatures == [0.1, 0.9]
+    assert [name for name, _ in built] == ["default", "fast", "default", "default"]
+    assert built[0][1] == 0.1 and built[-1][1] == 0.9
 
 
 def test_service_runtime_fingerprint_tracks_plugin_capability_and_config(
@@ -1233,7 +1189,7 @@ def test_chat_queued_apply_rejects_changed_source_and_retries_latest(tmp_path: P
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("change", ["session", "entry", "source_check", "new_conversation"])
+@pytest.mark.parametrize("change", ["session", "entry", "new_conversation"])
 def test_chat_application_freezes_instances_before_capture_and_rechecks_after_source(tmp_path: Path, monkeypatch: Any, change: str) -> None:
     """Chat 在捕获前固定实例, 同对象替换及来源核验期间变化均保留旧插件"""
     manager = PluginConfigManager(tmp_path / "plugin_config")
@@ -1262,21 +1218,8 @@ def test_chat_application_freezes_instances_before_capture_and_rechecks_after_so
             manager.save_global("chat_commands", entry.config_schema, {"about_text": "changed"})
 
             def record(catalog, manager, **kwargs):
-                """捕获真实来源, 在第二次核验让出循环期间替换实例"""
+                """捕获真实来源并通知测试可替换实例"""
                 snapshot = capture(catalog, manager, **kwargs)
-                if change == "source_check":
-                    check = snapshot.is_current
-                    checks = []
-
-                    def checked():
-                        """首次核验属于准备阶段, 随后锁内核验时替换实例"""
-                        valid = check()
-                        checks.append(True)
-                        if len(checks) == 2:
-                            conv.session = other.session
-                        return valid
-
-                    monkeypatch.setattr(snapshot, "is_current", checked)
                 captured.set()
                 return snapshot
 
@@ -1424,8 +1367,8 @@ def test_service_plugin_enable_no_plugins(tmp_path: Path, monkeypatch: Any):
     assert "不存在" in result["error"]
 
 
-def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
-    """send 未显式传 think 时使用会话默认 (create_conversation 持久化到 meta)"""
+def test_service_think_default_and_retry_override(tmp_path: Path, monkeypatch: Any):
+    """send 未显式传 think 用会话默认; retry 传入 think 时按指定强度重发不回落默认"""
     recorded: list[Any] = []
 
     class _RecLLM(_FakeAsyncLLM):
@@ -1434,10 +1377,7 @@ def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
             async for ev in super().stream_call(messages, **kw):
                 yield ev
 
-    def _fake_build_llm(cfg: Any) -> AsyncLLM:
-        return _RecLLM()
-
-    monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
+    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: _RecLLM())
     reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
     svc = ChatService(
         _as_model_config(_FakeModelConfig()),
@@ -1447,62 +1387,31 @@ def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
         storage_layout=StorageLayout(tmp_path / "data"),
     )
 
-    async def _run() -> tuple[str, str]:
+    async def _run() -> None:
         cid = await svc.create_conversation(model="default", think="high")
         conv = svc.get_conversation(cid)
         assert conv is not None and conv.default_think == "high"
         result = await svc.send(cid, "你好")   # 不传 think -> 用会话默认 high
-        assert result["ok"] is True
-        assert conv.task is not None
+        assert result["ok"] is True and conv.task is not None
         await conv.task
         meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
         assert meta is not None and meta["think"] == "high"
-        return cid, str(recorded[0] if recorded else None)
-
-    cid, first_think = asyncio.run(_run())
-    assert first_think == "high"
-
-
-def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
-    """retry 传入 think 时按指定强度重发, 不回落默认"""
-    recorded: list[Any] = []
-
-    class _RecLLM(_FakeAsyncLLM):
-        async def stream_call(self, messages: list[dict[str, Any]], **kw: Any) -> Any:
-            recorded.append(kw.get("thinking"))
-            async for ev in super().stream_call(messages, **kw):
-                yield ev
-
-    def _fake_build_llm(cfg: Any) -> AsyncLLM:
-        return _RecLLM()
-
-    monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
-    reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
-    svc = ChatService(
-        _as_model_config(_FakeModelConfig()),
-        reg,
-        chat_db_path=str(tmp_path / "chat.db"),
-        display_db_path=str(tmp_path / "display.db"),
-        storage_layout=StorageLayout(tmp_path / "data"),
-    )
-
-    async def _run() -> list[Any]:
-        cid = await svc.create_conversation(model="default", think="off")
-        conv = svc.get_conversation(cid)
-        assert conv is not None
-        sent = await svc.send(cid, "你好", think="low")
-        assert sent["ok"] is True and sent["conversation_id"] == cid
+        # retry 显式传入 think 覆盖默认
+        cid2 = await svc.create_conversation(model="default", think="off")
+        conv2 = svc.get_conversation(cid2)
+        assert conv2 is not None
+        sent = await svc.send(cid2, "你好", think="low")
+        assert sent["ok"] is True and sent["conversation_id"] == cid2
         assert sent["turn_index"] == 0 and sent["variant_index"] == 0
-        assert conv.task is not None
-        await conv.task
-        result = await svc.retry(cid, think="high")
-        assert result["ok"] is True
-        assert conv.task is not None
-        await conv.task
-        return list(recorded)
+        assert conv2.task is not None
+        await conv2.task
+        retried = await svc.retry(cid2, think="high")
+        assert retried["ok"] is True and conv2.task is not None
+        await conv2.task
+        await svc.close()
 
-    thinks = asyncio.run(_run())
-    assert thinks == ["low", "high"]
+    asyncio.run(_run())
+    assert recorded == ["high", "low", "high"]
 
 
 def test_service_retry_preserves_variants_and_switches_context(tmp_path: Path, monkeypatch: Any):

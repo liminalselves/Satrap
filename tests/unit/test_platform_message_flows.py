@@ -48,6 +48,9 @@ def test_cold_reads_and_maintenance_do_not_create_database(tmp_path: Path) -> No
     assert store.backfill_allowed(SCOPE, "absent")
     assert store.purge() == {"expired_count": 0, "backup_count": 0}
     assert list(tmp_path.iterdir()) == []
+    cold = StorageLayout(tmp_path / "cold")
+    assert StorageMaintenanceService(cold).expire_platform_messages({"future": 30}) == {"items": []}
+    assert not cold.platforms_root.exists()
 
 def test_real_platform_database_migration_preserves_context_and_configs(tmp_path: Path) -> None:
     database = tmp_path / "platform.db"
@@ -343,8 +346,10 @@ async def _request(path: str, payload: dict[str, Any] | None = None, *, authoriz
     header, content = bytes(response).split(b"\r\n\r\n", 1)
     return int(header.split()[1]), json.loads(content.decode("utf-8"))
 
-def test_catalog_has_dynamic_kinds_accounts_and_cross_platform_paging(saved) -> None:
-    layout, document, _ = saved
+@pytest.mark.asyncio
+async def test_catalog_and_archive_http_read_search_and_message_details(saved) -> None:
+    """目录聚合与 HTTP 读取共享动态对话类型, 账号及跨平台分页"""
+    layout, document, scopes = saved
     catalog = platform_archive_catalog(layout, document, {"limit": "2"})
     assert catalog["total"] == 3 and len(catalog["items"]) == 2
     assert catalog["conversation_kinds"] == [{"value": "circle", "label": "圈子讨论"}]
@@ -355,11 +360,8 @@ def test_catalog_has_dynamic_kinds_accounts_and_cross_platform_paging(saved) -> 
     assert selected["total"] == 1 and selected["items"][0]["message_count"] == 1
     assert platform_archive_catalog(layout, document, {"q": "%%%%"})["total"] == 0
 
-@pytest.mark.asyncio
-async def test_archive_http_read_search_and_message_details(saved) -> None:
-    _, _, scopes = saved
-    status, catalog = await _request("/config/conversations/archive?platform_id=alpha&conversation_kind=circle")
-    assert status == 200 and catalog["total"] == 2
+    status, http_catalog = await _request("/config/conversations/archive?platform_id=alpha&conversation_kind=circle")
+    assert status == 200 and http_catalog["total"] == 2
     status, data = await _request("/config/conversations/archive/data", _payload(scopes[0], keyword="原文", sender_id="member"))
     assert status == 200 and data["items"][0]["message_id"] == "same"
     assert data["retention_days"] == 7 and data["scope"]["self_id"] == "bot-1"
@@ -421,15 +423,27 @@ async def test_unauthorized_and_unknown_platform_requests_do_not_mutate(saved) -
     assert status == 200 and data["revision"] == 0 and len(data["items"]) == 1
 
 @pytest.mark.asyncio
-async def test_corrupt_archive_is_partial_warning_for_all_and_error_for_selected(saved, caplog) -> None:
-    layout, _, _ = saved
-    layout.platform_db("alpha").write_bytes(b"corrupt")
-    status, catalog = await _request("/config/conversations/archive")
-    assert status == 200 and catalog["total"] == 1
-    assert catalog["warnings"] == [{"platform_id": "alpha", "error": "archive_unavailable"}]
-    status, error = await _request("/config/conversations/archive?platform_id=alpha")
-    assert status == 503 and error["code"] == "archive_unavailable"
-    assert "目录读取失败" in caplog.text and "管理操作失败" in caplog.text
+@pytest.mark.parametrize("kind", ["db_bytes", "component"])
+async def test_corrupt_archive_isolates_to_failed_scope(saved, caplog, kind: str) -> None:
+    """损坏数据库或组件字段都只影响该平台, 其它平台档案仍可读且可管理"""
+    layout, _, scopes = saved
+    if kind == "db_bytes":
+        layout.platform_db("alpha").write_bytes(b"corrupt")
+        status, catalog = await _request("/config/conversations/archive")
+        assert status == 200 and catalog["total"] == 1
+        assert catalog["warnings"] == [{"platform_id": "alpha", "error": "archive_unavailable"}]
+        status, error = await _request("/config/conversations/archive?platform_id=alpha")
+        assert status == 503 and error["code"] == "archive_unavailable"
+        assert "目录读取失败" in caplog.text and "管理操作失败" in caplog.text
+    else:
+        with sqlite3.connect(layout.platform_db("alpha")) as connection:
+            connection.execute("UPDATE platform_messages SET components_json=? WHERE scope_key=?", ("{", scopes[0].key))
+        status, error = await _request("/config/conversations/archive/data", _payload(scopes[0]))
+        assert status == 503 and error["code"] == "archive_unavailable"
+    # 数据库整体损坏时其它平台仍可读; 单字段损坏时同库其它会话仍可读
+    other = scopes[2] if kind == "db_bytes" else scopes[1]
+    status, data = await _request("/config/conversations/archive/data", _payload(other))
+    assert status == 200 and data["items"][0]["text"] == "真实原文"
 
 def test_management_read_respects_concurrent_deletion_revision(saved, monkeypatch) -> None:
     layout, _, scopes = saved
@@ -444,18 +458,6 @@ def test_management_read_respects_concurrent_deletion_revision(saved, monkeypatc
     monkeypatch.setattr(store, "query", raced_query)
     with pytest.raises(MessageArchiveError, match="状态发生变化"):
         PlatformMessageDataService(store).operate({key: value for key, value in _payload(scope).items() if key != "platform_id"})
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("field,value", [("components_json", "{"), ("components_json", "[1]"),
-                                         ("mentions_json", "{}"), ("media_json", '"invalid"')])
-async def test_corrupt_component_data_is_storage_failure_then_service_remains_usable(saved, field: str, value: str) -> None:
-    layout, _, scopes = saved
-    with sqlite3.connect(layout.platform_db("alpha")) as connection:
-        connection.execute(f"UPDATE platform_messages SET {field}=? WHERE scope_key=?", (value, scopes[0].key))
-    status, error = await _request("/config/conversations/archive/data", _payload(scopes[0]))
-    assert status == 503 and error["code"] == "archive_unavailable"
-    status, data = await _request("/config/conversations/archive/data", _payload(scopes[1]))
-    assert status == 200 and data["items"][0]["text"] == "真实原文"
 
 def _platform_message_maintenance_item(store: PlatformMessageStore, scope: MessageScope, message_id: str) -> dict[str, Any]:
     """核验被维护的消息仍保留身份标记"""
@@ -527,11 +529,6 @@ def test_v4_archive_policy_migrates_without_losing_messages(tmp_path: Path) -> N
     assert store.saved_retention_days() == 7
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION
-
-def test_cold_maintenance_does_not_create_storage(tmp_path: Path) -> None:
-    layout = StorageLayout(tmp_path / "cold")
-    assert StorageMaintenanceService(layout).expire_platform_messages({"future": 30}) == {"items": []}
-    assert not layout.platforms_root.exists()
 
 @pytest.mark.asyncio
 async def test_backend_maintenance_failure_recovers_and_uses_applied_policy(tmp_path: Path, monkeypatch, caplog) -> None:

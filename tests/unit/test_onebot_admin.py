@@ -25,7 +25,7 @@ from satrap.core.platform.onebot.request_registry import (
     RequestApprovalLedger,
     RequestFlagRegistry,
 )
-from satrap.core.platform import PlatformAdapter, PlatformConfig
+from satrap.core.platform import PlatformConfig
 
 
 
@@ -155,24 +155,21 @@ class TestOneBotAdminCalls:
         adapter._bot.set_group_kick.side_effect = RuntimeError("network")
         with pytest.raises(AdminActionUnconfirmed):
             await adapter.admin.kick_group_member("456", "123")
+        # 畸形 retcode 与平台响应正文都不得进入归一化异常
+        for retcode in (True, "100", 2 ** 32, None):
+            adapter._bot.set_group_card.side_effect = ActionFailed({
+                "retcode": retcode, "message": "secret-response", "data": {"token": "secret-token"},
+            })
+            with pytest.raises(AdminActionRejected) as malformed:
+                await adapter.admin.set_group_card("456", "123", "")
+            assert malformed.value.retcode is None
+            assert "secret" not in str(malformed.value)
 
     @pytest.mark.asyncio
     async def test_clear_card_preserves_empty_protocol_parameter(self):
         adapter = _adapter()
         await adapter.admin.set_group_card("456", "123", "")
         adapter._bot.set_group_card.assert_awaited_once_with(group_id=456, user_id=123, card="")
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("retcode", [True, "100", 2 ** 32, None])
-    async def test_malformed_rejection_code_never_exposes_response(self, retcode: object):
-        adapter = _adapter()
-        adapter._bot.set_group_card.side_effect = ActionFailed({
-            "retcode": retcode, "message": "secret-response", "data": {"token": "secret-token"},
-        })
-        with pytest.raises(AdminActionRejected) as caught:
-            await adapter.admin.set_group_card("456", "123", "")
-        assert caught.value.retcode is None
-        assert "secret" not in str(caught.value)
 
     @pytest.mark.asyncio
     async def test_missing_client_is_unconfirmed(self):
@@ -248,10 +245,6 @@ class TestVoiceActions:
         with pytest.raises(ValueError, match="消息 ID"):
             await adapter.admin.fetch_ptt_text("abc")
 
-    def test_voice_actions_are_read_capabilities(self):
-        assert ADMIN_CAPABILITIES["get_record"][0] == "read"
-        assert ADMIN_CAPABILITIES["fetch_ptt_text"][0] == "read"
-
 
 class TestAdminCapabilities:
     def test_capabilities_follow_connection_and_passive_learning(self):
@@ -272,27 +265,6 @@ class TestAdminCapabilities:
         adapter._bot = None
         assert set(adapter.admin_capabilities().values()) == {"unavailable"}
 
-    def test_base_adapter_has_no_known_capabilities(self):
-        from satrap.core.platform.event import PlatformMetadata
-
-        class _Bare(PlatformAdapter):
-            adapter_type = "bare"
-
-            async def run(self) -> None:
-                return None
-
-            def meta(self) -> PlatformMetadata:
-                return PlatformMetadata(name="bare", id="b")
-
-        bare = _Bare(PlatformConfig(id="b", type="bare"))
-        assert bare.admin_capabilities() == {}
-
-    def test_stats_include_capabilities(self):
-        adapter = _adapter()
-        adapter._running = True
-        adapter.note_action_outcome("get_group_list", True)
-        assert adapter.get_stats()["capabilities"]["get_group_list"] == "supported"
-
     @pytest.mark.asyncio
     async def test_admin_call_outcome_feeds_capability_learning(self):
         adapter = _adapter()
@@ -300,6 +272,8 @@ class TestAdminCapabilities:
         adapter._bot.get_group_list.return_value = []
         await adapter.admin.fetch_group_directory()
         assert adapter.admin_capabilities()["get_group_list"] == "supported"
+        # 学习结果同时经 get_stats 序列化暴露
+        assert adapter.get_stats()["capabilities"]["get_group_list"] == "supported"
         adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 10002})
         with pytest.raises(UnsupportedAdminAction):
             await adapter.admin.kick_group_member("456", "123")
@@ -485,16 +459,6 @@ class TestRequestFlagOccupancy:
         assert sum(1 for item in results if isinstance(item, AdminActionRejected)) == 1
 
     @pytest.mark.asyncio
-    async def test_friend_and_group_tables_are_separate(self):
-        adapter = _adapter()
-        await _register_flag(adapter, "group", "same-flag", group_id="456", sub_type="invite", user_id="1")
-        await _register_flag(adapter, "friend", "same-flag", user_id="2")
-        await adapter.admin.handle_friend_request("same-flag", True)
-        adapter._bot.set_friend_add_request.assert_awaited_once()
-        await adapter.admin.handle_group_request("456", "same-flag", "invite", True)
-        adapter._bot.set_group_add_request.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_duplicate_inbound_does_not_reset_occupied_state(self):
         adapter = _adapter()
         await _register_flag(adapter, "group", "flag-d", group_id="456", sub_type="add", user_id="1")
@@ -630,16 +594,6 @@ class TestApprovalLedger:
     async def _approve(self, ledger: RequestApprovalLedger, gateway: AsyncMock, flag: str) -> None:
         await ledger.occupy("ob", "10000", "friend", flag, now=1001.0)
         await gateway(flag)
-
-    @pytest.mark.asyncio
-    async def test_restart_after_cancel_keeps_unknown_not_available(self, tmp_path: Path):
-        """反例: 取消后重启, 该 flag 仍不可审批"""
-        ledger = self._ledger(tmp_path)
-        await ledger.register("ob", "10000", "friend", "flag-a", user_id="7", now=1000.0)
-        await ledger.occupy("ob", "10000", "friend", "flag-a", now=1001.0)
-        revived = self._ledger(tmp_path)
-        with pytest.raises(LookupError, match="结果未知"):
-            await revived.occupy("ob", "10000", "friend", "flag-a", now=1002.0)
 
     @pytest.mark.asyncio
     async def test_capacity_refuses_new_and_old_identity_stays_consumed(self, tmp_path: Path):

@@ -93,16 +93,20 @@ async def test_input_budget_and_talk_value_are_hot_applied(tmp_path: Path):
 
     frozen = await feed("保存前", "1")
     assert frozen.policy_settings.get("input_text_limit") is None
+    assert backend.config.source_path == str(path.resolve())
     platform["settings"].update({"input_text_limit": 512, "input_media_limit": 3,
-                                 "wake_talk_value": 0, "wake_mode": "frequency"})
+                                 "wake_talk_value": 0, "wake_mode": "frequency",
+                                 "wake_words": ["new"], "media_plaintext_http": True})
     path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
     result = (await backend.reload_platform_policies())[0]
     assert result["status"] == "applied" and result["saved_revision"] == result["active_revision"]
     # 不重建实例或连接, 只替换配置对象
     assert _require_manager(backend).get_adapter("bot") is adapter
     assert adapter.config.settings["input_text_limit"] == 512
+    assert adapter.config.settings["media_plaintext_http"] is True
     # 已冻结事件保留其原快照, 下一事件才用新预算与新频率
     assert frozen.policy_settings.get("input_text_limit") is None
+    assert frozen.policy_settings["wake_words"] == ["old"]
     fresh = await feed("保存后", "2")
     assert fresh.policy_settings["input_text_limit"] == 512
     assert fresh.policy_settings["input_media_limit"] == 3
@@ -195,43 +199,33 @@ async def test_archive_policy_failure_during_replacement_still_restarts_old_rece
 
 
 @pytest.mark.asyncio
-async def test_reload_tracks_actual_file_and_updates_new_events_only(tmp_path):
-    backend, adapter, path, platform = setup_runtime(tmp_path)
-    assert backend.config.source_path == str(path.resolve())
-    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_type": "group",
-                                         "message": [{"type": "text", "data": {"text": "old"}}]})
-    old_event = adapter._event_queue.get_nowait()
-    platform["settings"]["wake_words"] = ["new"]
-    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
-    result = (await backend.reload_platform_policies())[0]
-    assert result["status"] == "applied"
-    assert result["saved_revision"] == result["active_revision"]
-    assert adapter.config.settings["wake_words"] == ["new"]
-    assert old_event.policy_settings["wake_words"] == ["old"]
-    manager = _scheduler_session_manager()
-    scheduler = PipelineScheduler(manager)
-    await scheduler.execute(old_event)
-    for text in ["old", "new"]:
-        await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_type": "group",
-                                             "message": [{"type": "text", "data": {"text": text}}]})
-        await scheduler.execute(adapter._event_queue.get_nowait())
-    assert manager.handle_call_async.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_connection_change_remains_pending_without_partial_policy_application(tmp_path):
+@pytest.mark.parametrize(
+    ("settings_update", "expected_status"),
+    [
+        ({"port": 6790, "wake_words": ["new"]}, "pending_restart"),
+        ({"host": "127.0.0.1", "access_token": "", "secret": "", "self_id": "", "wake_words": ["new"]}, "applied"),
+        ({"port": "invalid"}, "failed"),
+    ],
+)
+async def test_connection_field_change_branches(tmp_path, settings_update, expected_status):
+    """连接字段变更的待重启 / 表单默认值热应用 / 非法值保留三分支"""
     backend, adapter, path, platform = setup_runtime(tmp_path)
     original = (await backend.reload_platform_policies())[0]["active_revision"]
-    platform["settings"].update(port=6790, wake_words=["new"])
+    platform["settings"].update(settings_update)
     path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
     result = (await backend.reload_platform_policies())[0]
-    assert result["status"] == "pending_restart"
-    assert result["active_revision"] == original != result["saved_revision"]
-    assert adapter.port == 6789 and adapter.config.settings["wake_words"] == ["old"]
+    assert result["status"] == expected_status
+    if expected_status == "pending_restart":
+        assert result["active_revision"] == original != result["saved_revision"]
+        assert adapter.port == 6789 and adapter.config.settings["wake_words"] == ["old"]
+    elif expected_status == "applied":
+        assert adapter.config.settings["wake_words"] == ["new"]
+    else:
+        assert adapter.port == 6789
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("broken", ["missing", "invalid", "invalid_policy"])
+@pytest.mark.parametrize("broken", ["missing", "invalid", "invalid_policy", "unvalidated_active"])
 async def test_invalid_source_preserves_active_config(tmp_path, broken):
     backend, adapter, path, platform = setup_runtime(tmp_path)
     original = (await backend.reload_platform_policies())[0]["active_revision"]
@@ -239,14 +233,27 @@ async def test_invalid_source_preserves_active_config(tmp_path, broken):
         path.unlink()
     elif broken == "invalid":
         path.write_text("[", encoding="utf-8")
-    else:
+    elif broken == "invalid_policy":
         platform["settings"]["group_whitelist"] = "secret-value"
+        path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+    else:
+        # 当前 active 配置本身未通过校验也不能阻断重载
+        backend._platform_active_configs["bot"] = {"id": "bot", "type": "onebot", "enable": "yes", "settings": {"group_whitelist": "oops"}}
+        platform["settings"]["port"] = "invalid"
         path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
     result = (await backend.reload_platform_policies())[0]
     assert result["status"] == "failed"
-    assert result["active_revision"] == original
+    if broken == "unvalidated_active":
+        # 未校验的 active 配置使其生效指纹被按原样重算, 只要求仍有生效版本
+        assert result["active_revision"]
+    else:
+        assert result["active_revision"] == original
     assert adapter.config.settings["wake_words"] == ["old"]
     assert "secret-value" not in json.dumps(result)
+    if broken == "unvalidated_active":
+        platform["settings"]["port"] = 6789
+        path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+        assert (await backend.reload_platform_policies())[0]["status"] in {"applied", "pending_restart"}
 
 
 def test_yaml_loader_records_source_without_persisting_internal_path(tmp_path):
@@ -273,19 +280,6 @@ async def test_invalid_connection_retains_runtime(tmp_path):
     path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
     assert (await backend.reload_platform_policies())[0]["status"] == "failed"
     assert adapter.port == 6789
-
-
-@pytest.mark.asyncio
-async def test_reload_survives_unvalidated_active_config(tmp_path):
-    backend, adapter, path, platform = setup_runtime(tmp_path)
-    backend._platform_active_configs["bot"] = {"id": "bot", "type": "onebot", "enable": "yes", "settings": {"group_whitelist": "oops"}}
-    platform["settings"]["port"] = "invalid"
-    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
-    result = (await backend.reload_platform_policies())[0]
-    assert result["status"] == "failed" and result["active_revision"]
-    platform["settings"]["port"] = 6789
-    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
-    assert (await backend.reload_platform_policies())[0]["status"] in {"applied", "pending_restart"}
 
 
 @pytest.mark.asyncio
@@ -421,17 +415,6 @@ async def test_reload_failures_are_logged(tmp_path: Path, caplog: pytest.LogCapt
     with caplog.at_level(logging.WARNING):
         await backend.reload_platform_policies(expected_config_revision="deadbeef")
     assert any("修订与本次保存不一致" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_media_plaintext_http_toggle_is_hot_applied(tmp_path: Path):
-    """media_plaintext_http 逐事件读取, 开关切换热生效不触发实例重建"""
-    backend, adapter, path, platform = setup_runtime(tmp_path)
-    platform["settings"]["media_plaintext_http"] = True
-    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
-    result = (await backend.reload_platform_policies())[0]
-    assert result["status"] == "applied"
-    assert adapter.config.settings["media_plaintext_http"] is True
 
 
 class _BindingRegistry:
@@ -641,17 +624,37 @@ async def test_ghost_disabled_dangling_platform_applies_and_stays_applied(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_disabled_platform_rebinding_to_missing_definition_applies_without_fallback(tmp_path: Path):
-    """禁用平台改绑到不存在的定义: 应用成功, 绑定按配置值保留, 不回退到默认会话类"""
-    life = _lifecycle_backend(tmp_path, _dangling_platform(False), {})
-    life.platform["session_type"] = "another-missing"
+@pytest.mark.parametrize("provider", ["session_class", "no-such-provider"])
+async def test_disabled_platform_with_invalid_binding_applies_without_resolving(tmp_path: Path, provider: str) -> None:
+    """禁用平台改绑到不存在定义或未知 Provider: 应用成功, 绑定按配置值保留, 不回退也不解析"""
+    platform: dict[str, Any] = {"id": "bot", "type": "probe-runtime", "enable": False, "session_provider": provider,
+                                "session_type": "missing-session", "settings": {}}
+    saved = validate_platforms([deepcopy(platform)])
+    assert saved[0]["session_provider"] == provider and saved[0]["enable"] is False
+    life = _lifecycle_backend(tmp_path, platform, {}, {"session_class"})
+    life.platform["session_type"] = "rebind-1"
     _write(life.path, life.platform)
     result = (await life.backend.reload_platform_policies())[0]
     current = life.manager.get_adapter("bot")
     assert result["status"] == "applied"
-    assert current is not None and current.config.session_type == "another-missing"
+    assert current is not None and current.config.session_type == "rebind-1"
     assert current.config.enable is False and current.started is False
     assert life.registry.calls == []
+    # 启动装配路径同样不解析绑定
+    init_dir = tmp_path / "init"
+    init_dir.mkdir()
+    backend2, _, _, _ = setup_runtime(init_dir)
+    init_manager = _require_manager(backend2)
+    init_manager.registry.register("probe-runtime", _LifecycleAdapter)
+    init_manager._adapters = {}
+    init_registry = _BindingRegistry({}, {"session_class"})
+    backend2._platform_runtimes["bot"] = cast(Any, (
+        SimpleNamespace(provider_registry=init_registry, plugin_environment=None), None,
+    ))
+    backend2._init_platform("bot", "probe-runtime", platform)
+    assert init_registry.calls == []
+    init_adapter = _require_adapter(init_manager, "bot")
+    assert init_adapter.config.enable is False and init_adapter.started is False
 
 
 @pytest.mark.asyncio
@@ -852,38 +855,6 @@ async def test_failed_enable_keeps_old_instance_and_scheduler_untouched(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_disabled_platform_with_unknown_provider_applies_without_resolving(tmp_path: Path):
-    """Provider 本身不存在也属失效绑定: 禁用时保存与应用都成功且不发生解析"""
-    platform: dict[str, Any] = {"id": "bot", "type": "probe-runtime", "enable": False, "session_provider": "no-such-provider",
-                                "session_type": "whatever", "settings": {}}
-    saved = validate_platforms([deepcopy(platform)])
-    assert saved[0]["session_provider"] == "no-such-provider" and saved[0]["enable"] is False
-    life = _lifecycle_backend(tmp_path, platform, {}, {"session_class"})
-    life.platform["session_type"] = "whatever-2"
-    _write(life.path, life.platform)
-    result = (await life.backend.reload_platform_policies())[0]
-    current = life.manager.get_adapter("bot")
-    assert result["status"] == "applied"
-    assert current is not None and current.config.session_type == "whatever-2"
-    assert current.config.enable is False and current.started is False
-    assert life.registry.calls == []
-    init_dir = tmp_path / "init"
-    init_dir.mkdir()
-    backend2, _, _, _ = setup_runtime(init_dir)
-    init_manager = _require_manager(backend2)
-    init_manager.registry.register("probe-runtime", _LifecycleAdapter)
-    init_manager._adapters = {}
-    init_registry = _BindingRegistry({}, {"session_class"})
-    backend2._platform_runtimes["bot"] = cast(Any, (
-        SimpleNamespace(provider_registry=init_registry, plugin_environment=None), None,
-    ))
-    backend2._init_platform("bot", "probe-runtime", platform)
-    assert init_registry.calls == []
-    init_adapter = _require_adapter(init_manager, "bot")
-    assert init_adapter.config.enable is False and init_adapter.started is False
-
-
-@pytest.mark.asyncio
 async def test_enabled_platform_with_unknown_provider_keeps_unknown_provider_semantics(tmp_path: Path):
     """Provider 不存在时启用平台仍 fail-closed, 且保留既有的未知 Provider 语义"""
     platform: dict[str, Any] = {"id": "bot", "type": "probe-runtime", "enable": True, "session_provider": "no-such-provider",
@@ -902,26 +873,6 @@ async def test_enabled_platform_with_unknown_provider_keeps_unknown_provider_sem
     ))
     with pytest.raises(ValueError, match="未知会话 Provider: no-such-provider"):
         backend2._init_platform("bot", "probe-runtime", platform)
-
-
-@pytest.mark.asyncio
-async def test_unknown_provider_and_missing_definition_conclude_identically(tmp_path: Path):
-    """两种失效绑定形态在同一 enable 取值下结论一致"""
-    shapes: list[dict[str, str]] = [{"session_provider": "session_class"}, {"session_provider": "no-such-provider"}]
-    cases = [(enabled, index, shape) for enabled in (False, True) for index, shape in enumerate(shapes)]
-    for enabled, index, shape in cases:
-        case_dir = tmp_path / f"{int(enabled)}-{index}"
-        case_dir.mkdir()
-        active: dict[str, Any] = {"id": "bot", "type": "probe-runtime", "enable": enabled,
-                                  "session_type": "missing-session", "settings": {}}
-        active.update(shape)
-        life = _lifecycle_backend(case_dir, active, {"session_class": True})
-        # 改绑到另一个名字以强制走重建路径, 否则沿用就地在位分支而不校验绑定
-        life.platform["session_type"] = "rebind-1"
-        _write(life.path, life.platform)
-        result = (await life.backend.reload_platform_policies())[0]
-        assert result["status"] == ("applied" if not enabled else "failed"), (enabled, shape)
-        assert life.manager.get_adapter("bot") is not None
 
 
 @pytest.mark.asyncio

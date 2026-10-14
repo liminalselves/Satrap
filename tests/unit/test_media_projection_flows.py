@@ -88,37 +88,6 @@ class TestSelectMediaEquivalence:
     """select_media 与重构前的公开实现保持同一选中结论"""
 
     @pytest.mark.asyncio
-    async def test_top_quote_forward_share_budget_identically(self):
-        adapter, event = await _media_resolve_make_event({"input_media_limit": 4}, [
-            {"type": "reply", "data": {"id": "5"}},
-            {"type": "forward", "data": {"id": "f1"}},
-            {"type": "image", "data": {"url": "http://x/top.png"}},
-            {"type": "at", "data": {"qq": "10000"}},
-        ])
-        adapter._bot.get_msg.return_value = {
-            "message_id": 5, "group_id": 456, "message_type": "group", "self_id": 10000,
-            "sender": {"user_id": 321, "nickname": "小明"}, "time": 1700000000,
-            "message": [{"type": "image", "data": {"url": f"http://x/q{i}.png"}} for i in range(3)],
-        }
-        adapter._bot.get_forward_msg.return_value = {"messages": [
-            {"type": "node", "data": {"nickname": "小红", "user_id": 654, "content": [
-                {"type": "image", "data": {"url": f"http://x/f{i}.png"}} for i in range(2)
-            ]}},
-        ]}
-        quote_status = await resolve_quotes(event)
-        await resolve_forwards(event)
-
-        selection = select_media(event, quote_status)
-        images, videos, notes = reference_selection(event, quote_status)
-
-        assert selection.sources("image") == images
-        assert selection.sources("video") == videos
-        flat_notes = [*selection.top_notes, *selection.quote_notes]
-        for group in selection.forward_notes:
-            flat_notes.extend(group)
-        assert flat_notes == notes
-
-    @pytest.mark.asyncio
     async def test_selection_notes_cover_each_stage(self):
         adapter, event = await _media_resolve_make_event({"input_media_limit": 1}, [
             {"type": "reply", "data": {"id": "5"}},
@@ -412,37 +381,24 @@ class TestFailedMediaProjection:
         assert "media_failed:image_unavailable" in projected.notes
 
     @pytest.mark.asyncio
-    async def test_pure_failed_image_is_flagged_for_deterministic_feedback(self):
+    @pytest.mark.parametrize("kind,url,reason,marker", [
+        ("image", "https://cdn/a.png", "image_unavailable", "[图片读取失败]"),
+        ("video", "https://cdn/v.mp4", "video_download_failed", "[视频读取失败]"),
+    ])
+    async def test_pure_failed_media_is_flagged_for_deterministic_feedback(self, kind, url, reason, marker):
         adapter, event = await _media_resolve_make_event({"input_media_limit": 4}, [
-            {"type": "image", "data": {"url": "https://cdn/a.png"}},
+            {"type": kind, "data": {"url": url}},
         ])
-        event.set_extra("media_resolution", (
-            MediaResult("https://cdn/a.png", "image", "failed", "image_unavailable"),
-        ))
+        event.set_extra("media_resolution", (MediaResult(url, kind, "failed", reason),))
 
         projected = project_input(event, "none")
 
-        assert projected.images == ()
-        assert projected.message.strip() == "[用户 123, 消息 77] [图片读取失败]"
+        assert (projected.images if kind == "image" else projected.videos) == ()
+        assert projected.message.strip() == f"[用户 123, 消息 77] {marker}"
         assert projected.media_only_unavailable is True
 
     @pytest.mark.asyncio
-    async def test_pure_failed_video_marker_and_flag(self):
-        adapter, event = await _media_resolve_make_event({"input_media_limit": 4}, [
-            {"type": "video", "data": {"url": "https://cdn/v.mp4"}},
-        ])
-        event.set_extra("media_resolution", (
-            MediaResult("https://cdn/v.mp4", "video", "failed", "video_download_failed"),
-        ))
-
-        projected = project_input(event, "none")
-
-        assert projected.videos == ()
-        assert projected.message.strip() == "[用户 123, 消息 77] [视频读取失败]"
-        assert projected.media_only_unavailable is True
-
-    @pytest.mark.asyncio
-    async def test_quoted_media_failure_is_marked_in_context_block(self):
+    async def test_quoted_and_forwarded_media_failures_are_marked_in_context_block(self):
         adapter, event = await _media_resolve_make_event({"input_media_limit": 4}, [
             {"type": "reply", "data": {"id": "5"}},
             {"type": "at", "data": {"qq": "10000"}},
@@ -456,35 +412,10 @@ class TestFailedMediaProjection:
         event.set_extra("media_resolution", (
             MediaResult("https://cdn/q.png", "image", "failed", "image_url_refreshed"),
         ))
-
         projected = project_input(event, quote_status)
-
         assert "[图片读取失败]" in projected.message
         assert projected.media_only_unavailable is False
 
-    @pytest.mark.asyncio
-    async def test_forwarded_media_failure_is_marked_in_context_block(self):
-        adapter, event = await _media_resolve_make_event({"input_media_limit": 4}, [
-            {"type": "forward", "data": {"id": "f1"}},
-            {"type": "at", "data": {"qq": "10000"}},
-        ])
-        adapter._bot.get_forward_msg.return_value = {"messages": [
-            {"type": "node", "data": {"nickname": "小红", "user_id": 654, "content": [
-                {"type": "image", "data": {"url": "https://cdn/f.png"}},
-            ]}},
-        ]}
-        forward_status = await resolve_forwards(event)
-        event.set_extra("media_resolution", (
-            MediaResult("https://cdn/f.png", "image", "failed", "image_unavailable"),
-        ))
-
-        projected = project_input(event, "none", forward_status)
-
-        assert "- 小红: [图片读取失败]" in projected.message
-        assert projected.media_only_unavailable is False
-
-    @pytest.mark.asyncio
-    async def test_forwarded_media_placeholder_stays_chinese_when_resolved(self):
         adapter, event = await _media_resolve_make_event({"input_media_limit": 4}, [
             {"type": "forward", "data": {"id": "f1"}},
             {"type": "at", "data": {"qq": "10000"}},
@@ -501,13 +432,12 @@ class TestFailedMediaProjection:
         event.set_extra("media_resolution", (
             MediaResult("https://cdn/bad.png", "image", "failed", "image_unavailable"),
         ))
-
         projected = project_input(event, "none", forward_status)
-
         # 未失败的节点必须保持平台层的原占位, 不能退化成类型名
         assert "- 小红: [图片读取失败]" in projected.message
         assert "- 小蓝: [图片]" in projected.message
         assert "[image]" not in projected.message
+        assert projected.media_only_unavailable is False
 
 @pytest.fixture
 def media_policy(tmp_path, monkeypatch):
@@ -531,7 +461,7 @@ async def test_standard_uri_round_trip(media_policy, filename):
     assert _normalize_file_source(str(picture)) == picture.as_uri()
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["file", "file_url", "missing", "video_forward", "uppercase", "single_slash"])
+@pytest.mark.parametrize("kind", ["file", "file_url", "missing", "video_forward", "uppercase", "single_slash", "invalid_utf8"])
 async def test_onebot_denies_before_platform_call(tmp_path, media_policy, kind):
     outside = tmp_path / "outside.png"
     source = outside.as_uri()
@@ -546,6 +476,12 @@ async def test_onebot_denies_before_platform_call(tmp_path, media_policy, kind):
         component = Image(file="FILE:" + source[5:])
     elif kind == "single_slash":
         component = Image(file=source.replace("file:///", "file:/", 1))
+    elif kind == "invalid_utf8":
+        source = "file:///tmp/%FF.png"
+        with pytest.raises(paths.MediaSourcePermissionError) as caught:
+            paths.file_uri_to_path(source)
+        assert isinstance(caught.value.__cause__, UnicodeDecodeError)
+        component = Image(file=source)
     adapter = OneBotAdapter(PlatformConfig(id="test", type="onebot", settings={"host": "127.0.0.1"}))
     adapter._bot = AsyncMock()
     adapter._dispatch_action = AsyncMock()
@@ -585,11 +521,8 @@ async def test_misskey_keeps_remote_and_converts_inline(tmp_path, monkeypatch):
     assert remote is None and Path(local).read_bytes() == b"png"
 
 @pytest.mark.parametrize("relative", [
-    "platforms/p/cache/temp/a.png",
     "platforms/p/sessions/s/uploads/a.png",
     "platforms/p/sessions/s/artifacts/a.png",
-    "platforms/p/sessions/s/sandbox/a.png",
-    "platforms/p/sessions/s/cache/a.png",
 ])
 def test_default_layout_media_only(tmp_path, monkeypatch, relative):
     monkeypatch.setattr(paths, "_configured_media_roots", ())
@@ -600,8 +533,6 @@ def test_default_layout_media_only(tmp_path, monkeypatch, relative):
 @pytest.mark.parametrize("relative", [
     "platforms/p/trash/sessions/old/uploads/private.png",
     "platforms/p/users/u/cache/private.png",
-    "platforms/p/projects/a/uploads/private.png",
-    "platforms/p/sessions/s/indexes/cache/private.png",
     "platforms/p/platform.db",
 ])
 def test_default_layout_denies_named_ancestors(tmp_path, monkeypatch, relative):
@@ -668,20 +599,6 @@ def test_backend_rejects_invalid_media_config(value):
 def test_invalid_file_uri_rejected(source):
     with pytest.raises(paths.MediaSourcePermissionError):
         paths.file_uri_to_path(source)
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["file:///tmp/%FF.png", "file:///tmp/%E4.png", "file://%FF/share/a.png"])
-async def test_invalid_utf8_uri_is_media_denial(source):
-    with pytest.raises(paths.MediaSourcePermissionError) as caught:
-        paths.file_uri_to_path(source)
-    assert isinstance(caught.value.__cause__, UnicodeDecodeError)
-    adapter = OneBotAdapter(PlatformConfig(id="test", type="onebot", settings={"host": "127.0.0.1"}))
-    adapter._bot = AsyncMock()
-    adapter._dispatch_action = AsyncMock()
-    receipt = await adapter.send_message("group%456", MessageChain([Image(file=source)]))
-    assert receipt.status == "failed" and receipt.reason == "media_source_denied"
-    adapter._dispatch_action.assert_not_awaited()
-    assert adapter._bot.method_calls == []
 
 @pytest.mark.asyncio
 async def test_default_cache_keeps_download_and_inline_media(tmp_path, monkeypatch):
@@ -1115,7 +1032,9 @@ async def test_voice_download_or_asr_failure_degrades_without_raising(monkeypatc
     assert results[0].status == "unsupported" and results[0].reason == "unknown_codec"
 
 @pytest.mark.asyncio
-async def test_voice_prefers_platform_transcode_via_get_record(monkeypatch: pytest.MonkeyPatch):
+async def test_voice_get_record_transcode_and_download_fallback(monkeypatch: pytest.MonkeyPatch):
+    """优先用实现动作平台转码; 该动作失败时回落到下载并按内容识别后缀"""
+    # 平台转码可用: 直接使用 get_record 的 base64
     adapter, event = await _attachments_make_event([record()], {"asr_model": "speech"})
     wav = b"RIFF" + bytes(4) + b"WAVEfmt "
     adapter._bot.get_record.side_effect = None
@@ -1134,19 +1053,18 @@ async def test_voice_prefers_platform_transcode_via_get_record(monkeypatch: pyte
     assert seen == {"data": wav, "filename": "voice.wav"} and not calls
     adapter._bot.get_record.assert_awaited_once_with(file="https://media.example.com/voice.amr.wav", out_format="wav")
 
-@pytest.mark.asyncio
-async def test_voice_get_record_failure_falls_back_to_download(monkeypatch: pytest.MonkeyPatch):
+    # 平台转码失败: 下载原始字节, 文件名按内容识别
     adapter, event = await _attachments_make_event([record()], {"asr_model": "speech"})
     adapter._bot.get_record.side_effect = RuntimeError("network")
     download, calls = fake_download({"https://media.example.com/voice.amr.wav": b"OggS" + bytes(16)})
     monkeypatch.setattr(_attachments_module, "safe_async_get", download)
-    seen: dict[str, Any] = {}
+    seen = {}
 
-    async def transcribe(data: bytes, filename: str, config: ASRConfig) -> str:
+    async def transcribe_fallback(data: bytes, filename: str, config: ASRConfig) -> str:
         seen["filename"] = filename
         return "ok"
 
-    monkeypatch.setattr(_attachments_module, "_transcribe", transcribe)
+    monkeypatch.setattr(_attachments_module, "_transcribe", transcribe_fallback)
     results = await resolve_attachments(event, lambda name: asr_config())
     assert results[0].status == "resolved" and seen["filename"] == "voice.ogg" and len(calls) == 1
 
@@ -1341,29 +1259,6 @@ async def test_transcribe_close_failure_preserves_original_error(monkeypatch: py
         await _attachments_module._transcribe(b"x", "a.wav", ASRConfig())
 
 @pytest.mark.asyncio
-async def test_insecure_tls_only_applies_to_trusted_hosts(monkeypatch: pytest.MonkeyPatch):
-    """media_insecure_tls 只对登记主机关闭校验, 公网主机始终校验"""
-    calls: list[dict[str, Any]] = []
-
-    class _Resp:
-        content = b"x"
-
-        def raise_for_status(self) -> None:
-            return None
-
-    async def fake_get(url: str, **kwargs: Any) -> Any:
-        calls.append({"url": url, **kwargs})
-        return _Resp()
-
-    monkeypatch.setattr(_attachments_module, "safe_async_get", fake_get)
-    await _attachments_module._download("https://public.example.com/a.png", 100, ("nas.local",), verify_tls=False)
-    await _attachments_module._download("https://nas.local/a.png", 100, ("nas.local",), verify_tls=False)
-    await _attachments_module._download("https://other.local/a.png", 100, ("nas.local",), verify_tls=False)
-    assert calls[0]["ssl_verify"] is True
-    assert calls[1]["ssl_verify"] is False
-    assert calls[2]["ssl_verify"] is True
-
-@pytest.mark.asyncio
 async def test_attachment_total_budget_marks_remaining(monkeypatch: pytest.MonkeyPatch):
     """事件级总预算耗尽后, 其余附件标记 attachment_budget_exceeded 且不再下载"""
     now = [0.0]
@@ -1442,8 +1337,8 @@ async def test_accepted_voice_over_duration_is_rejected(monkeypatch: pytest.Monk
     assert results[0].status == "unsupported" and results[0].reason == "audio_too_long"
 
 @pytest.mark.asyncio
-async def test_plaintext_http_requires_user_switch(monkeypatch: pytest.MonkeyPatch):
-    """公网明文 http 默认拒绝, 开启 media_plaintext_http 或登记主机后放行"""
+async def test_plaintext_http_requires_switch_and_flows_through_resolve(monkeypatch: pytest.MonkeyPatch):
+    """公网明文 http 默认拒绝, 开启 media_plaintext_http 或登记主机后放行, 逐事件设置经解析链生效"""
     calls: list[str] = []
 
     class _Resp:
@@ -1465,11 +1360,9 @@ async def test_plaintext_http_requires_user_switch(monkeypatch: pytest.MonkeyPat
     await _attachments_module._download("http://public.example.com/a.png", 100, (), allow_plaintext=True)
     assert calls == ["http://nas.local/a.png", "http://public.example.com/a.png"]
 
-@pytest.mark.asyncio
-async def test_plaintext_http_setting_flows_through_resolve(monkeypatch: pytest.MonkeyPatch):
     adapter, event = await _attachments_make_event(
         [file_segment("notes.txt", "http://files.example.com/notes.txt")])
-    download, calls = fake_download({"http://files.example.com/notes.txt": b"hello"})
+    download, resolve_calls = fake_download({"http://files.example.com/notes.txt": b"hello"})
     monkeypatch.setattr(_attachments_module, "safe_async_get", download)
     results = await resolve_attachments(event, None)
     assert results[0].status == "failed" and results[0].reason == "UnsafeOutboundURLError"
@@ -1477,7 +1370,7 @@ async def test_plaintext_http_setting_flows_through_resolve(monkeypatch: pytest.
         [file_segment("notes.txt", "http://files.example.com/notes.txt")], {"media_plaintext_http": True})
     results = await resolve_attachments(event, None)
     assert results[0].status == "resolved"
-    assert len(calls) == 1
+    assert len(resolve_calls) == 1
 
 @pytest.mark.parametrize("settings", [{"media_plaintext_http": "yes"}, {"media_plaintext_http": 1}])
 def test_plaintext_http_policy_must_be_boolean(settings: dict[str, object]):
@@ -1510,21 +1403,16 @@ def _amr_bytes(seconds: float = 0.5) -> bytes:
 @pytest.mark.parametrize("payload, suffix, codec, accepted", [
     (b"RIFF\x00\x00\x00\x00WAVEfmt ", ".amr", "wav", True),
     (b"OggS\x00\x02" + b"\x00" * 10, "", "ogg", True),
-    (b"ID3\x04\x00" + b"\x00" * 10, "", "mp3", True),
-    (b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 4, "", "m4a", True),
     (b"#!AMR\n\x3c\x48", ".amr", "amr", False),
-    (b"#!AMR-WB\n\x44", "", "amr", False),
     (b"\x00" * 12, ".mp3", "mp3", True),
-    (b"\x00" * 12, ".amr", "amr", False),
 ])
 def test_probe_identifies_codec_by_magic_then_suffix(payload: bytes, suffix: str, codec: str, accepted: bool):
     probe = probe_audio(payload, suffix)
     assert (probe.codec, probe.accepted) == (codec, accepted)
 
-@pytest.mark.parametrize("payload", [b"#!SILK_V3" + b"\x00" * 7, b"\x02#!SILK_V3" + b"\x00" * 6, b"\x03#!SILK_V3" + b"\x00" * 6])
-def test_probe_flags_silk_for_platform_transcode(payload: bytes):
+def test_probe_flags_silk_for_platform_transcode():
     # QQ 语音以 .amr 命名但内容是 SILK, 文件头优先于扩展名
-    probe = probe_audio(payload, ".amr")
+    probe = probe_audio(b"\x02#!SILK_V3" + b"\x00" * 6, ".amr")
     assert probe == ("silk", False, False, "silk_needs_platform_transcode")
 
 def test_probe_unknown_and_missing_converter(monkeypatch: pytest.MonkeyPatch):

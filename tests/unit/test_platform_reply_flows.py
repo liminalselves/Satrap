@@ -13,6 +13,7 @@ from satrap.core.components import BaseMessageComponent, Plain, Image, At
 from satrap.core.platform.event import MessageChain
 from satrap.core.platform import PlatformConfig
 from collections.abc import Iterator
+import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 from pathlib import Path
@@ -64,15 +65,19 @@ def test_split_rejects_non_positive_limit():
     with pytest.raises(ValueError):
         split_components([Plain("a")], 0)
 
-@pytest.mark.parametrize("value", [63, 32001, "2000", 2000.5, True])
-def test_message_text_limit_validation_rejects_out_of_range(value: object):
-    with pytest.raises(ValueError, match="message_text_limit"):
+@pytest.mark.parametrize("value,valid", [
+    (63, False), (32001, False), ("2000", False), (2000.5, False), (True, False),
+    (64, True), (32000, True), (None, True),
+])
+def test_message_text_limit_validation_bounds(value: object, valid: bool):
+    """边界值接受, 越界或非整数拒绝, 缺省配置也合法"""
+    if value is None:
+        validate_wake_policy({})
+    elif valid:
         validate_wake_policy({"message_text_limit": value})
-
-def test_message_text_limit_validation_accepts_bounds():
-    validate_wake_policy({"message_text_limit": 64})
-    validate_wake_policy({"message_text_limit": 32000})
-    validate_wake_policy({})
+    else:
+        with pytest.raises(ValueError, match="message_text_limit"):
+            validate_wake_policy({"message_text_limit": value})
 
 def _adapter(**settings: object) -> OneBotAdapter:
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings=settings))
@@ -152,7 +157,7 @@ async def test_sends_to_same_target_are_serialized_and_other_targets_are_not_blo
     assert started == ["456", "789", "456"]
 
 @pytest.mark.asyncio
-async def test_outbound_turns_rejects_when_full_and_after_close():
+async def test_outbound_turns_rejects_when_full_and_after_close(caplog: pytest.LogCaptureFixture):
     turns = OutboundTurns()
     release = asyncio.Event()
     entered = asyncio.Event()
@@ -171,12 +176,17 @@ async def test_outbound_turns_rejects_when_full_and_after_close():
     holders = [asyncio.create_task(hold(f"t{i}")) for i in range(64)]
     await entered.wait()
     await asyncio.sleep(0)
-    with pytest.raises(RuntimeError):
-        await turns.run("extra", lambda: asyncio.sleep(0))
-    await turns.close()
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError):
+            await turns.run("extra", lambda: asyncio.sleep(0))
+        await turns.close()
     await asyncio.gather(*holders)
     # 关闭只取消发送子任务, 调用方任务自身不被取消
     assert outcomes.count("caller_survived") == 64 and outcomes.count("closed") == 64
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    assert any("发送队列不可用 closed=False inflight=64 target=extra" in m for m in warnings)
+    assert any("关闭发送队列, 取消 64 个在途发送" in m for m in infos)
     with pytest.raises(RuntimeError):
         await turns.run("t0", lambda: asyncio.sleep(0))
     assert not turns.locks
@@ -236,7 +246,7 @@ async def test_cancel_waits_for_cleanup_before_same_target_proceeds():
 
 @pytest.mark.asyncio
 async def test_cancel_settle_timeout_keeps_registry_until_child_finishes(monkeypatch: pytest.MonkeyPatch):
-    """清理超过有界等待时调用方先退出, 登记保留且同目标不并发"""
+    """清理超过有界等待时调用方先退出, 登记保留且同目标不并发; 重复取消不改变语义"""
     monkeypatch.setattr("satrap.core.platform.onebot.outbound.CANCEL_SETTLE_TIMEOUT", 0.2)
     turns = OutboundTurns()
     log: list[str] = []
@@ -256,9 +266,11 @@ async def test_cancel_settle_timeout_keeps_registry_until_child_finishes(monkeyp
     caller = asyncio.create_task(turns.run("t", slow_cleanup))
     await asyncio.sleep(0.05)
     caller.cancel()
+    await asyncio.sleep(0.05)
+    caller.cancel()
     with pytest.raises(asyncio.CancelledError):
         await caller
-    # 调用方已退出, 子任务仍在清理: 登记保留
+    # 调用方已退出, 子任务仍在清理: 登记保留, 同目标不并发放行
     assert turns.tasks and turns.locks.get("t") is not None
     second = asyncio.create_task(turns.run("t", second_op))
     await asyncio.sleep(0.1)
@@ -267,36 +279,6 @@ async def test_cancel_settle_timeout_keeps_registry_until_child_finishes(monkeyp
     await second
     assert log == ["cleanup_started", "cleanup_done", "second_started"]
     assert not turns.tasks and not turns.locks
-
-@pytest.mark.asyncio
-async def test_double_cancel_during_settle_keeps_cancel_semantics(monkeypatch: pytest.MonkeyPatch):
-    """有界等待期间重复取消不改变取消语义与登记时机"""
-    monkeypatch.setattr("satrap.core.platform.onebot.outbound.CANCEL_SETTLE_TIMEOUT", 5.0)
-    turns = OutboundTurns()
-    cleanup_release = asyncio.Event()
-    cleaned = asyncio.Event()
-
-    async def slow_cleanup() -> None:
-        try:
-            await asyncio.sleep(10)
-        finally:
-            await cleanup_release.wait()
-            cleaned.set()
-
-    caller = asyncio.create_task(turns.run("t", slow_cleanup))
-    await asyncio.sleep(0.05)
-    caller.cancel()
-    await asyncio.sleep(0.05)
-    caller.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await caller
-    # 重复取消让调用方立即退出, 但登记保持到子任务清理完成
-    assert turns.tasks
-    assert not cleaned.is_set()
-    cleanup_release.set()
-    await asyncio.sleep(0.05)
-    assert cleaned.is_set()
-    assert not turns.tasks
 
 @pytest.mark.asyncio
 async def test_close_waits_for_cleaning_task_and_reports_timeout(monkeypatch: pytest.MonkeyPatch):

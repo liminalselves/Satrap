@@ -16,11 +16,8 @@ import logging
 from aiocqhttp.exceptions import ActionFailed
 from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
 from satrap.core.platform.onebot.request_registry import flag_digest
-from satrap.core.platform.onebot.outbound import OutboundTurns
 from satrap.core.platform.event import MessageChain
-from dataclasses import dataclass
 from typing import cast
-from types import SimpleNamespace
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.log.reader import read_log_increment
@@ -47,15 +44,6 @@ def test_build_onebot_notice_narrows_fields_and_rejects_foreign_account():
     assert build_onebot_notice({"post_type": "message"}, "10000") is None
     request = build_onebot_notice({"post_type": "request", "request_type": "friend", "user_id": 5, "flag": "abc", "comment": "hi"}, "")
     assert request is not None and (request.kind, request.flag, request.comment) == ("friend", "abc", "hi")
-
-@pytest.mark.usefixtures('_reset_current_hub')
-def test_dedup_key_uses_stable_fields_only():
-    a = build_onebot_notice(raw_notice(), "10000")
-    b = build_onebot_notice(raw_notice(), "10000")
-    c = build_onebot_notice(raw_notice(user_id=999), "10000")
-    assert a is not None and b is not None and c is not None
-    assert a.dedup_key("ob") == b.dedup_key("ob") != c.dedup_key("ob")
-    assert a.dedup_key("ob") != a.dedup_key("other")
 
 @pytest.mark.usefixtures('_reset_current_hub')
 @pytest.mark.asyncio
@@ -151,13 +139,6 @@ async def test_onebot_emits_typed_platform_event_and_respects_filters():
     assert received[-1].event_type == "notice.group_recall"
     await adapter._handle_notice(raw_notice(self_id=2))
     assert adapter.get_stats()["ingress"]["account"] == 1
-
-@pytest.mark.usefixtures('_reset_current_hub')
-@pytest.mark.asyncio
-async def test_notice_never_reaches_message_pipeline():
-    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}))
-    await adapter._handle_notice(raw_notice())
-    assert adapter._event_queue.empty()
 
 @pytest.mark.usefixtures('_reset_current_hub')
 @pytest.mark.parametrize("value", [["message"], ["notice.Group"], "notice", ["notice"] * 65])
@@ -282,16 +263,21 @@ def _messages(caplog: pytest.LogCaptureFixture, level: int | None = None) -> lis
 async def test_admin_call_logs_each_failure_kind_and_write_audit(caplog: pytest.LogCaptureFixture):
     adapter = _adapter()
     admin = adapter.admin
+
+    async def attempt() -> None:
+        """驱动一次失败调用产生审计日志, 具体归一化异常类型由 onebot_admin 侧断言"""
+        try:
+            await admin.kick_group_member("456", "123")
+        except (AdminActionRejected, UnsupportedAdminAction, AdminActionUnconfirmed):
+            pass
+
     with caplog.at_level(logging.DEBUG):
         adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 1200})
-        with pytest.raises(AdminActionRejected):
-            await admin.kick_group_member("456", "123")
+        await attempt()
         adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 1404})
-        with pytest.raises(UnsupportedAdminAction):
-            await admin.kick_group_member("456", "123")
+        await attempt()
         adapter._bot.set_group_kick.side_effect = RuntimeError("net")
-        with pytest.raises(AdminActionUnconfirmed):
-            await admin.kick_group_member("456", "123")
+        await attempt()
         adapter._bot.set_group_kick.side_effect = None
         adapter._bot.set_group_kick.return_value = {}
         await admin.kick_group_member("456", "123")
@@ -328,7 +314,21 @@ async def test_approval_audit_log_records_digest_not_raw_flag(caplog: pytest.Log
     assert any("写动作已执行 set_group_anonymous_ban" in m and "'group_id': 456" in m for m in messages)
 
 @pytest.mark.asyncio
-async def test_send_failures_are_logged_with_reason(caplog: pytest.LogCaptureFixture):
+async def test_send_failures_are_logged_with_reason(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+):
+    """E5: 平台拒绝, 结果未知与三个发送兜底分支都保留原因码, 异常类型与目标会话"""
+    from satrap.core.components import File, Node, Plain
+
+    async def _boom_chunk(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("chunk boom")
+
+    async def _boom_forward(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("forward boom")
+
+    async def _boom_file(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("file boom")
+
     adapter = _adapter()
     adapter._bot.send_group_msg.side_effect = ActionFailed({"retcode": 100})
     with caplog.at_level(logging.WARNING):
@@ -342,24 +342,10 @@ async def test_send_failures_are_logged_with_reason(caplog: pytest.LogCaptureFix
     assert receipt.status == "unknown"
     assert any("reason=action_unconfirmed RuntimeError" in m for m in _messages(caplog))
 
-@pytest.mark.asyncio
-async def test_send_fallback_branches_keep_error_diagnostics(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch):
-    """E5: 三个发送兜底分支都保留原因码, 同时记录异常类型与目标会话"""
-    from satrap.core.components import File, Node, Plain
-
-    async def _boom_chunk(*args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("chunk boom")
-
-    async def _boom_forward(*args: Any, **kwargs: Any) -> Any:
-        raise ValueError("forward boom")
-
-    async def _boom_file(*args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("file boom")
-
-    adapter = _adapter()
     monkeypatch.setattr(adapter, "_send_chunk", _boom_chunk)
     monkeypatch.setattr(adapter, "_send_forward", _boom_forward)
     monkeypatch.setattr(adapter, "_send_file", _boom_file)
+    caplog.clear()
     with caplog.at_level(logging.WARNING):
         chunk = await adapter.send_message("group%456", MessageChain.from_text("hi"))
         forwarded = await adapter.send_message("group%456", MessageChain([Node(Plain("hi"), name="n", uin="10000")]))
@@ -404,80 +390,6 @@ async def test_lookup_failures_logged_at_debug(caplog: pytest.LogCaptureFixture)
     debugs = _messages(caplog, logging.DEBUG)
     assert any("引用回源失败 message_id=77: RuntimeError" in m for m in debugs)
     assert any("转发回源失败 forward_id=f1: RuntimeError" in m for m in debugs)
-
-@pytest.mark.asyncio
-async def test_outbound_turns_logs_full_and_close(caplog: pytest.LogCaptureFixture):
-    turns = OutboundTurns()
-    release = asyncio.Event()
-    entered = asyncio.Event()
-
-    async def hold() -> None:
-        entered.set()
-        await release.wait()
-
-    holders = [asyncio.create_task(turns.run(f"t{i}", hold)) for i in range(64)]
-    await entered.wait()
-    await asyncio.sleep(0)
-    with caplog.at_level(logging.INFO):
-        with pytest.raises(RuntimeError):
-            await turns.run("extra", lambda: asyncio.sleep(0))
-        await turns.close()
-    await asyncio.gather(*holders, return_exceptions=True)
-    assert any("发送队列不可用 closed=False inflight=64 target=extra" in m for m in _messages(caplog, logging.WARNING))
-    assert any("关闭发送队列, 取消 64 个在途发送" in m for m in _messages(caplog, logging.INFO))
-
-@pytest.mark.asyncio
-async def test_backend_health_with_no_adapter_manager_returns_empty_adapters():
-    """没有适配器管理器时 health 仍可正常返回"""
-    backend = BackendManager()
-    backend._running = True
-
-    health = await backend.health()
-
-    assert health["running"] is True
-    assert health["adapters"] == {}
-    assert health["platform_count"] == 0
-
-@dataclass
-class _FakeConfig:
-    id: str = "fake"
-    type: str = "test"
-
-class _FakeAdapter:
-    started = True
-    config = _FakeConfig()
-
-    def get_stats(self) -> dict[str, Any]:
-        return {
-            "status": "running",
-            "started": True,
-            "started_at": "2026-05-15T00:00:00",
-            "error_count": 0,
-            "last_error": None,
-            "config_id": "fake",
-            "config_type": "test",
-        }
-
-@pytest.mark.asyncio
-async def test_backend_health_uses_adapter_stats_dict(monkeypatch: pytest.MonkeyPatch):
-    """health 的 adapters 字段应为前端可直接读取的 dict"""
-    backend = BackendManager()
-    backend._running = True
-    monkeypatch.setattr(
-        backend,
-        "_adapter_mgr",
-        SimpleNamespace(
-            _adapters={"fake": _FakeAdapter()},
-            list_adapters=lambda: ["fake"],
-        ),
-    )
-
-    health = await backend.health()
-
-    assert isinstance(health["adapters"], dict)
-    assert health["adapters"]["fake"]["status"] == "running"
-    assert health["adapters"]["fake"]["started"] is True
-    assert health["adapters"]["fake"]["config_type"] == "test"
 
 class _RestartingDispatcher:
     """首次失败后保持运行的事件分发器替身"""

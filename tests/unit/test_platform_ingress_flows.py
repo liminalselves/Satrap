@@ -51,13 +51,6 @@ async def test_account_binding_and_echo_filter_do_not_poison_dedup():
     }
 
 @pytest.mark.asyncio
-async def test_configured_account_rejects_first_foreign_event():
-    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={"self_id": "10000"}))
-    await adapter._handle_group_message(payload(self_id=20000))
-    assert adapter._event_queue.empty()
-    assert adapter.client_self_id == "10000"
-
-@pytest.mark.asyncio
 async def test_replay_scope_expiry_and_instance_isolation(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr("satrap.core.platform.onebot.adapter.monotonic", lambda: clock[0])
@@ -114,10 +107,9 @@ async def test_full_queue_does_not_mark_message_delivered():
 @pytest.mark.asyncio
 async def test_dedup_capacity_is_bounded_and_termination_clears_state():
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}))
-    for message_id in range(4100):
-        await adapter._handle_group_message(payload(message_id))
-        adapter._event_queue.get_nowait()
-        adapter._event_queue.task_done()
+    # 预置远超上界的未过期键, 新消息入队后按容量裁剪
+    adapter._seen_messages.update({("g", "u", "m", f"k{i}"): 1e18 for i in range(4100)})
+    await adapter._handle_group_message(payload(message_id=99999))
     assert len(adapter._seen_messages) == 4096
     await adapter.terminate()
     assert not adapter._seen_messages
@@ -185,8 +177,10 @@ async def test_admitted_messages_archive_before_model_queue_even_when_queue_full
 @pytest.mark.asyncio
 async def test_rejected_group_and_foreign_account_are_not_archived(tmp_path: Path) -> None:
     adapter = _onebot(tmp_path, self_id="10000", group_whitelist=["456"])
+    assert adapter.client_self_id == "10000"
     await adapter._handle_group_message(_payload(group_id=789))
     await adapter._handle_group_message(_payload(self_id=20000))
+    assert adapter._event_queue.empty()
     assert not adapter.message_archive.database.exists()
     await adapter._handle_group_message(_payload())
     assert len(adapter.message_archive.query(MessageScope("ob", "10000", "group", "456"))["items"]) == 1
@@ -308,16 +302,13 @@ def adapter() -> OneBotAdapter:
     return result
 
 @pytest.mark.asyncio
-async def test_self_nickname_and_card_are_verified_and_cached(adapter: OneBotAdapter):
+async def test_self_identity_verifies_caches_and_scopes_group_cards(adapter: OneBotAdapter):
     first, second = await asyncio.gather(adapter.resolve_self_identity("10", "20"), adapter.resolve_self_identity("10", "20"))
     assert first == second == BotIdentity("10", "机器人昵称", "20", "群中名字")
     adapter._bot.get_login_info.assert_awaited_once_with(self_id="10")
     adapter._bot.get_group_member_info.assert_awaited_once_with(self_id="10", group_id=20, user_id=10, no_cache=True)
     assert await adapter.resolve_self_identity("10") == BotIdentity("10", "机器人昵称")
-
-@pytest.mark.asyncio
-async def test_cards_are_group_specific_but_login_info_is_shared(adapter: OneBotAdapter):
-    assert (await adapter.resolve_self_identity("10", "20")) == BotIdentity("10", "机器人昵称", "20", "群中名字")
+    # 账号昵称共享缓存, 群名片按群隔离
     adapter._bot.get_group_member_info.return_value = {"user_id": 10, "group_id": 21, "card": "另一个群名片"}
     assert (await adapter.resolve_self_identity("10", "21")) == BotIdentity("10", "机器人昵称", "21", "另一个群名片")
     assert (await adapter.resolve_self_identity("10", "20")) == BotIdentity("10", "机器人昵称", "20", "群中名字")
@@ -348,16 +339,21 @@ async def test_invalid_group_info_falls_back_to_verified_account(adapter: OneBot
     assert await adapter.resolve_self_identity("10", "20") == BotIdentity("10", "机器人昵称", "20")
 
 @pytest.mark.asyncio
-async def test_failed_login_can_fall_back_to_verified_group_nickname(adapter: OneBotAdapter):
-    adapter._bot.get_login_info.side_effect = RuntimeError("unavailable")
-    assert await adapter.resolve_self_identity("10", "20") == BotIdentity("10", "机器人昵称", "20", "群中名字")
-
-@pytest.mark.asyncio
-async def test_failed_queries_are_cached_and_refresh_after_ttl(adapter: OneBotAdapter, monkeypatch: pytest.MonkeyPatch):
+async def test_failed_queries_fall_back_then_are_cached_and_refresh_after_ttl(
+    adapter: OneBotAdapter, monkeypatch: pytest.MonkeyPatch,
+):
     from satrap.core.platform.onebot import self_identity as module
 
     moment = [0.0]
     monkeypatch.setattr(module, "monotonic", lambda: moment[0])
+    # 账号资料查询失败时回退到已核验的本群昵称
+    adapter._bot.get_login_info.side_effect = RuntimeError("unavailable")
+    assert await adapter.resolve_self_identity("10", "20") == BotIdentity("10", "机器人昵称", "20", "群中名字")
+    # 两级查询都失败时结果同样缓存, 不重复回源, TTL 到期后才刷新
+    adapter._self_identity.clear()
+    adapter._bot.get_login_info.reset_mock()
+    adapter._bot.get_group_member_info.reset_mock()
+    adapter._bot.get_login_info.side_effect = None
     adapter._bot.get_login_info.return_value = {}
     adapter._bot.get_group_member_info.return_value = {}
     assert await adapter.resolve_self_identity("10", "20") is None

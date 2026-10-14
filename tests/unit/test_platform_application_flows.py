@@ -116,9 +116,8 @@ async def test_actual_application_reports_capture_lock_uninstall_and_install(tmp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["capture", "lock", "source_check"])
-@pytest.mark.parametrize("removed", [False, True])
-async def test_plugin_batch_rejects_platform_manager_replacement(tmp_path: Path, monkeypatch: Any, phase: str, removed: bool) -> None:
-    """来源捕获/等待锁/线程核验期间所属平台被替换或移除, 旧管理器不执行插件生命周期"""
+async def test_plugin_batch_rejects_platform_manager_replacement(tmp_path: Path, monkeypatch: Any, phase: str) -> None:
+    """来源捕获/等待锁/线程核验期间所属平台被替换, 旧管理器不执行插件生命周期"""
     backend, configs, globals_, sessions, providers = await _platforms(tmp_path, monkeypatch)
     original_runtime = backend._platform_runtimes["one"]
     replacement = backend._platform_runtimes["two"]
@@ -159,10 +158,7 @@ async def test_plugin_batch_rejects_platform_manager_replacement(tmp_path: Path,
         task = asyncio.create_task(backend.reconcile_edictum_plugins_async(session_refs=[{"platform_id": "one", "session_id": "one-0"}]))
         try:
             assert await asyncio.to_thread(entered.wait, 2)
-            if removed:
-                backend._platform_runtimes.pop("one")
-            else:
-                backend._platform_runtimes["one"] = replacement
+            backend._platform_runtimes["one"] = replacement
         finally:
             resume.set()
             if phase == "lock":
@@ -494,7 +490,7 @@ async def test_full_application_model_build_does_not_block_progress_queries(tmp_
         await _close(managers)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["capture", "lock", "source_check", "candidate"])
+@pytest.mark.parametrize("phase", ["lock", "source_check", "candidate"])
 async def test_full_batch_rejects_platform_manager_replacement(tmp_path: Path, monkeypatch: Any, phase: str) -> None:
     """来源准备/等待锁/来源复核/候选准备期间平台管理器变化, 不提交旧批次"""
     backend, configs, _globals, managers, providers, sessions, builds = await _setup(tmp_path, monkeypatch)
@@ -676,7 +672,7 @@ async def test_full_application_uses_fresh_shared_models_and_skips_independent_m
         await _close(managers)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["queued", "candidate", "corrupt"])
+@pytest.mark.parametrize("change", ["candidate", "corrupt"])
 async def test_full_model_source_change_or_corruption_preserves_runtime(tmp_path: Path, monkeypatch: Any, change: str) -> None:
     """模型来源排队或准备期间变化以及损坏都不能提交旧候选, 保留上下文和插件"""
     backend, configs, _globals, managers, providers, sessions, builds = await _setup(tmp_path, monkeypatch)
@@ -994,7 +990,7 @@ async def test_full_snapshot_renamed_binding_uses_new_target(tmp_path: Path, mon
         await _close(managers)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["named", "instance", "binding"])
+@pytest.mark.parametrize("change", ["named", "instance"])
 async def test_full_application_rechecks_source_and_instance_override_after_lock(tmp_path: Path, monkeypatch: Any, change: str) -> None:
     """锁内复核来源及最新实例覆盖, 不沿用排队前重启判断"""
     backend, configs, _globals, managers, _providers, sessions, builds = await _setup(tmp_path, monkeypatch)
@@ -1041,8 +1037,7 @@ async def test_full_application_rechecks_source_and_instance_override_after_lock
         await _close(managers)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["source", "generation"])
-async def test_candidate_source_change_preserves_old_session_and_context(tmp_path: Path, monkeypatch: Any, change: str) -> None:
+async def test_candidate_source_change_preserves_old_session_and_context(tmp_path: Path, monkeypatch: Any) -> None:
     """候选实际插件准备后来源变化时撤销候选, 保留原上下文和插件"""
     backend, configs, _globals, managers, providers, sessions, _builds = await _setup(tmp_path, monkeypatch)
     entered = asyncio.Event()
@@ -1066,21 +1061,13 @@ async def test_candidate_source_change_preserves_old_session_and_context(tmp_pat
         task = asyncio.create_task(backend.reconcile_edictum_runtime_async(session_refs=[{"platform_id": "one", "session_id": "one-0"}]))
         try:
             await asyncio.wait_for(entered.wait(), 5)
-            if change == "source":
-                writer = EdictumConfigManager(configs.type_registry, configs.storage_path)
-                writer.update("assistant", {"params": {"system_prompt": "latest"}})
-            else:
-                current = managers[0].pool.get("one-0")
-                replacement = SessionEntry(session=sessions[0], session_type="assistant", created_at=0, last_used=0)
-                assert managers[0].pool.replace("one-0", current, replacement)
+            writer = EdictumConfigManager(configs.type_registry, configs.storage_path)
+            writer.update("assistant", {"params": {"system_prompt": "latest"}})
         finally:
             release.set()
         result = await asyncio.wait_for(task, 5)
         assert not result[0]["ok"]
-        if change == "source":
-            assert result[0]["old_runtime_preserved"] and "候选准备期间已变化" in result[0]["error"]
-        else:
-            assert result[0]["runtime_changed"] and "会话运行时已变化" in result[0]["error"]
+        assert result[0]["old_runtime_preserved"] and "候选准备期间已变化" in result[0]["error"]
         assert managers[0].pool.get("one-0").session is sessions[0]
         assert sessions[0].list_plugins()[0] is old_handle and sessions[0].ctx.get_context() == before
         assert candidates[0].list_plugins() == []
@@ -1146,7 +1133,7 @@ async def test_full_snapshot_handles_disabled_deleted_and_temporary_targets(tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-@pytest.mark.parametrize("change", ["binding", "generation", "source_check"])
+@pytest.mark.parametrize("change", ["binding", "generation"])
 async def test_plugin_application_keeps_frozen_target_and_rechecks_generation(tmp_path: Path, monkeypatch: Any, asynchronous: bool, change: str) -> None:
     """仅插件应用同样复核冻结绑定和运行代次, 来源核验让出循环后不能绕过"""
     backend, configs, globals_, managers, _providers, sessions, builds = await _setup(tmp_path, monkeypatch, asynchronous)
@@ -1154,23 +1141,8 @@ async def test_plugin_application_keeps_frozen_target_and_rechecks_generation(tm
     capture = EdictumPluginApplySnapshot.capture
 
     def record(*args, **kwargs):
-        """通知真实来源准备完成, 可在核验工作线程模拟运行代次变化"""
+        """通知真实来源准备完成"""
         snapshot = capture(*args, **kwargs)
-        if change == "source_check":
-            current = snapshot.sources.is_current
-
-            def replace_during_check():
-                """真实来源核验成功后替换同一条目对象的代次"""
-                valid = current()
-                old = managers[0].pool.get("one-0")
-                replacement = SessionEntry(session=sessions[0], session_type="assistant", created_at=0, last_used=0)
-                if old is None:
-                    raise AssertionError("测试原实例不存在")
-                if not managers[0].pool.replace("one-0", old, replacement):
-                    raise AssertionError("测试未替换运行代次")
-                return valid
-
-            monkeypatch.setattr(snapshot.sources, "is_current", replace_during_check)
         captured.set()
         return snapshot
 

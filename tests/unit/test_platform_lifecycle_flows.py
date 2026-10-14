@@ -291,6 +291,8 @@ async def test_health_reflects_errored_adapters(monkeypatch: pytest.MonkeyPatch)
     try:
         health = await backend.health()
         assert health["healthy"] is False and health["adapters_errored"] == ["broken"]
+        # adapters 字段为前端可直接读取的序列化 dict
+        assert isinstance(health["adapters"], dict) and health["adapters"]["fine"]["config_type"] == "lifecycle-test"
         broken.config = PlatformConfig(id="broken", type="lifecycle-test", enable=False)
         health = await backend.health()
         assert health["healthy"] is True and health["adapters_errored"] == []
