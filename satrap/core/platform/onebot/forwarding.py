@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 import json
 
@@ -14,8 +14,11 @@ from satrap.core.message_forward import ForwardError
 from satrap.core.platform.event import MessageChain
 from satrap.core.platform.onebot.onebot_utils import group_session_id, private_session_id
 
+if TYPE_CHECKING:
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
 
-def conversation(value: Any, origin: CallOrigin) -> dict[str, str]:
+
+def conversation(value: object, origin: CallOrigin) -> dict[str, str]:
     """
     解析通用对话地址, 不接受跨平台或跨机器人账号字段
 
@@ -31,7 +34,8 @@ def conversation(value: Any, origin: CallOrigin) -> dict[str, str]:
         value = {"conversation_kind": kind, "conversation_id": origin.conversation_id or origin.chat_id}
     if not isinstance(value, dict) or set(value) != {"conversation_kind", "conversation_id"}:
         raise ForwardError("invalid_parameters", "对话地址必须包含 conversation_kind 和 conversation_id")
-    kind, identity = value["conversation_kind"], value["conversation_id"]
+    fields = cast(dict[str, Any], value)
+    kind, identity = fields["conversation_kind"], fields["conversation_id"]
     if kind not in {"group", "private"} or not isinstance(identity, str) or not identity.isascii() or not identity.isdecimal() or int(identity) <= 0:
         raise ForwardError("invalid_parameters", "OneBot 对话类型必须为 group 或 private, 对话 ID 必须为正整数")
     return {"conversation_kind": kind, "conversation_id": str(int(identity))}
@@ -40,7 +44,7 @@ def conversation(value: Any, origin: CallOrigin) -> dict[str, str]:
 class OneBotForwarding:
     """绑定当前适配器账号与连接代次的原消息转发"""
 
-    def __init__(self, adapter: Any, origin: CallOrigin, check: Callable[[], None]) -> None:
+    def __init__(self, adapter: OneBotAdapter, origin: CallOrigin, check: Callable[[], None]) -> None:
         """
         冻结本轮来源账号与连接代次
 
@@ -58,7 +62,7 @@ class OneBotForwarding:
         if self.adapter.bot_self_id != self.origin.self_id or self.adapter.connection_generation() != self.generation:
             raise ForwardError("stale_account", "转发期间机器人账号或连接已变化")
 
-    async def source_message(self, source: dict[str, str], message_id: Any) -> dict[str, Any]:
+    async def source_message(self, source: dict[str, str], message_id: object) -> dict[str, Any]:
         """
         回源完整消息, 私聊无法证明聊天对象时拒绝读取
 

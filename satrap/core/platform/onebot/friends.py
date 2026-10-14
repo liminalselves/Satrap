@@ -51,7 +51,7 @@ class OneBotFriends:
         if account != self.adapter.bot_self_id or generation != self.adapter.connection_generation():
             raise FriendError("stale_account", "机器人账号或平台连接已变化, 请刷新")
 
-    async def protocol(self, operation: Awaitable[Any]) -> Any:
+    async def protocol(self, operation: Awaitable[object]) -> object:
         """
         在适配器边界将协议错误转换为通用好友错误
 

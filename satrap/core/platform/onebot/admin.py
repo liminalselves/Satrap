@@ -7,7 +7,7 @@ OneBot 群管理与请求审批动作封装
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 import inspect
 import base64
@@ -20,6 +20,9 @@ from satrap.core.platform.onebot.request_registry import flag_digest
 from satrap.core.log import logger
 
 from satrap.core.config.group_action_origin import current_group_action_preflight, extend_group_action_preflight, bind_group_request_occupancy
+
+if TYPE_CHECKING:
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
 
 
 class PlatformAdminError(Exception):
@@ -156,7 +159,7 @@ def is_missing_action_error(error: BaseException) -> bool:
     return payload.get("retcode") in MISSING_ACTION_RETCODES
 
 
-def _normalize_decimal(value: Any, label: str) -> str:
+def _normalize_decimal(value: object, label: str) -> str:
     """
     校验并归一化纯数字平台 ID
 
@@ -173,12 +176,12 @@ def _normalize_decimal(value: Any, label: str) -> str:
     return text
 
 
-def normalize_group_id(value: Any) -> str:
+def normalize_group_id(value: object) -> str:
     """校验并归一化群 ID"""
     return _normalize_decimal(value, "群 ID")
 
 
-def _normalize_message_id(value: Any, message: str = "消息 ID 必须为整数") -> str:
+def _normalize_message_id(value: object, message: str = "消息 ID 必须为整数") -> str:
     """
     校验并归一化平台消息 ID
 
@@ -197,7 +200,7 @@ def _normalize_message_id(value: Any, message: str = "消息 ID 必须为整数"
 
 
 
-def _normalize_duration(value: Any, message: str, *, allow_minus_one: bool = False) -> int:
+def _normalize_duration(value: object, message: str, *, allow_minus_one: bool = False) -> int:
     """
     校验并归一化秒数时长, 类型校验先于 int() 转换
 
@@ -212,7 +215,7 @@ def _normalize_duration(value: Any, message: str, *, allow_minus_one: bool = Fal
     if isinstance(value, bool):
         raise ValueError(message)
     try:
-        seconds = int(value)
+        seconds = int(cast("int | float | str", value))
     except (TypeError, ValueError):
         raise ValueError(message) from None
     if allow_minus_one and seconds == -1:
@@ -222,12 +225,12 @@ def _normalize_duration(value: Any, message: str, *, allow_minus_one: bool = Fal
     return seconds
 
 
-def normalize_user_id(value: Any) -> str:
+def normalize_user_id(value: object) -> str:
     """校验并归一化用户 ID"""
     return _normalize_decimal(value, "用户 ID")
 
 
-def normalize_flag(value: Any) -> str:
+def normalize_flag(value: object) -> str:
     """
     校验请求审批 flag
 
@@ -252,7 +255,7 @@ class OneBotAdmin:
     接口缺失 (10002/1404) 与业务拒绝, 不读取响应正文作为错误细节
     """
 
-    def __init__(self, adapter: Any, action_failures: tuple[type[Exception], ...] = ()) -> None:
+    def __init__(self, adapter: OneBotAdapter, action_failures: tuple[type[Exception], ...] = ()) -> None:
         """
         初始化动作集
 
@@ -263,7 +266,7 @@ class OneBotAdmin:
         self._adapter = adapter
         self._action_failures = action_failures
 
-    async def _call(self, action: str, timeout: float = ADMIN_TIMEOUT, **params: Any) -> Any:
+    async def _call(self, action: str, timeout: float = ADMIN_TIMEOUT, **params: object) -> object:
         """
         统一执行动作并归一化错误
 
@@ -273,7 +276,7 @@ class OneBotAdmin:
         - params: 动作参数
 
         返回:
-        - Any: 动作返回的数据字段, 无数据返回空字典
+        - object: 动作返回的数据字段, 无数据返回空字典, 使用前必须自行收窄
         """
         bot = self._adapter.get_client()
         if bot is None:
@@ -284,7 +287,7 @@ class OneBotAdmin:
             raise UnsupportedAdminAction(f"当前实现不支持动作 {action}")
         call = cast(Callable[..., Awaitable[Any]], method)
         try:
-            async def guarded_call() -> Any:
+            async def guarded_call() -> object:
                 """在平台写调用的同一协程中完成最后一次权限复核"""
 
                 preflight = current_group_action_preflight()
@@ -387,7 +390,7 @@ class OneBotAdmin:
             "reason": reason, "raw_count": len(result),
         }
 
-    async def get_group_info(self, group_id: Any) -> dict[str, Any]:
+    async def get_group_info(self, group_id: int | str) -> dict[str, Any]:
         """
         获取群信息
 
@@ -405,7 +408,7 @@ class OneBotAdmin:
         data = cast(dict[str, Any], result)
         return {key: data.get(key) for key in ("group_id", "group_name", "member_count", "max_member_count", "group_create_time", "group_level")}
 
-    async def get_group_member_list(self, group_id: Any) -> list[dict[str, Any]]:
+    async def get_group_member_list(self, group_id: int | str) -> list[dict[str, Any]]:
         """
         获取群成员列表
 
@@ -431,7 +434,7 @@ class OneBotAdmin:
             )})
         return members
 
-    async def get_group_member_info(self, group_id: Any, user_id: Any, *, no_cache: bool = False) -> dict[str, Any]:
+    async def get_group_member_info(self, group_id: int | str, user_id: int | str, *, no_cache: bool = False) -> dict[str, Any]:
         """
         获取群成员信息
 
@@ -509,7 +512,7 @@ class OneBotAdmin:
             raise AdminActionRejected("转码后语音超过大小上限")
         return data
 
-    async def fetch_ptt_text(self, message_id: Any) -> str:
+    async def fetch_ptt_text(self, message_id: int | str) -> str:
         """
         用实现提供的原生语音转文字获取转写
 
@@ -525,7 +528,7 @@ class OneBotAdmin:
         value = payload.get("text", "")
         return value if isinstance(value, str) else ""
 
-    async def get_group_honor_info(self, group_id: Any, honor_type: str = "all") -> dict[str, Any]:
+    async def get_group_honor_info(self, group_id: int | str, honor_type: str = "all") -> dict[str, Any]:
         """
         获取群荣誉信息
 
@@ -545,7 +548,7 @@ class OneBotAdmin:
             raise AdminActionUnconfirmed("荣誉信息响应格式不符")
         return cast(dict[str, Any], result)
 
-    async def _verify_group_message(self, gid: str, message_id: Any, *, rejection: str) -> tuple[int, dict[str, Any]]:
+    async def _verify_group_message(self, gid: str, message_id: int | str, *, rejection: str) -> tuple[int, dict[str, Any]]:
         """
         回源并确认消息实际属于目标群
 
@@ -566,7 +569,7 @@ class OneBotAdmin:
             raise AdminActionRejected(rejection)
         return int(text), payload
 
-    async def recall_message(self, group_id: Any, message_id: Any) -> None:
+    async def recall_message(self, group_id: int | str, message_id: int | str) -> None:
         """
         撤回一条群消息
 
@@ -583,7 +586,7 @@ class OneBotAdmin:
         self._check_group(gid)
         await self._call("delete_msg", message_id=message_int)
 
-    async def kick_group_member(self, group_id: Any, user_id: Any, reject_add_request: bool = False) -> None:
+    async def kick_group_member(self, group_id: int | str, user_id: int | str, reject_add_request: bool = False) -> None:
         """
         移出群成员
 
@@ -596,7 +599,7 @@ class OneBotAdmin:
         self._check_group(gid)
         await self._call("set_group_kick", group_id=int(gid), user_id=int(uid), reject_add_request=bool(reject_add_request))
 
-    async def ban_group_member(self, group_id: Any, user_id: Any, duration: Any = 1800) -> None:
+    async def ban_group_member(self, group_id: int | str, user_id: int | str, duration: int = 1800) -> None:
         """
         禁言群成员, 时长 0 表示解除
 
@@ -610,7 +613,7 @@ class OneBotAdmin:
         seconds = _normalize_duration(duration, "禁言时长必须为 0 到 2592000 秒")
         await self._call("set_group_ban", group_id=int(gid), user_id=int(uid), duration=seconds)
 
-    async def set_group_whole_ban(self, group_id: Any, enable: Any) -> None:
+    async def set_group_whole_ban(self, group_id: int | str, enable: bool) -> None:
         """
         开启或解除全员禁言
 
@@ -623,7 +626,7 @@ class OneBotAdmin:
         enable = boolean_parameter(enable, 'enable 必须为布尔值')
         await self._call("set_group_whole_ban", group_id=int(gid), enable=enable)
 
-    async def ban_anonymous(self, group_id: Any, flag: Any, duration: Any = 1800) -> None:
+    async def ban_anonymous(self, group_id: int | str, flag: int | str, duration: int = 1800) -> None:
         """
         禁言匿名成员
 
@@ -637,7 +640,7 @@ class OneBotAdmin:
         seconds = _normalize_duration(duration, "禁言时长必须为 0 到 2592000 秒")
         await self._call("set_group_anonymous_ban", group_id=int(gid), flag=normalize_flag(flag), duration=seconds)
 
-    async def set_group_admin(self, group_id: Any, user_id: Any, enable: Any) -> None:
+    async def set_group_admin(self, group_id: int | str, user_id: int | str, enable: bool) -> None:
         """
         设置或取消群管理员
 
@@ -651,7 +654,7 @@ class OneBotAdmin:
         enable = boolean_parameter(enable, 'enable 必须为布尔值')
         await self._call("set_group_admin", group_id=int(gid), user_id=int(uid), enable=enable)
 
-    async def set_group_anonymous(self, group_id: Any, enable: Any) -> None:
+    async def set_group_anonymous(self, group_id: int | str, enable: bool) -> None:
         """
         开启或关闭群匿名
 
@@ -664,7 +667,7 @@ class OneBotAdmin:
         enable = boolean_parameter(enable, 'enable 必须为布尔值')
         await self._call("set_group_anonymous", group_id=int(gid), enable=enable)
 
-    async def set_group_card(self, group_id: Any, user_id: Any, card: Any = "") -> None:
+    async def set_group_card(self, group_id: int | str, user_id: int | str, card: str = "") -> None:
         """
         设置成员在本群的昵称
 
@@ -679,7 +682,7 @@ class OneBotAdmin:
         action_text(text, "card", allow_empty=True, error='本群昵称长度不能超过 60 字符')
         await self._call("set_group_card", group_id=int(gid), user_id=int(uid), card=text)
 
-    async def set_group_name(self, group_id: Any, name: Any) -> None:
+    async def set_group_name(self, group_id: int | str, name: str) -> None:
         """
         修改群名
 
@@ -693,7 +696,7 @@ class OneBotAdmin:
         action_text(text, "name", allow_empty=False, error='群名必须为 1 到 60 字符')
         await self._call("set_group_name", group_id=int(gid), group_name=text)
 
-    async def set_group_special_title(self, group_id: Any, user_id: Any, title: Any, duration: Any = -1) -> None:
+    async def set_group_special_title(self, group_id: int | str, user_id: int | str, title: str, duration: int = -1) -> None:
         """
         设置群成员专属头衔
 
@@ -710,7 +713,7 @@ class OneBotAdmin:
         seconds = _normalize_duration(duration, "头衔有效期必须为 -1 或 0 到 2592000 秒", allow_minus_one=True)
         await self._call("set_group_special_title", group_id=int(gid), user_id=int(uid), special_title=text, duration=seconds)
 
-    async def leave_group(self, group_id: Any, dismiss: Any = False) -> None:
+    async def leave_group(self, group_id: int | str, dismiss: bool = False) -> None:
         """
         退出或解散群 (解散仅群主可用)
 
@@ -792,7 +795,7 @@ class OneBotAdmin:
         await self._settle_request_flag(kind, flag, self_id, "completed", "accepted" if params.get("approve") else "rejected",
                                         identity_digest=identity_digest)
 
-    async def handle_friend_request(self, flag: Any, approve: Any, remark: Any = "", *, allow_archived: bool = False,
+    async def handle_friend_request(self, flag: int | str, approve: bool, remark: str = "", *, allow_archived: bool = False,
                                     identity_digest: str | None = None, suspicious: bool = False) -> None:
         """
         处理好友添加请求
@@ -827,7 +830,7 @@ class OneBotAdmin:
             identity_digest=identity_digest,
         )
 
-    async def handle_group_request(self, group_id: Any, flag: Any, sub_type: Any, approve: Any, reason: Any = "", *,
+    async def handle_group_request(self, group_id: int | str, flag: int | str, sub_type: str, approve: bool, reason: str = "", *,
                                    request_id: str | None = None, expected_revision: int | None = None, allow_archived: bool = False) -> None:
         """
         处理加群请求或邀请
@@ -866,7 +869,7 @@ class OneBotAdmin:
             identity_digest = row["digest"]
         try:
             occupied = await registry.occupy(
-                "group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type),
+                "group", normalized, self_id=self_id, group_id=gid, sub_type=sub_type,
                 allow_archived=allow_archived, identity_digest=identity_digest,
             )
         except LookupError as error:
@@ -875,7 +878,7 @@ class OneBotAdmin:
             raise AdminActionRejected("群请求占用凭据与当前动作不符")
 
         with bind_group_request_occupancy(
-            self._adapter.config.id, self_id, gid, cast(str, sub_type), identity_digest or flag_digest("group", self_id, normalized),
+            self._adapter.config.id, self_id, gid, sub_type, identity_digest or flag_digest("group", self_id, normalized),
         ):
             await self._execute_request_decision(
                 "group", normalized, self_id,

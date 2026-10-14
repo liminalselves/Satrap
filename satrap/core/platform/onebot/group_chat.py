@@ -70,7 +70,7 @@ class OneBotGroupChatReader:
         if _numeric_id(scope.chat_id) != scope.chat_id:
             raise GroupChatError("wrong_conversation", "来源群身份不符合协议")
 
-    async def _read(self, scope: MessageScope, action: str, *, max_bytes: int, **params: Any) -> Any:
+    async def _read(self, scope: MessageScope, action: str, *, max_bytes: int, **params: object) -> object:
         """
         有界读取协议响应并拒绝连接切换期间的迟到结果
 
@@ -89,7 +89,7 @@ class OneBotGroupChatReader:
         if client is None:
             raise GroupChatError("unavailable", "平台客户端未连接", retryable=True)
 
-        async def lookup() -> Any:
+        async def lookup() -> object:
             """将等待并发槽位计入整次读取的超时"""
             async with adapter._message_lookup_slots:
                 self._scope(scope)
