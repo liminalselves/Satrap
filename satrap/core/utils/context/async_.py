@@ -25,6 +25,11 @@ from satrap.core.log import logger
 class AsyncContextManager(_AsyncSummary):
     """异步对话上下文管理器"""
 
+    catalog_session_id: str
+    catalog_kind: str
+    catalog_workflow: str | None
+    catalog_source: str
+
     def __init__(
         self,
         conversation_id: Union[int, str],

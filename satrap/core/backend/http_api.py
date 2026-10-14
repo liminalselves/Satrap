@@ -11,6 +11,7 @@ from __future__ import annotations
 from urllib.parse import parse_qs, unquote, urlsplit
 import dataclasses
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import json
@@ -41,11 +42,13 @@ from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager
+    from satrap.core.framework.SessionManager import SessionManager
+    from satrap.core.framework.UserManager import UserManager
 
 STATIC_DIR = DEFAULT_STATIC_DIR
 # 静态文件目录 - 前端构建产物
 
-RouteResponse = tuple[int, dict[str, Any]]
+RouteResponse = tuple[int, Mapping[str, Any]]
 # 管理 API 响应: (状态码, JSON 体)
 
 from satrap.core.group_chat.reminders import ReminderError
@@ -68,7 +71,7 @@ def _parse_json_object(body: bytes) -> dict[str, Any]:
     return dict(cast(dict[str, Any], payload))
 
 
-def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[Any, Any]]:
+def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[SessionManager, UserManager]]:
     """
     获取后端的平台运行时映射
 
@@ -76,11 +79,11 @@ def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[Any, Any]]:
     - backend: 后端实例
 
     返回:
-    - dict[str, tuple[Any, Any]]: 平台 ID 到会话和用户管理器的映射
+    - dict[str, tuple[SessionManager, UserManager]]: 平台 ID 到会话和用户管理器的映射
     """
     getter = getattr(backend, "list_platform_runtimes", None)
     if callable(getter):
-        runtimes = cast(dict[str, tuple[Any, Any]], getter())
+        runtimes = cast("dict[str, tuple[SessionManager, UserManager]]", getter())
         return {
             platform_id: runtime
             for platform_id, runtime in runtimes.items()
@@ -90,7 +93,7 @@ def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[Any, Any]]:
     user_manager = getattr(backend, "user_manager", None)
     if session_manager is None:
         return {}
-    return {LOCAL_PLATFORM_ID: (session_manager, user_manager)}
+    return cast("dict[str, tuple[SessionManager, UserManager]]", {LOCAL_PLATFORM_ID: (session_manager, user_manager)})
 
 
 def _platform_db_path(backend: BackendManager, platform_id: str) -> str:
@@ -117,7 +120,7 @@ _WAKE_INPUT_REASONS = frozenset({
 """属于请求参数错误的手动唤醒拒绝原因, 返回 400 而非冲突类 409"""
 
 
-def _wake_status_code(result: dict[str, Any]) -> int:
+def _wake_status_code(result: Mapping[str, Any]) -> int:
     """
     把手动唤醒结果映射为 HTTP 状态码
 
@@ -307,7 +310,7 @@ class BackendHTTPServer(MiniHTTPServer):
         method: str,
         path: str,
         body: bytes,
-    ) -> tuple[int, dict[str, Any]]:
+    ) -> RouteResponse:
         """
         路由分发到 BackendManager 对应方法
 

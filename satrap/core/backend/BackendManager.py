@@ -13,6 +13,7 @@ import secrets
 import time
 import traceback
 from typing import (
+    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
@@ -72,6 +73,10 @@ from satrap.core.utils.paths import set_media_allowed_roots, set_media_storage_r
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 
+if TYPE_CHECKING:
+    from satrap.core.framework.Base import AsyncSession, Session
+    from satrap.core.friends.service import FriendService
+
 from satrap.core.log import logger
 from satrap.core.group_chat.reminder_host import ReminderHost
 from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
@@ -87,7 +92,13 @@ from satrap.core.config.group_events import EVENT_KINDS, event_values
 from satrap.core.config.group_policy import policy_values, resolve_group_policy
 from satrap.core.config.wake_overrides import GROUP_KEYS
 from satrap.edictum.plugin_settings import validate_plugin_settings, resolve_runtime_specs
-from satrap.core.type import UserCall
+from satrap.core.type import (
+    AdministratorRuntimeStatus, DiagnosticStatusBody, GroupAccountsResult, GroupActionPage,
+    GroupActionRecord, GroupActionTypesResult, GroupBindingOptionsResult, GroupMembersPage,
+    GroupSyncState, GroupSyncTicket, ManualWakeStatusResult, PlatformStoreRecovery,
+    ReloadConfigResult, RequestDiagnosticDetail, RequestDiagnosticsPage, UserCall,
+    WakeSubmitResult,
+)
 from satrap.core.call_context import CallOrigin
 from satrap.core.config.group_actions import action_fingerprint
 from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
@@ -259,7 +270,7 @@ class BackendManager:
         self._group_action_lock = asyncio.Lock()
         self._group_action_flags: dict[str, str] = {}
         self._group_action_authorizers: dict[str, ModelActionAuthorization] = {}
-        self._friend_services: dict[str, Any] = {}
+        self._friend_services: dict[str, FriendService] = {}
         self._group_events = GroupEventBuffer()
 
         self._model_cfg: ModelConfigManager | None = None
@@ -431,7 +442,7 @@ class BackendManager:
                 # 不把第三方异常正文中的 URL, 令牌或响应内容返回管理界面
         return ConnectionProbeResult(ok, detail, round((time.monotonic() - started) * 1000))
 
-    def friend_service(self, adapter_id: str) -> Any:
+    def friend_service(self, adapter_id: str) -> FriendService:
         """
         为已配置平台建立账号级好友管理宿主
 
@@ -452,7 +463,7 @@ class BackendManager:
             )
         return self._friend_services[adapter_id]
 
-    def administrator_runtime_status(self) -> dict[str, Any]:
+    def administrator_runtime_status(self) -> AdministratorRuntimeStatus:
         """
         返回当前宿主实际使用的管理员修订和进程身份
 
@@ -463,7 +474,7 @@ class BackendManager:
         return {"ok": True, "section_revision": revision, "runtime_id": self._runtime_id, "pid": os.getpid(),
                 "config_path": str(Path(self.config.source_path).resolve()) if self.config.source_path else ""}
 
-    def apply_saved_administrator_groups(self, expected_revision: str) -> dict[str, Any]:
+    def apply_saved_administrator_groups(self, expected_revision: str) -> AdministratorRuntimeStatus:
         """
         从本进程配置文件应用已保存的管理员区段, 不接受外部授权正文
 
@@ -540,7 +551,7 @@ class BackendManager:
                             values.update(permission_id_list(tool.config.get("managers")))
         return sorted(values)
 
-    async def group_accounts(self, adapter_id: str) -> dict[str, Any]:
+    async def group_accounts(self, adapter_id: str) -> GroupAccountsResult:
         """
         列出当前平台的已确认账号和运行时绑定账号
 
@@ -682,7 +693,7 @@ class BackendManager:
         return {**listing, "account": self_id, "current_account": current,
                 "account_generation": generation, "sync": sync}
 
-    async def trigger_group_sync(self, adapter_id: str, expected_self_id: str) -> dict[str, Any]:
+    async def trigger_group_sync(self, adapter_id: str, expected_self_id: str) -> GroupSyncTicket:
         """
         启动或复用当前账号的单个群目录同步任务
 
@@ -719,7 +730,7 @@ class BackendManager:
             return {"sync_id": token, "status": "running", "reused": False}
 
     async def _run_group_sync(
-        self, adapter: Any, store: GroupDirectoryStore, self_id: str, generation: int, token: str,
+        self, adapter: OneBotAdapter, store: GroupDirectoryStore, self_id: str, generation: int, token: str,
     ) -> None:
         """
         执行一次有界同步并丢弃旧实例或旧连接的迟到结果
@@ -750,7 +761,7 @@ class BackendManager:
             logger.warning(f"[BackendManager] 群目录同步失败 adapter={adapter.config.id} self_id={self_id}: {type(error).__name__}: {error}")
             await asyncio.to_thread(store.fail_sync, self_id, generation, token, type(error).__name__)
 
-    async def group_sync_status(self, adapter_id: str, self_id: str, sync_id: str) -> dict[str, Any]:
+    async def group_sync_status(self, adapter_id: str, self_id: str, sync_id: str) -> GroupSyncState:
         """
         查询账号内固定同步任务的状态
 
@@ -805,7 +816,7 @@ class BackendManager:
 
     @staticmethod
     def _current_group_instances(
-        adapter: Any, manager: SessionManager, group_id: str, revision: int,
+        adapter: OneBotAdapter, manager: SessionManager, group_id: str, revision: int,
         route_generation: int, scoped_ids: list[str],
     ) -> dict[str, str]:
         """合并范围路由和可信群调用关联, 只保留当前池实例"""
@@ -939,7 +950,7 @@ class BackendManager:
                              "event_kinds": sorted(EVENT_KINDS)},
         }
 
-    async def group_binding_options(self, adapter_id: str, self_id: str) -> dict[str, Any]:
+    async def group_binding_options(self, adapter_id: str, self_id: str) -> GroupBindingOptionsResult:
         """列出当前运行时可解析的命名会话定义供群绑定选择"""
         store = await asyncio.to_thread(self._group_directory_store, adapter_id)
         if await asyncio.to_thread(store.read_account, self_id) is None:
@@ -1240,7 +1251,7 @@ class BackendManager:
         version = int(hashlib.sha256(version_payload.encode("utf-8")).hexdigest()[:15], 16)
         return adapter, store, mode, version
 
-    async def group_action_types(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
+    async def group_action_types(self, adapter_id: str, self_id: str, group_id: str) -> GroupActionTypesResult:
         """返回当前群的动作参数结构、风险和有效审批模式"""
         from satrap.core.config.group_approval import effective_approval
         from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS, action_metadata
@@ -1272,7 +1283,7 @@ class BackendManager:
     async def group_members(
         self, adapter_id: str, self_id: str, group_id: str, *,
         query: str = "", page: int = 1, page_size: int = 25,
-    ) -> dict[str, Any]:
+    ) -> GroupMembersPage:
         """按需从 OneBot 读取成员, 对已取集合分页并明确截断边界"""
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
@@ -1311,7 +1322,7 @@ class BackendManager:
     def group_request_diagnostics(
         self, adapter_id: str, self_id: str, group_id: str, *,
         stage: str = "", request_id: str = "", limit: int = 50,
-    ) -> dict[str, Any]:
+    ) -> RequestDiagnosticsPage:
         """在诊断存储内部按平台、账号、群和阶段过滤请求"""
         scheduler = self._scheduler
         if scheduler is None:
@@ -1327,7 +1338,7 @@ class BackendManager:
 
     def group_request_diagnostic_detail(
         self, adapter_id: str, self_id: str, group_id: str, request_id: str,
-    ) -> dict[str, Any]:
+    ) -> RequestDiagnosticDetail | DiagnosticStatusBody:
         """只返回与指定群身份严格相符的阶段明细"""
         scheduler = self._scheduler
         if scheduler is None:
@@ -1355,7 +1366,7 @@ class BackendManager:
 
     async def send_group_message(
         self, adapter_id: str, self_id: str, group_id: str, action_id: str, message: str,
-    ) -> dict[str, Any]:
+    ) -> GroupActionRecord:
         """显式管理发送先持久占位, 使用同 ID 查询恢复未知回执"""
 
         if not isinstance(message, str) or not message.strip() or len(message) > 1000:
@@ -1401,7 +1412,7 @@ class BackendManager:
 
     async def wake_group(
         self, adapter_id: str, self_id: str, group_id: str, request_id: str, prompt: str,
-    ) -> dict[str, Any]:
+    ) -> WakeSubmitResult:
         """固定可信账号和群目标, 复用手动唤醒的持久受理链路"""
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
@@ -1417,7 +1428,7 @@ class BackendManager:
 
     async def group_wake_status(
         self, adapter_id: str, self_id: str, group_id: str, request_id: str,
-    ) -> dict[str, Any]:
+    ) -> ManualWakeStatusResult:
         """仅在账号和目标群都匹配时返回手动唤醒状态"""
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
@@ -1433,12 +1444,12 @@ class BackendManager:
     async def group_actions(
         self, adapter_id: str, self_id: str, group_id: str, *,
         state: str = "pending", page: int = 1, page_size: int = 25,
-    ) -> dict[str, Any]:
+    ) -> GroupActionPage:
         """读取固定群的有界审批和执行记录"""
         store = await self._group_action_store(adapter_id)
         return await asyncio.to_thread(store.list, self_id, group_id, state=state, page=page, page_size=page_size, request_sub_type="add")
 
-    async def group_action(self, adapter_id: str, self_id: str, group_id: str, action_id: str) -> dict[str, Any]:
+    async def group_action(self, adapter_id: str, self_id: str, group_id: str, action_id: str) -> GroupActionRecord:
         """按固定群身份查询单个动作, 供响应丢失后按原 ID 恢复"""
         store = await self._group_action_store(adapter_id)
         result = await asyncio.to_thread(store.get, self_id, group_id, action_id)
@@ -1488,7 +1499,7 @@ class BackendManager:
         return result
 
     async def submit_account_group_invite(self, adapter_id: str, self_id: str, params: dict[str, Any], *,
-                                          actor_kind: str, action_id: str | None = None) -> dict[str, Any]:
+                                          actor_kind: str, action_id: str | None = None) -> GroupActionRecord:
         """
         从原邀请解析目标与凭据, 复用宿主原子占用和执行账本
 
@@ -1542,7 +1553,7 @@ class BackendManager:
             "handle_group_request", values, actor_kind=actor_kind)
 
     async def account_invite_actions(self, adapter_id: str, self_id: str, *, state: str = "pending",
-                                     page: int = 1) -> dict[str, Any]:
+                                     page: int = 1) -> GroupActionPage:
         """
         账号层查询邀请审批, 不要求预先选定目标群
 
@@ -1563,7 +1574,7 @@ class BackendManager:
             raise PermissionError("邀请所属平台已变化")
         return result
 
-    async def decide_account_invite(self, adapter_id: str, self_id: str, action_id: str, *, approve: bool) -> dict[str, Any]:
+    async def decide_account_invite(self, adapter_id: str, self_id: str, action_id: str, *, approve: bool) -> GroupActionRecord:
         """
         后台在账号层批准或拒绝固定邀请动作
 
@@ -1664,7 +1675,10 @@ class BackendManager:
         if plugins is None:
             instance = session_cfg.session_config or {}
             plugins = instance.get("plugins", definition.metadata.get("plugins", []))
-        specs = resolve_runtime_specs(session, parse_plugin_specs(plugins, provider.plugin_catalog), provider.plugin_catalog)
+        specs = resolve_runtime_specs(
+            cast("Session | AsyncSession", session),
+            parse_plugin_specs(plugins, provider.plugin_catalog), provider.plugin_catalog,
+        )
         tool_name = identity["tool_name"]
         self_nickname = tool_name == "group_chat_set_group_nickname"
         plugin_name = "account_requests" if account_action else "friend_manager" if friend_action else "group_chat" if self_nickname else "group_admin"
@@ -1746,7 +1760,7 @@ class BackendManager:
     async def submit_group_action(
         self, adapter_id: str, self_id: str, group_id: str, action_id: str,
         action_type: str, params: dict[str, object], *, actor_kind: str,
-    ) -> dict[str, Any]:
+    ) -> GroupActionRecord:
         """校验目标和参数, 按策略持久登记审批或原子占用后执行"""
         from satrap.core.platform.onebot.group_action_types import normalize_action_params
 
@@ -1818,7 +1832,7 @@ class BackendManager:
     async def decide_group_action(
         self, adapter_id: str, self_id: str, group_id: str, action_id: str,
         *, approve: bool,
-    ) -> dict[str, Any]:
+    ) -> GroupActionRecord:
         """人工批准或拒绝固定群的待审批动作, 并发只占用一次"""
         current = await self.group_action(adapter_id, self_id, group_id, action_id)
         if approve:
@@ -1843,8 +1857,8 @@ class BackendManager:
 
     async def _execute_group_action(
         self, adapter_id: str, self_id: str, group_id: str, action_id: str,
-        record: dict[str, Any],
-    ) -> dict[str, Any]:
+        record: GroupActionRecord,
+    ) -> GroupActionRecord:
         """
         占用后再次核验策略与成员关系, 按平台结果保守结算并记录失败
 
@@ -2112,7 +2126,7 @@ class BackendManager:
                 logger.error(f"[消息档案] 自动维护轮次失败, 原因={type(exc).__name__}: {exc}")
             await asyncio.sleep(3600)
 
-    async def wake_platform(self, payload: dict[str, Any], *, operator: str) -> dict[str, Any]:
+    async def wake_platform(self, payload: dict[str, Any], *, operator: str) -> WakeSubmitResult:
         """
         向平台队列提交手动唤醒, 操作者必须来自可信应用调用边界
 
@@ -2229,7 +2243,7 @@ class BackendManager:
         logger.info(f"[BackendManager] 手动唤醒已接受 request_id={request_id} adapter={adapter_id} group={group_id} operator={operator} pending={len(snapshot)}")
         return {"status": "accepted", "request_id": request_id}
 
-    async def recover_platform_store(self, name: str) -> dict[str, Any]:
+    async def recover_platform_store(self, name: str) -> PlatformStoreRecovery:
         """
         管理入口校验已修复的持久文件后解除平台状态存储降级
 
@@ -2253,7 +2267,7 @@ class BackendManager:
         return {"ok": recovered and not store.degraded, "store": name, "degraded": store.degraded,
                 "reason": "" if recovered and not store.degraded else "recovery_failed", "detail": store.degraded_reason}
 
-    async def manual_wake_status(self, request_id: str, adapter_id: str | None = None) -> dict[str, Any]:
+    async def manual_wake_status(self, request_id: str, adapter_id: str | None = None) -> ManualWakeStatusResult:
         """
         查询手动唤醒请求的持久化状态, 重启后可查
 
@@ -2303,7 +2317,7 @@ class BackendManager:
 
     def request_diagnostics(
         self, adapter_id: str | None = None, *, stage: str = "", request_id: str = "", limit: int = 50,
-    ) -> dict[str, Any]:
+    ) -> RequestDiagnosticsPage:
         """
         查询按请求关联的有界诊断摘要, 最新在前
 
@@ -2330,7 +2344,7 @@ class BackendManager:
             **scheduler.request_diagnostics.stats(adapter_id),
         }
 
-    def request_diagnostic_detail(self, request_id: str, adapter_id: str | None = None) -> dict[str, Any]:
+    def request_diagnostic_detail(self, request_id: str, adapter_id: str | None = None) -> RequestDiagnosticDetail | DiagnosticStatusBody:
         """
         单个请求的完整阶段诊断
 
@@ -2349,7 +2363,7 @@ class BackendManager:
             return {"status": "unknown", "request_id": request_id, "reason": "not_found"}
         return detail
 
-    async def reload_config(self, expected_config_revision: str | None = None) -> dict[str, Any]:
+    async def reload_config(self, expected_config_revision: str | None = None) -> ReloadConfigResult:
         """
         重载模型与会话定义, 并应用可在线更新的平台策略
 

@@ -16,6 +16,7 @@ import time
 from satrap.core.config.group_store import GroupConfigStore, _identity
 
 from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+from satrap.core.type import GroupDirectoryRecord, GroupSyncState, ScopedSessionSummary
 
 
 class GroupDirectoryStore(GroupConfigStore):
@@ -54,7 +55,7 @@ class GroupDirectoryStore(GroupConfigStore):
 
     def scoped_session_summary(
         self, platform_id: str, self_id: str, group_id: str, generation: int = 0,
-    ) -> dict[str, Any]:
+    ) -> ScopedSessionSummary:
         """汇总可从范围路由键可靠归属到本群的持久会话实例"""
         _identity(self_id, group_id)
         with closing(self._connect()) as connection:
@@ -292,7 +293,7 @@ class GroupDirectoryStore(GroupConfigStore):
                     (time.time(), json.dumps({"reason": "membership_left"}), self_id, group_id),
                 )
 
-    def sync_status(self, self_id: str) -> dict[str, Any]:
+    def sync_status(self, self_id: str) -> GroupSyncState:
         """
         读取最近同步状态和最后一次完整快照时间
 
@@ -317,7 +318,7 @@ class GroupDirectoryStore(GroupConfigStore):
             "connection_generation": int(row["connection_generation"]),
         }
 
-    def group_record(self, self_id: str, group_id: str) -> dict[str, Any] | None:
+    def group_record(self, self_id: str, group_id: str) -> GroupDirectoryRecord | None:
         """读取单群目录记录, 已发现或仅有配置均可打开详情"""
         _identity(self_id, group_id)
         with closing(self._connect()) as connection:

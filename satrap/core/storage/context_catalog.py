@@ -7,13 +7,19 @@
 from __future__ import annotations
 
 from contextlib import closing
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from pathlib import Path
 import traceback
 import sqlite3
 import time
 
 from satrap.core.log import logger
+
+if TYPE_CHECKING:
+    from satrap.core.utils.context.async_ import AsyncContextManager
+    from satrap.core.utils.context.async_storage import _AsyncStorage
+    from satrap.core.utils.context.sync import ContextManager
+    from satrap.core.utils.context.sync_storage import _SyncStorage
 
 
 CATALOG_SCHEMA = """CREATE TABLE IF NOT EXISTS context_catalog (
@@ -36,12 +42,12 @@ CATALOG_WRITE = """INSERT INTO context_catalog
 """
 
 
-def catalog_values(context: Any, *, appended: bool = False, modified: bool = False) -> tuple[object, ...]:
+def catalog_values(context: _SyncStorage | _AsyncStorage, *, appended: bool = False, modified: bool = False) -> tuple[object, ...]:
     """
     生成目录写入参数, 旧消息首次加载不伪造创建和消息时间
 
     参数:
-    - context: 持久化上下文管理器
+    - context: 持久化上下文存储面 (管理器为其子类)
     - appended: 是否正在保存新追加消息
     - modified: 是否正在修改已有消息
 
@@ -58,7 +64,7 @@ def catalog_values(context: Any, *, appended: bool = False, modified: bool = Fal
     )
 
 
-def bind_context(context: Any, session_id: str, kind: str, workflow_name: str | None = None, source: str = "unknown") -> None:
+def bind_context(context: ContextManager | AsyncContextManager, session_id: str, kind: str, workflow_name: str | None = None, source: str = "unknown") -> None:
     """
     登记精确的会话归属, 初始化前的异步上下文延迟到消息写入
 

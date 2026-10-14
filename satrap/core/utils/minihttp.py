@@ -730,7 +730,7 @@ class MiniHTTPServer:
 
     # ---------- 钩子 (子类实现) ----------
 
-    async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
+    async def _route(self, method: str, path: str, body: bytes) -> tuple[int, Mapping[str, Any]]:
         """
         路由分发 (子类实现)
 
@@ -740,7 +740,7 @@ class MiniHTTPServer:
         - body: 请求体
 
         返回:
-        - tuple[int, dict[str, Any]]: 路由分发 (子类实现)
+        - tuple[int, Mapping[str, Any]]: 路由分发 (子类实现)
         """
         raise NotImplementedError
 

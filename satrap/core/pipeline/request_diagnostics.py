@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import threading
 
+from satrap.core.type import RequestDiagnosticDetail, RequestDiagnosticsStats
+
 REQUEST_CAPACITY = 256
 """每适配器保留的最近请求数"""
 
@@ -226,7 +228,7 @@ class RequestDiagnosticLog:
         summaries.sort(key=lambda item: str(item["recorded_at"]), reverse=True)
         return summaries[:limit]
 
-    def get_request(self, request_id: str, adapter_id: str | None = None) -> dict[str, object] | None:
+    def get_request(self, request_id: str, adapter_id: str | None = None) -> RequestDiagnosticDetail | None:
         """
         单个请求的完整诊断明细
 
@@ -255,7 +257,7 @@ class RequestDiagnosticLog:
                 }
         return None
 
-    def stats(self, adapter_id: str | None = None) -> dict[str, object]:
+    def stats(self, adapter_id: str | None = None) -> RequestDiagnosticsStats:
         """诊断容量与占用情况, 供健康检查与测试观察"""
         with self._lock:
             if adapter_id is not None:

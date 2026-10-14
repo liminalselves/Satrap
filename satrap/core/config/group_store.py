@@ -21,6 +21,7 @@ from satrap.core.config.platform_policy import normalize_group_whitelist
 from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.core.config.group_policy import policy_values
 from satrap.core.config.group_session import session_values
+from satrap.core.type import GroupAccountRecord, GroupAccountSummary, GroupConfigRecord
 
 
 _IDENTITY = re.compile(r"[1-9][0-9]*\Z")
@@ -124,7 +125,7 @@ class GroupConfigStore:
         connection.row_factory = sqlite3.Row
         return connection
 
-    def read_account(self, self_id: str) -> dict[str, Any] | None:
+    def read_account(self, self_id: str) -> GroupAccountRecord | None:
         """
         读取已采用账号的群接入模式
 
@@ -147,7 +148,7 @@ class GroupConfigStore:
             "legacy_adopted": row["legacy_source_fingerprint"] is not None,
         }
 
-    def list_accounts(self) -> list[dict[str, Any]]:
+    def list_accounts(self) -> list[GroupAccountSummary]:
         """
         列出本平台已确认的机器人账号供当前和历史数据选择
 
@@ -165,7 +166,7 @@ class GroupConfigStore:
             for row in rows
         ]
 
-    def adopt_legacy(self, self_id: str, settings: Mapping[str, object]) -> dict[str, Any]:
+    def adopt_legacy(self, self_id: str, settings: Mapping[str, object]) -> GroupAccountRecord:
         """
         首次确认账号时原子采用旧群字段, 已采用后检查旧字段未被改写
 
@@ -264,7 +265,7 @@ class GroupConfigStore:
 
     def patch_account(
         self, self_id: str, *, expected_revision: int, mode: str, approval_defaults: Mapping[str, object],
-    ) -> dict[str, Any]:
+    ) -> GroupAccountRecord:
         """
         乐观并发更新账号接入模式和管理动作默认审批策略
 
@@ -303,7 +304,7 @@ class GroupConfigStore:
             raise RuntimeError("账号设置更新后无法读取")
         return result
 
-    def read_group(self, self_id: str, group_id: str) -> dict[str, Any]:
+    def read_group(self, self_id: str, group_id: str) -> GroupConfigRecord:
         """
         读取群显式配置, 未创建记录时返回空配置和零修订号
 
@@ -392,7 +393,7 @@ class GroupConfigStore:
 
     def patch_group(
         self, self_id: str, group_id: str, section: str, values: Mapping[str, object], *, expected_revision: int,
-    ) -> dict[str, Any]:
+    ) -> GroupConfigRecord:
         """在资源引用扫描锁内保存逐群配置"""
         from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 
@@ -403,7 +404,7 @@ class GroupConfigStore:
 
     def _patch_group_locked(
         self, self_id: str, group_id: str, section: str, values: Mapping[str, object], *, expected_revision: int,
-    ) -> dict[str, Any]:
+    ) -> GroupConfigRecord:
         """
         在同一事务中只替换指定配置区域并核验整体修订号
 

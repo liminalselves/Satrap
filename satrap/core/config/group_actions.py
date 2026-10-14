@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
-from typing import Any
 import hashlib
 import json
 import sqlite3
@@ -12,6 +11,7 @@ import time
 import math
 
 from satrap.core.config.group_store import GroupConfigConflict, GroupConfigStore, _identity
+from satrap.core.type import GroupActionPage, GroupActionRecord
 
 
 ACTION_CAPACITY = 10000
@@ -56,7 +56,7 @@ class GroupActionStore(GroupConfigStore):
                 )
 
     @staticmethod
-    def _record(row: sqlite3.Row) -> dict[str, Any]:
+    def _record(row: sqlite3.Row) -> GroupActionRecord:
         """把数据库记录转换为不包含原始请求 flag 的 API 形状"""
         return {
             "action_id": row["action_id"], "self_id": row["self_id"], "group_id": row["group_id"],
@@ -72,7 +72,7 @@ class GroupActionStore(GroupConfigStore):
         self, action_id: str, self_id: str, group_id: str, action_type: str,
         params: Mapping[str, object], actor_kind: str, policy_revision: int,
         *, approval_required: bool, model_origin: Mapping[str, str] | None = None, deadline: float | None = None,
-    ) -> tuple[dict[str, Any], bool]:
+    ) -> tuple[GroupActionRecord, bool]:
         """
         同 ID 同指纹返回既有记录, 申请审批期限不晚于原申请期限
 
@@ -160,7 +160,7 @@ class GroupActionStore(GroupConfigStore):
             raise RuntimeError("模型动作来源数据损坏")
         return decoded
 
-    def get(self, self_id: str, group_id: str, action_id: str) -> dict[str, Any] | None:
+    def get(self, self_id: str, group_id: str, action_id: str) -> GroupActionRecord | None:
         """按固定账号和群身份读取动作并处理自然到期"""
         _identity(self_id, group_id)
         with closing(self._connect()) as connection, connection:
@@ -193,7 +193,7 @@ class GroupActionStore(GroupConfigStore):
     def list(
         self, self_id: str, group_id: str | None, *, state: str = "pending", page: int = 1, page_size: int = 25,
         request_sub_type: str = "",
-    ) -> dict[str, Any]:
+    ) -> GroupActionPage:
         """
         在数据库内按账号, 可选群和请求类型筛选分页
 
@@ -241,7 +241,7 @@ class GroupActionStore(GroupConfigStore):
         return {"items": [self._record(row) for row in rows], "total": total,
                 "page": page, "page_size": page_size}
 
-    def invitation(self, self_id: str, action_id: str) -> dict[str, Any]:
+    def invitation(self, self_id: str, action_id: str) -> GroupActionRecord:
         """
         按账号定位固定邀请动作, 不要求调用者预先提供群号
 
@@ -266,7 +266,7 @@ class GroupActionStore(GroupConfigStore):
             raise LookupError("账号入群邀请动作已删除")
         return result
 
-    def decide(self, self_id: str, group_id: str, action_id: str, *, approve: bool, policy_revision: int) -> dict[str, Any]:
+    def decide(self, self_id: str, group_id: str, action_id: str, *, approve: bool, policy_revision: int) -> GroupActionRecord:
         """在一个事务内比较待审批状态和策略版本并占用执行权"""
         _identity(self_id, group_id)
         now = time.time()
@@ -304,7 +304,7 @@ class GroupActionStore(GroupConfigStore):
             return self._record(row)
 
     def settle(self, self_id: str, group_id: str, action_id: str, state: str, reason: str,
-               details: Mapping[str, object] | None = None) -> dict[str, Any]:
+               details: Mapping[str, object] | None = None) -> GroupActionRecord:
         """
         只允许执行中的动作进入终态, 持久保存有限的结果诊断字段
 

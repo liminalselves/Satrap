@@ -51,7 +51,7 @@ from satrap.core.server_auth import is_loopback_host
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
-from satrap.core.type import PlatformMessage, safe_getattr_callable
+from satrap.core.type import GroupActionRecord, PlatformMessage, safe_getattr_callable
 
 from satrap.core.log import logger
 from satrap.core.call_context import CallOrigin
@@ -249,8 +249,8 @@ class OneBotAdapter(PlatformAdapter):
         self._account_apply_errors: dict[int, str] = {}
         self._group_access_lock = asyncio.Lock()
         self._group_sync_handler: Callable[[], Awaitable[object]] | None = None
-        self.group_action_handler: Callable[[str, str, dict[str, object]], Awaitable[dict[str, Any]]] | None = None
-        self.account_request_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+        self.group_action_handler: Callable[[str, str, dict[str, object]], Awaitable[GroupActionRecord]] | None = None
+        self.account_request_handler: Callable[[dict[str, Any]], Awaitable[GroupActionRecord]] | None = None
 
     def set_group_access_store(self, store: GroupConfigStore) -> None:
         """
@@ -646,7 +646,7 @@ class OneBotAdapter(PlatformAdapter):
                 logger.error(f"[OneBotAdapter] {name} 处理异常: {type(error).__name__}: {error}")
         return guarded
 
-    def _register_optional_handler(self, method_name: str, handler: Any) -> bool:
+    def _register_optional_handler(self, method_name: str, handler: Callable[[dict[str, Any]], Awaitable[None]]) -> bool:
         """
         兼容不同 aiocqhttp 版本的可选事件装饰器
 
@@ -1083,7 +1083,7 @@ class OneBotAdapter(PlatformAdapter):
         """
         return self.allows_group(group_id)
 
-    async def group_chat_set_nickname(self, scope: MessageScope, nickname: str) -> dict[str, Any]:
+    async def group_chat_set_nickname(self, scope: MessageScope, nickname: str) -> GroupActionRecord:
         """
         固定机器人自身为目标, 交给宿主审批服务
 
@@ -1161,7 +1161,7 @@ class OneBotAdapter(PlatformAdapter):
         """
         if not self.allows_group(group_id) or self._bot is None:
             raise PermissionError("消息来源不可用")
-        async def lookup() -> Any:
+        async def lookup() -> object:
             """将等待并发槽位计入总超时"""
             async with self._message_lookup_slots:
                 return await self._bot.get_msg(message_id=int(message_id))
@@ -1194,7 +1194,7 @@ class OneBotAdapter(PlatformAdapter):
             return None
         if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
             return None
-        async def lookup() -> Any:
+        async def lookup() -> object:
             """等待并发槽位计入总超时"""
             async with self._message_lookup_slots:
                 return await self._bot.get_msg(message_id=int(message_id))
@@ -1244,7 +1244,7 @@ class OneBotAdapter(PlatformAdapter):
         if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
             return None
 
-        async def lookup() -> Any:
+        async def lookup() -> object:
             """等待并发槽位计入总超时"""
             async with self._message_lookup_slots:
                 return await self._bot.get_forward_msg(id=forward_id)
@@ -1842,7 +1842,7 @@ class OneBotAdapter(PlatformAdapter):
             return self._failed_receipt(session_id, "forward", "action_unconfirmed", error, status="unknown")
         self.note_action_outcome(forward_action, True)
         receipt = self._receipt_from_result(result)
-        if receipt.status == "success":
+        if receipt.status == "success" and isinstance(result, dict):
             forward_id = result.get("forward_id") or result.get("res_id") or ""
             self._archive_sent_segments(session_id, sent_self_id, receipt.message_ids[0],
                                         [{"type": "forward", "data": {"id": forward_id}}])
@@ -2089,7 +2089,7 @@ class OneBotAdapter(PlatformAdapter):
         except Exception as exc:
             logger.error(f"[消息档案] OneBot 发送确认转换失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
 
-    async def _dispatch_action(self, session_id: str, private_action: str, group_action: str, **params: Any) -> Any:
+    async def _dispatch_action(self, session_id: str, private_action: str, group_action: str, **params: object) -> object:
         """
         按会话类型选择私聊或群动作并附上目标 ID
 
@@ -2100,7 +2100,7 @@ class OneBotAdapter(PlatformAdapter):
         - params: 动作其余参数
 
         返回:
-        - Any: 平台原始响应; 会话格式非法时抛出 ValueError
+        - object: 平台原始响应; 会话格式非法时抛出 ValueError
         """
         if is_private_session(session_id):
             return await getattr(self._bot, private_action)(user_id=int(extract_private_user_id(session_id)), **params)
@@ -2109,7 +2109,7 @@ class OneBotAdapter(PlatformAdapter):
         raise ValueError("invalid_session")
 
     @staticmethod
-    def _receipt_from_result(result: Any) -> SendReceipt:
+    def _receipt_from_result(result: object) -> SendReceipt:
         """
         从平台响应提取消息 ID
 
