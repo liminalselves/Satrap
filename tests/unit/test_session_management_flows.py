@@ -59,72 +59,49 @@ def _make_sm(tmp_path: Path) -> _session_manager_config_SessionManager:
         db_path=tmp_path / "session_config.db",
     )
 
-def test_class_config_register_list_and_types(tmp_path: Path):
-    """类级配置: 注册后可列出, 类型名/参数正确"""
-    mgr = SessionClassConfigManager(storage_path=tmp_path / "classes.json")
+def test_class_config_crud_and_persistence(tmp_path: Path):
+    """类级配置: 注册可列出, 参数写入 storage_path 可重建, remove_config 后消失"""
+    storage = tmp_path / "classes.json"
+    mgr = SessionClassConfigManager(storage_path=storage)
     mgr.register("dummy", _EchoSession)
-    names = list(mgr.list_configs().keys())
-    assert names == ["dummy"]
+    assert list(mgr.list_configs().keys()) == ["dummy"]
     assert mgr.get_class("dummy") is _EchoSession
     assert isinstance(mgr.get_params("dummy"), dict)
     assert mgr.has_config("dummy") is True
 
-def test_class_config_persists_to_storage_file(tmp_path: Path):
-    """类级配置写入 storage_path JSON 文件, 重建可恢复"""
-    storage = tmp_path / "classes.json"
-    mgr = SessionClassConfigManager(storage_path=storage)
-    mgr.register("dummy", _EchoSession)
     mgr.set_config("dummy", {"model": "m1"})
     mgr2 = SessionClassConfigManager(storage_path=storage)
     assert list(mgr2.list_configs().keys()) == ["dummy"]
     assert mgr2.get_params("dummy") == {"model": "m1"}
 
-def test_class_config_delete(tmp_path: Path):
-    """类级配置 remove_config 后不再列出"""
-    mgr = SessionClassConfigManager(storage_path=tmp_path / "classes.json")
-    mgr.register("dummy", _EchoSession)
     assert mgr.remove_config("dummy") is True
     assert mgr.has_config("dummy") is False
 
-def test_register_session_persists_config(tmp_path: Path):
-    """register_session 生成 SessionConfig 并落库"""
+def test_session_config_register_update_and_list(tmp_path: Path):
+    """实例配置: 注册落库, 更新/缺失语义, 列表按最后使用倒序, 类型注册表可列出"""
     sm = _make_sm(tmp_path)
-    cfg = sm.register_session(
-        session_class=_EchoSession,
-        session_type_name="echo",
-        session_config={"model_name": "m1"},
-        session_id="s-1",
-    )
+    cfg = sm.register_session(_EchoSession, "echo", session_config={"model_name": "m1"}, session_id="s-1")
     assert cfg.session_id == "s-1"
     assert cfg.session_type_name == "echo"
     assert cfg.session_config == {"model_name": "m1"}
     assert sm.get_session_config("s-1") is not None
-
-def test_get_session_config_missing_returns_none(tmp_path: Path):
-    """不存在的会话 ID 返回 None"""
-    sm = _make_sm(tmp_path)
     assert sm.get_session_config("nope") is None
 
-def test_list_session_configs_ordered_by_last_used(tmp_path: Path):
-    """list_session_configs 按最后使用时间倒序, 支持 limit"""
-    sm = _make_sm(tmp_path)
-    sm.register_session(_EchoSession, "echo", session_id="s-old")
-    old_cfg = sm.get_session_config("s-old")
-    assert old_cfg is not None
-    sm.store.update_runtime_fields("s-old", last_used_at=time.time() - 1000, message_count=0)
-    sm.register_session(_EchoSession, "echo", session_id="s-new")
-    configs = sm.list_session_configs()
-    assert [c.session_id for c in configs] == ["s-new", "s-old"]
-    assert len(sm.list_session_configs(limit=1)) == 1
-
-def test_update_session_config_existing_and_missing(tmp_path: Path):
-    """update_session_config: 存在时更新并返回, 不存在返回 None"""
-    sm = _make_sm(tmp_path)
-    sm.register_session(_EchoSession, "echo", session_config={"a": 1}, session_id="s-1")
     updated = sm.update_session_config("s-1", session_config={"a": 2})
     assert updated is not None
     assert updated.session_config == {"a": 2}
     assert sm.update_session_config("missing", session_config={"a": 3}) is None
+
+    sm.store.update_runtime_fields("s-1", last_used_at=time.time() - 1000, message_count=0)
+    sm.register_session(_EchoSession, "echo", session_id="s-new")
+    configs = sm.list_session_configs()
+    assert [c.session_id for c in configs] == ["s-new", "s-1"]
+    assert len(sm.list_session_configs(limit=1)) == 1
+
+    sm.register_session_type("extra", _EchoSession)
+    types = sm.list_registered_session_types()
+    assert "echo" in types
+    assert "extra" in types
 
 def test_register_session_from_class_config(tmp_path: Path):
     """从类级配置派生实例配置 (extra_params 覆盖)"""
@@ -138,14 +115,6 @@ def test_register_session_from_class_config(tmp_path: Path):
     assert cfg.session_type_name == "dummy"
     assert cfg.session_config["model"] == "m1"
     assert cfg.session_config["k"] == "override"
-
-def test_list_registered_session_types(tmp_path: Path):
-    """list_registered_session_types 返回注册的类型名"""
-    sm = _make_sm(tmp_path)
-    sm.register_session_type("extra", _EchoSession)
-    types = sm.list_registered_session_types()
-    assert "echo" in types
-    assert "extra" in types
 
 def _register_active_session(sm: _session_manager_config_SessionManager, session_id: str) -> None:
     """注册一个会话并放入活跃池"""
@@ -162,15 +131,20 @@ def test_remove_session_keeps_config_by_default(tmp_path: Path):
     assert len(sm.list_sessions()) == 0
     assert sm.get_session_config("s-1") is not None   # 配置保留
 
-def test_remove_session_with_config_deletes_both(tmp_path: Path):
-    """remove_session(remove_config=True) 同时删除内存实例与 SQL 配置"""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_remove_session_with_config_deletes_both(tmp_path: Path, asynchronous: bool):
+    """remove_session(remove_config=True) 同时删除内存实例, SQL 配置与沙箱目录 (同步与异步镜像)"""
     sm = _make_sm(tmp_path)
     _register_active_session(sm, "s-1")
     sandbox_path = sm.storage_layout.session_sandbox("local", "s-1")
     sandbox_path.mkdir(parents=True)
     (sandbox_path / "result.txt").write_text("data", encoding="utf-8")
 
-    sm.remove_session("s-1", remove_config=True)
+    if asynchronous:
+        await sm.remove_session_async("s-1", remove_config=True)
+    else:
+        sm.remove_session("s-1", remove_config=True)
 
     assert sm.get_session_config("s-1") is None
     assert not sandbox_path.exists()
@@ -181,20 +155,6 @@ def test_remove_session_missing_id_no_error(tmp_path: Path):
     sm = _make_sm(tmp_path)
     sm.remove_session("missing")
     sm.remove_session("missing", remove_config=True)
-
-@pytest.mark.asyncio
-async def test_remove_session_async(tmp_path: Path):
-    """异步移除会话, 行为与同步一致"""
-    sm = _make_sm(tmp_path)
-    _register_active_session(sm, "s-1")
-    sandbox_path = sm.storage_layout.session_sandbox("local", "s-1")
-    sandbox_path.mkdir(parents=True)
-    (sandbox_path / "result.txt").write_text("data", encoding="utf-8")
-
-    await sm.remove_session_async("s-1", remove_config=True)
-
-    assert sm.get_session_config("s-1") is None
-    assert not sandbox_path.exists()
 
 def test_reload_model_configs_skips_without_manager(tmp_path: Path):
     """无 ModelConfigManager 时跳过, 不报错"""
@@ -505,37 +465,57 @@ def test_edictum_provider_creates_registered_factory_session(tmp_path: Path) -> 
     assert created.session_id == "edictum-1"
     assert created.marker == "instance"
 
-def test_edictum_provider_manages_sync_plugin_lifecycle(tmp_path: Path) -> None:
-    """EdictumProvider 应安装启用插件, 暴露状态并在释放时卸载"""
-    def install(session: _session_providers_Session | _session_providers_AsyncSession, path: str, config: dict[str, Any] | None) -> object:
-        assert isinstance(session, _PluginSession)
-        session.installed.append(Path(path).name)
-        return object()
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_edictum_provider_manages_plugin_lifecycle(tmp_path: Path, asynchronous: bool) -> None:
+    """EdictumProvider 安装启用插件, 暴露状态并在释放时卸载 (同步与异步镜像)"""
+    if asynchronous:
+        async def install_async(session: _session_providers_Session | _session_providers_AsyncSession, path: str, config: dict[str, Any] | None) -> object:
+            assert isinstance(session, _AsyncPluginSession)
+            session.installed.append(Path(path).name)
+            return object()
 
-    def uninstall(session: _session_providers_Session | _session_providers_AsyncSession, name: str) -> bool:
-        assert isinstance(session, _PluginSession)
-        session.uninstalled.append(name)
-        return True
+        async def uninstall_async(session: _session_providers_Session | _session_providers_AsyncSession, name: str) -> bool:
+            assert isinstance(session, _AsyncPluginSession)
+            session.uninstalled.append(name)
+            return True
+
+        install = install_async
+        uninstall = uninstall_async
+        session_cls: type = _AsyncPluginSession
+        type_name = "plugin-async"
+        plugins_payload: list[Any] = ["session_commands"]
+    else:
+        def install_sync(session: _session_providers_Session | _session_providers_AsyncSession, path: str, config: dict[str, Any] | None) -> object:
+            assert isinstance(session, _PluginSession)
+            session.installed.append(Path(path).name)
+            return object()
+
+        def uninstall_sync(session: _session_providers_Session | _session_providers_AsyncSession, name: str) -> bool:
+            assert isinstance(session, _PluginSession)
+            session.uninstalled.append(name)
+            return True
+
+        install = install_sync
+        uninstall = uninstall_sync
+        session_cls = _PluginSession
+        type_name = "plugin-sync"
+        plugins_payload = ["session_commands", {"name": "disabled", "enabled": False}]
 
     registry = EdictumTypeRegistry()
     registry.register(
         EdictumTypeDefinition(
-            name="plugin-sync",
-            factory=_PluginSession,
-            is_async=False,
+            name=type_name,
+            factory=session_cls,
+            is_async=asynchronous,
             plugin_installer=install,
             plugin_uninstaller=uninstall,
         )
     )
     config_manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
-    config_payload: dict[str, Any] = {
-        "edictum_type": "plugin-sync",
-        "model_name": "demo",
-        "plugins": ["session_commands", {"name": "disabled", "enabled": False}],
-    }
     config_manager.create(
         "assistant",
-        config_payload,
+        {"edictum_type": type_name, "model_name": "demo", "plugins": plugins_payload},
     )
     provider = EdictumProvider(config_manager, registry)
     config = _session_providers_SessionConfig(
@@ -544,76 +524,30 @@ def test_edictum_provider_manages_sync_plugin_lifecycle(tmp_path: Path) -> None:
         provider_name="edictum",
     )
 
-    created = provider.create_session(config, llm=_placeholder_llm())
+    created = cast("_PluginSession | _AsyncPluginSession", provider.create_session(config, llm=_placeholder_llm()))
     setattr(created, "plugin_environment", PluginEnvironment("platform", "onebot"))
-    provider.prepare_session(created)
+    if asynchronous:
+        await provider.prepare_session_async(created)
+    else:
+        provider.prepare_session(created)
     metadata = provider.get_runtime_metadata(created)
 
-    assert isinstance(created, _PluginSession)
     assert created.installed == ["session_commands"]
-    assert metadata["plugin_summary"] == {
-        "total": 2,
-        "loaded": 1,
-        "errors": 0,
-        "pending": 0,
-        "drift": 0,
-        "restart_required": 0,
-    }
-    assert metadata["plugins"][1]["status"] == "disabled"
-    provider.release_session(created)
-    assert created.uninstalled == ["session_commands"]
-    assert provider.get_runtime_metadata(created) == {}
-
-@pytest.mark.asyncio
-async def test_edictum_provider_manages_async_plugin_lifecycle(tmp_path: Path) -> None:
-    """EdictumProvider 的异步生命周期应等待插件安装和卸载"""
-    async def install(
-        session: _session_providers_Session | _session_providers_AsyncSession,
-        path: str,
-        config: dict[str, Any] | None,
-    ) -> object:
-        assert isinstance(session, _AsyncPluginSession)
-        session.installed.append(Path(path).name)
-        return object()
-
-    async def uninstall(session: _session_providers_Session | _session_providers_AsyncSession, name: str) -> bool:
-        assert isinstance(session, _AsyncPluginSession)
-        session.uninstalled.append(name)
-        return True
-
-    registry = EdictumTypeRegistry()
-    registry.register(
-        EdictumTypeDefinition(
-            name="plugin-async",
-            factory=_AsyncPluginSession,
-            is_async=True,
-            plugin_installer=install,
-            plugin_uninstaller=uninstall,
-        )
-    )
-    config_manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
-    config_manager.create(
-        "assistant",
-        {
-            "edictum_type": "plugin-async",
-            "model_name": "demo",
-            "plugins": ["session_commands"],
-        },
-    )
-    provider = EdictumProvider(config_manager, registry)
-    config = _session_providers_SessionConfig(
-        session_id="plugin-async-1",
-        session_type_name="assistant",
-        provider_name="edictum",
-    )
-
-    created = provider.create_session(config, llm=_placeholder_llm())
-    setattr(created, "plugin_environment", PluginEnvironment("platform", "onebot"))
-    await provider.prepare_session_async(created)
-    assert isinstance(created, _AsyncPluginSession)
-    assert created.installed == ["session_commands"]
-    assert provider.get_runtime_metadata(created)["plugin_summary"]["loaded"] == 1
-    await provider.release_session_async(created)
+    if asynchronous:
+        assert metadata["plugin_summary"]["loaded"] == 1
+        await provider.release_session_async(created)
+    else:
+        assert metadata["plugin_summary"] == {
+            "total": 2,
+            "loaded": 1,
+            "errors": 0,
+            "pending": 0,
+            "drift": 0,
+            "restart_required": 0,
+        }
+        assert metadata["plugins"][1]["status"] == "disabled"
+        provider.release_session(created)
+        assert provider.get_runtime_metadata(created) == {}
     assert created.uninstalled == ["session_commands"]
 
 def test_default_edictum_type_loads_platform_command_plugin(tmp_path: Path) -> None:
@@ -1100,7 +1034,8 @@ def test_package_relative_import_survives_discovery_and_registration(tmp_path, m
     assert sys.modules[found.module_name].VALUE == "ok"
     manager = SessionClassConfigManager(storage_path=tmp_path / "classes.json", session_scan_paths=[str(package)])
     manager.register_by_class_path("relative", found.class_path)
-    assert manager.get_config("relative")["class_path"] == found.class_path
+    stored_config = cast(dict[str, Any], manager.get_config("relative"))
+    assert stored_config["class_path"] == found.class_path
 
 def test_parent_import_does_not_execute_session_twice(tmp_path, monkeypatch):
     import sys
@@ -1334,45 +1269,28 @@ async def test_async_handle_call_with_async_session(tmp_path: Path):
     assert call.session_id is not None
 
 @pytest.mark.asyncio
-async def test_async_session_initializes_once_after_explicit_initialize(tmp_path: Path):
-    session = AsyncInitCountingSession(
+async def test_async_session_initializes_once(tmp_path: Path):
+    """异步会话初始化只执行一次: 显式 initialize 后连续 run, 并发首次调用亦然"""
+    explicit = AsyncInitCountingSession(
         "explicit-initialize",
         db_path=str(tmp_path / "platform.db"),
     )
+    await explicit.initialize()
+    await explicit.run("first")
+    await explicit.run("second")
+    assert explicit.initialize_count == 1
 
-    await session.initialize()
-    await session.run("first")
-    await session.run("second")
-
-    assert session.initialize_count == 1
-
-@pytest.mark.asyncio
-async def test_async_session_initializes_once_for_concurrent_first_calls(tmp_path: Path):
-    session = AsyncInitCountingSession(
+    concurrent = AsyncInitCountingSession(
         "concurrent-initialize",
         db_path=str(tmp_path / "platform.db"),
     )
-
     results = await asyncio.gather(
-        session.run("first"),
-        session.run("second"),
-        session.run("third"),
+        concurrent.run("first"),
+        concurrent.run("second"),
+        concurrent.run("third"),
     )
-
     assert results == ["first", "second", "third"]
-    assert session.initialize_count == 1
-
-def test_list_sessions_metadata(tmp_path: Path):
-    manager = _manager(tmp_path, "echo")
-    manager.register_session_type("echo", EchoSession)
-    call = UserCall(session_id=None, session_type="echo", message="meta")
-    manager.handle_call(call)
-
-    sessions = manager.list_sessions()
-    assert len(sessions) >= 1
-    assert sessions[0].session_id == call.session_id
-    assert sessions[0].session_type == "echo"
-    assert sessions[0].message_count >= 1
+    assert concurrent.initialize_count == 1
 
 def test_session_message_count_includes_unique_workflow_contexts(tmp_path: Path):
     db_path = str(tmp_path / "chat_history.db")

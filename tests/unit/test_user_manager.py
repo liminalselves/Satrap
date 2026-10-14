@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.UserManager import UserInfoStore, UserManager
@@ -51,8 +53,8 @@ def _user_manager(tmp_path: Path, auto_create: bool = True) -> UserManager:
 # ================= UserInfoStore 测试 =================
 
 
-def test_store_upsert_get_delete_roundtrip(tmp_path: Path):
-    """用户写入后可查询, 平台/昵称更新后覆盖, 删除后消失"""
+def test_store_upsert_list_get_delete_roundtrip(tmp_path: Path):
+    """用户写入后可查询, 平台/昵称更新后覆盖, 列表有序受限, 删除后消失"""
     store = UserInfoStore(db_path=tmp_path / "users.db")
     info = UserInfo(user_id="u1", user_platform="misskey", user_nickname="小美", user_session=[])
 
@@ -72,15 +74,9 @@ def test_store_upsert_get_delete_roundtrip(tmp_path: Path):
     store.delete("u1")
     assert store.get("u1") is None
 
-
-def test_store_list_sorted_and_limited(tmp_path: Path):
-    """list 按 user_id 升序且受 limit 限制"""
-    store = UserInfoStore(db_path=tmp_path / "users.db")
     for uid in ("b", "a", "c"):
         store.upsert(UserInfo(user_id=uid, user_platform="", user_nickname="", user_session=[]))
-
-    all_users = store.list()
-    assert [u.user_id for u in all_users] == ["a", "b", "c"]
+    assert [u.user_id for u in store.list()] == ["a", "b", "c"]
     assert [u.user_id for u in store.list(limit=2)] == ["a", "b"]
 
 
@@ -122,27 +118,13 @@ def test_store_context_session_route(tmp_path: Path):
 # ================= auto_create 开关语义 =================
 
 
-def test_auto_create_true_creates_missing_user(tmp_path: Path):
-    """auto_create=True (默认): 未知用户自动创建并落库"""
-    um = _user_manager(tmp_path, auto_create=True)
-    info = um.get_or_create_user("u1", platform="misskey", nickname="小美")
-
-    assert info is not None
-    assert info.user_id == "u1"
-    assert um.store.get("u1") is not None
-
-
-def test_auto_create_false_rejects_missing_user(tmp_path: Path):
-    """auto_create=False: 未知用户返回 None 且不落库"""
-    um = _user_manager(tmp_path, auto_create=False)
-    assert um.get_or_create_user("u1", platform="misskey") is None
-    assert um.store.get("u1") is None
-
-
-def test_auto_create_false_still_works_for_existing_user(tmp_path: Path):
-    """auto_create=False: 已存在用户仍可查询与更新"""
+def test_auto_create_toggle_semantics(tmp_path: Path):
+    """auto_create=True 自动创建未知用户; False 时已存在用户仍可查询与更新"""
     um_on = _user_manager(tmp_path, auto_create=True)
-    um_on.get_or_create_user("u1", platform="misskey", nickname="小美")
+    created = um_on.get_or_create_user("u1", platform="misskey", nickname="小美")
+    assert created is not None
+    assert created.user_id == "u1"
+    assert um_on.store.get("u1") is not None
 
     um_off = _user_manager(tmp_path, auto_create=False)
     info = um_off.get_or_create_user("u1", platform="onebot", nickname="新昵称")
@@ -151,23 +133,22 @@ def test_auto_create_false_still_works_for_existing_user(tmp_path: Path):
     assert info.user_nickname == "新昵称"
 
 
-def test_auto_create_false_resolve_session_returns_empty(tmp_path: Path):
-    """auto_create=False: resolve_session 对未知用户返回空, 不创建会话"""
+@pytest.mark.parametrize(
+    "entry",
+    ["get_or_create_user", "resolve_session", "create_user_session", "route_call"],
+)
+def test_auto_create_false_rejects_unknown_user(tmp_path: Path, entry: str):
+    """auto_create=False: 各入口对未知用户一律返回空且不落库"""
     um = _user_manager(tmp_path, auto_create=False)
-    assert um.resolve_session("u1", "misskey", "dummy", um.sm.class_cfg_mgr) == ""
+    if entry == "get_or_create_user":
+        assert um.get_or_create_user("u1", platform="misskey") is None
+    elif entry == "resolve_session":
+        assert um.resolve_session("u1", "misskey", "dummy", um.sm.class_cfg_mgr) == ""
+    elif entry == "create_user_session":
+        assert um.create_user_session("u1", _EchoSession, "dummy") == ""
+    else:
+        assert um.route_call(UserCall(session_id="", message="hello"), "u1") == ""
     assert um.store.get("u1") is None
-
-
-def test_auto_create_false_create_user_session_returns_empty(tmp_path: Path):
-    """auto_create=False: create_user_session 对未知用户返回空"""
-    um = _user_manager(tmp_path, auto_create=False)
-    assert um.create_user_session("u1", _EchoSession, "dummy") == ""
-
-
-def test_auto_create_false_route_call_rejects(tmp_path: Path):
-    """auto_create=False: route_call 对未知用户拒绝处理"""
-    um = _user_manager(tmp_path, auto_create=False)
-    assert um.route_call(UserCall(session_id="", message="hello"), "u1") == ""
 
 
 # ================= 绑定与会话 =================
@@ -222,16 +203,6 @@ def test_resolve_session_reuses_same_context(tmp_path: Path):
     other = um.resolve_session("u1", "onebot", "dummy", scm)
     assert other != first
     assert other.startswith("dummy:onebot:u1:")
-
-
-def test_route_call_full_flow(tmp_path: Path):
-    """route_call: 自动创建用户与会话, 消息路由返回会话回复"""
-    um = _user_manager(tmp_path)
-    um.resolve_session("u1", "misskey", "dummy", um.sm.class_cfg_mgr)
-
-    result = um.route_call(UserCall(session_id="", message="hello"), "u1")
-    assert result == "hello"
-    assert um.store.get("u1") is not None
 
 
 # ================= API 层 =================

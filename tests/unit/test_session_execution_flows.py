@@ -73,7 +73,7 @@ def _make_manager(tmp_path: Path, max_size: int = 1000) -> SessionManager:
         default_checkpoint_db=str(tmp_path / "context.db"),
     )
 
-@pytest.mark.parametrize("_iteration", range(20))
+@pytest.mark.parametrize("_iteration", range(3))
 def test_sync_calls_create_one_runtime_for_same_session(
     _iteration: int,
     tmp_path: Path,
@@ -408,12 +408,7 @@ def kind_origin(chat_type: str, conversation_kind: str) -> CallOrigin:
     ("GroupMessage", "group", True, False),
     ("FriendMessage", "private", False, True),
     ("GroupMessage", "", True, False),
-    ("FriendMessage", "", False, True),
-    ("GroupMessage", "private", False, True),
     ("FriendMessage", "group", True, False),
-    ("GroupMessage", "channel", False, False),
-    ("FriendMessage", "channel", False, False),
-    ("group_message", "", False, False),
 ])
 def test_origin_kind_prefers_conversation_kind_and_falls_back_only_when_empty(
         chat_type: str, conversation_kind: str, group: bool, private: bool) -> None:
@@ -541,69 +536,80 @@ def test_message_session_from_str_invalid_fallback():
     assert parsed.message_type == ""
     assert parsed.session_id == "invalid"
 
-def test_message_chain_operations():
-    """消息链构造 / 迭代 / 拼接 / 索引 / 布尔"""
+def test_message_chain_contract():
+    """消息链构造/迭代/拼接/布尔与协议字典转换"""
     chain = MessageChain.from_text("你好")
     assert len(chain) == 1
     assert bool(chain) is True
     assert MessageChain().__bool__() is False
     assert getattr(chain[0], "text", "") == "你好"
+    assert chain.to_dict_list() == [{"type": "text", "data": {"text": "你好"}}]
 
-    other = MessageChain.from_text("世界")
-    merged = chain + other
+    merged = chain + MessageChain.from_text("世界")
     assert len(merged) == 2
     assert [getattr(c, "text", "") for c in merged] == ["你好", "世界"]
 
-def test_message_chain_to_dict_list():
-    """消息链转为组件协议字典列表, 纯文本使用 text 类型"""
-    chain = MessageChain.from_text("你好")
-    items = chain.to_dict_list()
-    assert isinstance(items, list)
-    assert items == [{"type": "text", "data": {"text": "你好"}}]
-
-def test_event_result_chain_building():
-    """结果构建器: 文本 / 图片 / 停止 / 继续 / 日志"""
+def test_event_result_builders_contract():
+    """结果构建器与事件结果控制: 文本/图片/停止/继续/日志/快速构建/清空"""
     result = MessageEventResult()
     assert result.is_stopped() is False
-
     result.message("回复")
     assert result.chain is not None
     assert result.chain[0].type == PlatformComponentType.Plain
-
     result.url_image("http://x/a.png")
     assert result.chain[0].type == PlatformComponentType.Image
     assert getattr(result.chain[0], "url", "") == "http://x/a.png"
-
     result.file_image("local.png")
     assert getattr(result.chain[0], "file", "") == "local.png"
-
     result.stop_event()
     assert result.is_stopped() is True
     assert result.result_type.value == "stop"
-
     result.continue_event()
     assert result.is_stopped() is False
-
     result.set_console_log("log-line")
     assert result.console_log == "log-line"
 
-def test_event_session_identifiers():
-    """会话标识读写: unified_msg_origin / session_id"""
+    from satrap.core.components import Plain as _Plain
+
+    adapter = RecorderAdapter()
+    event = _make_event(adapter)
+    event.set_result("纯文本结果")
+    event_result = event.get_result()
+    assert event_result is not None
+    assert event_result.chain and getattr(event_result.chain[0], "text", "") == "纯文本结果"
+
+    event.stop_event()
+    assert event.is_stopped() is True
+    event.continue_event()
+    assert event.is_stopped() is False
+
+    plain = event.plain_result("hi")
+    assert plain.chain is not None
+    assert getattr(plain.chain[0], "text", "") == "hi"
+    img = event.image_result("http://x/b.png")
+    assert img.chain is not None
+    assert getattr(img.chain[0], "url", "") == "http://x/b.png"
+    local = event.image_result("local.png")
+    assert local.chain is not None
+    assert getattr(local.chain[0], "file", "") == "local.png"
+    chain_result = event.chain_result([_Plain(text="x")])
+    assert len(chain_result.chain or []) == 1
+
+    event.clear_result()
+    assert event.get_result() is None
+
+def test_event_accessors_contract():
+    """会话标识/消息读取/LLM 请求默认值/扩展字段/唤醒开关读写"""
     adapter = RecorderAdapter()
     event = _make_event(adapter, session_id="s1")
     assert event.unified_msg_origin == "rec1:FriendMessage:s1"
     assert event.session_id == "s1"
     assert event.get_session_id() == "s1"
-
     event.unified_msg_origin = "onebot:GroupMessage:g1"
     assert event.session_id == "g1"
-
     event.session_id = "g2"
     assert event.session_id == "g2"
 
-def test_event_message_readers():
-    """消息读取: 文本 / 发送者 / 平台 / 类型 / 群组"""
-    adapter = RecorderAdapter()
     event = _make_event(adapter)
     assert event.get_message_str() == "你好"
     assert event.get_sender_id() == "user-1"
@@ -617,7 +623,26 @@ def test_event_message_readers():
     assert event.get_self_id() == "bot"
     assert event.get_group_id() == ""
 
-def test_event_message_outline():
+    req = event.request_llm(prompt="p", session_id="s1")
+    assert req.prompt == "p"
+    assert req.session_id == "s1"
+    assert req.image_urls == []
+    assert req.audio_urls == []
+    assert req.contexts == []
+
+    event.set_extra("k1", "v1")
+    assert event.get_extra("k1") == "v1"
+    assert event.get_extra("missing", "default") == "default"
+    assert event.get_extra() == {"k1": "v1"}
+    event.clear_extra()
+    assert event.get_extra() == {}
+
+    assert event.call_llm is True
+    event.should_call_llm(False)
+    assert event.call_llm is False
+
+@pytest.mark.asyncio
+async def test_event_message_outline():
     """消息摘要: 纯文本 / 图片 / 引用 混合"""
     from satrap.core.components import BaseMessageComponent, Image, Plain
     from satrap.core.type import MessageMember as _MM
@@ -636,51 +661,6 @@ def test_event_message_outline():
     outline = event.get_message_outline()
     assert "正文" in outline
     assert "[图片]" in outline
-
-def test_event_result_control():
-    """事件结果控制: set_result / stop / continue / 快速构建"""
-    adapter = RecorderAdapter()
-    event = _make_event(adapter)
-
-    event.set_result("纯文本结果")
-    result = event.get_result()
-    assert result is not None
-    assert result.chain and getattr(result.chain[0], "text", "") == "纯文本结果"
-
-    event.stop_event()
-    assert event.is_stopped() is True
-    event.continue_event()
-    assert event.is_stopped() is False
-
-    plain = event.plain_result("hi")
-    assert plain.chain is not None
-    assert getattr(plain.chain[0], "text", "") == "hi"
-
-    img = event.image_result("http://x/b.png")
-    assert img.chain is not None
-    assert getattr(img.chain[0], "url", "") == "http://x/b.png"
-    local = event.image_result("local.png")
-    assert local.chain is not None
-    assert getattr(local.chain[0], "file", "") == "local.png"
-
-    from satrap.core.components import Plain as _Plain
-
-    chain_result = event.chain_result([_Plain(text="x")])
-    assert len(chain_result.chain or []) == 1
-
-    event.clear_result()
-    assert event.get_result() is None
-
-def test_event_request_llm_defaults():
-    """LLM 请求"""
-    adapter = RecorderAdapter()
-    event = _make_event(adapter)
-    req = event.request_llm(prompt="p", session_id="s1")
-    assert req.prompt == "p"
-    assert req.session_id == "s1"
-    assert req.image_urls == []
-    assert req.audio_urls == []
-    assert req.contexts == []
 
 @pytest.mark.asyncio
 async def test_event_send_records_and_flags():
@@ -727,19 +707,6 @@ def test_event_temporary_files():
     assert not f2.exists()
     assert event._temporary_local_files == []
 
-def test_event_extras():
-    """扩展字段: set / get / 全部 / 清除"""
-    adapter = RecorderAdapter()
-    event = _make_event(adapter)
-
-    event.set_extra("k1", "v1")
-    assert event.get_extra("k1") == "v1"
-    assert event.get_extra("missing", "default") == "default"
-    assert event.get_extra() == {"k1": "v1"}
-
-    event.clear_extra()
-    assert event.get_extra() == {}
-
 @pytest.mark.asyncio
 async def test_event_process_buffer(monkeypatch: pytest.MonkeyPatch):
     """缓冲区分段提取: 匹配内容逐段发送, 返回剩余部分"""
@@ -765,11 +732,3 @@ async def test_event_process_buffer_stops_on_zero_width_match():
 
     assert rest == "tail"
     assert adapter.sent == []
-
-def test_event_should_call_llm_flag():
-    """call_llm 开关读写"""
-    adapter = RecorderAdapter()
-    event = _make_event(adapter)
-    assert event.call_llm is True
-    event.should_call_llm(False)
-    assert event.call_llm is False

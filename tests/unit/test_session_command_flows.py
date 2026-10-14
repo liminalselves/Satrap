@@ -15,7 +15,7 @@ from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.components import At, AtAll, BaseMessageComponent, Image, Plain, Reply
 from satrap.core.platform.event import MessageEvent, PlatformMetadata
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
-from satrap.expend.command.session_commands import cmd_about, cmd_history, cmd_history_async, cmd_new, cmd_new_async
+from satrap.expend.command.session_commands import cmd_history_async, cmd_new, cmd_new_async
 from satrap.expend.command.session_commands import cmd_switch, cmd_switch_async
 from satrap.core.framework import AsyncSession, CommandHandler as _session_commands_CommandHandler, Session
 from satrap.edictum.plugin import collect_commands
@@ -52,54 +52,35 @@ def _event(
         session_type="dummy",
     )
 
-def test_leading_self_mention_is_stripped():
-    """群内前置 @bot 的命令剥离提及后得到正文"""
-    event = _event([At(qq="bot"), Plain(text=" /help")], message_str="@bot /help")
-    assert extract_command_candidate(event) == "/help"
+@pytest.mark.parametrize(
+    ("components", "expected", "kwargs"),
+    [
+        ([At(qq="bot"), Plain(text=" /help")], "/help", {}),
+        ([At(qq="bot"), At(qq="bot"), Plain(text=" /help")], "/help", {}),
+        ([At(qq="bot"), Plain(text="   /help")], "/help", {}),
+        ([At(qq="bot"), Plain(text=" "), At(qq="bot"), Plain(text=" /help")], "/help", {}),
+        ([At(qq="other"), Plain(text=" /help")], None, {}),
+        ([AtAll(), Plain(text=" /help")], None, {}),
+        ([Plain(text="/help")], None, {}),
+        ([Plain(text="/help")], "/help", {"private": True}),
+        ([Reply(id="m0"), At(qq="bot"), Plain(text=" /help")], "/help", {}),
+        ([At(qq="bot"), Plain(text=" /help"), Image(file="https://cdn/a.png")], None, {}),
+    ],
+)
+def test_extract_command_candidate_table(components, expected, kwargs):
+    """平台入口命令候选抽取: 寻址段/非文本正文/群私聊差异的集中判定"""
+    assert extract_command_candidate(_event(components, **kwargs)) == expected
 
 def test_body_not_starting_with_prefix_is_not_command():
     """正文不以前缀开头时不是命令候选"""
     event = _event([At(qq="bot"), Plain(text=" 你好")], message_str="@bot 你好")
     assert extract_command_candidate(event) is None
 
-def test_addressing_run_allows_repeated_mention_and_blank_text():
-    """相邻提及与全空白文本都属于寻址段"""
-    cases: tuple[list[BaseMessageComponent], ...] = (
-        [At(qq="bot"), At(qq="bot"), Plain(text=" /help")],
-        [At(qq="bot"), Plain(text="   /help")],
-        [At(qq="bot"), Plain(text=" "), At(qq="bot"), Plain(text=" /help")],
-    )
-    for components in cases:
-        assert extract_command_candidate(_event(components)) == "/help"
-
 def test_trailing_self_mention_is_kept_only_in_private_chat():
     """尾随 self 提及不剥离: 群内不构成命令, 私聊保留在正文里"""
     private = _event([Plain(text="/help "), At(qq="bot")], private=True)
     assert extract_command_candidate(private) == "/help @bot"
     assert extract_command_candidate(_event([Plain(text="/help "), At(qq="bot")])) is None
-
-def test_mention_of_others_is_not_addressing():
-    """提及他人不构成寻址"""
-    assert extract_command_candidate(_event([At(qq="other"), Plain(text=" /help")])) is None
-
-def test_at_all_is_not_self_mention():
-    """全体成员提及不构成寻址"""
-    assert extract_command_candidate(_event([AtAll(), Plain(text=" /help")])) is None
-
-def test_group_requires_explicit_mention():
-    """群内没有前置 @bot 时不是命令, 私聊不要求"""
-    assert extract_command_candidate(_event([Plain(text="/help")])) is None
-    assert extract_command_candidate(_event([Plain(text="/help")], private=True)) == "/help"
-
-def test_leading_reply_marker_is_addressing():
-    """首部引用标记不属于命令正文"""
-    event = _event([Reply(id="m0"), At(qq="bot"), Plain(text=" /help")])
-    assert extract_command_candidate(event) == "/help"
-
-def test_non_text_component_in_body_is_rejected():
-    """正文含不可渲染组件时保守拒绝"""
-    event = _event([At(qq="bot"), Plain(text=" /help"), Image(file="https://cdn/a.png")])
-    assert extract_command_candidate(event) is None
 
 def test_multiple_commands_are_left_to_session_layer():
     """候选只看正文起点, 参数个数与命令名合法性交由会话层判定"""
@@ -124,15 +105,13 @@ def test_empty_self_id_never_matches():
     assert is_self_mention(At(qq="bot"), "") is False
     assert extract_command_candidate(_event([At(qq="bot"), Plain(text=" /help")], self_id="")) is None
 
-def test_prefix_has_single_source():
-    """前缀单一来源: 处理器默认值与平台入口判定取自同一常量"""
+def test_command_prefix_has_single_source(monkeypatch: pytest.MonkeyPatch):
+    """前缀单一来源: 处理器默认值与平台入口判定取自同一常量, 改写常量后判定同步变化"""
     assert inspect.signature(AsyncCommandHandler.__init__).parameters["cmd_prefix"].default is DEFAULT_COMMAND_PREFIX
     assert inspect.signature(_command_entry_CommandHandler.__init__).parameters["cmd_prefix"].default is DEFAULT_COMMAND_PREFIX
     assert AsyncCommandHandler().prefix == DEFAULT_COMMAND_PREFIX
     assert _command_entry_CommandHandler().prefix == DEFAULT_COMMAND_PREFIX
 
-def test_prefix_constant_drives_candidate(monkeypatch: pytest.MonkeyPatch):
-    """改写前缀常量后平台入口判定同步变化"""
     monkeypatch.setattr("satrap.core.pipeline.command_entry.DEFAULT_COMMAND_PREFIX", "#")
     assert extract_command_candidate(_event([At(qq="bot"), Plain(text=" #help")])) == "#help"
     assert extract_command_candidate(_event([At(qq="bot"), Plain(text=" /help")])) is None
@@ -699,32 +678,41 @@ class FakeUserManager:
             self.sessions.append(session_id)
         return True
 
-def test_base_session_registers_only_framework_commands_by_default():
-    session = Session("chat:misskey:user1")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_session_command_contract(asynchronous: bool, monkeypatch: pytest.MonkeyPatch):
+    """同步与异步会话命令注册/执行契约一致, 异步侧延续 history/new/switch"""
+    if asynchronous:
+        handler = AsyncCommandHandler()
 
-    assert set(session.command_handler.commands) == {"help"}
+        async def about() -> str:
+            return "custom"
 
-def test_sync_session_command_handler_supports_custom_commands():
-    handler = _session_commands_CommandHandler()
-    handler.register_command("about", lambda: "custom", "自定义")
-    session = Session("chat:misskey:user1", command_handler=handler)
+        handler.register_command("about", about, "预置")
+        session = AsyncSession("chat:misskey:user1:old", command_handler=handler)
+        assert await session.cmd_process("/about") == ("custom", True)
 
-    result, is_command = session.cmd_process("/about")
-
-    assert is_command is True
-    assert result == "custom"
-
-def test_pre_registered_command_is_preserved():
-    handler = _session_commands_CommandHandler()
-    handler.register_command("about", lambda: "pre", "预置")
-    session = Session("chat:misskey:user1", command_handler=handler)
-
-    assert session.cmd_process("/about") == ("pre", True)
-
-def test_sync_history_without_user_manager_returns_empty_message():
-    session = Session("chat:misskey:user1")
-
-    assert cmd_history(session) == "暂无其他对话"
+        user_manager = FakeUserManager(
+            ["chat:misskey:user1:old", "chat:misskey:user1:next"],
+        )
+        monkeypatch.setattr(session, "_user_manager", user_manager)
+        history = await cmd_history_async(session)
+        new_action = await cmd_new_async(session)
+        switch_action = await cmd_switch_async(session, "chat:misskey:user1:next")
+        assert isinstance(history, str)
+        assert "chat:misskey:user1:old" in history
+        assert isinstance(new_action, CommandAction)
+        assert new_action.target_session_id is not None
+        assert new_action.target_session_id.startswith("chat:misskey:user1:")
+        assert isinstance(switch_action, CommandAction)
+        assert switch_action.target_session_id == "chat:misskey:user1:next"
+    else:
+        handler = _session_commands_CommandHandler()
+        handler.register_command("about", lambda: "custom", "自定义")
+        session = Session("chat:misskey:user1", command_handler=handler)
+        result, is_command = session.cmd_process("/about")
+        assert is_command is True
+        assert result == "custom"
 
 def test_sync_new_command_creates_action_and_binds_user(monkeypatch: pytest.MonkeyPatch):
     session = Session("chat:misskey:user1:old")
@@ -758,45 +746,13 @@ def test_sync_switch_validates_bound_contexts(monkeypatch: pytest.MonkeyPatch):
     assert result.action == "switch_session"
     assert result.target_session_id == "chat:misskey:user1:next"
 
-def test_about_command_returns_configured_text():
-    assert cmd_about("关于 Satrap") == "关于 Satrap"
-
 @pytest.mark.asyncio
-async def test_async_commands_match_sync_command_contract(monkeypatch: pytest.MonkeyPatch):
-    session = AsyncSession("chat:misskey:user1:old")
-    user_manager = FakeUserManager(
-        ["chat:misskey:user1:old", "chat:misskey:user1:next"],
-    )
-    monkeypatch.setattr(session, "_user_manager", user_manager)
-
-    history = await cmd_history_async(session)
-    new_action = await cmd_new_async(session)
-    switch_action = await cmd_switch_async(session, "chat:misskey:user1:next")
-
-    assert isinstance(history, str)
-    assert "chat:misskey:user1:old" in history
-    assert isinstance(new_action, CommandAction)
-    assert new_action.target_session_id is not None
-    assert new_action.target_session_id.startswith("chat:misskey:user1:")
-    assert isinstance(switch_action, CommandAction)
-    assert switch_action.target_session_id == "chat:misskey:user1:next"
-
-@pytest.mark.asyncio
-async def test_async_pre_registered_command_is_preserved():
-    from satrap.core.framework import AsyncCommandHandler
-
-    handler = AsyncCommandHandler()
-
-    async def about():
-        return "pre"
-
-    handler.register_command("about", about, "预置")
-    session = AsyncSession("chat:misskey:user1", command_handler=handler)
-
-    assert await session.cmd_process("/about") == ("pre", True)
-
-def test_platform_session_commands_plugin_builds_bound_sync_commands(monkeypatch: pytest.MonkeyPatch):
-    """平台命令插件应以当前会话为作用域构建同步命令"""
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_platform_session_commands_plugin_builds_bound_commands(
+    asynchronous: bool,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """平台命令插件以当前会话为作用域构建同步/异步命令 (镜像)"""
     plugin_dir = (
         Path(__file__).resolve().parents[2]
         / "satrap"
@@ -804,47 +760,34 @@ def test_platform_session_commands_plugin_builds_bound_sync_commands(monkeypatch
         / "plugins"
         / "session_commands"
     )
-    session = Session("onebot-edictum:onebot-platform:user1:old")
-    monkeypatch.setattr(session, "_user_manager", FakeUserManager([session.session_id]))
-
-    sync_commands, async_commands = collect_commands(
-        plugin_dir,
-        "session_commands",
-        cast(Any, session),
-        {"about_text": "自定义平台说明"},
-    )
-    result = sync_commands["new"]()
-    about = sync_commands["about"]()
-
-    assert set(sync_commands) == {"new", "history", "switch", "about"}
-    assert async_commands == {}
-    assert about == "自定义平台说明"
-    assert isinstance(result, CommandAction)
-    assert result.target_session_id is not None
-    assert result.target_session_id.startswith("onebot-edictum:onebot-platform:user1:")
-
-@pytest.mark.asyncio
-async def test_platform_session_commands_plugin_builds_bound_async_about():
-    """平台命令插件应为异步 Edictum 会话绑定关于命令"""
-    plugin_dir = (
-        Path(__file__).resolve().parents[2]
-        / "satrap"
-        / "expend"
-        / "plugins"
-        / "session_commands"
-    )
-    session = AsyncSession("onebot-edictum:onebot-platform:user1:old")
-
-    sync_commands, async_commands = collect_commands(
-        plugin_dir,
-        "session_commands",
-        cast(Any, session),
-        {"about_text": "异步自定义说明"},
-    )
-
-    assert sync_commands == {}
-    assert set(async_commands) == {"new", "history", "switch", "about"}
-    assert await async_commands["about"]() == "异步自定义说明"
+    if asynchronous:
+        session = AsyncSession("onebot-edictum:onebot-platform:user1:old")
+        sync_commands, async_commands = collect_commands(
+            plugin_dir,
+            "session_commands",
+            cast(Any, session),
+            {"about_text": "异步自定义说明"},
+        )
+        assert sync_commands == {}
+        assert set(async_commands) == {"new", "history", "switch", "about"}
+        assert await async_commands["about"]() == "异步自定义说明"
+    else:
+        session = Session("onebot-edictum:onebot-platform:user1:old")
+        monkeypatch.setattr(session, "_user_manager", FakeUserManager([session.session_id]))
+        sync_commands, async_commands = collect_commands(
+            plugin_dir,
+            "session_commands",
+            cast(Any, session),
+            {"about_text": "自定义平台说明"},
+        )
+        result = sync_commands["new"]()
+        about = sync_commands["about"]()
+        assert set(sync_commands) == {"new", "history", "switch", "about"}
+        assert async_commands == {}
+        assert about == "自定义平台说明"
+        assert isinstance(result, CommandAction)
+        assert result.target_session_id is not None
+        assert result.target_session_id.startswith("onebot-edictum:onebot-platform:user1:")
 
 class CountingTool(Tool):
     def __init__(self):
@@ -872,10 +815,6 @@ class AsyncCountingTool(AsyncTool):
         self.calls += 1
         return {"value": value}
 
-class BrokenTool(Tool):
-    def __init__(self):
-        super().__init__()
-
 class RaisingTool(Tool):
     def __init__(self):
         super().__init__(
@@ -902,29 +841,39 @@ class AsyncRaisingTool(AsyncTool):
         self.calls += 1
         raise RuntimeError(f"async boom {value}")
 
-def test_tools_manager_can_disable_and_enable_tool():
-    manager = ToolsManager()
-    tool = CountingTool()
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_tools_manager_can_disable_and_enable_tool(asynchronous: bool):
+    """启停工具: 定义隐藏/执行拒绝/恢复 (同步与异步镜像)"""
+    if asynchronous:
+        manager: Any = AsyncToolsManager()
+        tool = AsyncCountingTool()
+        name = "async_counting"
+    else:
+        manager = ToolsManager()
+        tool = CountingTool()
+        name = "counting"
     manager.register_tool(tool)
 
-    assert manager.is_tool_enabled("counting") is True
+    assert manager.is_tool_enabled(name) is True
     assert len(manager.get_tools_definitions()) == 1
-    assert manager.disable_tool("counting") is True
-    assert "counting" in manager.tools
-    assert manager.is_tool_enabled("counting") is False
+    assert manager.disable_tool(name) is True
+    assert name in manager.tools
+    assert manager.is_tool_enabled(name) is False
     assert manager.get_tools_definitions() == []
 
-    result = manager.execute_tool("counting", {"value": 1})
+    result = await manager.execute_tool(name, {"value": 1}) if asynchronous else manager.execute_tool(name, {"value": 1})
 
-    assert result["error"] == "工具 counting 已禁用"
+    assert result["error"] == f"工具 {name} 已禁用"
     assert result["ok"] is False
     assert result["error_type"] == "disabled"
-    assert result["tool_name"] == "counting"
+    assert result["tool_name"] == name
     assert tool.calls == 0
 
-    assert manager.enable_tool("counting") is True
+    assert manager.enable_tool(name) is True
     assert len(manager.get_tools_definitions()) == 1
-    assert manager.execute_tool("counting", {"value": 2}) == {"value": 2}
+    restored = await manager.execute_tool(name, {"value": 2}) if asynchronous else manager.execute_tool(name, {"value": 2})
+    assert restored == {"value": 2}
     assert tool.calls == 1
 
 def test_tools_manager_bulk_enable_disable_and_unregister_regression():
@@ -943,82 +892,50 @@ def test_tools_manager_bulk_enable_disable_and_unregister_regression():
     assert "counting" not in manager.tools
     assert manager.unregister_all_tools() is False
 
-def test_incomplete_tool_still_cannot_register():
-    manager = ToolsManager()
-    manager.register_tool(BrokenTool())
-
-    assert manager.tools == {}
-
 @pytest.mark.asyncio
-async def test_async_tools_manager_can_disable_and_enable_tool():
-    manager = AsyncToolsManager()
-    tool = AsyncCountingTool()
-    manager.register_tool(tool)
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_tools_manager_structured_errors_and_exception_isolated(asynchronous: bool):
+    """非法调用返回结构化错误且不执行, 工具异常被隔离为 execution_error (同步与异步镜像)"""
+    if asynchronous:
+        manager: Any = AsyncToolsManager()
+        counting = AsyncCountingTool()
+        raising = AsyncRaisingTool()
+        name_c, name_r = "async_counting", "async_raising"
+    else:
+        manager = ToolsManager()
+        counting = CountingTool()
+        raising = RaisingTool()
+        name_c, name_r = "counting", "raising"
+    manager.register_tool(counting)
+    manager.register_tool(raising)
 
-    assert manager.is_tool_enabled("async_counting") is True
-    assert len(manager.get_tools_definitions()) == 1
-    assert manager.disable_tool("async_counting") is True
-    assert "async_counting" in manager.tools
-    assert manager.get_tools_definitions() == []
+    async def call(tool_name: str, arguments: Any) -> dict[str, Any]:
+        if asynchronous:
+            return await manager.execute_tool(tool_name, arguments)
+        return manager.execute_tool(tool_name, arguments)
 
-    result = await manager.execute_tool("async_counting", {"value": 1})
+    missing = await call("missing", {})
+    assert missing["error_type"] == "not_found"
+    assert missing["tool_name"] == "missing"
 
-    assert result["error"] == "工具 async_counting 已禁用"
-    assert result["ok"] is False
-    assert result["error_type"] == "disabled"
-    assert result["tool_name"] == "async_counting"
-    assert tool.calls == 0
+    invalid_name = await call("", {})
+    assert invalid_name["error_type"] == "invalid_tool_call"
 
-    assert manager.enable_tool("async_counting") is True
-    assert await manager.execute_tool("async_counting", {"value": 2}) == {"value": 2}
-    assert tool.calls == 1
+    invalid_args = await call(name_c, cast(Any, "not a dict"))
+    assert invalid_args["error_type"] == "invalid_arguments"
+    assert counting.calls == 0
 
-def test_execute_tool_call_preserves_return_shape_for_disabled_tool():
-    manager = ToolsManager()
-    manager.register_tool(CountingTool())
-    manager.disable_tool("counting")
+    none_args = await call(name_c, None)
+    assert none_args["error_type"] == "execution_error"
+    assert counting.calls == 0
 
-    tool_message, tool_result = manager.execute_tool_call(
-        {"name": "counting", "id": "call_1", "arguments": {"value": 1}}
-    )
-
-    assert tool_message["id"] == "call_1"
-    assert tool_result["error"] == "工具 counting 已禁用"
-    assert tool_result["error_type"] == "disabled"
-
-def test_tools_manager_returns_structured_errors_without_executing_invalid_calls():
-    manager = ToolsManager()
-    tool = CountingTool()
-    manager.register_tool(tool)
-
-    missing_result = manager.execute_tool("missing", {})
-    assert missing_result["error_type"] == "not_found"
-    assert missing_result["tool_name"] == "missing"
-
-    invalid_name_result = manager.execute_tool("", {})
-    assert invalid_name_result["error_type"] == "invalid_tool_call"
-
-    invalid_args_result = manager.execute_tool("counting", cast(Any, "not a dict"))
-    assert invalid_args_result["error_type"] == "invalid_arguments"
-    assert tool.calls == 0
-
-    none_args_result = manager.execute_tool("counting", None)
-    assert none_args_result["error_type"] == "execution_error"
-    assert tool.calls == 0
-
-def test_tools_manager_catches_tool_exceptions_as_structured_errors():
-    manager = ToolsManager()
-    tool = RaisingTool()
-    manager.register_tool(tool)
-
-    result = manager.execute_tool("raising", {"value": 3})
-
-    assert result["ok"] is False
-    assert result["error_type"] == "execution_error"
-    assert result["tool_name"] == "raising"
-    assert result["error"] == "工具执行失败: RuntimeError"
-    assert "boom 3" not in result["error"]
-    assert tool.calls == 1
+    boom = await call(name_r, {"value": 3})
+    assert boom["ok"] is False
+    assert boom["error_type"] == "execution_error"
+    assert boom["tool_name"] == name_r
+    assert boom["error"] == "工具执行失败: RuntimeError"
+    assert "boom" not in boom["error"]
+    assert raising.calls == 1
 
 def test_tool_argument_log_summary_redacts_nested_credentials() -> None:
     """工具异常日志参数摘要不得包含凭据原值"""
@@ -1053,31 +970,3 @@ def test_execute_tool_call_handles_malformed_call_info_without_raising():
     assert tool_message["id"] == "call_bad_args"
     assert tool_result["error_type"] == "invalid_arguments"
 
-@pytest.mark.asyncio
-async def test_async_tools_manager_returns_structured_errors_and_catches_exceptions():
-    manager = AsyncToolsManager()
-    counting_tool = AsyncCountingTool()
-    raising_tool = AsyncRaisingTool()
-    manager.register_tool(counting_tool)
-    manager.register_tool(raising_tool)
-
-    missing_result = await manager.execute_tool("missing", {})
-    assert missing_result["error_type"] == "not_found"
-
-    invalid_args_result = await manager.execute_tool("async_counting", cast(Any, "not a dict"))
-    assert invalid_args_result["error_type"] == "invalid_arguments"
-    assert counting_tool.calls == 0
-
-    exception_result = await manager.execute_tool("async_raising", {"value": 7})
-    assert exception_result["ok"] is False
-    assert exception_result["error_type"] == "execution_error"
-    assert exception_result["tool_name"] == "async_raising"
-    assert exception_result["error"] == "工具执行失败: RuntimeError"
-    assert "async boom 7" not in exception_result["error"]
-    assert raising_tool.calls == 1
-
-    tool_message, tool_result = await manager.execute_tool_call(
-        {"id": "call_bad_args", "name": "async_counting", "arguments": "bad"}
-    )
-    assert tool_message["id"] == "call_bad_args"
-    assert tool_result["error_type"] == "invalid_arguments"

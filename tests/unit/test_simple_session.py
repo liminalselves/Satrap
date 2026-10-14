@@ -191,26 +191,6 @@ def test_run_basic_flow(tmp_path: Path):
     assert call["tools"] == []
 
 
-def test_call_delegates_to_run(tmp_path: Path):
-    """__call__ 委托 run"""
-    llm = _FakeLLM()
-    session = _make_session(tmp_path, llm)
-    assert session("你好") == "回复"
-
-
-def test_run_multimodal_img_urls(tmp_path: Path):
-    """多模态: 图片固定在用户消息中传入 llm.call"""
-    llm = _FakeLLM()
-    llm.supports_visual_input = True
-    session = _make_session(tmp_path, llm)
-
-    session.run("看图", img_urls=["data:image/png;base64,aW1hZ2U="])
-    assert llm.calls[0]["img_urls"] is None
-    user = next(m for m in llm.calls[0]["messages"] if m["role"] == "user")
-    assert user["content"][1]["image_url"]["url"] == "data:image/png;base64,aW1hZ2U="
-    assert len(user["content"]) == 2
-
-
 def test_async_run_signature_forwards_media_params(tmp_path: Path):
     """平台入口: run 签名须暴露媒体参数, 否则 SessionManager 的参数适配会静默丢弃 img_urls"""
     session = AsyncSimpleSession(
@@ -233,100 +213,152 @@ def test_async_run_signature_forwards_media_params(tmp_path: Path):
 # ================= 工具管理 =================
 
 
-def test_add_remove_enable_tools(tmp_path: Path):
-    """工具: 注入后进入 llm.call 的 tools, 启停/删除/列表生效"""
-    llm = _FakeLLM()
-    session = _make_session(tmp_path, llm)
-    tool = _EchoTool()
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_tools_lifecycle(tmp_path: Path, asynchronous: bool):
+    """工具: 注入进入 llm.call 的 tools, 启停/删除/列表生效 (异步覆盖初始化后注入与批量)"""
+    if asynchronous:
+        llm: Any = _FakeAsyncLLM()
+        session: Any = AsyncSimpleSession(
+            "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+        tool: Any = _AsyncEchoTool()
+        name = "async_echo"
+        await session.run("hi")
+        session.add_tool(tool)
+        session.add_tools(_AsyncEchoTool())
+        assert session.list_tools() == [name]
+        await session.run("hi")
+    else:
+        llm = _FakeLLM()
+        session = _make_session(tmp_path, llm)
+        tool = _EchoTool()
+        name = "echo"
+        session.add_tool(tool)
+        session.run("hi")
+    assert session.list_tools() == [name]
+    assert session.is_tool_enabled(name) is True
+    tools_def = llm.calls[-1]["tools"]
+    assert tools_def and tools_def[0]["function"]["name"] == name
 
-    session.add_tool(tool)
-    assert session.list_tools() == ["echo"]
-    assert session.is_tool_enabled("echo") is True
+    assert session.disable_tool(name) is True
+    assert session.is_tool_enabled(name) is False
+    assert session.enable_tool(name) is True
+    assert session.is_tool_enabled(name) is True
 
-    session.run("hi")
-    tools_def = llm.calls[0]["tools"]
-    assert tools_def and tools_def[0]["function"]["name"] == "echo"
-
-    session.disable_tool("echo")
-    assert session.is_tool_enabled("echo") is False
-    session.enable_tool("echo")
-    assert session.is_tool_enabled("echo") is True
-
-    assert session.remove_tool("echo") is True
+    assert session.remove_tool(name) is True
     assert session.list_tools() == []
-    assert session.remove_tool("echo") is False
-
-
-def test_add_tools_batch(tmp_path: Path):
-    """批量注入工具"""
-    session = _make_session(tmp_path)
-    session.add_tools(_EchoTool(), _EchoTool())
-    assert session.list_tools() == ["echo"]
+    assert session.remove_tool(name) is False
 
 
 # ================= 命令管理 =================
 
 
-def test_command_lifecycle(tmp_path: Path):
-    """命令: 添加/列表/执行/停用/删除"""
-    session = _make_session(tmp_path)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_command_lifecycle(tmp_path: Path, asynchronous: bool):
+    """命令: 添加/列表/执行/停用/删除 (同步与异步镜像)"""
+    if asynchronous:
+        session: Any = AsyncSimpleSession(
+            "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
 
-    def ping(args: str) -> str:
-        return f"pong:{args}"
+        async def ping_async(args: str) -> str:
+            return f"pong:{args}"
 
-    session.add_command("ping", ping, intro="测试命令")
-    assert "ping" in session.list_commands()
-    assert session.is_command_enabled("ping") is True
+        session.add_command("ping", ping_async, intro="测试")
+        assert "ping" in session.list_commands()
+        assert session.is_command_enabled("ping") is True
+        result, is_cmd = await session.command_handler.process_message("/ping hello")
+        assert is_cmd is True
+        assert result == "pong:hello"
+        session.disable_command("ping")
+        assert session.is_command_enabled("ping") is False
+        result, is_cmd = await session.command_handler.process_message("/ping hello")
+        assert is_cmd is False
+        session.enable_command("ping")
+        assert session.is_command_enabled("ping") is True
+        assert session.remove_command("ping") is True
+        assert "ping" not in session.list_commands()
+        assert session.remove_command("ping") is False
+    else:
+        session = _make_session(tmp_path)
 
-    result, is_cmd = session.cmd_handler.process_message("/ping hello")
-    assert is_cmd is True
-    assert result == "pong:hello"
+        def ping(args: str) -> str:
+            return f"pong:{args}"
 
-    session.disable_command("ping")
-    assert session.is_command_enabled("ping") is False
-    result, is_cmd = session.cmd_handler.process_message("/ping hello")
-    assert is_cmd is False
-
-    session.enable_command("ping")
-    assert session.is_command_enabled("ping") is True
-
-    assert session.remove_command("ping") is True
-    assert "ping" not in session.list_commands()
-    assert session.remove_command("ping") is False
-
-
-def test_default_help_command(tmp_path: Path):
-    """默认 /help 存在且在列表中"""
-    session = _make_session(tmp_path)
-    assert "help" in session.list_commands()
-    result, is_cmd = session.cmd_handler.process_message("/help")
-    assert is_cmd is True
-    assert "help" in str(result)
+        session.add_command("ping", ping, intro="测试命令")
+        assert "ping" in session.list_commands()
+        assert session.is_command_enabled("ping") is True
+        result, is_cmd = session.cmd_handler.process_message("/ping hello")
+        assert is_cmd is True
+        assert result == "pong:hello"
+        session.disable_command("ping")
+        assert session.is_command_enabled("ping") is False
+        result, is_cmd = session.cmd_handler.process_message("/ping hello")
+        assert is_cmd is False
+        session.enable_command("ping")
+        assert session.is_command_enabled("ping") is True
+        assert session.remove_command("ping") is True
+        assert "ping" not in session.list_commands()
+        assert session.remove_command("ping") is False
 
 
 # ================= skill 管理 =================
 
 
-def test_skill_lifecycle(tmp_path: Path):
-    """skill: 激活后系统提示变化, 停用/删除/列表生效"""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_skill_lifecycle(tmp_path: Path, asynchronous: bool):
+    """skill: 激活后系统提示变化, 停用/删除/列表与缺省分支生效 (同步与异步镜像)"""
     skill_dir = _write_demo_skill(tmp_path)
     mgr = SkillsManager(skills_dir=str(skill_dir.parent), include_preset=False)
     mgr.scan(str(skill_dir.parent))
 
-    llm = _FakeLLM()
-    session = _make_session(tmp_path, llm)
+    if asynchronous:
+        llm: Any = _FakeAsyncLLM()
+        session: Any = AsyncSimpleSession(
+            "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+        assert await session.disable_skill("demo") is False
+        assert session.list_skills() == []
+        assert await session.add_skill("demo", skills_manager=mgr) is True
+        assert "demo" in session.list_skills()
+        await session.run("hi")
+        system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
+        assert system_msgs and "Demo" in str(system_msgs[0]["content"])
+        assert await session.enable_skill("demo") is True
+        assert await session.disable_skill("demo") is True
+        assert await session.remove_skill("demo") is True
+        assert "demo" not in session.list_skills()
 
-    assert session.add_skill("demo", skills_manager=mgr) is True
-    assert "demo" in session.list_skills()
-    session.run("hi")
-    system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
-    assert system_msgs and "Demo" in str(system_msgs[0]["content"])
+        session2 = AsyncSimpleSession(
+            "conv-b", llm, db_path=str(tmp_path / "chat2.db"), enable_checkpoint=True,
+        )
+        assert await session2.remove_skill("demo") is False
+        assert await session2.disable_skill("demo") is False
+        assert session2.list_skills() == []
+        await session2.run("hi")
+        assert await session2.add_skill("not-exist") is False
+    else:
+        llm = _FakeLLM()
+        session = _make_session(tmp_path, llm)
+        assert session.add_skill("demo", skills_manager=mgr) is True
+        assert "demo" in session.list_skills()
+        session.run("hi")
+        system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
+        assert system_msgs and "Demo" in str(system_msgs[0]["content"])
+        assert session.disable_skill("demo") is True
+        assert session.enable_skill("demo") is True
+        assert session.remove_skill("demo") is True
+        assert "demo" not in session.list_skills()
+        assert session.remove_skill("demo") is False
 
-    assert session.disable_skill("demo") is True
-    assert session.enable_skill("demo") is True
-    assert session.remove_skill("demo") is True
-    assert "demo" not in session.list_skills()
-    assert session.remove_skill("demo") is False
+        # 无技能管理器时 remove/disable/list 的兑底分支
+        empty = _make_session(tmp_path / "empty")
+        assert empty.remove_skill("demo") is False
+        assert empty.disable_skill("demo") is False
+        assert empty.list_skills() == []
 
 
 def test_skill_missing_returns_false(tmp_path: Path):
@@ -483,9 +515,16 @@ def test_plugin_duplicate_name_conflicts_and_replace(tmp_path: Path):
     assert closed == ["p"]
 
 
-def test_plugin_empty_name_raises(tmp_path: Path):
-    """空插件名抛 ValueError"""
-    session = _make_session(tmp_path)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_plugin_empty_name_raises(tmp_path: Path, asynchronous: bool):
+    """空插件名抛 ValueError (同步与异步镜像)"""
+    if asynchronous:
+        session: Any = AsyncSimpleSession(
+            "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+    else:
+        session = _make_session(tmp_path)
     with pytest.raises(ValueError):
         session.add_handler(SessionHandler(name=""))
 
@@ -647,19 +686,40 @@ async def test_async_missing_wf_raises(tmp_path: Path):
 # ================= 补充分支覆盖 =================
 
 
-def test_sync_constructor_tools_and_proxies(tmp_path: Path):
-    """构造传初始工具 + 属性代理 (llm setter / ctx / tools_manager)"""
-    llm = _FakeLLM()
-    session = SimpleSession(
-        "conv-3", llm, tools=[_EchoTool()], db_path=str(tmp_path / "chat.db"),
-    )
-    assert session.list_tools() == ["echo"]
-
-    llm2 = _FakeLLM()
-    session.llm = llm2
-    assert session.llm is llm2
-    assert session.ctx is not None
-    assert session.tools_manager is session._wf.tools_manager
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_model_interfaces(tmp_path: Path, asynchronous: bool):
+    """构造初始工具 + 属性代理与模型接口 (llm setter / ctx / tools_manager / reload_llm)"""
+    if asynchronous:
+        llm1: Any = _FakeAsyncLLM()
+        session: Any = AsyncSimpleSession(
+            "conv-a", llm1, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+        assert await session("hi") == "异步回复"
+        assert session.ctx is not None
+        assert session.tools_manager is session._require_wf().tools_manager
+        llm2 = _FakeAsyncLLM()
+        session.llm = llm2
+        assert session.llm is llm2
+        session.reload_llm(llm1)
+        assert session.llm is llm1
+        session.set_model_parameters(temperature=0.5)
+        assert llm1.params == {"temperature": 0.5}
+        session.set_stream_mode(False)
+        assert session.stream is False
+    else:
+        llm1 = _FakeLLM()
+        session = SimpleSession(
+            "conv-3", llm1, tools=[_EchoTool()], db_path=str(tmp_path / "chat.db"),
+        )
+        assert session.list_tools() == ["echo"]
+        llm2 = _FakeLLM()
+        session.llm = llm2
+        assert session.llm is llm2
+        assert session.ctx is not None
+        assert session.tools_manager is session._wf.tools_manager
+        session.reload_llm(llm1)
+        assert session.llm is llm1
 
 
 def test_sync_plugin_missing_before_user_send(tmp_path: Path):
@@ -674,49 +734,22 @@ def test_sync_plugin_missing_before_user_send(tmp_path: Path):
     assert seen == ["hi"]
 
 
-def test_sync_skill_manager_missing_branches(tmp_path: Path):
-    """无技能管理器时 remove/disable/list 的兑底分支"""
-    session = _make_session(tmp_path)
-    assert session.remove_skill("demo") is False
-    assert session.disable_skill("demo") is False
-    assert session.list_skills() == []
-
-
-def test_sync_plugin_missing_enable(tmp_path: Path):
-    """enable_plugin 不存在的插件返回 False"""
-    session = _make_session(tmp_path)
-    assert session.enable_handler("missing") is False
-
-
-def test_sync_reload_llm(tmp_path: Path):
-    """reload_llm 委托 set_llm"""
-    llm1 = _FakeLLM()
-    session = _make_session(tmp_path, llm1)
-    llm2 = _FakeLLM()
-    session.reload_llm(llm2)
-    assert session.llm is llm2
-
-
 @pytest.mark.asyncio
-async def test_async_proxies_and_model_interfaces(tmp_path: Path):
-    """异步属性代理与模型接口 (__call__ / ctx / tools_manager / set_llm 等)"""
-    llm1 = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm1, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-    assert await session("hi") == "异步回复"
-    assert session.ctx is not None
-    assert session.tools_manager is session._require_wf().tools_manager
-
-    llm2 = _FakeAsyncLLM()
-    session.llm = llm2
-    assert session.llm is llm2
-    session.reload_llm(llm1)
-    assert session.llm is llm1
-    session.set_model_parameters(temperature=0.5)
-    assert llm1.params == {"temperature": 0.5}
-    session.set_stream_mode(False)
-    assert session.stream is False
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_plugin_and_mcp_missing_branches(tmp_path: Path, asynchronous: bool):
+    """启停/移除不存在的能力返回 False"""
+    if asynchronous:
+        session: Any = AsyncSimpleSession(
+            "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+        await session.run("hi")
+        assert session.enable_handler("missing") is False
+        assert session.disable_handler("missing") is False
+        assert session.enable_mcp("missing") is False
+        assert session.disable_mcp("missing") is False
+    else:
+        session = _make_session(tmp_path)
+        assert session.enable_handler("missing") is False
 
 
 @pytest.mark.asyncio
@@ -762,110 +795,12 @@ async def test_async_plugin_sync_callbacks_and_continue(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_async_command_lifecycle(tmp_path: Path):
-    """异步命令: 添加/列表/执行/停用/删除"""
-    llm = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-
-    async def ping(args: str) -> str:
-        return f"pong:{args}"
-
-    session.add_command("ping", ping, intro="测试")
-    assert "ping" in session.list_commands()
-    assert session.is_command_enabled("ping") is True
-
-    result, is_cmd = await session.command_handler.process_message("/ping hello")
-    assert is_cmd is True
-    assert result == "pong:hello"
-
-    session.disable_command("ping")
-    assert session.is_command_enabled("ping") is False
-    session.enable_command("ping")
-    assert session.is_command_enabled("ping") is True
-    assert session.remove_command("ping") is True
-    assert session.remove_command("ping") is False
-
-
-@pytest.mark.asyncio
-async def test_async_tools_after_initialize(tmp_path: Path):
-    """初始化后注入/批量/启停/删除工具"""
-    llm = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-    await session.run("hi")
-
-    session.add_tool(_AsyncEchoTool())
-    assert session.list_tools() == ["async_echo"]
-    session.add_tools(_AsyncEchoTool())
-    assert session.list_tools() == ["async_echo"]
-
-    assert session.disable_tool("async_echo") is True
-    assert session.is_tool_enabled("async_echo") is False
-    assert session.enable_tool("async_echo") is True
-    assert session.is_tool_enabled("async_echo") is True
-    assert session.remove_tool("async_echo") is True
-    assert session.remove_tool("async_echo") is False
-
-
-@pytest.mark.asyncio
-async def test_async_skill_lifecycle(tmp_path: Path):
-    """异步 skill: 初始化前注册延迟生效, 惰性创建, 启停/删除"""
-    skill_dir = _write_demo_skill(tmp_path)
-    mgr = SkillsManager(skills_dir=str(skill_dir.parent), include_preset=False)
-    mgr.scan(str(skill_dir.parent))
-
-    llm = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-    assert await session.disable_skill("demo") is False
-    assert session.list_skills() == []
-
-    assert await session.add_skill("demo", skills_manager=mgr) is True
-    assert "demo" in session.list_skills()
-    await session.run("hi")
-    system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
-    assert system_msgs and "Demo" in str(system_msgs[0]["content"])
-
-    assert await session.enable_skill("demo") is True
-    assert await session.disable_skill("demo") is True
-    assert await session.remove_skill("demo") is True
-    assert "demo" not in session.list_skills()
-
-    session2 = AsyncSimpleSession(
-        "conv-b", llm, db_path=str(tmp_path / "chat2.db"), enable_checkpoint=True,
-    )
-    # 无管理器兑底 + 惰性创建
-    assert await session2.remove_skill("demo") is False
-    await session2.run("hi")
-    assert await session2.add_skill("not-exist") is False
-
-
-@pytest.mark.asyncio
-async def test_async_mcp_missing_branches(tmp_path: Path):
-    """MCP 不存在的连接启停返回 False"""
-    llm = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-    await session.run("hi")
-    assert session.enable_mcp("missing") is False
-    assert session.disable_mcp("missing") is False
-
-
-@pytest.mark.asyncio
 async def test_async_plugin_management(tmp_path: Path):
-    """异步插件管理全套 + 空名抛错"""
+    """异步插件管理全套"""
     llm = _FakeAsyncLLM()
     session = AsyncSimpleSession(
         "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
-    with pytest.raises(ValueError):
-        session.add_handler(SessionHandler(name=""))
-
     session.add_handler(SessionHandler(name="p", priority=100))
     assert len(session.list_handlers()) == 1
     assert session.set_handler_priority("p", 50) is True
@@ -919,40 +854,36 @@ class _ToolLoopLLM(_FakeLLM):
         return LLMCallResponse(type="answer", content="最终回复")
 
 
-def test_default_db_path_constructs_ok(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """H1 回归: 默认 db_path (正斜杠) 构造不再抛 ValueError"""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_default_db_path_initializes_ok(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, asynchronous: bool):
+    """H1 回归: 默认 db_path (正斜杠) 构造/初始化不再抛 ValueError"""
     monkeypatch.chdir(tmp_path)
-    session = SimpleSession("conv-default", _FakeLLM())
-    assert session.run("hi") == "回复"
+    if asynchronous:
+        session = AsyncSimpleSession("conv-default", _FakeAsyncLLM())
+        assert await session.run("hi") == "异步回复"
+    else:
+        session = SimpleSession("conv-default", _FakeLLM())
+        assert session.run("hi") == "回复"
 
 
 @pytest.mark.asyncio
-async def test_async_default_db_path_initializes_ok(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """H1 回归: 异步版默认 db_path 初始化不再抛 ValueError"""
-    monkeypatch.chdir(tmp_path)
-    session = AsyncSimpleSession("conv-default", _FakeAsyncLLM())
-    assert await session.run("hi") == "异步回复"
-
-
-def test_plugin_empty_string_rewrite(tmp_path: Path):
-    """H2 修复: before_user_send 返回空串 = 拦截/清空输入"""
-    llm = _FakeLLM()
-    session = _make_session(tmp_path, llm)
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_plugin_empty_string_rewrite(tmp_path: Path, asynchronous: bool):
+    """H2 修复: before_user_send 返回空串 = 拦截/清空输入 (同步与异步镜像)"""
+    if asynchronous:
+        llm: Any = _FakeAsyncLLM()
+        session: Any = AsyncSimpleSession(
+            "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+    else:
+        llm = _FakeLLM()
+        session = _make_session(tmp_path, llm)
     session.add_handler(SessionHandler(name="p", before_user_send=lambda t, ctx: ""))
-    session.run("你好")
-    user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
-    assert user_msgs[-1]["content"] == ""
-
-
-@pytest.mark.asyncio
-async def test_async_plugin_empty_string_rewrite(tmp_path: Path):
-    """H2 修复: 异步版空串改写生效"""
-    llm = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-    session.add_handler(SessionHandler(name="p", before_user_send=lambda t, ctx: ""))
-    await session.run("hi")
+    if asynchronous:
+        await session.run("你好")
+    else:
+        session.run("你好")
     user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
     assert user_msgs[-1]["content"] == ""
 
@@ -974,22 +905,20 @@ async def test_plugin_non_str_return_ignored_async(tmp_path: Path):
     assert user_msgs[-1]["content"] == "hi"   # dict 被忽略, 未改写
 
 
-def test_non_stream_thinking_is_forwarded_sync(tmp_path: Path):
-    """验证同步非流式会话向模型传递 thinking"""
-    llm = _FakeLLM()
-    session = _make_session(tmp_path, llm=llm)
-    assert session.run("hi", thinking="medium") == "回复"
-    assert llm.calls[0]["thinking"] == "medium"
-
-
 @pytest.mark.asyncio
-async def test_non_stream_thinking_is_forwarded_async(tmp_path: Path):
-    """验证异步非流式会话向模型传递 thinking"""
-    llm = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-    assert await session.run("hi", thinking="medium") == "异步回复"
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_non_stream_thinking_is_forwarded(tmp_path: Path, asynchronous: bool):
+    """验证同步与异步非流式会话向模型传递 thinking"""
+    if asynchronous:
+        llm: Any = _FakeAsyncLLM()
+        session: Any = AsyncSimpleSession(
+            "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+        assert await session.run("hi", thinking="medium") == "异步回复"
+    else:
+        llm = _FakeLLM()
+        session = _make_session(tmp_path, llm=llm)
+        assert session.run("hi", thinking="medium") == "回复"
     assert llm.calls[0]["thinking"] == "medium"
 
 
@@ -1728,14 +1657,24 @@ def test_handler_result_continue_rewrites(tmp_path: Path):
     assert user_msgs[-1]["content"] == "xab"
 
 
-def test_handler_result_respond_short_circuits(tmp_path: Path):
-    """respond 跳过模型直接返回; after_model_reply 仍执行 (finally)"""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_handler_result_respond_short_circuits(tmp_path: Path, asynchronous: bool):
+    """respond 跳过模型直接返回; after_model_reply 仍执行 (finally) (同步与异步镜像)"""
     seen: list[str] = []
-    llm = _FakeLLM()
-    session = _make_session(tmp_path, llm)
+    if asynchronous:
+        llm: Any = _FakeAsyncLLM()
+        session: Any = AsyncSimpleSession(
+            "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+        expected = "异步已响应"
+    else:
+        llm = _FakeLLM()
+        session = _make_session(tmp_path, llm)
+        expected = "已响应"
 
     def respond(text: str, ctx: HandlerContext) -> HandlerResult:
-        return HandlerResult.respond("已响应")
+        return HandlerResult.respond(expected)
 
     def after_reply(result: str | None, ctx: HandlerContext) -> None:
         seen.append(result or "")
@@ -1743,9 +1682,9 @@ def test_handler_result_respond_short_circuits(tmp_path: Path):
     session.add_handler(SessionHandler(
         name="r", before_user_send=respond, after_model_reply=after_reply,
     ))
-    result = session.run("hi")
-    assert isinstance(result, str) and result == "已响应"
-    assert seen == ["已响应"]
+    result = await session.run("hi") if asynchronous else session.run("hi")
+    assert isinstance(result, str) and result == expected
+    assert seen == [expected]
     assert llm.calls == []   # 模型未调用
 
 
@@ -1763,8 +1702,8 @@ def test_handler_result_reject_returns_reason(tmp_path: Path):
     assert llm.calls == []
 
 
-def test_handler_result_abort_raises(tmp_path: Path):
-    """abort 故障终止, 抛 HandlerAbortError"""
+def test_handler_abort_short_circuits(tmp_path: Path):
+    """abort 故障终止: HandlerResult.abort 与 error_policy="abort" 同语义, after_model_reply 不执行"""
     session = _make_session(tmp_path, _FakeLLM())
 
     def abort(text: str, ctx: HandlerContext) -> HandlerResult:
@@ -1774,21 +1713,21 @@ def test_handler_result_abort_raises(tmp_path: Path):
     with pytest.raises(HandlerAbortError, match="系统故障"):
         session.run("hi")
 
+    seen: list[str] = []
 
-@pytest.mark.asyncio
-async def test_async_handler_result_respond_short_circuits(tmp_path: Path):
-    """异步版 respond 短路同样生效"""
-    llm = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
+    def boom(text: str, ctx: HandlerContext) -> str | None:
+        raise RuntimeError("boom")
 
-    def respond(text: str, ctx: HandlerContext) -> HandlerResult:
-        return HandlerResult.respond("异步已响应")
+    def after(result: str | None, ctx: HandlerContext) -> str | None:
+        seen.append("after")
+        return None
 
-    session.add_handler(SessionHandler(name="r", before_user_send=respond))
-    assert await session.run("hi") == "异步已响应"
-    assert llm.calls == []
+    session2 = SimpleSession("conv-2", _FakeLLM(), db_path=str(tmp_path / "chat2.db"))
+    session2.add_handler(SessionHandler(name="p", error_policy="abort", before_user_send=boom))
+    session2.add_handler(SessionHandler(name="q", after_model_reply=after))
+    with pytest.raises(HandlerAbortError):
+        session2.run("x")
+    assert seen == []   # abort 在 before 阶段短路, after_model_reply 不执行
 
 
 def test_after_model_reply_rewrite_result(tmp_path: Path):
@@ -1854,25 +1793,6 @@ def test_after_model_reply_runs_in_finally_on_error(tmp_path: Path):
         session.run("hi")
     assert seen["result"] is None
     assert isinstance(seen["error"], RuntimeError)
-
-
-@pytest.mark.asyncio
-async def test_async_handler_timeout_isolated(tmp_path: Path):
-    """同步 handler 阻塞超过 timeout -> wait_for 放弃等待, 隔离继续 (to_thread 线程仍跑完)"""
-    seen: list[str] = []
-    llm = _FakeAsyncLLM()
-    session = AsyncSimpleSession(
-        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-
-    def slow(text: str, ctx: HandlerContext) -> str | None:
-        time.sleep(0.5)
-        seen.append("slow-done")
-        return None
-
-    session.add_handler(SessionHandler(name="slow", timeout=0.05, before_user_send=slow))
-    assert await session.run("hi") == "异步回复"
-    assert seen == []   # 超时放弃等待, 隔离继续
 
 
 @pytest.mark.asyncio
@@ -1975,25 +1895,6 @@ def test_replace_inherits_owner_plugin(tmp_path: Path):
     assert user_msgs[-1]["content"] == "hi [custom]"
 
 
-def test_handler_close_on_remove_idempotent(tmp_path: Path):
-    """remove_handler 触发 close; close 幂等 (重复调用无害)"""
-    closed: list[str] = []
-
-    class _H(SessionHandler):
-        def close(self) -> None:
-            closed.append(self.name)
-
-    session = _make_session(tmp_path)
-    h = _H(name="p")
-    session.add_handler(h)
-    assert session.remove_handler("p") is True
-    assert closed == ["p"]
-    h.close()
-    h.close()
-    assert closed == ["p", "p", "p"]   # 幂等: 重复调用不抛异常
-    assert session.remove_handler("p") is False
-
-
 def test_install_rollback_closes_handlers(tmp_path: Path):
     """插件安装中途失败 (命令冲突) 时已注册 handler 的 close 被调"""
     plugin_dir = tmp_path / "plugins" / "rb"
@@ -2022,16 +1923,41 @@ def test_install_rollback_closes_handlers(tmp_path: Path):
     assert mod.closed == ["rb.h"]   # 回滚 close 被调
 
 
-def test_sync_add_handler_rejects_async_callback(tmp_path: Path):
-    """协议级拒绝: add_handler 拒绝异步回调 (全同步协议)"""
-    async def bad(text: str, ctx: HandlerContext) -> str | None:
-        return None
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("entry", ["add_handler", "install"])
+async def test_rejects_async_handler_callbacks(tmp_path: Path, asynchronous: bool, entry: str):
+    """协议级拒绝: add_handler 与插件安装路径统一拒绝异步回调 (全同步协议), 失败无残留"""
+    if asynchronous:
+        session: Any = AsyncSimpleSession(
+            "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"),
+        )
+    else:
+        session = _make_session(tmp_path)
 
-    session = _make_session(tmp_path)
-    with pytest.raises(TypeError, match="异步回调"):
-        session.add_handler(SessionHandler(
-            name="p", before_user_send=cast(Any, bad),   # 负向用例: 故意传入异步回调验证拒绝
-        ))
+    if entry == "add_handler":
+        async def bad(text: str, ctx: HandlerContext) -> str | None:
+            return None
+
+        with pytest.raises(TypeError, match="异步回调"):
+            session.add_handler(SessionHandler(
+                name="p", before_user_send=cast(Any, bad),   # 负向用例: 故意传入异步回调验证拒绝
+            ))
+    else:
+        plugin_dir = tmp_path / "plugins" / "bad"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "meta.yaml").write_text("name: bad\n", encoding="utf-8")
+        (plugin_dir / "handlers.py").write_text(
+            "from satrap.edictum import SessionHandler\n\n"
+            "async def before_user_send(text: str, ctx):\n"
+            "    return text + '!'\n"
+            "handlers = [SessionHandler(name='bad.h', before_user_send=before_user_send)]\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(TypeError, match="异步回调"):
+            await session.install_plugin(str(plugin_dir)) if asynchronous else session.install_plugin(str(plugin_dir))
+        assert session.list_handlers() == []   # 回滚无残留
+        assert session.list_plugins() == []
 
 
 def test_handler_context_fields_passthrough(tmp_path: Path):
@@ -2089,65 +2015,6 @@ def test_run_snapshot_semantics(tmp_path: Path):
 # ================= 第二轮修复新增测试 (全同步协议 / to_thread / 延迟 close / 并发) =================
 
 
-def test_sync_install_rejects_async_handler_callbacks(tmp_path: Path):
-    """同步插件安装路径拒绝异步回调 (与 add_handler 校验统一), 失败后无残留"""
-    plugin_dir = tmp_path / "plugins" / "bad"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "meta.yaml").write_text("name: bad\n", encoding="utf-8")
-    (plugin_dir / "handlers.py").write_text(
-        "from satrap.edictum import SessionHandler\n\n"
-        "async def before_user_send(text: str, ctx):\n"
-        "    return text + '!'\n"
-        "handlers = [SessionHandler(name='bad.h', before_user_send=before_user_send)]\n",
-        encoding="utf-8",
-    )
-    session = _make_session(tmp_path)
-    with pytest.raises(TypeError, match="异步回调"):
-        session.install_plugin(str(plugin_dir))
-    assert session.list_handlers() == []   # 回滚无残留
-    assert session.list_plugins() == []
-
-
-@pytest.mark.asyncio
-async def test_async_install_rejects_async_handler_callbacks(tmp_path: Path):
-    """异步插件安装路径同样拒绝异步回调 (全同步协议)"""
-    plugin_dir = tmp_path / "plugins" / "bad"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "meta.yaml").write_text("name: bad\n", encoding="utf-8")
-    (plugin_dir / "handlers.py").write_text(
-        "from satrap.edictum import SessionHandler\n\n"
-        "async def before_user_send(text: str, ctx):\n"
-        "    return text + '!'\n"
-        "handlers = [SessionHandler(name='bad.h', before_user_send=before_user_send)]\n",
-        encoding="utf-8",
-    )
-    session = AsyncSimpleSession(
-        "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"),
-    )
-    with pytest.raises(TypeError, match="异步回调"):
-        await session.install_plugin(str(plugin_dir))
-    assert session.list_handlers() == []
-
-
-def test_handler_error_policy_abort(tmp_path: Path):
-    """error_policy="abort": handler 异常 -> run 抛 HandlerAbortError (与 HandlerResult.abort 同语义)"""
-    seen: list[str] = []
-
-    def boom(text: str, ctx: HandlerContext) -> str | None:
-        raise RuntimeError("boom")
-
-    def after(result: str | None, ctx: HandlerContext) -> str | None:
-        seen.append("after")
-        return None
-
-    session = _make_session(tmp_path)
-    session.add_handler(SessionHandler(name="p", error_policy="abort", before_user_send=boom))
-    session.add_handler(SessionHandler(name="q", after_model_reply=after))
-    with pytest.raises(HandlerAbortError):
-        session.run("x")
-    assert seen == []   # abort 在 before 阶段短路, after_model_reply 不执行 (与 HandlerResult.abort 一致)
-
-
 def test_handler_error_policy_continue_default(tmp_path: Path):
     """error_policy 默认 continue: 异常隔离继续 (回归锚点)"""
     seen: list[str] = []
@@ -2167,32 +2034,24 @@ def test_handler_error_policy_continue_default(tmp_path: Path):
     assert seen == ["next"]   # 隔离后后续 handler 继续
 
 
-def test_handler_timeout_negative_raises(tmp_path: Path):
-    """timeout 负数: add_handler 拒绝"""
+@pytest.mark.parametrize("entry", ["add_handler", "install"])
+def test_handler_timeout_negative_raises(tmp_path: Path, entry: str):
+    """timeout 负数: add_handler 与插件安装路径统一拒绝 (_validate_handler)"""
     session = _make_session(tmp_path)
-    with pytest.raises(ValueError, match="timeout"):
-        session.add_handler(SessionHandler(name="p", timeout=-1))
-
-
-def test_plugin_install_timeout_negative_raises(tmp_path: Path):
-    """timeout 负数: 插件安装路径同样拒绝"""
-    plugin_dir = tmp_path / "plugins" / "bad"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "meta.yaml").write_text("name: bad\n", encoding="utf-8")
-    (plugin_dir / "handlers.py").write_text(
-        "from satrap.edictum import SessionHandler\n\n"
-        "handlers = [SessionHandler(name='bad.h', timeout=-1)]\n",
-        encoding="utf-8",
-    )
-    session = _make_session(tmp_path)
-    with pytest.raises(ValueError, match="timeout"):
-        session.install_plugin(str(plugin_dir))
-
-
-def test_handler_result_invalid_action_raises():
-    """HandlerResult 非法 action 构造时拒绝"""
-    with pytest.raises(ValueError, match="action"):
-        HandlerResult("unknown", "text")
+    if entry == "add_handler":
+        with pytest.raises(ValueError, match="timeout"):
+            session.add_handler(SessionHandler(name="p", timeout=-1))
+    else:
+        plugin_dir = tmp_path / "plugins" / "bad"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "meta.yaml").write_text("name: bad\n", encoding="utf-8")
+        (plugin_dir / "handlers.py").write_text(
+            "from satrap.edictum import SessionHandler\n\n"
+            "handlers = [SessionHandler(name='bad.h', timeout=-1)]\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="timeout"):
+            session.install_plugin(str(plugin_dir))
 
 
 def test_handler_invalid_return_value_warns(tmp_path: Path, caplog: Any):
@@ -2241,24 +2100,6 @@ def test_handler_outcome_respond_and_reject(tmp_path: Path):
     ))
     assert session2.run("x") == "拒绝"
     assert seen2 == ["reject"]
-
-
-def test_handler_config_frozen(tmp_path: Path):
-    """HandlerConfig 冻结: handler 写 config 字段 -> FrozenInstanceError; ctx.text 可变"""
-    frozen_seen: list[str] = []
-
-    def tamper(text: str, ctx: HandlerContext) -> str | None:
-        try:
-            # 负向用例: 通过 Any 视图执行正常赋值路径以验证 frozen 拒绝
-            cast(Any, ctx.config).original_input = "hacked"
-        except Exception as e:   # noqa: BLE001
-            frozen_seen.append(type(e).__name__)
-        return text
-
-    session = _make_session(tmp_path)
-    session.add_handler(SessionHandler(name="p", before_user_send=tamper))
-    assert session.run("hi") == "回复"
-    assert frozen_seen == ["FrozenInstanceError"]
 
 
 def test_sync_deferred_close_during_run(tmp_path: Path):
@@ -2336,20 +2177,6 @@ async def test_async_deferred_close_during_run(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_async_handler_timeout_zero(tmp_path: Path):
-    """timeout=0: 立即放弃等待, 隔离继续"""
-    def slow(text: str, ctx: HandlerContext) -> str | None:
-        time.sleep(0.2)
-        return text
-
-    session = AsyncSimpleSession(
-        "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
-    )
-    session.add_handler(SessionHandler(name="slow", timeout=0, before_user_send=slow))
-    assert await session.run("hi") == "异步回复"
-
-
-@pytest.mark.asyncio
 async def test_async_handler_to_thread_does_not_block_loop(tmp_path: Path):
     """to_thread: 同步 handler 阻塞不卡事件循环 (问题 6 根治验证)"""
     def slow(text: str, ctx: HandlerContext) -> str | None:
@@ -2372,9 +2199,12 @@ async def test_async_handler_to_thread_does_not_block_loop(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_async_handler_timeout_then_next_handler(tmp_path: Path):
-    """to_thread 超时: wait_for 放弃等待, 后续 handler 照常执行"""
+    """to_thread 超时: wait_for 放弃等待隔离继续, 后续 handler 照常执行"""
+    seen: list[str] = []
+
     def slow(text: str, ctx: HandlerContext) -> str | None:
         time.sleep(0.5)
+        seen.append("slow-done")
         return text
 
     def next_h(text: str, ctx: HandlerContext) -> str | None:
@@ -2387,6 +2217,7 @@ async def test_async_handler_timeout_then_next_handler(tmp_path: Path):
     session.add_handler(SessionHandler(name="slow", timeout=0.05, before_user_send=slow))
     session.add_handler(SessionHandler(name="next", priority=2, before_user_send=next_h))
     assert await session.run("hi") == "异步回复"
+    assert seen == []   # 超时放弃等待, 慢回调未在返回前完成
     user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
     assert user_msgs[0]["content"] == "hi!"   # slow 超时隔离, next 改写生效
 

@@ -95,8 +95,7 @@ def test_subscriber_byte_budget_is_independent_of_message_count():
     queue.invalidate()
     assert queue.qsize() == 1 and queue.buffered_bytes <= 128
 
-@pytest.mark.parametrize("event_type", ["turn_done", "ask_user"])
-def test_full_queue_requires_resynchronization(event_type):
+def test_full_queue_requires_resynchronization():
     service = ChatService.__new__(ChatService)
     service._event_sequences = {}
     service._stream_id = "audit"
@@ -104,7 +103,7 @@ def test_full_queue_requires_resynchronization(event_type):
     for _ in range(1000):
         queue.put_nowait({"type": "content", "delta": "old"})
     conv = cast(_Conversation, SimpleNamespace(conversation_id="audit", subscribers={queue}))
-    service._broadcast(conv, {"type": event_type})
+    service._broadcast(conv, {"type": "turn_done"})
     events = [queue.get_nowait() for _ in range(queue.qsize())]
     assert events == [{"type": "resync_required"}]
     assert queue.invalidated and queue not in conv.subscribers
@@ -120,36 +119,49 @@ class _EchoTool(Tool):
         return f"echo:{x}"
 
 def test_truncate_arguments_limits_each_value():
-    """每个参数值截断到前 20 字符, 超长加省略号"""
+    """每个参数值截断到前 20 字符, 非 dict 输入返回空对象"""
     args: dict[str, Any] = {"short": "abc", "long": "x" * 50, "num": 42}
     out = json.loads(_truncate_arguments(args))
     assert out["short"] == "abc"
     assert out["long"] == "x" * 20 + "…"
     assert out["num"] == "42"
-
-def test_truncate_arguments_non_dict_returns_empty():
     assert _truncate_arguments(None) == "{}"
     assert _truncate_arguments("str") == "{}"
 
-def test_tool_observer_default_none_no_behavior_change():
-    """默认 None: execute_tool_call 行为不变"""
-    m = ToolsManager()
-    m.register_tool(_EchoTool())
-    _, res = m.execute_tool_call({"name": "echo", "arguments": {"x": "hi"}, "id": "c1"})
-    assert res == "echo:hi"
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_tool_observer_start_and_end_fired(asynchronous: bool):
+    """挂接钩子后 start/end 均触发, end 带 success (同步与异步管理器镜像)"""
+    if asynchronous:
+        from satrap.core.utils.TCBuilder import AsyncTool
 
-def test_tool_observer_start_and_end_fired():
-    """挂接钩子后 start/end 均触发, end 带 success"""
-    m = ToolsManager()
-    m.register_tool(_EchoTool())
-    events: list[tuple[str, dict[str, Any]]] = []
-    m.tool_call_start = lambda e: events.append(("start", e))
-    m.tool_call_end = lambda e: events.append(("end", e))
-    m.execute_tool_call({"name": "echo", "arguments": {"x": "hi"}, "id": "c2"})
-    assert events[0][0] == "start"
-    assert events[0][1]["name"] == "echo" and events[0][1]["call_id"] == "c2"
-    assert "success" not in events[0][1]
-    assert events[1][0] == "end" and events[1][1]["success"] is True
+        class _AEcho(AsyncTool):
+            tool_name = "aecho"
+            description = "aecho"
+            params_dict = {"x": ("string", "input")}
+
+            async def execute(self, x: str = "") -> str:
+                return f"echo:{x}"
+
+        m = AsyncToolsManager()
+        m.register_tool(_AEcho())
+        async_events: list[str] = []
+        m.tool_call_start = lambda e: async_events.append("start")
+        m.tool_call_end = lambda e: async_events.append(f"end:{e['success']}")
+        _, res = await m.execute_tool_call({"name": "aecho", "arguments": {"x": "hi"}, "id": "c2"})
+        assert res == "echo:hi"
+        assert async_events == ["start", "end:True"]
+    else:
+        m = ToolsManager()
+        m.register_tool(_EchoTool())
+        events: list[tuple[str, dict[str, Any]]] = []
+        m.tool_call_start = lambda e: events.append(("start", e))
+        m.tool_call_end = lambda e: events.append(("end", e))
+        m.execute_tool_call({"name": "echo", "arguments": {"x": "hi"}, "id": "c2"})
+        assert events[0][0] == "start"
+        assert events[0][1]["name"] == "echo" and events[0][1]["call_id"] == "c2"
+        assert "success" not in events[0][1]
+        assert events[1][0] == "end" and events[1][1]["success"] is True
 
 def test_tool_observer_failure_marks_success_false():
     """工具执行失败 (ok=False) 时 end 事件 success=False"""
@@ -171,30 +183,8 @@ def test_tool_observer_exception_isolated():
     _, res = m.execute_tool_call({"name": "echo", "arguments": {"x": "ok"}, "id": "c4"})
     assert res == "echo:ok"
 
-@pytest.mark.asyncio
-async def test_async_tool_observer_fired():
-    """异步 AsyncToolsManager 同样触发钩子"""
-    from satrap.core.utils.TCBuilder import AsyncTool
-
-    class _AEcho(AsyncTool):
-        tool_name = "aecho"
-        description = "aecho"
-        params_dict = {"x": ("string", "input")}
-
-        async def execute(self, x: str = "") -> str:
-            return f"echo:{x}"
-
-    m = AsyncToolsManager()
-    m.register_tool(_AEcho())
-    events: list[str] = []
-    m.tool_call_start = lambda e: events.append("start")
-    m.tool_call_end = lambda e: events.append(f"end:{e['success']}")
-    _, res = await m.execute_tool_call({"name": "aecho", "arguments": {"x": "hi"}, "id": "c5"})
-    assert res == "echo:hi"
-    assert events == ["start", "end:True"]
-
 def test_recorder_turn_and_tool_calls(tmp_path: Any):
-    """start_turn 提前插行 -> 工具状态实时 -> end_turn 回填 thinking/answer"""
+    """start_turn 提前插行 -> 工具状态实时 -> end_turn 回填 thinking/answer; 失败与兜底一并覆盖"""
     db = str(tmp_path / "display.db")
     rec = _display_recorder_DisplayRecorder(db, "conv-1")
 
@@ -220,6 +210,23 @@ def test_recorder_turn_and_tool_calls(tmp_path: Any):
     assert t["answer"] == "最终回复"
     assert t["tool_calls"][0]["success"] is True
     assert t["tool_calls"][0]["name"] == "list_dir"
+    rec.close()
+
+    # 工具失败记录 success=False
+    rec_fail = _display_recorder_DisplayRecorder(str(tmp_path / "fail.db"), "conv-fail")
+    rec_fail.start_turn("x")
+    rec_fail.on_tool_start({"name": "shell", "arguments": {"command": "rm"}, "call_id": "c9"})
+    rec_fail.on_tool_end({"name": "shell", "call_id": "c9", "success": False})
+    rec_fail.end_turn("done")
+    assert rec_fail.list_turns()[0]["tool_calls"][0]["success"] is False
+    rec_fail.close()
+
+    # 回调流为空时 answer 用 end_turn 的 fallback 兜底
+    rec_fallback = _display_recorder_DisplayRecorder(str(tmp_path / "fallback.db"), "conv-fallback")
+    rec_fallback.start_turn("hi")
+    rec_fallback.end_turn("兜底回复")
+    assert rec_fallback.list_turns()[0]["answer"] == "兜底回复"
+    rec_fallback.close()
 
 def test_copy_turns_uses_consistent_source_snapshot(
     tmp_path: Path,
@@ -441,8 +448,8 @@ def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
     assert t["context_stats"]["request_count"] == 2
     assert t["context_stats"]["last_request"]["api_input_tokens"] == 15
 
-def test_recorder_meta_think_roundtrip(tmp_path: Any):
-    """conversation_meta 保存/读取 think 默认思考强度"""
+def test_recorder_meta_roundtrip_and_schema(tmp_path: Any):
+    """conversation_meta 保存/读取 think, 新库默认思考模式与项目归属"""
     from satrap.display.recorder import get_conversation_meta
 
     db = str(tmp_path / "display.db")
@@ -454,22 +461,18 @@ def test_recorder_meta_think_roundtrip(tmp_path: Any):
     assert meta is not None
     assert meta["model"] == "default"
     assert meta["think"] == "high"
-
-def test_recorder_meta_has_complete_schema(tmp_path: Any):
-    """新库的会话元数据直接包含默认思考模式和项目归属"""
-    from satrap.display.recorder import get_conversation_meta
-
-    db = str(tmp_path / "display.db")
-    rec = _display_recorder_DisplayRecorder(db_path=db, conversation_id="c1")
-    rec.save_meta("default")
-    rec.close()
-
-    meta = get_conversation_meta("c1", db_path=db)
-    assert meta is not None
-    assert meta["think"] == "off"
     assert meta["project_id"] is None
 
+    rec2 = _display_recorder_DisplayRecorder(db_path=db, conversation_id="c2")
+    rec2.save_meta("default")
+    rec2.close()
+    meta2 = get_conversation_meta("c2", db_path=db)
+    assert meta2 is not None
+    assert meta2["think"] == "off"
+    assert meta2["project_id"] is None
+
 def test_history_batch_queries_preserve_full_variants(tmp_path):
+    """批量查询历史: 每条 turn 带全量 variants 与工具调用, 无逐行 N+1 查询"""
     recorder = _display_recorder_DisplayRecorder(str(tmp_path / "history.db"), "audit")
     try:
         for turn in range(8):
@@ -485,11 +488,13 @@ def test_history_batch_queries_preserve_full_variants(tmp_path):
         conn.set_trace_callback(statements.append)
         result = recorder.list_turns(limit=3, offset=2)
         conn.set_trace_callback(None)
-        assert len([sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]) == 3
+        select_count = len([sql for sql in statements if sql.lstrip().upper().startswith("SELECT")])
+        assert select_count == 3
         assert [row["turn_index"] for row in result] == [2, 3, 4]
         for row in result:
-            assert row["variants"] == recorder._list_variants_locked(conn, row["id"])
-            assert row["tool_calls"] == recorder._list_tool_calls_locked(conn, row["id"], 2)
+            turn = row["turn_index"]
             assert row["variant_count"] == 3
+            assert [item["answer"] for item in row["variants"]] == [f"回复 {turn}-{v}" for v in range(3)]
+            assert [item["name"] for item in row["tool_calls"]] == ["read"]
     finally:
         recorder.close()

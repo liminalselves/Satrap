@@ -7,7 +7,9 @@ import pytest
 from typing import Any, cast
 import queue
 import json
+import sys
 import time
+from pathlib import Path
 
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.utils.TCBuilder import ToolsManager
@@ -116,6 +118,16 @@ class _ThreadMultiprocessing:
 def threaded_sub_agent_process_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """将同步子代理切换到线程承载的测试进程上下文"""
     monkeypatch.setattr(agent_module, "multiprocessing", _ThreadMultiprocessing())
+
+
+@pytest.fixture
+def isolated_spawn_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """子进程继承父进程 sys.path; 其它测试追加的插件临时目录含 mcp.py 会遮蔽标准库 mcp 包"""
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [entry for entry in sys.path if not (entry and (Path(entry) / "mcp.py").is_file())],
+    )
 
 
 class _FakeTool:
@@ -229,79 +241,87 @@ class _FakeAsyncLLM:
 
 
 # ================================================================
-# 同步 SubAgent 测试 (使用 fake LLM 的单元测试)
+# 同步 / 异步 SubAgent 解析族测试 (共用 _parse_tasks 纯函数)
 # ================================================================
 
 
-def test_sub_agent_parses_json_array_task(
-    threaded_sub_agent_process_context: None,
-) -> None:
-    llm = _FakeLLM()
-    tools_manager = _FakeToolsManager()
-    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
+async def _execute_sub_agent(task_input: str, asynchronous: bool) -> str:
+    """按同步或异步实现执行一次子代理任务"""
+    if asynchronous:
+        agent = AsyncSubAgent(_as_async_llm(_FakeAsyncLLM()), _as_async_tools_manager(_FakeToolsManager()))
+        return await agent.execute(task_input)
+    agent = SubAgent(_as_llm(_FakeLLM()), _as_tools_manager(_FakeToolsManager()))
+    return agent.execute(task_input)
 
-    result = agent.execute('["task one", "task two"]')
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_sub_agent_parses_json_array_task(
+    threaded_sub_agent_process_context: None,
+    asynchronous: bool,
+) -> None:
+    result = await _execute_sub_agent('["task one", "task two"]', asynchronous)
     assert "子代理1执行任务" in result
     assert "子代理2执行任务" in result
     assert "task one" in result
     assert "task two" in result
 
 
-def test_sub_agent_parses_single_string_task(
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_sub_agent_parses_single_string_task(
     threaded_sub_agent_process_context: None,
+    asynchronous: bool,
 ) -> None:
-    llm = _FakeLLM()
-    tools_manager = _FakeToolsManager()
-    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
-
-    result = agent.execute("single task description")
+    result = await _execute_sub_agent("single task description", asynchronous)
     assert "子代理1执行任务" in result
     assert "single task description" in result
 
 
-def test_sub_agent_handles_empty_task_list():
-    llm = _FakeLLM()
-    tools_manager = _FakeToolsManager()
-    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
-
-    result = agent.execute("[]")
-    assert result == "未收到任何子任务"
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_sub_agent_handles_empty_task_list(asynchronous: bool) -> None:
+    assert await _execute_sub_agent("[]", asynchronous) == "未收到任何子任务"
 
 
-def test_sub_agent_rejects_excessive_task_count():
-    """同步子代理拒绝超过固定上限的批量任务"""
-    agent = SubAgent(_as_llm(_FakeLLM()), _as_tools_manager(_FakeToolsManager()))
-    result = agent.execute(json.dumps([f"task-{index}" for index in range(17)]))
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_sub_agent_rejects_excessive_task_count(asynchronous: bool) -> None:
+    """同步与异步子代理拒绝超过固定上限的批量任务"""
+    result = await _execute_sub_agent(json.dumps([f"task-{index}" for index in range(17)]), asynchronous)
     assert "不能超过 16" in result
 
 
-def test_sub_agent_handles_malformed_json(
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("task_input", "expected_text"),
+    [("{bad json}", "{bad json}"), ('"just a string"', "just a string")],
+)
+async def test_sub_agent_handles_malformed_or_plain_string_input(
     threaded_sub_agent_process_context: None,
+    asynchronous: bool,
+    task_input: str,
+    expected_text: str,
 ) -> None:
-    llm = _FakeLLM()
-    tools_manager = _FakeToolsManager()
-    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
-
-    result = agent.execute("{bad json}")
+    """非法 JSON 与裸 JSON 字符串都降级为单任务"""
+    result = await _execute_sub_agent(task_input, asynchronous)
     assert "子代理1执行任务" in result
-    assert "{bad json}" in result
+    assert expected_text in result
 
 
-def test_sub_agent_preserves_task_order(
+@pytest.mark.asyncio
+async def test_sub_agent_preserves_task_order(
     threaded_sub_agent_process_context: None,
 ) -> None:
-    llm = _FakeLLM()
-    tools_manager = _FakeToolsManager()
-    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
-
-    result = agent.execute('["first", "second", "third"]')
+    result = await _execute_sub_agent('["first", "second", "third"]', asynchronous=False)
     first_pos = result.index("first")
     second_pos = result.index("second")
     third_pos = result.index("third")
     assert first_pos < second_pos < third_pos
 
 
-def test_sub_agent_hard_timeout_terminates_worker_process() -> None:
+def test_sub_agent_hard_timeout_terminates_worker_process(isolated_spawn_path: None) -> None:
     """同步子代理超时后应终止工作进程并及时返回"""
     agent = SubAgent(
         cast(LLM, _SlowLLM()),
@@ -317,7 +337,7 @@ def test_sub_agent_hard_timeout_terminates_worker_process() -> None:
     assert "超过 0.5 秒" in result
 
 
-def test_sub_agent_does_not_serialize_tools_manager_runtime_state() -> None:
+def test_sub_agent_does_not_serialize_tools_manager_runtime_state(isolated_spawn_path: None) -> None:
     """进程隔离只传递工具定义, 不要求真实工具管理器可序列化"""
     tools_manager = _FakeToolsManager()
     setattr(tools_manager, "runtime_lock", threading.Lock())
@@ -332,7 +352,7 @@ def test_sub_agent_does_not_serialize_tools_manager_runtime_state() -> None:
     assert "fake reply" in result
 
 
-def test_sub_agent_forwards_tool_calls_to_parent_manager() -> None:
+def test_sub_agent_forwards_tool_calls_to_parent_manager(isolated_spawn_path: None) -> None:
     """隔离子进程应把真实工具执行转发回父进程"""
     tools_manager = _RecordingToolsManager()
     agent = SubAgent(
@@ -345,58 +365,3 @@ def test_sub_agent_forwards_tool_calls_to_parent_manager() -> None:
     assert tools_manager.call_count == 1
     assert "proxy complete" in result
 
-
-# ================================================================
-# 异步 SubAgent 测试 (使用 fake 异步 LLM 的单元测试)
-# ================================================================
-
-
-async def _run_async_sub_agent(task_input: str) -> str:
-    llm = _FakeAsyncLLM()
-    tools_manager = _FakeToolsManager()
-    agent = AsyncSubAgent(_as_async_llm(llm), _as_async_tools_manager(tools_manager))
-    return await agent.execute(task_input)
-
-
-@pytest.mark.asyncio
-async def test_async_sub_agent_parses_json_array_task():
-    result = await _run_async_sub_agent('["async task a", "async task b"]')
-    assert "子代理1执行任务" in result
-    assert "子代理2执行任务" in result
-    assert "async task a" in result
-    assert "async task b" in result
-
-
-@pytest.mark.asyncio
-async def test_async_sub_agent_parses_single_string():
-    result = await _run_async_sub_agent("single async task")
-    assert "子代理1执行任务" in result
-    assert "single async task" in result
-
-
-@pytest.mark.asyncio
-async def test_async_sub_agent_empty_list():
-    result = await _run_async_sub_agent("[]")
-    assert result == "未收到任何子任务"
-
-
-@pytest.mark.asyncio
-async def test_async_sub_agent_rejects_excessive_task_count():
-    """异步子代理拒绝超过固定上限的批量任务"""
-    agent = AsyncSubAgent(_as_async_llm(_FakeAsyncLLM()), _as_async_tools_manager(_FakeToolsManager()))
-    result = await agent.execute(json.dumps([f"task-{index}" for index in range(17)]))
-    assert "不能超过 16" in result
-
-
-@pytest.mark.asyncio
-async def test_async_sub_agent_malformed_json():
-    result = await _run_async_sub_agent("{bad json}")
-    assert "子代理1执行任务" in result
-    assert "{bad json}" in result
-
-
-@pytest.mark.asyncio
-async def test_async_sub_agent_invalid_type():
-    result = await _run_async_sub_agent('"just a string"')
-    assert "子代理1执行任务" in result
-    assert "just a string" in result
