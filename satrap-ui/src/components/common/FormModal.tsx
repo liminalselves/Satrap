@@ -10,7 +10,7 @@ export interface FormField {
   placeholder?: string;
   required?: boolean;
   disabled?: boolean;
-  options?: { value: string; label: string }[];
+  options?: { value: string; label: string; description?: string }[];
   rows?: number;
   // 数字字段的控件约束: min/max 为含上界, 排他上界由调用方的校验器负责
   min?: number;
@@ -141,7 +141,10 @@ export const FormModal = memo(function FormModal({
                   disabled={field.disabled}
                   className="h-4 w-4 accent-accent"
                 />
-                <span className="text-sm text-text-primary">{option.label}</span>
+                <span className="text-sm text-text-primary">
+                  <span className="block">{option.label}</span>
+                  {option.description && <span className="block text-xs text-text-tertiary">{option.description}</span>}
+                </span>
               </label>
             ))}
           </div>

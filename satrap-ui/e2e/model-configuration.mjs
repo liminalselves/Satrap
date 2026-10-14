@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { runSuite, mockConfigVersions } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
+import { createBenchmarkFixture } from '../benchmarks/fixtures.mjs';
 
 async function asr_models(runtime) {
   /** ASR 模型配置与转录测试的浏览器回归, 接口使用受控响应, 不调用真实服务 */
@@ -159,8 +160,132 @@ async function model_dimensions(runtime) {
 
 }
 
+async function shared_llm_editor(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  try {
+    await runtime.listen(server);
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const context = await runtime.browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const models = { default: { name: 'default', model: 'offline', api_key: '****masked', context_window: 4096,
+      history_ratio: 0.6, context_strategy: 'summarize', context_threshold: 0.9, truncation_floor: 0.3,
+      summary_keep_recent_turns: 3, thinking_fields: ['reasoning_effort'], thinking_levels: ['low', 'high'],
+      supports_visual_input: false, lock_api_key: true } };
+    const writes = [];
+    const fixture = createBenchmarkFixture(1);
+    let reloads = 0;
+    let failNext = false;
+    await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
+      backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
+    } }));
+    await context.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, (route) => {
+      const request = route.request(), url = new URL(request.url()), pathname = url.pathname;
+      const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+        'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+      if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+      if (['POST', 'PATCH', 'PUT'].includes(request.method()) && (pathname.startsWith('/config/models/llm/') || pathname.startsWith('/api/chat/models'))) {
+        if (failNext) {
+          failNext = false;
+          return route.fulfill({ status: 400, headers, json: { ok: false, error: '模拟保存失败' } });
+        }
+        const config = request.postDataJSON();
+        writes.push({ pathname, config });
+        models[config.name] = { ...models[config.name], ...config };
+        return route.fulfill({ headers, json: { ok: true, refreshed_conversations: 1, deferred_conversations: 2 } });
+      }
+      if (pathname === '/api/config/reload') reloads += 1;
+      const responses = {
+        '/config/models': url.searchParams.get('type') === 'llm' ? models : {},
+        '/api/chat/models': { models: Object.keys(models) }, '/api/chat/models/detail': { ok: true, models },
+        '/api/chat/health': { ok: true }, '/api/chat/plugins': { plugins: [] },
+        '/api/chat/conversations': { conversations: fixture.conversations }, '/api/chat/turns': { turns: fixture.turns },
+        '/api/chat/runs': { ok: true, runs: [], next_cursor: null }, '/api/projects': { projects: [] },
+        '/api/health': { running: true, adapters: {} }, '/status': { running: true },
+        '/api/config/reload': { ok: true, platforms: [], edictum_sessions: [] },
+      };
+      return route.fulfill({ headers, json: responses[pathname] ?? { ok: true } });
+    });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:1987[02]\//, () => {});
+    await mockConfigVersions(page, origin, () => JSON.stringify(models));
+    await page.goto(`${origin}/models`);
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    let dialog = page.getByRole('dialog', { name: '编辑模型: default', exact: true });
+    assert.equal(await dialog.getByLabel('API Key').inputValue(), '');
+    assert.equal(await dialog.getByLabel('保留最近轮数').inputValue(), '3');
+    await dialog.getByLabel('上下文窗口').fill('8000');
+    await dialog.getByLabel('历史比例').fill('0.75');
+    await dialog.getByLabel('触发比例').fill('0.8');
+    await dialog.getByLabel('压缩目标比例').fill('0.9');
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
+    await dialog.getByRole('alert').filter({ hasText: '上下文比例必须满足' }).waitFor();
+    assert.equal(writes.length, 0);
+    await dialog.getByLabel('压缩目标比例').fill('0.4');
+    await dialog.getByLabel('保留最近轮数').fill('4');
+    await dialog.getByText('历史预算: 6,000', { exact: true }).waitFor();
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal('api_key' in writes[0].config, false);
+    assert.equal(writes[0].config.context_strategy, 'summarize');
+    assert.equal(writes[0].config.summary_keep_recent_turns, 4);
+    assert.equal(writes[0].config.lock_api_key, true);
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    assert.equal(await dialog.getByLabel('上下文窗口').inputValue(), '8000');
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '新增配置', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: '新增模型配置', exact: true });
+    await dialog.getByLabel('配置名称').fill('platform-new');
+    await dialog.getByLabel('模型 ID').fill('offline-new');
+    await dialog.getByRole('button', { name: '创建', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(writes[1].config.context_strategy, 'sliding');
+    assert.equal(writes[1].config.context_threshold, 0.8);
+
+    await page.goto(`${origin}/chat`);
+    await page.getByText('继续最近对话', { exact: true }).click();
+    await page.getByTitle('对话设置', { exact: true }).click();
+    const settings = page.getByRole('dialog', { name: '对话设置', exact: true });
+    await settings.getByRole('button', { name: '模型管理', exact: true }).click();
+    await settings.locator('.glass-card').filter({ hasText: 'default' }).getByTitle('编辑', { exact: true }).click();
+    dialog = page.getByRole('dialog', { name: '编辑模型: default', exact: true });
+    assert.equal(await dialog.getByLabel('上下文窗口').inputValue(), '8000');
+    assert.equal(await dialog.getByLabel('保留最近轮数').inputValue(), '4');
+    assert.equal(await dialog.getByLabel('配置名称').isDisabled(), true);
+    assert.equal(await dialog.getByLabel('API Key').inputValue(), '');
+    await dialog.getByLabel('上下文处理策略').selectOption('mid_truncate');
+    assert.equal(await dialog.getByLabel('保留最近轮数').count(), 0);
+    failNext = true;
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
+    await dialog.getByRole('alert').waitFor();
+    assert.equal(await dialog.getByLabel('上下文处理策略').inputValue(), 'mid_truncate');
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(writes[2].pathname, '/api/chat/models/default');
+    assert.equal(writes[2].config.context_strategy, 'mid_truncate');
+    assert.equal('api_key' in writes[2].config, false);
+    assert.equal(reloads, 1);
+    await settings.getByRole('button', { name: '新增模型', exact: true }).click();
+    dialog = page.getByRole('dialog', { name: '新增模型配置', exact: true });
+    await dialog.getByLabel('配置名称').fill('chat-new');
+    await dialog.getByLabel('模型 ID').fill('offline-chat');
+    await dialog.getByLabel('上下文处理策略').selectOption('summarize');
+    assert.equal(await dialog.getByLabel('保留最近轮数').inputValue(), '6');
+    await dialog.getByRole('button', { name: '创建', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(writes[3].config.context_strategy, 'summarize');
+    assert.deepEqual(errors, []);
+    console.log('PASS: 两端共用 LLM 字段, 默认值, 校验和预算; 配置回显, 密钥保留及 Chat 热加载');
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
   ["asr-models", asr_models],
-  ["model-dimensions", model_dimensions]
+  ["model-dimensions", model_dimensions],
+  ["shared-llm-editor", shared_llm_editor]
 ];
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) await runSuite(scenarios);
