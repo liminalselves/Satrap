@@ -257,7 +257,7 @@ async def test_rule6_section_endpoint_round_trips_converges_and_rejects_added_ex
     assert preview_renamed is not None and preview_renamed[0] == 400 and "不能新增排除插件" in str(preview_renamed[1]["error"])
 
 @pytest.mark.asyncio
-async def test_pending_legacy_exclusions_round_trip_through_general_config(tmp_path, monkeypatch):
+async def test_general_config_exclusion_scope_round_trip_and_rejection(tmp_path, monkeypatch):
     from satrap.core.backend import control_server as control
 
     path = tmp_path / "config.json"
@@ -276,20 +276,17 @@ async def test_pending_legacy_exclusions_round_trip_through_general_config(tmp_p
     assert status == 200, payload                    # 存量旧排除可原样往返
     assert load_config_document(path)["administrator_groups"][0]["plugin_scope"]["excluded"] == ["friend_manager"]
 
-@pytest.mark.asyncio
-async def test_general_config_rejects_hand_added_selected_exclusion(tmp_path, monkeypatch):
-    from satrap.core.backend import control_server as control
-
-    path = tmp_path / "config.json"
-    monkeypatch.setattr(control, "CONFIG_PATH", path)
-    save_config_document(path, {"platforms": [{"id": "ob", "type": "onebot", "instance_id": "a" * 32}]})
-    current = load_config_document(path)
-    current["administrator_groups"] = [{"id": "fresh", "name": "F", "enabled": True, "protect": True,
+    # 手工新增排除项 (无 previous) 必须被拒绝
+    fresh_path = tmp_path / "fresh.json"
+    monkeypatch.setattr(control, "CONFIG_PATH", fresh_path)
+    save_config_document(fresh_path, {"platforms": [{"id": "ob", "type": "onebot", "instance_id": "a" * 32}]})
+    fresh = load_config_document(fresh_path)
+    fresh["administrator_groups"] = [{"id": "fresh", "name": "F", "enabled": True, "protect": True,
         "members": [{"platform_id": "ob", "user_id": "123", "platform_instance_id": "a" * 32}],
         "plugin_scope": {"mode": "selected", "included": ["group_admin"], "excluded": ["friend_manager"]}}]
-    revision = config_document_revision(load_config_document(path))
-    status, payload = await route_config(control, "PUT", "/config", current, query=f"?expected_revision={revision}")
-    assert status == 400 and "不能新增排除插件" in str(payload["error"])   # 手工新增排除被拒
+    revision = config_document_revision(load_config_document(fresh_path))
+    status, payload = await route_config(control, "PUT", "/config", fresh, query=f"?expected_revision={revision}")
+    assert status == 400 and "不能新增排除插件" in str(payload["error"])
 
 def test_save_and_preview_require_overrides_keyword(tmp_path):
     path = tmp_path / "config.json"
@@ -492,32 +489,21 @@ async def test_http_shutdown_route_sets_backend_event():
     assert data == {"ok": True}
     assert event.is_set()
 
-def test_config_editor_yaml_roundtrip(tmp_path: Path):
-    """配置编辑器应能读写 YAML 配置"""
-    path = tmp_path / "config.yaml"
+@pytest.mark.parametrize("suffix,port,platform_id", [(".yaml", 19870, "misskey1"), (".json", 19871, "misskey1")])
+def test_config_editor_roundtrip(tmp_path: Path, suffix: str, port: int, platform_id: str):
+    """配置编辑器应能按 YAML/JSON 后缀读写配置"""
+    path = tmp_path / f"config{suffix}"
     data: dict[str, Any] = {
-        "api": {"host": "127.0.0.1", "port": 19870},
-        "default_session_type": "misskey",
-        "platforms": [{"id": "misskey1", "type": "misskey", "settings": {}}],
+        "api": {"host": "127.0.0.1", "port": port},
+        "platforms": [{"id": platform_id, "type": "misskey", "settings": {}}],
     }
 
     config = save_config_document(path, data)
     loaded = load_config_document(path)
 
     assert isinstance(config, dict)
-    assert loaded["api"]["port"] == 19870
-    assert loaded["platforms"][0]["id"] == "misskey1"
-
-def test_config_editor_json_roundtrip(tmp_path: Path):
-    """配置编辑器应能读写 JSON 配置"""
-    path = tmp_path / "config.json"
-    data: dict[str, Any] = {"api": {"host": "127.0.0.1", "port": 19871}, "platforms": []}
-
-    config = save_config_document(path, data)
-    loaded = load_config_document(path)
-
-    assert config["api"]["port"] == 19871
-    assert loaded["api"]["host"] == "127.0.0.1"
+    assert loaded["api"]["port"] == port
+    assert loaded["platforms"][0]["id"] == platform_id
 
 def test_parse_raw_config_rejects_non_object(tmp_path: Path):
     """原始配置根节点必须是对象"""
@@ -530,8 +516,8 @@ def test_parse_raw_config_rejects_non_object(tmp_path: Path):
     else:
         raise AssertionError("应拒绝非对象配置")
 
-def test_update_common_fields_and_parse_platforms():
-    """常用配置保存应更新字段并解析 platforms"""
+def test_update_common_fields_parse_platforms_and_configured_types():
+    """常用字段保存解析 platforms, 平台类型汇总来自配置和后端运行态"""
     platforms = parse_platforms_text('[{"id": "misskey1", "type": "misskey", "settings": {}}]')
     data = update_common_fields(
         {},
@@ -549,19 +535,13 @@ def test_update_common_fields_and_parse_platforms():
     assert data["api"]["port"] == 19870
     assert data["platforms"][0]["id"] == "misskey1"
 
-def test_configured_platform_types_uses_config_and_health():
-    """平台类型汇总应来自配置和后端运行态"""
     config_data: dict[str, Any] = {"platforms": [{"id": "misskey1", "type": "misskey", "settings": {}}]}
     health: dict[str, Any] = {"adapters": {"qq1": {"config_type": "qq"}}}
-
     assert configured_platform_types(config_data, health) == ["misskey", "qq"]
 
-def test_find_config_path_defaults_to_yaml(tmp_path: Path):
-    """没有配置文件时默认指向 .satrap/config.yaml"""
+def test_find_config_path_defaults_and_prefers_root(tmp_path: Path):
+    """没有配置文件时默认指向 .satrap/config.yaml, 根目录配置优先"""
     assert find_config_path(tmp_path) == tmp_path / ".satrap" / "config.yaml"
-
-def test_find_config_path_prefers_root_config(tmp_path: Path):
-    """根目录配置优先于 satrap 目录配置"""
     root_config = tmp_path / "config.yaml"
     nested_config = tmp_path / ".satrap" / "config.yaml"
     nested_config.parent.mkdir()
@@ -570,39 +550,32 @@ def test_find_config_path_prefers_root_config(tmp_path: Path):
 
     assert find_config_path(tmp_path) == root_config
 
-def test_create_default_config_under_satrap(tmp_path: Path):
-    """无配置文件时应在 .satrap/config.yaml 创建默认配置"""
+def test_default_config_creation_and_autodetect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """无配置时创建默认 .satrap/config.yaml, autodetect 创建默认且保留根目录优先级"""
     assert not config_exists(tmp_path)
-
     path = tmp_path / ".satrap" / "config.yaml"
     config = create_default_config(path)
-
     assert path.exists()
     assert config["api"]["host"] == "127.0.0.1"
     assert load_config_document(path)["platforms"] == []
 
-def test_config_loader_autodetect_creates_default_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """ConfigLoader.autodetect 无配置时创建并加载 .satrap/config.yaml"""
-    monkeypatch.chdir(tmp_path)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    monkeypatch.chdir(fresh)
+    loaded = ConfigLoader.autodetect()
+    assert (fresh / ".satrap" / "config.yaml").exists()
+    assert loaded.api_port == 19870
 
-    config = ConfigLoader.autodetect()
-    path = tmp_path / ".satrap" / "config.yaml"
+    rooted = tmp_path / "rooted"
+    rooted.mkdir()
+    (rooted / "config.yaml").write_text("api:\n  port: 19999\nplatforms: []\n", encoding="utf-8")
+    monkeypatch.chdir(rooted)
+    rooted_config = ConfigLoader.autodetect()
+    assert rooted_config.api_port == 19999
+    assert not (rooted / ".satrap" / "config.yaml").exists()
 
-    assert path.exists()
-    assert config.api_port == 19870
-
-def test_config_loader_autodetect_keeps_root_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """根目录已有配置时不创建 .satrap/config.yaml"""
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.yaml").write_text("api:\n  port: 19999\nplatforms: []\n", encoding="utf-8")
-
-    config = ConfigLoader.autodetect()
-
-    assert config.api_port == 19999
-    assert not (tmp_path / ".satrap" / "config.yaml").exists()
-
-def test_platform_upsert_add_update_and_delete():
-    """平台快捷编辑应支持新增, 修改和删除"""
+def test_platform_upsert_add_update_delete_and_duplicate_id():
+    """平台快捷编辑支持新增/修改/删除, 且不覆盖另一个已有平台 id"""
     platforms: list[dict[str, Any]] = []
     platforms = upsert_platform(
         platforms,
@@ -646,19 +619,8 @@ def test_platform_upsert_add_update_and_delete():
     platforms = delete_platform(platforms, "onebot_main")
     assert [item["id"] for item in platforms] == ["misskey_prod"]
 
-def test_platform_upsert_rejects_duplicate_id():
-    """修改平台 id 时不能覆盖另一个已有平台"""
-    platforms: list[dict[str, Any]] = [
-        {"id": "misskey_main", "type": "misskey", "settings": {}},
-        {"id": "onebot_main", "type": "onebot", "settings": {}},
-    ]
-
     try:
-        upsert_platform(
-            platforms,
-            {"id": "onebot_main", "type": "misskey", "settings": {}},
-            original_id="misskey_main",
-        )
+        upsert_platform(platforms, {"id": "misskey_prod", "type": "misskey", "settings": {}}, original_id="other")
     except ValueError as e:
         assert "已存在" in str(e)
     else:

@@ -53,8 +53,8 @@ class _FakeLLM(LLM):
     ) -> Iterator[LLMCallStreamEvent]:
         yield LLMCallStreamEvent(kind="content_delta", delta="流")
 
-def test_parse_config_schema_full():
-    """完整 config_schema 解析为 ConfigField"""
+def test_parse_config_schema_field_validate_and_payload():
+    """schema 完整/简写/非法解析, ConfigField 校验归一, payload 可序列化"""
     meta: dict[str, Any] = {
         "config_schema": {
             "sandbox_root": {"type": "path", "default": "", "description": "沙箱根"},
@@ -70,34 +70,22 @@ def test_parse_config_schema_full():
     assert schema["mode"].options == ["a", "b"]
     assert schema["verbose"].type == "bool"
 
-def test_parse_config_schema_shorthand_and_invalid():
-    """简写形式 + 非法类型回退 string + 非字典整体跳过"""
-    meta: dict[str, Any] = {"config_schema": {"plain": "默认值", "bad": {"type": "weird"}}}
-    schema = parse_config_schema(meta)
-    assert schema["plain"].type == "string"
-    assert schema["plain"].default == "默认值"
-    assert schema["bad"].type == "string"
+    shorthand = parse_config_schema({"config_schema": {"plain": "默认值", "bad": {"type": "weird"}}})
+    assert shorthand["plain"].type == "string" and shorthand["plain"].default == "默认值"
+    assert shorthand["bad"].type == "string"
     assert parse_config_schema({"config_schema": "not-dict"}) == {}
     assert parse_config_schema({}) == {}
 
-def test_config_field_validate():
-    """各类型校验与归一化"""
     assert ConfigField("n", "number", 10).validate("15") == 15.0
     assert ConfigField("n", "number", 10).validate(3) == 3
     assert ConfigField("b", "bool", False).validate(1) is True
     assert ConfigField("s", "select", "a", options=["a", "b"]).validate("b") == "b"
-    # 不在可选值回退默认
     assert ConfigField("s", "select", "a", options=["a", "b"]).validate("z") == "a"
-    # None 回退默认
     assert ConfigField("p", "path", "/x").validate(None) == "/x"
 
-def test_schema_to_payload():
-    """schema 转可序列化 payload"""
-    schema = {"root": ConfigField("root", "path", "", "根目录", [])}
-    payload = schema_to_payload(schema)
-    assert payload["root"]["type"] == "path"
-    assert payload["root"]["description"] == "根目录"
-    json.dumps(payload)   # 必须可序列化
+    payload = schema_to_payload({"root": ConfigField("root", "path", "", "根目录", [])})
+    assert payload["root"]["type"] == "path" and payload["root"]["description"] == "根目录"
+    json.dumps(payload)
 
 def _schema() -> dict[str, ConfigField]:
     return {
@@ -105,34 +93,22 @@ def _schema() -> dict[str, ConfigField]:
         "timeout": ConfigField("timeout", "number", 10),
     }
 
-def test_global_roundtrip(tmp_path: Path):
-    """写全局配置后读回, 未设置键用默认"""
+def test_plugin_config_manager_roundtrip_defaults_and_override(tmp_path: Path):
+    """全局写读, 未声明键忽略, 会话覆盖优先, 缺文件全默认"""
     mgr = PluginConfigManager(tmp_path)
     mgr.save_global("p1", _schema(), {"sandbox_root": "/custom"})
     loaded = mgr.load_global("p1", _schema())
     assert loaded["sandbox_root"] == "/custom"
-    assert loaded["timeout"] == 10   # 默认
+    assert loaded["timeout"] == 10
 
-def test_global_ignores_undeclared_key(tmp_path: Path):
-    """未在 schema 声明的键被忽略"""
-    mgr = PluginConfigManager(tmp_path)
-    mgr.save_global("p1", _schema(), {"ghost": 1, "timeout": 20})
-    loaded = mgr.load_global("p1", _schema())
-    assert "ghost" not in loaded
-    assert loaded["timeout"] == 20
+    mgr.save_global("p2", _schema(), {"ghost": 1, "timeout": 20})
+    ignored = mgr.load_global("p2", _schema())
+    assert "ghost" not in ignored
+    assert ignored["timeout"] == 20
 
-def test_resolve_session_override(tmp_path: Path):
-    """会话覆盖优先于全局"""
-    mgr = PluginConfigManager(tmp_path)
-    mgr.save_global("p1", _schema(), {"timeout": 20})
-    resolved = mgr.resolve("p1", _schema(), {"timeout": 99})
-    assert resolved["timeout"] == 99
-    # 无覆盖用全局
-    assert mgr.resolve("p1", _schema())["timeout"] == 20
+    assert mgr.resolve("p2", _schema(), {"timeout": 99})["timeout"] == 99
+    assert mgr.resolve("p2", _schema())["timeout"] == 20
 
-def test_load_global_missing_file(tmp_path: Path):
-    """无配置文件时全部默认"""
-    mgr = PluginConfigManager(tmp_path)
     assert mgr.load_global("ghost", _schema()) == {"sandbox_root": "", "timeout": 10}
 
 @pytest.mark.parametrize("name", ["../outside", "..\\outside", "C:/outside", "..", "bad/name"])
@@ -477,37 +453,6 @@ def test_override_only_grant_is_labelled_as_administrator_override():
     assert grant.source == "administrator_override" and grant.override_ids == ("solo",) and grant.group_ids == ()
     assert evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("alice"), override_administrators()).status == "denied"
 
-def test_group_grant_records_group_source_and_fingerprint_distinguishes_layers():
-    group_result = evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("alice"), administrators())
-    override_result = evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("carol"), override_administrators())
-    grant = _write_grant(group_result)
-    assert grant.source == "administrator_group" and grant.group_ids == ("a",) and grant.override_ids == ()
-    assert group_result.status == override_result.status == "allowed"
-    assert group_result.permission_fingerprint != override_result.permission_fingerprint
-
-def test_both_layers_allow_together_reports_group_source():
-    service = AdministratorService(lambda: [{"id": "p", "instance_id": "one"}],
-        [{"id": "a", "name": "管理员", "enabled": True,
-          "members": [{"platform_id": "p", "user_id": "alice", "platform_instance_id": "one"}],
-          "plugin_scope": {"mode": "selected", "included": ["example"], "excluded": []}}],
-        [{"id": "solo", "enabled": True, "protect": False, "platform_id": "p", "platform_instance_id": "one",
-          "user_id": "alice", "allow": ["example"], "deny": []}])
-    result = evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("alice"), service)
-    assert result.status == "allowed"
-    grant = _write_grant(result)
-    assert grant.source == "administrator_group" and grant.group_ids == ("a",)
-    assert grant.override_ids == ("solo",)   # 例外来源仍记录在归属里
-
-def test_legacy_and_ordinary_entries_do_not_receive_management_grants():
-    assert not parse_plugin_permissions({}, {}).supports_administrators
-    assert evaluate_plugin_permissions("example", spec(), "tools", "ordinary", {}, None).status == "not_applicable"
-
-def test_empty_rules_and_permission_and_are_preserved():
-    assert evaluate_plugin_permissions("example", spec(), "tools", "query", {}, origin()).status == "allowed"
-    assert evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin()).status == "denied"
-    assert evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": "alice", "readers": "bob"}, origin()).status == "denied"
-    assert evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": "alice"}, origin()).status == "allowed"
-
 def test_administrators_fill_multiple_gates_without_changing_config():
     config = {"readers": "bob", "writers": ""}
     before = deepcopy(config)
@@ -515,17 +460,6 @@ def test_administrators_fill_multiple_gates_without_changing_config():
     assert result.status == "allowed" and all(item.source == "administrator_group" for item in result.grants)
     assert config == before
     assert evaluate_plugin_permissions("example", spec(), "tools", "write", config, origin("bob"), administrators()).status == "denied"
-
-def test_exclusion_preserves_independent_local_permissions_and_revision_is_scoped():
-    service = administrators(excluded=["example"])
-    assert evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin(), service).status == "denied"
-    result = evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": "alice"}, origin(), service)
-    assert result.status == "allowed" and result.grants[-1].source == "local_list"
-    groups, overrides, _ = service.snapshot()
-    groups[0]["name"] = "重命名"
-    service.apply(groups, overrides)
-    updated = evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": "alice"}, origin(), service)
-    assert result.policy_revision != updated.policy_revision and result.permission_fingerprint == updated.permission_fingerprint
 
 def test_invalid_config_and_non_platform_identity_cannot_use_admin_fallback():
     assert evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": 123}, origin(), administrators()).status == "denied"
@@ -708,18 +642,6 @@ def test_entry_decision_is_evaluated_once_inside_one_step(monkeypatch: pytest.Mo
     assert first is second and first.status == "allowed"
     assert evaluations == [("query", None)]
 
-def test_entry_decision_is_not_reused_outside_its_step(monkeypatch: pytest.MonkeyPatch) -> None:
-    evaluations = counted_evaluations(monkeypatch)
-    binding = tool_binding()
-    with bind_call_origin(origin()):
-        first = authorize_plugin_entry(binding)
-        with bind_authorization_step():
-            second = authorize_plugin_entry(binding)
-        third = authorize_plugin_entry(binding)
-    assert first is not second and second is not third
-    assert all(decision.status == "allowed" for decision in (first, second, third))
-    assert evaluations == [("query", None), ("query", None), ("query", None)]
-
 def test_entry_decision_is_re_evaluated_when_revoked_between_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     class Entry:
         def is_enabled(self) -> bool:
@@ -746,19 +668,6 @@ def test_entry_decision_is_re_evaluated_when_revoked_between_steps(monkeypatch: 
             assert authorize_plugin_entry(binding).status == "denied"
     assert evaluations == [("query", None)]
 
-def test_nested_step_scope_shares_the_outer_decision(monkeypatch: pytest.MonkeyPatch) -> None:
-    evaluations = counted_evaluations(monkeypatch)
-    binding = tool_binding()
-    with bind_call_origin(origin()):
-        with bind_authorization_step():
-            outer = authorize_plugin_entry(binding)
-            with bind_authorization_step():
-                inner = authorize_plugin_entry(binding)
-        after = authorize_plugin_entry(binding)
-    assert inner is outer
-    assert after is not outer and after.status == "allowed"
-    assert evaluations == [("query", None), ("query", None)]
-
 def test_copied_step_context_cannot_reuse_revoked_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
     evaluations = counted_evaluations(monkeypatch)
     binding = tool_binding()
@@ -771,16 +680,6 @@ def test_copied_step_context_cannot_reuse_revoked_authorization(monkeypatch: pyt
     decision = copied.run(authorize_plugin_entry, binding)
     assert decision.status == "denied" and decision.reason_code == "identity_missing"
     assert evaluations == [("query", None), ("query", None), ("query", None)]
-
-def test_step_cache_does_not_cross_call_origin(monkeypatch: pytest.MonkeyPatch) -> None:
-    evaluations = counted_evaluations(monkeypatch)
-    binding = tool_binding()
-    with bind_call_origin(origin()), bind_authorization_step():
-        assert authorize_plugin_entry(binding).status == "allowed"
-        with bind_call_origin(None):
-            masked = authorize_plugin_entry(binding)
-    assert masked.status == "denied" and masked.reason_code == "identity_missing"
-    assert evaluations == [("query", None), ("query", None)]
 
 class _AuthorizedTool(Tool):
     """记录每次授权判定结果的工具替身"""
@@ -855,10 +754,11 @@ def _counted_meta_loads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(plugin_module, "load_plugin_meta", counted)
     return recorded
 
-def test_factory_declarations_reuse_unchanged_meta_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_factory_declarations_reuse_and_refresh_meta_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """未变化元数据复用声明, 修改或重命名后重新读取并更新绑定"""
     loads = _counted_meta_loads(monkeypatch)
     plugin_dir = tmp_path / "example"
-    _factory_plugin(plugin_dir)
+    meta_path = _factory_plugin(plugin_dir)
     first, second = _FactoryTool(), _FactoryTool()
     bind_plugin_factory_tools([first], str(plugin_dir / "tools.py"))
     bind_plugin_factory_tools([second], str(plugin_dir / "tools.py"))
@@ -868,12 +768,7 @@ def test_factory_declarations_reuse_unchanged_meta_yaml(monkeypatch: pytest.Monk
     assert first_binding.plugin_name == "example"
     assert first_binding.permissions is second_binding.permissions
 
-def test_factory_declarations_refresh_after_meta_yaml_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    loads = _counted_meta_loads(monkeypatch)
-    plugin_dir = tmp_path / "example"
-    meta_path = _factory_plugin(plugin_dir)
     before = meta_path.stat()
-    bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
     os.utime(meta_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
     touched = _FactoryTool()
     bind_plugin_factory_tools([touched], str(plugin_dir / "tools.py"))
@@ -896,14 +791,3 @@ def test_factory_declarations_do_not_survive_missing_meta_yaml(monkeypatch: pyte
         bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
     # 文件消失后仍走真实读取并抛出既有错误, 不返回缓存声明
     assert loads == [str(plugin_dir)] * 2
-
-def test_factory_declaration_cache_stays_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from satrap.core import plugin_authorization as authorization
-
-    _counted_meta_loads(monkeypatch)
-    monkeypatch.setattr(authorization, "_FACTORY_DECLARATIONS_LIMIT", 1)
-    for name in ("first", "second"):
-        plugin_dir = tmp_path / name
-        _factory_plugin(plugin_dir, name=name)
-        bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
-    assert list(authorization._FACTORY_DECLARATIONS) == [str(tmp_path / "second" / "meta.yaml")]

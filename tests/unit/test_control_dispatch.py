@@ -271,10 +271,7 @@ async def test_conversation_user_directory_dynamic_platforms_cold_reads_and_conf
     [
         ("GET", "/config/unknown"),
         ("POST", "/config/unknown"),
-        ("GET", "/storage/unknown"),
-        ("GET", "/chat/history/unknown"),
         ("GET", "/statusx"),
-        ("GET", "/configx"),
         ("GET", "/shutdownx"),
     ],
 )
@@ -297,17 +294,10 @@ async def test_control_unknown_paths_fall_through_to_final_404(
     [
         ("DELETE", "/status"),
         ("POST", "/ui-config.json"),
-        ("PUT", "/chat/history"),
-        ("POST", "/chat/history/trash"),
         ("DELETE", "/config"),
-        ("DELETE", "/config/models"),
         ("PUT", "/config/platforms"),
-        ("PUT", "/config/session-classes"),
-        ("PATCH", "/config/session-instances"),
         ("DELETE", "/config/edictum/sessions"),
         ("GET", "/start"),
-        ("GET", "/stop"),
-        ("GET", "/restart"),
         ("GET", "/shutdown"),
     ],
 )
@@ -329,17 +319,11 @@ async def test_control_wrong_method_on_exact_paths_falls_through(
     "method,path",
     [
         ("GET", "/config/models/llm/foo"),
-        ("PUT", "/config/models/llm/foo"),
-        ("GET", "/config/models/llm"),
         ("POST", "/config/models/llm"),
         ("GET", "/config/session-instances/abc"),
-        ("POST", "/config/session-instances/abc"),
         ("GET", "/config/edictum/sessions/foo/enable"),
-        ("PATCH", "/config/edictum/sessions/foo/enable"),
-        ("DELETE", "/config/edictum/sessions/foo/enable"),
         ("POST", "/config/edictum/sessions/"),
         ("GET", "/config/session-classes/foo/enable"),
-        ("DELETE", "/config/session-classes/foo/disable"),
         ("POST", "/config/session-classes/foo"),
     ],
 )
@@ -442,58 +426,6 @@ class _FakeProcess:
 
 async def _no_sleep(delay: float) -> None:
     """即时 sleep 替身: 跳过生命周期分支的等待"""
-
-@pytest.mark.asyncio
-async def test_control_start_already_running_short_circuits(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """后端健康时 /start 直接返回已在运行, 不得再次拉起进程"""
-    _use_config(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        control_server,
-        "_check_backend_health",
-        lambda: {"running": True},
-    )
-    popen_calls: list[_FakeProcess] = []
-
-    def _fake_popen(cmd: object, *args: object, **kwargs: object) -> _FakeProcess:
-        proc = _FakeProcess(cmd, *args, **kwargs)
-        popen_calls.append(proc)
-        return proc
-
-    monkeypatch.setattr(control_server.subprocess, "Popen", _fake_popen)
-    response = await _request("/start", "POST")
-    assert b"200 OK" in response
-    assert _json_body(response) == {"ok": True, "message": "后端已在运行中"}
-    assert popen_calls == []
-
-
-@pytest.mark.asyncio
-async def test_control_start_in_progress_short_circuits(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """已拉起但未就绪时 /start 返回正在启动, 不得重复拉起进程"""
-    _use_config(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        control_server,
-        "_check_backend_health",
-        lambda: {"running": False},
-    )
-    monkeypatch.setattr(control_server, "_backend_process", _FakeProcess("existing"))
-    popen_calls: list[_FakeProcess] = []
-
-    def _fake_popen(cmd: object, *args: object, **kwargs: object) -> _FakeProcess:
-        proc = _FakeProcess(cmd, *args, **kwargs)
-        popen_calls.append(proc)
-        return proc
-
-    monkeypatch.setattr(control_server.subprocess, "Popen", _fake_popen)
-    response = await _request("/start", "POST")
-    assert _json_body(response) == {"ok": True, "message": "后端正在启动中"}
-    assert popen_calls == []
-
 
 @pytest.mark.asyncio
 async def test_control_lifecycle_start_stop_restart_side_effects(

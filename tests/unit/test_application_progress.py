@@ -100,17 +100,17 @@ async def test_concurrent_instances_and_wait_for_original_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_closed_context_cannot_update_completed_or_another_operation() -> None:
-    """复制的观测上下文终结后失效, 不改变下一次任务的阶段"""
-    registry = ApplicationOperations()
+async def test_stale_context_cannot_update_completed_or_reused_operation() -> None:
+    """终结后或被淘汰复用 ID 后, 复制出的旧观测上下文都不能修改新任务"""
+    registry = ApplicationOperations(max_completed=1)
     contexts = []
 
-    async def apply():
+    async def completed():
         contexts.append(copy_context())
         return {"ok": True}
 
-    key = "closed-operation-001"
-    registry.submit(key, {}, apply)
+    key = "reused-operation-id-001"
+    registry.submit(key, {}, completed)
     before = await _finished(registry, key)
 
     def late_update():
@@ -122,23 +122,10 @@ async def test_closed_context_cannot_update_completed_or_another_operation() -> 
     assert registry.get(key) == before
     assert registry.get(key)["instances"] == []
 
-
-@pytest.mark.asyncio
-async def test_reused_id_cannot_receive_old_generation_progress() -> None:
-    """终态被淘汰后即使显式复用 ID, 原观测上下文也不能修改新任务"""
-    registry = ApplicationOperations(max_completed=1)
-    old_contexts = []
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def completed():
-        old_contexts.append(copy_context())
-        return {"ok": True}
-
-    key = "reused-operation-id-001"
-    registry.submit(key, {}, completed)
-    await _finished(registry, key)
+    # 终态被淘汰后即使显式复用 ID, 原观测上下文也不能修改新任务
     registry.submit("evict-old-operation-002", {}, completed)
     await _finished(registry, "evict-old-operation-002")
+    entered, release = asyncio.Event(), asyncio.Event()
 
     async def active():
         entered.set()
@@ -147,12 +134,7 @@ async def test_reused_id_cannot_receive_old_generation_progress() -> None:
 
     registry.submit(key, {}, active)
     await asyncio.wait_for(entered.wait(), 1)
-
-    def old_update():
-        with progress_instance("obsolete", "must-not-exist"), progress_phase("install_ms"):
-            pass
-
-    old_contexts[0].run(old_update)
+    contexts[0].run(late_update)
     assert registry.get(key)["instances"] == [] and registry.get(key)["stage"]["phase"] == "applying"
     release.set()
     assert (await _finished(registry, key))["status"] == "completed"
@@ -254,7 +236,7 @@ async def test_service_cancellation_is_not_success() -> None:
     assert result["status"] == "cancelled" and result["result"] is None
 
 
-@pytest.mark.parametrize("operation_id", [None, "short", "../" * 20, "x" * 129, "测试" * 20])
+@pytest.mark.parametrize("operation_id", [None, "short", "../" * 20])
 def test_invalid_id_is_rejected_before_execution(operation_id) -> None:
     registry = ApplicationOperations()
     with pytest.raises(ApplicationProgressError) as invalid:

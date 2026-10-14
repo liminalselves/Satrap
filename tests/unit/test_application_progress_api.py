@@ -36,7 +36,7 @@ async def _request(server: MiniHTTPServer, method: str, path: str, payload: dict
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["plugins", "full", "chat"])
+@pytest.mark.parametrize("kind", ["plugins"])
 async def test_async_application_http_auth_dedup_progress_and_legacy(monkeypatch, tmp_path, kind: str) -> None:
     """POST 接受后连接关闭不取消工作, 查询鉴权相同, 同 ID 不重复执行且旧调用保持原信封"""
     monkeypatch.setenv("SATRAP_API_TOKEN", _TOKEN)

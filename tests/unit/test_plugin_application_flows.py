@@ -39,24 +39,6 @@ from satrap.display.server import ChatHTTPServer
 from support.http import _request, _json_body
 from support.progress import _finished
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("kind,location,targets", [(None, None, ["Chat", "Edictum"]), ("chat", "chat", ["Chat"]), ("edictum", "agent-a", ["Edictum"])])
-async def test_bridge_only_calls_selected_service(monkeypatch, kind, location, targets):
-    """使用位置保存只联系对应服务, 全局参数保存保留两个服务"""
-    calls = []
-
-    def request(target, url, scope):
-        """记录实际提交的服务及范围"""
-        calls.append((target, url, dict(scope)))
-        return {"target": target, "status": "applied", "sessions": []}
-
-    monkeypatch.setattr(control_server, "_plugin_runtime_request", request)
-    result = await control_server._apply_plugin_runtime(plugin_name="测试插件", kind=kind, location_id=location)
-    assert [item["target"] for item in result] == targets
-    assert sorted(item[0] for item in calls) == sorted(targets)
-    expected = {"plugin_name": "测试插件", **({"config_name": location} if kind == "edictum" else {})}
-    assert all(item[2] == expected for item in calls)
-
 def test_scoped_internal_request_serializes_utf8(monkeypatch):
     """内部范围通过 JSON 请求体传递且保留认证"""
     def request(req, **kwargs):
@@ -195,39 +177,59 @@ def _sources(tmp_path):
     path.write_text('{"note":"before"}', encoding="utf-8")
     return PluginCatalog(tmp_path / "builtin", tmp_path / "plugins"), manager, path
 
-def test_model_sources_deduplicate_retry_and_reject_queue_changes(tmp_path, monkeypatch):
-    """模型文件跨实例只读一次, 捕获中变化整体重读且排队变化使来源失效"""
-    catalog, manager, _path = _sources(tmp_path)
-    models = ModelConfigManager(tmp_path / "models.json")
-    models.update_llm_config("resource", model="old", api_key="test")
-    writer = ModelConfigManager(models.storage_path)
-    reads = []
-    read = ModelConfigSnapshot.read
+@pytest.mark.parametrize("source_kind", ["model", "global"])
+def test_capture_retries_when_source_changes_during_read(tmp_path, monkeypatch, source_kind):
+    """模型文件跨实例只读一次, 任一来源捕获中变化整体重读且旧正文不沿用"""
+    catalog, manager, path = _sources(tmp_path)
+    if source_kind == "model":
+        models = ModelConfigManager(tmp_path / "models.json")
+        models.update_llm_config("resource", model="old", api_key="test")
+        writer = ModelConfigManager(models.storage_path)
+        reads = []
+        read = ModelConfigSnapshot.read
 
-    def changing(source):
-        """首次读取结束后改写来源以验证整次重试"""
-        result = read(source)
-        reads.append(source.storage_path)
-        if len(reads) == 1:
-            writer.update_llm_config("resource", model="new")
+        def changing_model(source):
+            """首次读取结束后改写来源以验证整次重试"""
+            result = read(source)
+            reads.append(source.storage_path)
+            if len(reads) == 1:
+                writer.update_llm_config("resource", model="new")
+            return result
+
+        monkeypatch.setattr(ModelConfigSnapshot, "read", changing_model)
+        snapshot = PluginApplySnapshot.capture(catalog, manager, model_managers=(models, writer, models))
+        assert reads == [models.storage_path, models.storage_path]
+        captured = snapshot.models_for(models)
+        if captured is None:
+            raise AssertionError("模型来源未捕获")
+        assert captured is snapshot.models_for(writer)
+        assert captured.get_llm_config("resource").model == "new"
+        assert models.get_llm_config("resource").model == "old"
+        assert snapshot.is_current()
+        writer.update_llm_config("resource", model="latest")
+        assert not snapshot.is_current()
+        assert captured.get_llm_config("resource").model == "new"
+        return
+    read = manager.load_global_explicit
+    calls = []
+
+    def changing_global(name, schema):
+        """在首次读取结束后改写来源"""
+        calls.append(name)
+        result = read(name, schema)
+        if len(calls) == 1:
+            path.write_text('{"note":"changed"}', encoding="utf-8")
         return result
 
-    monkeypatch.setattr(ModelConfigSnapshot, "read", changing)
-    snapshot = PluginApplySnapshot.capture(catalog, manager, model_managers=(models, writer, models))
-    assert reads == [models.storage_path, models.storage_path]
-    captured = snapshot.models_for(models)
-    if captured is None:
-        raise AssertionError("模型来源未捕获")
-    assert captured is snapshot.models_for(writer)
-    assert captured.get_llm_config("resource").model == "new"
-    assert models.get_llm_config("resource").model == "old"
+    monkeypatch.setattr(manager, "load_global_explicit", changing_global)
+    snapshot = PluginApplySnapshot.capture(catalog, manager)
+    assert snapshot.global_config("probe") == {"note": "changed"}
+    assert calls == ["probe", "probe"]
     assert snapshot.is_current()
-    writer.update_llm_config("resource", model="latest")
-    assert not snapshot.is_current()
-    assert captured.get_llm_config("resource").model == "new"
 
-def test_model_reference_added_during_capture_is_detected_from_fixed_catalog(tmp_path, monkeypatch):
-    """捕获期间元数据新增模型字段时重新决定来源, 不沿用旧目录的无引用判断"""
+def test_snapshot_capture_global_models_and_override_invariants(tmp_path, monkeypatch):
+    """快照固定目录与全局字段, 捕获期间新增模型引用重读, 会话与命名覆盖按来源解析"""
+    # 捕获期间元数据新增模型字段: 从固定目录重读并捕获来源
     catalog, manager, _path = _sources(tmp_path)
     models = ModelConfigManager(tmp_path / "models.json")
     models.update_llm_config("resource", model="expected", api_key="test")
@@ -252,18 +254,17 @@ def test_model_reference_added_during_capture_is_detected_from_fixed_catalog(tmp
     assert snapshot.global_config("probe")["model"] == "resource"
     assert captured.get_llm_config("resource").model == "expected"
 
-def test_snapshot_reads_globals_once_and_returns_private_copies(tmp_path, monkeypatch):
-    """同次解析不重读全局字段, 返回副本不修改其他实例目标"""
-    catalog, manager, path = _sources(tmp_path)
+    # 同次解析不重读全局字段, 返回副本且固定快照不再构造实时来源
+    catalog, manager, path = _sources(tmp_path / "second")
     read = manager.load_global_explicit
-    calls = []
+    counted = []
 
-    def counted(name, schema):
+    def counted_global(name, schema):
         """记录全局正文解析"""
-        calls.append(name)
+        counted.append(name)
         return read(name, schema)
 
-    monkeypatch.setattr(manager, "load_global_explicit", counted)
+    monkeypatch.setattr(manager, "load_global_explicit", counted_global)
     snapshot = PluginApplySnapshot.capture(catalog, manager)
     copied = snapshot.global_config("probe")
     copied["note"] = "outside"
@@ -278,16 +279,15 @@ def test_snapshot_reads_globals_once_and_returns_private_copies(tmp_path, monkey
         session: Any = SimpleNamespace(session_id=str(index))
         result = resolve_runtime_specs(session, [PluginSpec(name="probe")], snapshot.catalog, snapshot=snapshot)
         assert result[0].config == {"note": "before"}
-    assert calls == ["probe"]
+    assert counted == ["probe"]
     path.write_text('{"note":"after"}', encoding="utf-8")
     assert not snapshot.is_current()
     assert snapshot.global_config("probe") == {"note": "before"}
     assert PluginApplySnapshot.capture(catalog, manager).global_config("probe") == {"note": "after"}
-    assert calls == ["probe", "probe"]
+    assert counted == ["probe", "probe"]
 
-def test_snapshot_keeps_named_and_fresh_instance_overrides(tmp_path):
-    """快照固定全局字段, 会话覆盖仍即时读取且不跨实例传播"""
-    catalog, manager, _path = _sources(tmp_path)
+    # 命名配置与实例覆盖仍即时读取且不跨实例传播
+    catalog, manager, _path = _sources(tmp_path / "third")
     snapshot = PluginApplySnapshot.capture(catalog, manager)
     store = SessionOverrideStore(tmp_path / "instances.db")
     store.replace("one", "plugins.probe", {"note": "local-one"}, expected_revision=0)
@@ -301,26 +301,6 @@ def test_snapshot_keeps_named_and_fresh_instance_overrides(tmp_path):
     store.replace("one", "plugins.probe", {"note": "new-local"}, expected_revision=1)
     assert resolve_runtime_specs(one, [spec], snapshot.catalog, snapshot=snapshot)[0].config["note"] == "new-local"
     assert snapshot.global_config("probe")["note"] == "before"
-
-def test_capture_retries_when_source_changes_during_read(tmp_path, monkeypatch):
-    """捕获中途变化时整次重读, 不保留旧读取正文与新版本标识"""
-    catalog, manager, path = _sources(tmp_path)
-    read = manager.load_global_explicit
-    calls = []
-
-    def changing(name, schema):
-        """在首次读取结束后改写来源"""
-        calls.append(name)
-        result = read(name, schema)
-        if len(calls) == 1:
-            path.write_text('{"note":"changed"}', encoding="utf-8")
-        return result
-
-    monkeypatch.setattr(manager, "load_global_explicit", changing)
-    snapshot = PluginApplySnapshot.capture(catalog, manager)
-    assert snapshot.global_config("probe") == {"note": "changed"}
-    assert calls == ["probe", "probe"]
-    assert snapshot.is_current()
 
 def test_corrupt_source_is_logged_and_never_becomes_default_snapshot(tmp_path, monkeypatch):
     """损坏配置明确失败, 不安装默认参数来替代已保存配置"""

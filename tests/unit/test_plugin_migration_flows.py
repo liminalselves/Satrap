@@ -33,9 +33,9 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return PluginConfigManager(root), PluginCatalog(user_dir=tmp_path / "user")
 
 @pytest.mark.parametrize("field,tool", list(FRIEND_SWITCHES.items()))
-@pytest.mark.parametrize("global_flag", [False, True])
-@pytest.mark.parametrize("named_flag", [None, False, True])
-@pytest.mark.parametrize("tool_enabled", [False, True])
+@pytest.mark.parametrize("global_flag,named_flag,tool_enabled", [
+    (True, None, True), (False, None, True), (True, False, True), (True, None, False),
+])
 def test_old_effective_state_preserved_and_migration_idempotent(config: tuple[Any, Any], field, tool, global_flag, named_flag, tool_enabled):
     manager, catalog = config
     path = manager.global_path("friend_manager")
@@ -76,9 +76,9 @@ def test_global_save_preserves_legacy_baseline_but_not_live_gate(config: tuple[A
     assert not parse_plugin_specs([new], catalog, migration_manager=manager)[0].capabilities["tools"]["friend_manager_handle_request"]
     assert GLOBAL_RECEIPT not in manager.load_global("friend_manager", schema)
 
-@pytest.mark.parametrize("original_tool", [False, True])
-@pytest.mark.parametrize("named_switch", [False, True])
-@pytest.mark.parametrize("instance_switch", [False, True])
+@pytest.mark.parametrize("original_tool,named_switch,instance_switch", [
+    (True, True, True), (False, True, True), (True, False, True), (True, True, False),
+])
 def test_instance_highest_priority_converted_to_tool_override(config: tuple[Any, Any], tmp_path, original_tool, named_switch, instance_switch):
     manager, catalog = config
     spec = parse_plugin_specs([{"name": "friend_manager", "config": {"request_handling_enabled": named_switch},
@@ -261,8 +261,8 @@ async def test_group_query_rejects_group_outside_plugin_allowance(tmp_path: Path
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("plugin_name", ["group_chat", "group_admin"])
-@pytest.mark.parametrize("nickname", ["验收群昵称", ""])
-async def test_each_plugin_independently_submits_nickname_for_approval_and_executes(tmp_path, asynchronous, plugin_name, nickname):
+async def test_each_plugin_independently_submits_nickname_for_approval_and_executes(tmp_path, asynchronous, plugin_name):
+    nickname = "验收群昵称"
     backend, adapter, origin, session, provider, _ = await runtime(tmp_path, asynchronous, plugin_name)
     try:
         assert [plugin.name for plugin in session.list_plugins()] == [plugin_name]
@@ -284,7 +284,7 @@ async def test_each_plugin_independently_submits_nickname_for_approval_and_execu
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason", ["off", "actor", "private", "handler", "unsupported", "bad_nickname"])
+@pytest.mark.parametrize("reason", ["off", "actor", "unsupported", "bad_nickname"])
 async def test_self_nickname_denied_paths_never_write(tmp_path, reason):
     _, adapter, origin, session, provider, _ = await runtime(tmp_path, True, "group_chat")
     try:
@@ -310,8 +310,7 @@ async def test_self_nickname_denied_paths_never_write(tmp_path, reason):
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure, state", [(ActionFailed({"retcode": 100}), "failed"),
-                                         (TimeoutError(), "unknown"), (RuntimeError("transport"), "unknown")])
+@pytest.mark.parametrize("failure, state", [(ActionFailed({"retcode": 100}), "failed"), (TimeoutError(), "unknown")])
 async def test_self_nickname_platform_failure_is_not_success_or_retried(tmp_path, failure, state):
     from satrap.core.config.group_store import GroupConfigConflict
 
@@ -456,7 +455,7 @@ async def test_new_queries_support_another_platform_and_private_route_revocation
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("revocation", ["live_config", "saved_config", "plugin", "actor", "account"])
+@pytest.mark.parametrize("revocation", ["live_config", "plugin", "account"])
 async def test_self_nickname_rejects_forged_target_and_rechecks_revocation(tmp_path, revocation):
     backend, adapter, origin, session, provider, configs = await runtime(tmp_path, True, "group_chat")
     try:

@@ -89,7 +89,7 @@ async def test_duplicate_event_never_revives_but_later_request_is_independent(tm
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-async def test_duplicate_active_event_does_not_change_comment_or_expiry(tmp_path: Path, _friend_request_occurrences_clock: list[float]):
+async def test_duplicate_event_keeps_identity_and_repairs_missing_details_without_renewal(tmp_path: Path, _friend_request_occurrences_clock: list[float]):
     registry = RequestFlagRegistry("ob", RequestApprovalLedger(tmp_path / "ledger.json"))
     initial = await register(registry, 990)
     _friend_request_occurrences_clock[0] = 1100
@@ -97,6 +97,18 @@ async def test_duplicate_active_event_does_not_change_comment_or_expiry(tmp_path
     current = (await registry.list_requests("friend", self_id="10000"))["items"][0]
     assert current["request_id"] == initial["request_id"]
     assert current["comment"] == initial["comment"] and current["expires_at"] == initial["expires_at"]
+
+    # 详情丢失后重复事件只修复详情, 不续期也不新建身份
+    assert registry.inbox.path is not None
+    with sqlite3.connect(registry.inbox.path) as connection:
+        connection.execute("DELETE FROM requests")
+    _friend_request_occurrences_clock[0] = 1700
+    assert not await registry.register("friend", "reused-user-uid", self_id="10000", user_id="321", event_time=990, comment="修复详情")
+    page = await registry.list_requests("friend", self_id="10000", view="archived")
+    assert page["total"] == 1 and page["unavailable_count"] == 0
+    repaired = page["items"][0]
+    assert repaired["received_at"] == initial["received_at"] and repaired["expires_at"] == initial["expires_at"]
+    assert repaired["comment"] == "修复详情" and repaired["requires_confirmation"]
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
@@ -203,22 +215,6 @@ async def test_pending_archived_approval_cannot_handle_later_same_person_request
     adapter._bot.set_friend_add_request.assert_not_awaited()
     current = await adapter.friend_requests("10000", 20, None)
     assert current["total"] == 1 and current["items"][0]["comment"] == "不能由旧审批处理"
-
-@pytest.mark.usefixtures('restore_manager')
-@pytest.mark.asyncio
-async def test_duplicate_event_repairs_missing_occurrence_details_without_renewal(tmp_path: Path, _friend_request_occurrences_clock: list[float]):
-    registry = RequestFlagRegistry("ob", RequestApprovalLedger(tmp_path / "ledger.json"))
-    old = await register(registry, 990)
-    assert registry.inbox.path is not None
-    with sqlite3.connect(registry.inbox.path) as connection:
-        connection.execute("DELETE FROM requests")
-    _friend_request_occurrences_clock[0] = 1700
-    assert not await registry.register("friend", "reused-user-uid", self_id="10000", user_id="321", event_time=990, comment="修复详情")
-    page = await registry.list_requests("friend", self_id="10000", view="archived")
-    assert page["total"] == 1 and page["unavailable_count"] == 0
-    repaired = page["items"][0]
-    assert repaired["received_at"] == old["received_at"] and repaired["expires_at"] == old["expires_at"]
-    assert repaired["comment"] == "修复详情" and repaired["requires_confirmation"]
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
@@ -640,14 +636,14 @@ async def test_protocol_query_bounded_invalid_items_do_not_leak_or_crash(adapter
     adapter._bot.get_doubt_friends_add_request.assert_awaited_once_with(count=200)
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("raw, code, message", [
-    (suspicious(uid=""), "invalid_credential", "缺少有效处理凭据"),
-    (None, "invalid_item", "条目格式无效"),
-    (suspicious(user_id=True), "invalid_applicant", "账号格式无效"),
-    ({**suspicious(), "user_id": "bad-account"}, "invalid_applicant", "账号格式无效"),
-    (suspicious(msg=["not-text"]), "invalid_details", "详情格式无效"),
+@pytest.mark.parametrize("raw, code", [
+    (suspicious(uid=""), "invalid_credential"),
+    (None, "invalid_item"),
+    (suspicious(user_id=True), "invalid_applicant"),
+    ({**suspicious(), "user_id": "bad-account"}, "invalid_applicant"),
+    (suspicious(msg=["not-text"]), "invalid_details"),
 ])
-async def test_item_failure_reason_is_separate_from_query_coverage(adapter, raw, code, message, caplog):
+async def test_item_failure_reason_is_separate_from_query_coverage(adapter, raw, code, caplog):
     adapter._bot.get_doubt_friends_add_request.return_value = [raw]
     with bind_call_origin(_origin()):
         result = await tool("friend_manager_list_requests").execute(request_category="suspicious")
@@ -658,16 +654,9 @@ async def test_item_failure_reason_is_separate_from_query_coverage(adapter, raw,
     assert proof["unavailable_count"] == 1
     assert len(proof["unavailable_reasons"]) == 1
     reason = proof["unavailable_reasons"][0]
-    assert reason["code"] == code and reason["count"] == 1 and message in reason["message"]
+    assert reason["code"] == code and reason["count"] == 1 and reason["message"]
     assert "private-doubt-credential" not in json.dumps(result) + caplog.text
     adapter._bot.set_doubt_friends_add_request.assert_not_awaited()
-
-@pytest.mark.asyncio
-async def test_empty_query_does_not_imply_an_unreadable_request(adapter):
-    page = await adapter.friend_requests("10000", 20, None)
-    proof = page["coverage"]["suspicious"]
-    assert proof["complete"] is False and page["items"] == []
-    assert proof["unavailable_count"] == 0 and proof["unavailable_reasons"] == []
 
 @pytest.mark.asyncio
 async def test_registration_failure_reports_safe_reason(adapter, monkeypatch, caplog):

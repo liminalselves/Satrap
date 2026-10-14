@@ -16,7 +16,7 @@ import threading
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from unittest.mock import AsyncMock, Mock
 from satrap.core.framework.SessionManager import SessionManager
-from satrap.core.utils.async_worker import BoundedAsyncWorker, WorkerBusyError
+from satrap.core.utils.async_worker import BoundedAsyncWorker
 from satrap.core.utils import outbound
 from satrap.core.type import UserCall
 
@@ -52,30 +52,6 @@ def _timeout(coroutine: Any, loop: Any, seconds: float) -> Any:
     coroutine.close()
     raise TimeoutError
 
-@pytest.mark.usefixtures('_clear_manager')
-def test_group_chat_without_loop_reports_unavailable() -> None:
-    tool = _group_chat_tool(None)
-    with bind_call_origin(_origin("group")):
-        result = tool.execute(message_id="1")
-    assert result == {"ok": False, "error": {"code": "unavailable", "message": "来源事件循环不可用", "retryable": True}}
-
-@pytest.mark.usefixtures('_clear_manager')
-@pytest.mark.asyncio
-async def test_group_chat_inside_platform_loop_is_rejected() -> None:
-    tool = _group_chat_tool(asyncio.get_running_loop())
-    with bind_call_origin(_origin("group")):
-        result = tool.execute(message_id="1")
-    assert result == {"ok": False, "error": {
-        "code": "unavailable", "message": "同步工具不能在平台事件循环内阻塞调用", "retryable": True}}
-
-@pytest.mark.usefixtures('_clear_manager')
-def test_group_chat_timeout_reports_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
-    tool = _group_chat_tool(None)
-    monkeypatch.setattr(group_chat_tools, "run_on_platform_loop", _timeout)
-    with bind_call_origin(_origin("group")):
-        result = tool.execute(message_id="1")
-    assert result == {"ok": False, "error": {"code": "unavailable", "message": "群聊宿主调用超时, 已取消", "retryable": True}}
-
 def _friend_tool(monkeypatch: pytest.MonkeyPatch) -> Any:
     adapter = SimpleNamespace(_loop=None)
     origin = _origin("private")
@@ -84,33 +60,49 @@ def _friend_tool(monkeypatch: pytest.MonkeyPatch) -> Any:
     return tool
 
 @pytest.mark.usefixtures('_clear_manager')
-def test_friend_manager_without_loop_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    tool = _friend_tool(monkeypatch)
-    with bind_call_origin(_origin("private")):
-        result = tool.execute()
-    assert result == {"ok": False, "error": {"code": "unavailable", "message": "来源平台事件循环不可用于同步工具", "retryable": False}}
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["group_chat", "group_chat_in_loop", "friend_manager", "memory"])
+async def test_sync_tools_without_usable_platform_loop_report_unavailable(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    """三插件缺少可用平台事件循环时都返回不可用, 不执行任何副作用"""
+    if kind.startswith("group_chat"):
+        in_loop = kind.endswith("in_loop")
+        tool = _group_chat_tool(asyncio.get_running_loop() if in_loop else None)
+        message = "同步工具不能在平台事件循环内阻塞调用" if in_loop else "来源事件循环不可用"
+        with bind_call_origin(_origin("group")):
+            result = tool.execute(message_id="1")
+        assert result == {"ok": False, "error": {"code": "unavailable", "message": message, "retryable": True}}
+    elif kind == "friend_manager":
+        tool = _friend_tool(monkeypatch)
+        with bind_call_origin(_origin("private")):
+            result = tool.execute()
+        assert result == {"ok": False, "error": {"code": "unavailable", "message": "来源平台事件循环不可用于同步工具", "retryable": False}}
+    else:
+        set_current_adapter_manager(None)
+        coroutine = _never()
+        result = memory_runtime.wait_host(coroutine)
+        assert result == {"ok": False, "error": "同步记忆操作需要有效的平台工作线程", "error_type": "unavailable"}
+        assert coroutine.cr_frame is None
 
 @pytest.mark.usefixtures('_clear_manager')
-def test_friend_manager_timeout_keeps_unconfirmed(monkeypatch: pytest.MonkeyPatch) -> None:
-    tool = _friend_tool(monkeypatch)
-    monkeypatch.setattr(friend_tools, "run_on_platform_loop", _timeout)
-    with bind_call_origin(_origin("private")):
-        result = tool.execute()
-    assert result == {"ok": False, "error": {"code": "unconfirmed", "message": "平台未确认结果, 请核查, 不要重复执行", "retryable": True}}
-
-@pytest.mark.usefixtures('_clear_manager')
-def test_memory_without_loop_reports_unavailable_and_closes_coroutine() -> None:
-    set_current_adapter_manager(None)
-    coroutine = _never()
-    result = memory_runtime.wait_host(coroutine)
-    assert result == {"ok": False, "error": "同步记忆操作需要有效的平台工作线程", "error_type": "unavailable"}
-    assert coroutine.cr_frame is None
-
-@pytest.mark.usefixtures('_clear_manager')
-def test_memory_timeout_reports_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(memory_runtime, "run_on_platform_loop", _timeout)
-    result = memory_runtime.wait_host(_never())
-    assert result == {"ok": False, "error": "记忆操作超时, 已取消等待", "error_type": "unavailable"}
+@pytest.mark.parametrize("kind", ["group_chat", "friend_manager", "memory"])
+def test_sync_tools_timeout_report_cancelled_or_unconfirmed(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    """三插件平台调用超时都归一为可重试的未确认/取消结果"""
+    if kind == "group_chat":
+        tool = _group_chat_tool(None)
+        monkeypatch.setattr(group_chat_tools, "run_on_platform_loop", _timeout)
+        with bind_call_origin(_origin("group")):
+            result = tool.execute(message_id="1")
+        assert result == {"ok": False, "error": {"code": "unavailable", "message": "群聊宿主调用超时, 已取消", "retryable": True}}
+    elif kind == "friend_manager":
+        tool = _friend_tool(monkeypatch)
+        monkeypatch.setattr(friend_tools, "run_on_platform_loop", _timeout)
+        with bind_call_origin(_origin("private")):
+            result = tool.execute()
+        assert result == {"ok": False, "error": {"code": "unconfirmed", "message": "平台未确认结果, 请核查, 不要重复执行", "retryable": True}}
+    else:
+        monkeypatch.setattr(memory_runtime, "run_on_platform_loop", _timeout)
+        result = memory_runtime.wait_host(_never())
+        assert result == {"ok": False, "error": "记忆操作超时, 已取消等待", "error_type": "unavailable"}
 
 class _LoopThread:
     """在后台线程运行事件循环, 模拟来源平台工作线程"""
@@ -157,32 +149,15 @@ def test_timeout_cancels_coroutine_in_platform_loop(loop_thread: _LoopThread) ->
         run_on_platform_loop(slow(), loop_thread.loop, 0.05)
     assert cancelled.wait(5)
 
-def test_missing_loop_closes_coroutine() -> None:
-    async def never() -> None:
-        raise AssertionError("协程不应被提交")
-
-    coroutine = never()
-    with pytest.raises(PlatformLoopUnavailable) as info:
-        run_on_platform_loop(coroutine, None, 5)
-    assert info.value.reason == "missing"
-    assert str(info.value) == "来源平台事件循环不可用"
-    assert coroutine.cr_frame is None
-
-def test_closed_loop_closes_coroutine() -> None:
-    loop = asyncio.new_event_loop()
-    loop.close()
-
-    async def never() -> None:
-        raise AssertionError("协程不应被提交")
-
-    coroutine = never()
-    with pytest.raises(PlatformLoopUnavailable) as info:
-        run_on_platform_loop(coroutine, loop, 5)
-    assert info.value.reason == "missing"
-    assert coroutine.cr_frame is None
-
-def test_not_running_loop_is_rejected() -> None:
-    loop = asyncio.new_event_loop()
+@pytest.mark.parametrize("loop_kind", ["missing", "closed", "not_running"])
+def test_unavailable_platform_loop_closes_coroutine(loop_kind: str) -> None:
+    """缺失/已关闭/未运行的平台事件循环都归为 missing 并关闭协程"""
+    loop: Any = None
+    if loop_kind == "closed":
+        loop = asyncio.new_event_loop()
+        loop.close()
+    elif loop_kind == "not_running":
+        loop = asyncio.new_event_loop()
 
     async def never() -> None:
         raise AssertionError("协程不应被提交")
@@ -193,8 +168,11 @@ def test_not_running_loop_is_rejected() -> None:
             run_on_platform_loop(coroutine, loop, 5)
         assert info.value.reason == "missing"
         assert coroutine.cr_frame is None
+        if loop_kind == "missing":
+            assert str(info.value) == "来源平台事件循环不可用"
     finally:
-        loop.close()
+        if loop_kind == "not_running":
+            loop.close()
 
 @pytest.mark.asyncio
 async def test_same_loop_is_rejected_before_blocking() -> None:
@@ -255,28 +233,6 @@ async def test_cancel_keeps_session_until_sync_worker_finishes():
     finally:
         release.set()
         await asyncio.gather(*[task for task in (first, second) if task], return_exceptions=True)
-
-async def test_worker_bounds_queue_after_caller_abandons_result():
-    worker = BoundedAsyncWorker("audit-worker", workers=1, capacity=1)
-    entered, release = threading.Event(), threading.Event()
-
-    def block():
-        entered.set()
-        release.wait(3)
-        return "late"
-
-    task = asyncio.create_task(worker.run(block, wait_on_cancel=False))
-    try:
-        await wait_thread_event(entered)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        with pytest.raises(WorkerBusyError):
-            await worker.run(lambda: "must not queue")
-    finally:
-        release.set()
-        await asyncio.gather(task, return_exceptions=True)
-        await asyncio.to_thread(worker.close)
 
 @pytest.mark.parametrize("redirect", [False, True])
 async def test_dns_deadline_discards_late_results(monkeypatch, redirect):

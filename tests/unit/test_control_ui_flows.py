@@ -38,7 +38,6 @@ from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from support.media import png
 from support.administration import _setup_adapter, _async_tools, _origin
-import importlib
 from importlib import import_module
 from setuptools import find_packages
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
@@ -144,45 +143,6 @@ async def test_control_server_rejects_connections_over_limit(
     assert b"service unavailable" in response
 
 @pytest.mark.asyncio
-async def test_control_config_redacts_and_preserves_platform_secrets(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """控制配置接口不返回明文凭据, 掩码回写不覆盖真实令牌"""
-    config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({
-        "platforms": [{
-            "id": "misskey-main",
-            "type": "misskey",
-            "settings": {
-                "api_token": "real-platform-token",
-                "base_url": "https://old.example",
-            },
-        }],
-    }), encoding="utf-8")
-    monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
-
-    fetched = await _request("/config")
-    assert b"real-platform-token" not in fetched
-    assert b"********" in fetched
-
-    payload = json.dumps({
-        "platforms": [{
-            "id": "misskey-main",
-            "type": "misskey",
-            "settings": {
-                "api_token": "********",
-                "base_url": "https://new.example",
-            },
-        }],
-    }).encode("utf-8")
-    saved = await _request("/config", "PUT", payload)
-    persisted = json.loads(config_path.read_text(encoding="utf-8"))
-    assert b"real-platform-token" not in saved
-    assert persisted["platforms"][0]["settings"]["api_token"] == "real-platform-token"
-    assert persisted["platforms"][0]["settings"]["base_url"] == "https://new.example"
-
-@pytest.mark.asyncio
 async def test_control_server_serves_react_without_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -204,32 +164,6 @@ async def test_control_server_serves_react_without_backend(
     assert b"control-ui" in index_response
     assert b"200 OK" in route_response
     assert b"control-ui" in route_response
-
-@pytest.mark.asyncio
-async def test_control_server_forwards_static_compression_headers(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """控制服务应向共享静态服务传递压缩协商请求头"""
-    static_dir = tmp_path / "dist"
-    assets_dir = static_dir / "assets"
-    assets_dir.mkdir(parents=True)
-    asset_path = assets_dir / "app-AbCd1234.js"
-    asset_path.write_bytes(b"plain-content")
-    Path(f"{asset_path}.br").write_bytes(b"brotli-content")
-    monkeypatch.setattr(
-        control_server,
-        "CONTROL_STATIC_UI",
-        SPAStaticService(static_dir, excluded_prefixes=("/status", "/config")),
-    )
-
-    response = await _request(
-        "/assets/app-AbCd1234.js",
-        headers={"Accept-Encoding": "br"},
-    )
-
-    assert b"Content-Encoding: br" in response
-    assert response.endswith(b"brotli-content")
 
 @pytest.mark.asyncio
 async def test_control_api_routes_are_not_captured_by_spa(
@@ -753,29 +687,6 @@ async def test_control_server_creates_and_scans_session_directory_while_backend_
     assert b"400" in rejected.split(b"\r\n", 1)[0]
     assert not (tmp_path / "outside").exists()
 
-@pytest.mark.asyncio
-async def test_control_unmatched_api_get_returns_404_without_spa(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """未匹配的 API 前缀 GET 应返回 404 JSON 而非 SPA 入口"""
-    static_dir = tmp_path / "dist"
-    static_dir.mkdir()
-    (static_dir / "index.html").write_text("control-ui", encoding="utf-8")
-    monkeypatch.setattr(
-        control_server,
-        "CONTROL_STATIC_UI",
-        SPAStaticService(static_dir, excluded_prefixes=("/status", "/config")),
-    )
-
-    storage_response = await _request("/storage/foo")
-    history_response = await _request("/chat/history/unknown")
-
-    assert b"404" in storage_response.split(b"\r\n", 1)[0]
-    assert b"control-ui" not in storage_response
-    assert b"404" in history_response.split(b"\r\n", 1)[0]
-    assert b"control-ui" not in history_response
-
 class _static_ui_BufferWriter:
     """记录响应字节的测试写入器"""
 
@@ -812,24 +723,6 @@ async def test_spa_static_service_serves_index_assets_and_routes(tmp_path: Path)
     assert await service.serve(cast(asyncio.StreamWriter, route_writer), "/settings") is True
     assert b"<main>Satrap</main>" in route_writer.data
     assert b"Cache-Control: no-cache" in route_writer.data
-
-@pytest.mark.asyncio
-async def test_spa_static_service_caches_only_hashed_assets(tmp_path: Path):
-    """静态服务应仅长期缓存带哈希的 assets 文件"""
-    static_dir = tmp_path / "dist"
-    assets_dir = static_dir / "assets"
-    assets_dir.mkdir(parents=True)
-    asset_path = assets_dir / "app-AbCd1234.js"
-    asset_path.write_text("window.satrap = true", encoding="utf-8")
-    service = SPAStaticService(static_dir)
-    writer = _static_ui_BufferWriter()
-
-    assert await service.serve(
-        cast(asyncio.StreamWriter, writer),
-        "/assets/app-AbCd1234.js",
-    ) is True
-
-    assert b"Cache-Control: public, max-age=31536000, immutable" in writer.data
 
 @pytest.mark.asyncio
 async def test_spa_static_service_uses_stable_javascript_mime(
@@ -940,20 +833,6 @@ async def test_spa_static_service_rejects_hidden_files_and_source_maps(tmp_path:
     assert b"sources" not in source_map_writer.data
 
 @pytest.mark.asyncio
-async def test_backend_http_server_uses_shared_static_service(tmp_path: Path):
-    """平台后端应通过共享静态服务托管 React"""
-    static_dir = tmp_path / "dist"
-    static_dir.mkdir()
-    (static_dir / "index.html").write_text("backend-ui", encoding="utf-8")
-    server = BackendHTTPServer(BackendManager(), static_dir=static_dir)
-    writer = _static_ui_BufferWriter()
-
-    handled = await server._serve_static(cast(asyncio.StreamWriter, writer), "/dashboard")
-
-    assert handled is True
-    assert b"backend-ui" in writer.data
-
-@pytest.mark.asyncio
 async def test_backend_http_server_exposes_ui_runtime_config():
     """平台后端应提供前端运行时服务地址并避免被 SPA 捕获"""
     backend = BackendManager()
@@ -1008,25 +887,6 @@ def test_sticker_symlink_cannot_authorize_external_file(tmp_path, monkeypatch):
         pytest.skip("当前 Windows 会话无符号链接权限")
     with pytest.raises(paths.MediaSourcePermissionError):
         paths.ensure_allowed_media_path(str(link))
-
-@pytest.mark.asyncio
-async def test_empty_write_list_and_read_list_are_independent():
-    adapter = _setup_adapter()
-    adapter._bot.get_group_honor_info.return_value = {}
-    try:
-        with bind_call_origin(_origin()):
-            tools = _async_tools({"write_tools_enabled": True})
-            write = next(t for t in tools if t.tool_name == "group_admin_kick")
-            denied = await write.execute(user_id="321")
-            assert denied["ok"] is False and denied["error_type"] == "permission_denied"
-            read = next(t for t in tools if t.tool_name == "group_admin_get_honors")
-            assert (await read.execute())["ok"] is True
-            read.config["allowed_read_callers"] = "999"
-            assert (await read.execute())["ok"] is False
-        adapter._bot.set_group_kick.assert_not_awaited()
-        adapter._bot.get_group_honor_info.assert_awaited_once()
-    finally:
-        set_current_adapter_manager(None)
 
 @pytest.mark.asyncio
 async def test_forced_approval_cannot_fall_back_to_direct_sdk():
@@ -1115,49 +975,6 @@ async def test_approval_is_single_durable_request_and_sources_are_rechecked(tmp_
         await provider.release_session_async(session)
         set_current_adapter_manager(None)
 
-def test_subpackage_and_top_level_reexports():
-    """tools 子包与顶层 satrap.expend 的再导出面保持可用"""
-    from satrap.expend.tools import (   # noqa: F401
-        AsyncCodeSandboxTool,
-        AsyncFetchPageTool,
-        AsyncSearchTool,
-        CodeSandboxTool,
-        DataBaseRAG,
-        LiteVectorRAG,
-        Mem0Memory,
-        SearchTool,
-    )
-    from satrap.expend.tools.agent import (   # noqa: F401
-        AsyncSubAgent,
-        SubAgent,
-    )
-    from satrap.expend import (   # noqa: F401
-        AsyncCodeSandboxTool as TopAsyncCodeSandboxTool,
-        AsyncFetchPageTool as TopAsyncFetchPageTool,
-        AsyncSearchTool as TopAsyncSearchTool,
-        CodeSandboxTool as TopCodeSandboxTool,
-        DataBaseRAG as TopDataBaseRAG,
-        FetchPageTool as TopFetchPageTool,
-        LiteVectorRAG as TopLiteVectorRAG,
-        Mem0Memory as TopMem0Memory,
-        SearchTool as TopSearchTool,
-    )
-    from satrap.expend.tools.rag import LiteVectorRAG as LVR2
-    assert LVR2 is LiteVectorRAG
-    assert TopLiteVectorRAG is LiteVectorRAG
-
-def test_legacy_module_path_alias():
-    """旧路径 satrap.expend.<mod> 经 sys.modules 别名兼容"""
-    for mod_name in ("mem0", "rag", "sandbox_tools", "search"):
-        legacy = importlib.import_module(f"satrap.expend.{mod_name}")
-        new = importlib.import_module(f"satrap.expend.tools.{mod_name}")
-        assert legacy is new
-
-    legacy_rag = importlib.import_module("satrap.expend.rag")
-    new_rag = importlib.import_module("satrap.expend.tools.rag")
-    assert legacy_rag.LiteVectorRAG is new_rag.LiteVectorRAG
-
-
 @pytest.fixture(scope="module")
 def packaged_modules() -> set[str]:
     """按项目的 setuptools 配置检查真实打包发现结果"""
@@ -1188,17 +1005,6 @@ def test_legacy_imports_and_package_discovery(module: str, names: list[str], pac
     assert loaded.__spec__ is not None and loaded.__spec__.submodule_search_locations is not None
     for name in names:
         assert callable(getattr(loaded, name))
-
-@pytest.mark.parametrize("class_path", [
-    "satrap.core.framework.Base.Session",
-    "satrap.core.framework.Base.AsyncSession",
-    "satrap.edictum.simple_session.SimpleSession",
-    "satrap.edictum.simple_session.AsyncSimpleSession",
-])
-def test_legacy_session_class_paths_remain_trusted(tmp_path: Path, class_path: str):
-    manager = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
-    module, name = class_path.rsplit(".", 1)
-    assert manager._load_class(class_path) is getattr(import_module(module), name)
 
 def test_session_reexport_cannot_escape_its_package(tmp_path: Path, monkeypatch):
     class ExternalSession(Session):

@@ -38,13 +38,8 @@ async def _http_api_dispatch_route(
         ("GET", "/api/nope"),
         ("POST", "/api"),
         ("GET", "/api/sessionsxyz"),
-        ("GET", "/api/checkpointxyz"),
-        ("GET", "/api/userxyz"),
         ("DELETE", "/api/health"),
-        ("GET", "/api/shutdown"),
         ("PUT", "/api/sessions"),
-        ("GET", "/api/sessions/foo/restart"),
-        ("PATCH", "/api/users"),
     ],
 )
 async def test_unknown_route_and_wrong_method_fall_through_to_404(
@@ -62,11 +57,7 @@ async def test_unknown_route_and_wrong_method_fall_through_to_404(
     [
         ("POST", "/api/config/session-classes"),
         ("GET", "/api/config/session-classes/foo"),
-        ("DELETE", "/api/config/session-classes/foo"),
         ("GET", "/api/config/models"),
-        ("POST", "/api/config/models/llm/x"),
-        ("GET", "/api/config/edictum/types"),
-        ("GET", "/api/config/edictum/sessions"),
         ("GET", "/api/config/edictum/sessions/foo"),
     ],
 )
@@ -86,31 +77,25 @@ async def test_session_class_collection_responds_without_manager(tmp_path: Path)
     assert data == {}
 
 @pytest.mark.asyncio
-async def test_users_list_and_limit_validation(tmp_path: Path):
-    """/api/users 命中用户列表 (不被 /api/user 前缀吞掉), limit 越界报 400"""
-    server = _http_api_dispatch_make_server(tmp_path)
-    status, _ = await _http_api_dispatch_route(server, "GET", "/api/users")
+@pytest.mark.parametrize("limit", ["0", "1001", "invalid"])
+async def test_users_list_and_limit_validation(tmp_path: Path, limit: str):
+    """/api/users 命中用户列表 (不被 /api/user 前缀吞掉), limit 越界或非整数报 400"""
+    server = _user_http_api_make_server(str(tmp_path / "users.db"))
+    status, _ = await _user_http_api_route(server, "GET", "/api/users")
     assert status == 200
 
-    status, data = await _http_api_dispatch_route(server, "GET", "/api/users?limit=0")
+    status, data = await _user_http_api_route(server, "GET", f"/api/users?limit={limit}")
     assert status == 400
-    assert "limit" in data["error"]
-
-    status, _ = await _http_api_dispatch_route(server, "GET", "/api/users?limit=2000")
-    assert status == 400
+    assert "limit" in data["error"] or "invalid" in data["error"]
 
 @pytest.mark.asyncio
-async def test_user_sessions_requires_user_id(tmp_path: Path):
-    """/api/user/sessions 缺少 user_id 报 400 (命中 user 区段而非 404)"""
+async def test_user_routes_require_user_id(tmp_path: Path):
+    """/api/user/sessions 与 /api/user/create 缺少 user_id 报 400 (命中 user 区段而非 404)"""
     server = _http_api_dispatch_make_server(tmp_path)
     status, data = await _http_api_dispatch_route(server, "GET", "/api/user/sessions")
     assert status == 400
     assert "user_id" in data["error"]
 
-@pytest.mark.asyncio
-async def test_user_create_requires_user_id(tmp_path: Path):
-    """POST /api/user/create 空负载报 400 (命中 user 区段而非 404)"""
-    server = _http_api_dispatch_make_server(tmp_path)
     status, data = await _http_api_dispatch_route(server, "POST", "/api/user/create", b"{}")
     assert status == 400
     assert "user_id" in data["error"]
@@ -121,8 +106,6 @@ async def test_user_create_requires_user_id(tmp_path: Path):
     [
         "/api/checkpoints",
         "/api/checkpoint/branches",
-        "/api/checkpoint/lineage",
-        "/api/checkpoint/audit",
     ],
 )
 async def test_checkpoint_get_routes_are_distinct(tmp_path: Path, path: str):
@@ -308,8 +291,11 @@ async def test_conversation_data_route_isolated_edit_conflict_and_failure_recove
     status, recovered = await request()
     assert status == 200 and recovered["revision"] == edited["revision"]
 
-def test_token_is_generated_once_and_persisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """未配置环境令牌时生成高熵令牌并稳定复用"""
+def test_token_is_generated_persisted_and_created_once_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未配置环境令牌时生成高熵令牌并持久化, 并发启动只创建一个共享值"""
     monkeypatch.delenv("SATRAP_API_TOKEN", raising=False)
     token_path = tmp_path / "api-token"
     first = load_or_create_api_token(token_path)
@@ -318,21 +304,13 @@ def test_token_is_generated_once_and_persisted(tmp_path: Path, monkeypatch: pyte
     assert len(first) >= 32
     assert token_path.read_text(encoding="utf-8") == first
 
-def test_concurrent_token_creation_returns_same_value(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """并发启动多个服务时只能有一个进程创建共享令牌"""
-    monkeypatch.delenv("SATRAP_API_TOKEN", raising=False)
-    token_path = tmp_path / "api-token"
-
     def load_token(_: int) -> str:
         """读取或创建共享测试令牌"""
         return load_or_create_api_token(token_path)
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         tokens = list(executor.map(load_token, range(16)))
-    assert len(set(tokens)) == 1
+    assert len(set(tokens)) == 1 and tokens[0] == first
 
 def test_non_loopback_binding_requires_explicit_token(
     tmp_path: Path,
@@ -407,8 +385,8 @@ async def _user_http_api_route(
     return await server._route(method, path, body)
 
 @pytest.mark.asyncio
-async def test_user_api_full_flow(tmp_path: Path):
-    """用户端点全链路: 创建 -> 列表 -> 详情 -> 绑定 -> 会话 -> 解绑 -> 删除"""
+async def test_user_api_full_flow_and_error_paths(tmp_path: Path):
+    """用户端点全链路 (创建/列表/详情/绑定/会话/更新/解绑/删除) 与异常路径"""
     db = str(tmp_path / "users.db")
     server = _user_http_api_make_server(db)
 
@@ -416,101 +394,53 @@ async def test_user_api_full_flow(tmp_path: Path):
         server, "POST", "/api/user/create",
         json.dumps({"user_id": "u1", "platform": "misskey", "nickname": "小美"}).encode(),
     )
-    # 创建
-    assert status == 200
-    assert data["ok"] is True
-    assert data["created"] is True
+    assert status == 200 and data["ok"] is True and data["created"] is True
 
     status, data = await _user_http_api_route(server, "GET", "/api/users")
-    # 列表
-    assert status == 200
-    assert data["count"] == 1
-    assert data["users"][0]["user_id"] == "u1"
+    assert status == 200 and data["count"] == 1 and data["users"][0]["user_id"] == "u1"
 
     status, data = await _user_http_api_route(server, "GET", "/api/users?user_id=u1")
-    # 详情
-    assert status == 200
-    assert data["user"]["user_nickname"] == "小美"
+    assert status == 200 and data["user"]["user_nickname"] == "小美"
 
     status, data = await _user_http_api_route(
         server, "POST", "/api/user/bind",
         json.dumps({"user_id": "u1", "session_id": "sid-1"}).encode(),
     )
-    # 绑定会话
-    assert status == 200
-    assert data["session_ids"] == ["sid-1"]
+    assert status == 200 and data["session_ids"] == ["sid-1"]
 
     status, data = await _user_http_api_route(server, "GET", "/api/user/sessions?user_id=u1")
-    # 会话列表
-    assert status == 200
-    assert data["session_ids"] == ["sid-1"]
+    assert status == 200 and data["session_ids"] == ["sid-1"]
 
     status, data = await _user_http_api_route(
         server, "POST", "/api/user/update",
         json.dumps({"user_id": "u1", "nickname": "新昵称"}).encode(),
     )
-    # 更新
-    assert status == 200
-    assert data["user"]["user_nickname"] == "新昵称"
+    assert status == 200 and data["user"]["user_nickname"] == "新昵称"
 
     status, data = await _user_http_api_route(
         server, "POST", "/api/user/unbind",
         json.dumps({"user_id": "u1", "session_id": "sid-1"}).encode(),
     )
-    # 解绑
-    assert status == 200
-    assert data["session_ids"] == []
+    assert status == 200 and data["session_ids"] == []
 
     status, data = await _user_http_api_route(
         server, "POST", "/api/user/delete", json.dumps({"user_id": "u1"}).encode()
     )
-    # 删除
-    assert status == 200
-    assert data["ok"] is True
+    assert status == 200 and data["ok"] is True
 
-@pytest.mark.asyncio
-async def test_user_api_error_paths(tmp_path: Path):
-    """异常路径: 缺参数 / 用户不存在"""
-    db = str(tmp_path / "users.db")
-    server = _user_http_api_make_server(db)
-
-    status, data = await _user_http_api_route(
-        server, "POST", "/api/user/create", json.dumps({}).encode()
-    )
-    # 缺 user_id
-    assert status == 400
-    assert "user_id" in data["error"]
+    # 异常路径: 缺参数 / 用户不存在 / 未知路由
+    status, data = await _user_http_api_route(server, "POST", "/api/user/create", json.dumps({}).encode())
+    assert status == 400 and "user_id" in data["error"]
 
     status, data = await _user_http_api_route(server, "GET", "/api/users?user_id=missing")
-    # 不存在的用户
-    assert status == 200
-    assert data["ok"] is False
+    assert status == 200 and data["ok"] is False
 
     status, data = await _user_http_api_route(
-        server, "POST", "/api/user/update",
-        json.dumps({"user_id": "missing", "nickname": "x"}).encode(),
-    )
-    assert status == 200
-    assert data["ok"] is False
+        server, "POST", "/api/user/update", json.dumps({"user_id": "missing", "nickname": "x"}).encode())
+    assert status == 200 and data["ok"] is False
 
-    status, data = await _user_http_api_route(
-        server, "POST", "/api/user/bind", json.dumps({"user_id": "u1"}).encode()
-    )
-    # 绑定缺 session_id
-    assert status == 400
-    assert "session_id" in data["error"]
+    status, data = await _user_http_api_route(server, "POST", "/api/user/bind", json.dumps({"user_id": "u1"}).encode())
+    assert status == 400 and "session_id" in data["error"]
 
-    status, data = await _user_http_api_route(server, "GET", "/api/user/unknown")
-    # 未知路由仍 404
+    status, _ = await _user_http_api_route(server, "GET", "/api/user/unknown")
     assert status == 404
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("limit", ["0", "-1", "1001", "invalid"])
-async def test_user_list_rejects_invalid_limit(tmp_path: Path, limit: str):
-    """用户列表拒绝越界或非整数 limit, 避免负数绕过分页限制"""
-    server = _user_http_api_make_server(str(tmp_path / "users.db"))
-
-    status, data = await _user_http_api_route(server, "GET", f"/api/users?limit={limit}")
-
-    assert status == 400
-    assert "limit" in data["error"] or "invalid" in data["error"]

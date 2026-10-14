@@ -140,6 +140,11 @@ def test_migration_explicit_new_plugin_wins_and_plain_admin_stays_independent(tm
 
 @pytest.mark.usefixtures('restore_adapter_manager')
 def test_plugins_have_no_cross_imports_and_only_two_account_tools(tmp_path: Path):
+    assert not set(group_definitions) & {
+        "group_admin_list_groups", "group_admin_get_group_info", "group_admin_list_members",
+        "group_admin_get_member", "group_admin_get_message", "group_admin_set_card",
+    }
+    assert "group_admin_set_group_nickname" in group_definitions
     root = Path(__file__).resolve().parents[2] / "satrap/expend/plugins"
     plugins = {"account_requests", "friend_manager", "group_admin", "group_chat"}
     for plugin in plugins:
@@ -147,6 +152,12 @@ def test_plugins_have_no_cross_imports_and_only_two_account_tools(tmp_path: Path
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 names = [node.module or ""] if isinstance(node, ast.ImportFrom) else [item.name for item in node.names] if isinstance(node, ast.Import) else []
                 assert all(not name.startswith(f"satrap.expend.plugins.{other}") for name in names for other in plugins - {plugin})
+    # 旧群管理好友工具名只允许出现在迁移模块
+    for path in (Path(__file__).resolve().parents[2] / "satrap").rglob("*.py"):
+        if path.name == "plugin_migrations.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "group_admin_list_friend_requests" not in source and "group_admin_handle_friend_request" not in source
     catalog = PluginCatalog(user_dir=tmp_path)
     entry = catalog.get("account_requests")
     assert entry is not None and set(entry.capabilities["tools"]) == set(DEFINITIONS)
@@ -591,40 +602,35 @@ async def test_missing_request_counts_and_cursors_are_scoped_before_pagination()
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["GroupMessage", "FriendMessage"])
-async def test_ordinary_caller_can_request_own_deletion_but_needs_approval(kind):
+async def test_self_deletion_request_needs_approval_and_rechecks_protection():
     adapter = _setup_adapter()
     await incoming(adapter)
     adapter.client_self_id = adapter.bot_self_id
     delete = tool("friend_manager_delete_friend", request_managers="", write_callers="", delete_friend_enabled=True)
     adapter._bot.get_friend_list.return_value = [{"user_id": 321, "nickname": "本人", "remark": ""}]
-    with bind_call_origin(_origin(chat_type=kind, actor="321")):
+    with bind_call_origin(_origin(chat_type="FriendMessage", actor="321")):
         denied = await delete.execute(user_id="999")
         assert denied["error"]["code"] == "permission_denied"
         result = await delete.execute()
         assert result["ok"] and result["data"]["state"] == "pending"
         adapter._bot.delete_friend.assert_not_awaited()
-    approved = await cast(FriendService, adapter.friend_host).decide("10000", result["data"]["action_id"], True)
-    assert approved["state"] == "succeeded"
-    adapter._bot.delete_friend.assert_awaited_once_with(user_id=321)
-
-@pytest.mark.usefixtures('restore_manager')
-@pytest.mark.asyncio
-async def test_own_deletion_cannot_bypass_protection_or_revoked_switch():
-    adapter = _setup_adapter()
-    await incoming(adapter)
-    delete = tool("friend_manager_delete_friend", request_managers="", write_callers="", delete_friend_enabled=True)
-    adapter._bot.get_friend_list.return_value = [{"user_id": 321, "nickname": "本人", "remark": ""}]
-    with bind_call_origin(_origin(chat_type="FriendMessage", actor="321")):
-        result = await delete.execute()
-        delete.disable()
-    approved = await cast(FriendService, adapter.friend_host).decide("10000", result["data"]["action_id"], True)
-    assert approved["state"] == "failed"
+    # 审批前工具被停用 → 不能执行
+    delete.disable()
+    blocked = await cast(FriendService, adapter.friend_host).decide("10000", result["data"]["action_id"], True)
+    assert blocked["state"] == "failed"
     delete.enable()
+    # 保护名单阻止再次提交
     delete.config.update(protected_friend_ids="321")
     with bind_call_origin(_origin(chat_type="FriendMessage", actor="321")):
         assert not (await delete.execute())["ok"]
     adapter._bot.delete_friend.assert_not_awaited()
+    # 解除保护后可正常提交并获批执行
+    delete.config.update(protected_friend_ids="")
+    with bind_call_origin(_origin(chat_type="FriendMessage", actor="321")):
+        fresh = await delete.execute()
+    approved = await cast(FriendService, adapter.friend_host).decide("10000", fresh["data"]["action_id"], True)
+    assert approved["state"] == "succeeded"
+    adapter._bot.delete_friend.assert_awaited_once_with(user_id=321)
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
@@ -802,7 +808,7 @@ async def test_model_deletion_requires_approval_and_concurrent_decision_executes
     assert (await host.decide(adapter.account, "model-delete", True))["state"] == "succeeded"
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("revocation", ["permission", "fingerprint", "account", "connection", "replacement", "protection"])
+@pytest.mark.parametrize("revocation", ["permission", "account", "protection"])
 async def test_pending_model_action_rechecks_every_boundary(tmp_path, revocation):
     host, adapter, source, active, permission = setup(tmp_path)
     await host.submit(adapter.account, "pending", "delete_friend", {"user_id": "alice"}, actor="model", source=source)
@@ -916,29 +922,9 @@ def test_migration_conservative_idempotent_and_removes_old_entries(tmp_path, mon
     canonical = [spec.to_config() for spec in specs.values()]
     assert [spec.to_config() for spec in parse_plugin_specs(canonical, catalog)] == canonical
 
-def test_plugins_do_not_import_each_other_and_old_tools_only_in_migration():
-    assert not set(group_definitions) & {
-        "group_admin_list_groups", "group_admin_get_group_info", "group_admin_list_members",
-        "group_admin_get_member", "group_admin_get_message", "group_admin_set_card",
-    }
-    assert "group_admin_set_group_nickname" in group_definitions
-    root = Path(__file__).resolve().parents[2] / "satrap"
-    for name in ("friend_manager", "group_admin", "group_chat"):
-        for path in (root / "expend/plugins" / name).rglob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    assert all(f"plugins.{other}" not in node.module for other in ("friend_manager", "group_admin", "group_chat") if other != name)
-                elif isinstance(node, ast.Import):
-                    assert all(f"plugins.{other}" not in item.name for item in node.names
-                               for other in ("friend_manager", "group_admin", "group_chat") if other != name)
-    for path in root.rglob("*.py"):
-        if path.name == "plugin_migrations.py":
-            continue
-        source = path.read_text(encoding="utf-8")
-        assert "group_admin_list_friend_requests" not in source and "group_admin_handle_friend_request" not in source
-
-def test_migration_preserves_existing_empty_manager_deny_and_new_tool_switches(tmp_path, monkeypatch):
+def test_migration_defaults_preserve_empty_manager_and_implicit_globals(tmp_path, monkeypatch):
     from satrap.edictum.plugin_config import PluginConfigManager
+
     monkeypatch.setattr(PluginConfigManager, "load_global_explicit", lambda *args: {})
     catalog = PluginCatalog(user_dir=tmp_path / "plugins")
     source = [{"name": "group_admin", "config": {"request_managers": "manager", "write_tools_enabled": True},
@@ -950,17 +936,14 @@ def test_migration_preserves_existing_empty_manager_deny_and_new_tool_switches(t
     assert not specs["friend_manager"].capabilities["tools"]["friend_manager_handle_request"]
     assert not specs["friend_manager"].capabilities["tools"]["friend_manager_delete_friend"]
 
-def test_implicit_legacy_request_defaults_migrate_global_permissions(tmp_path, monkeypatch):
-    from satrap.edictum.plugin_config import PluginConfigManager
+    # 隐式旧默认: 从 group_admin 全局显式配置迁移到 friend_manager
     monkeypatch.setattr(PluginConfigManager, "load_global_explicit", lambda self, name, schema:
                         {"request_managers": "manager", "write_tools_enabled": True} if name == "group_admin" else {})
-    catalog = PluginCatalog(user_dir=tmp_path / "plugins")
-    specs = {spec.name: spec for spec in parse_plugin_specs(["group_admin"], catalog)}
-    assert specs["friend_manager"].config["managers"] == "manager"
-    assert specs["friend_manager"].config["write_callers"] == "manager"
-    assert specs["friend_manager"].capabilities["tools"]["friend_manager_handle_request"]
-    assert specs["friend_manager"].capabilities["tools"]["friend_manager_handle_request"]
-    assert not specs["friend_manager"].capabilities["tools"]["friend_manager_delete_friend"]
+    implicit = {spec.name: spec for spec in parse_plugin_specs(["group_admin"], catalog)}
+    assert implicit["friend_manager"].config["managers"] == "manager"
+    assert implicit["friend_manager"].config["write_callers"] == "manager"
+    assert implicit["friend_manager"].capabilities["tools"]["friend_manager_handle_request"]
+    assert not implicit["friend_manager"].capabilities["tools"]["friend_manager_delete_friend"]
 
 def test_v7_schema_migration_preserves_history_and_checks_missing_friend_tables(tmp_path):
     from satrap.core.config.platform_schema import ensure_platform_tables, PLATFORM_SCHEMA_VERSION

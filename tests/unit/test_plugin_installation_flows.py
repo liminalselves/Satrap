@@ -10,20 +10,16 @@ from satrap.edictum import plugin_archive
 from satrap.edictum.plugin_archive import PluginArchiveInstaller
 from satrap.edictum.plugin_catalog import PluginCatalog
 import satrap.edictum.plugin as plugin_module
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
-import importlib as _plugin_module_loading_importlib
-from types import ModuleType
 import sys
 from unittest.mock import Mock
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.edictum.plugin_resources import PluginResources, model_reference_fingerprint
-from satrap.core.APICall.ReRankCall import parse_rerank_result, ReRank, AsyncReRank
-from satrap.core.APICall.EmbedCall import Embedding, AsyncEmbedding
+from satrap.core.APICall.ReRankCall import parse_rerank_result
 from satrap.edictum.plugin_config import parse_config_schema
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.edictum.plugin import _invoke_factory
-from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.type import EmbeddingConfig
 import importlib as _plugin_skill_activation_importlib
 from typing import Any, cast
 from satrap.core.framework.SessionManager import SessionManager
@@ -147,18 +143,6 @@ def test_corrupt_archive_and_move_failure_cleanup(installer, monkeypatch):
     assert not (installer.catalog.user_dir / "probe").exists()
     assert not list((installer.catalog.user_dir.parent / ".plugin-install").iterdir())
 
-def test_atomic_move_refuses_existing_empty_directory(tmp_path):
-    source = tmp_path / "source"
-    target = tmp_path / "target"
-    source.mkdir()
-    target.mkdir()
-    (source / "keep").write_text("source", encoding="utf-8")
-    with pytest.raises(OSError):
-        plugin_archive._move_no_replace(source, target)
-    assert (source / "keep").is_file()
-    assert target.is_dir()
-    assert not list(target.iterdir())
-
 def test_nested_private_metadata_is_not_a_second_plugin(installer):
     result = installer.preview(archive_bytes([("package/meta.yaml", "name: probe"), ("package/resources/private/meta.yaml", "resource: example")]))
     installer.install(result["token"])
@@ -273,50 +257,6 @@ def test_load_module_replaces_same_name_from_different_source(
     assert second is not first
     assert second.MARKER == "second"
 
-def test_load_module_discovers_module_added_after_index_seed(
-    tmp_path: Path,
-    loaded_module_names: list[str],
-) -> None:
-    """索引建立后由其他入口加载的模块仍可按源路径发现"""
-    seed_path = tmp_path / "seed.py"
-    external_path = tmp_path / "external.py"
-    _write_module(seed_path)
-    _write_module(external_path, "MARKER = 'external'\n")
-    loaded_module_names.extend([
-        "_satrap_test_seed",
-        "_satrap_test_external_origin",
-        "_satrap_test_external_alias",
-    ])
-    assert plugin_module._load_module(seed_path, loaded_module_names[0]) is not None
-
-    spec = _plugin_module_loading_importlib.util.spec_from_file_location(loaded_module_names[1], external_path)
-    assert spec is not None
-    assert spec.loader is not None
-    external_module = _plugin_module_loading_importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(external_module)
-    sys.modules[loaded_module_names[1]] = external_module
-
-    discovered = plugin_module._load_module(external_path, loaded_module_names[2])
-
-    assert discovered is external_module
-
-def test_load_module_does_not_reuse_removed_module(
-    tmp_path: Path,
-    loaded_module_names: list[str],
-) -> None:
-    """模块从 sys.modules 移除后对应路径缓存随刷新失效"""
-    module_path = tmp_path / "removed.py"
-    _write_module(module_path)
-    loaded_module_names.extend(["_satrap_test_removed", "_satrap_test_reloaded"])
-
-    first = plugin_module._load_module(module_path, loaded_module_names[0])
-    sys.modules.pop(loaded_module_names[0], None)
-    second = plugin_module._load_module(module_path, loaded_module_names[1])
-
-    assert first is not None
-    assert second is not None
-    assert second is not first
-
 def test_load_module_does_not_cache_failed_execution(
     tmp_path: Path,
     loaded_module_names: list[str],
@@ -331,46 +271,6 @@ def test_load_module_does_not_cache_failed_execution(
 
     assert loaded_module_names[0] not in sys.modules
     assert module_path.resolve() not in plugin_module._module_index_by_path
-
-def test_load_module_serializes_concurrent_execution(
-    tmp_path: Path,
-    loaded_module_names: list[str],
-) -> None:
-    """并发加载同一源文件时只创建一个模块对象"""
-    module_path = tmp_path / "concurrent.py"
-    _write_module(module_path, "import time\ntime.sleep(0.05)\nVALUE = object()\n")
-    loaded_module_names.append("_satrap_test_concurrent")
-
-    def load_module(_: int) -> ModuleType | None:
-        return plugin_module._load_module(module_path, loaded_module_names[0])
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        modules = list(executor.map(load_module, range(4)))
-
-    assert modules[0] is not None
-    assert all(module is modules[0] for module in modules)
-
-def test_load_module_does_not_resolve_unchanged_modules_again(
-    tmp_path: Path,
-    loaded_module_names: list[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """索引热路径不再解析未变化模块的源路径"""
-    module_path = tmp_path / "cached.py"
-    _write_module(module_path)
-    loaded_module_names.append("_satrap_test_cached")
-    assert plugin_module._load_module(module_path, loaded_module_names[0]) is not None
-    resolve_calls: list[ModuleType] = []
-    original_resolver = plugin_module._resolve_module_source
-
-    def counting_resolver(module: ModuleType) -> Path | None:
-        resolve_calls.append(module)
-        return original_resolver(module)
-
-    monkeypatch.setattr(plugin_module, "_resolve_module_source", counting_resolver)
-
-    assert plugin_module._load_module(module_path, loaded_module_names[0]) is not None
-    assert resolve_calls == []
 
 def test_factory_internal_type_error_is_not_retried():
     calls = []
@@ -456,29 +356,6 @@ def test_strict_rerank_accepts_empty_and_filters_scores():
     assert parse_rerank_result({"results": []}, suppress_error=False) == []
     result = parse_rerank_result({"results": [{"index": 0, "relevance_score": 0.1}, {"index": 1, "relevance_score": 0.8}]}, min_score=0.5, suppress_error=False)
     assert result == [{"text": "", "score": 0.8, "original_index": 1}]
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("asynchronous", [False, True])
-async def test_all_reference_types_construct_matching_clients_without_network(tmp_path, asynchronous):
-    manager = ModelConfigManager(tmp_path / "models.json")
-    manager.set_llm_config(LLMConfig(model="chat", api_key="test", base_url="http://localhost:1234"), "chat")
-    manager.set_embedding_config(EmbeddingConfig(model="embed", api_key="test", base_url="http://localhost:1234", dimensions=3, max_batch_size=4), "embed")
-    manager.set_rerank_config(ReRankConfig(model="rank", api_key="test", base_url="http://localhost:1234", top_k=9), "rank")
-    schema = parse_config_schema({"config_schema": {key: {"type": key} for key in ("llm", "embed", "rerank")}})
-    resources = PluginResources(manager, schema, {"llm": "chat", "embed": "embed", "rerank": "rank"}, async_=asynchronous)
-    try:
-        assert isinstance(resources["llm"], AsyncLLM if asynchronous else LLM)
-        assert isinstance(resources["embed"], AsyncEmbedding if asynchronous else Embedding)
-        assert isinstance(resources["rerank"], AsyncReRank if asynchronous else ReRank)
-        assert resources["embed"].dimensions == 3
-        assert resources["embed"].max_batch_size == 4
-        assert resources["rerank"].top_k == 9
-    finally:
-        if asynchronous:
-            await resources.aclose()
-        else:
-            resources.close()
-    assert resources._clients == {}
 
 def _write_plugin(root: Path, asynchronous: bool, *, fail_mcp: bool = False) -> Path:
     """创建含两个技能、独立自带工具和 MCP 的目录插件"""

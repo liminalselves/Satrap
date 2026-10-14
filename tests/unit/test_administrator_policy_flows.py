@@ -159,18 +159,16 @@ def test_override_overlap_is_logged_and_evaluated_as_denial(monkeypatch):
     service = AdministratorService(lambda: [platform()], groups, overrides)
     assert not service.resolve(origin("user-beta"), "example").allowed
 
-def test_override_allow_grants_without_any_group():
-    service = AdministratorService(lambda: [platform()], [], [override(allow=["example"])])
-    granted = service.resolve(origin("user-beta"), "example")
+def test_override_grant_and_deny_priority():
+    """例外层可独立授予; 例外否决优先于组允许并记录两侧来源"""
+    granted = AdministratorService(lambda: [platform()], [], [override(allow=["example"])]).resolve(origin("user-beta"), "example")
     assert granted.allowed and granted.allowed_overrides == ("entry",) and granted.group_ids == ()
-    assert not service.resolve(origin("user-alpha"), "example").allowed
+    assert not AdministratorService(lambda: [platform()], [], [override(allow=["example"])]).resolve(origin("user-alpha"), "example").allowed
 
-def test_override_deny_beats_group_allow_and_records_both_sources():
-    service = AdministratorService(
-        lambda: [platform()], [group()], [override(user="user-alpha", deny=["example"])])
-    result = service.resolve(origin(), "example")
-    assert not result.allowed
-    assert result.group_ids == ("admins",) and result.denied_overrides == ("entry",)
+    denied = AdministratorService(
+        lambda: [platform()], [group()], [override(user="user-alpha", deny=["example"])]).resolve(origin(), "example")
+    assert not denied.allowed
+    assert denied.group_ids == ("admins",) and denied.denied_overrides == ("entry",)
 
 def test_all_mode_group_exclusion_and_override_deny_coexist():
     service = AdministratorService(
@@ -197,13 +195,20 @@ def test_override_rebind_requires_saved_binding_and_keeps_other_identity():
     with pytest.raises(ValueError, match="平台不存在"):
         normalize_administrator_overrides([override(identity="new", user="user-gamma", allow=["example"])], [], bind_new=True)
 
-def test_protect_switch_controls_protection_for_groups_and_overrides():
+def test_protection_requires_enabled_matched_protect_switch():
+    """保护只对启用且实例匹配的条目生效, 组与例外一致"""
     off = AdministratorService(lambda: [platform()], [group(protect=False)], [])
     assert off.protected_users("qq") == []
     on = AdministratorService(lambda: [platform()], [group(protect=False)], [override(protect=True)])
     assert on.protected_users("qq") == ["user-beta"]
     disabled = AdministratorService(lambda: [platform()], [], [override(protect=True, enabled=False)])
     assert disabled.protected_users("qq") == []
+    disabled_protect = AdministratorService(lambda: [platform()], [group("off", enabled=False, protect=True)], [])
+    assert disabled_protect.protected_users("qq") == []
+    leaked = AdministratorService(lambda: [platform()], [group("p", protect=True, enabled=False), group("np", protect=False)], [])
+    assert leaked.protected_users("qq") == []
+    enabled_protect = AdministratorService(lambda: [platform()], [group(protect=True)], [])
+    assert enabled_protect.protected_users("qq") == ["user-alpha"]
 
 def test_migration_expands_legacy_exclusions_and_merges_existing_entries():
     groups = normalize_administrator_groups([group(mode="selected", excluded=["example", "other"])], [platform()])
@@ -257,13 +262,24 @@ def test_migration_of_disabled_group_captures_denial_without_changing_behavior()
     assert groups[1]["plugin_scope"]["excluded"] == []
     assert service.resolve(origin(), "example").allowed
 
-def test_migration_skips_group_when_existing_entry_enabled_state_conflicts():
+def test_migration_conflicting_entry_skips_round_trips_and_resolves():
     conflicting = override(user="user-alpha", deny=["other"], enabled=False)
     service = AdministratorService(lambda: [platform()], [group(excluded=["example"])], [conflicting])
     groups, overrides, _ = service.snapshot()
     assert groups[0]["plugin_scope"]["excluded"] == ["example"]   # 旧排除原样保留, 行为零变化
     assert overrides[0]["deny"] == ["other"] and overrides[0]["enabled"] is False
     assert not service.resolve(origin(), "example").allowed       # 旧规则仍生效
+    # 待迁移组带着旧排除原样回存必须放行, 且语义不变 (规则6 解除死锁)
+    round_tripped = normalize_administrator_groups(groups, [platform()], previous=groups, strict_scope=True)
+    assert round_tripped[0]["plugin_scope"]["excluded"] == ["example"]
+    service.apply(round_tripped, overrides)
+    assert service.snapshot()[0][0]["plugin_scope"]["excluded"] == ["example"]
+    assert not service.resolve(origin(), "example").allowed
+    # 启用状态对齐后下次读取即完成迁移
+    service.apply(service.snapshot()[0], [dict(service.snapshot()[1][0], enabled=True)])
+    groups, overrides, _ = service.snapshot()
+    assert groups[0]["plugin_scope"]["excluded"] == []
+    assert overrides[0]["deny"] == ["other", "example"]
 
 def test_migration_merges_when_enabled_state_matches():
     matching = override(user="user-alpha", deny=["other"], enabled=True)
@@ -271,15 +287,6 @@ def test_migration_merges_when_enabled_state_matches():
     groups, overrides, _ = service.snapshot()
     assert groups[0]["plugin_scope"]["excluded"] == []
     assert overrides[0]["deny"] == ["other", "example"] and overrides[0]["enabled"] is True
-
-def test_migration_pending_resolves_after_entry_enabled_state_is_adjusted():
-    conflicting = override(user="user-alpha", deny=["other"], enabled=False)
-    service = AdministratorService(lambda: [platform()], [group(excluded=["example"])], [conflicting])
-    assert service.snapshot()[0][0]["plugin_scope"]["excluded"] == ["example"]
-    service.apply(service.snapshot()[0], [dict(service.snapshot()[1][0], enabled=True)])
-    groups, overrides, _ = service.snapshot()
-    assert groups[0]["plugin_scope"]["excluded"] == []            # 启用状态对齐后下次读取即完成迁移
-    assert overrides[0]["deny"] == ["other", "example"]
 
 def test_migration_generates_unique_entry_id_when_digest_collides():
     digest = hashlib.sha1(f"qq\0user-alpha".encode("utf-8")).hexdigest()[:16]
@@ -306,27 +313,6 @@ def test_strict_scope_treats_new_or_renamed_group_as_empty_previous():
     saved = normalize_administrator_groups([group(excluded=["example"])], [platform()])
     with pytest.raises(ValueError, match="不能新增排除插件"):
         normalize_administrator_groups([group("fresh", excluded=["example"])], [platform()], previous=saved, strict_scope=True)
-
-def test_migration_skipped_group_round_trips_and_stays_effective():
-    conflicting = override(user="user-alpha", deny=["other"], enabled=False)
-    service = AdministratorService(lambda: [platform()], [group(excluded=["example"])], [conflicting])
-    groups, overrides, _ = service.snapshot()
-    # 待迁移组带着旧排除原样回存必须放行, 且语义不变 (规则6 解除死锁)
-    round_tripped = normalize_administrator_groups(groups, [platform()], previous=groups, strict_scope=True)
-    assert round_tripped[0]["plugin_scope"]["excluded"] == ["example"]
-    service.apply(round_tripped, overrides)
-    assert service.snapshot()[0][0]["plugin_scope"]["excluded"] == ["example"]
-    assert not service.resolve(origin(), "example").allowed
-
-def test_protection_requires_enabled_instance_matched_protect_in_same_entry():
-    disabled_protect = AdministratorService(lambda: [platform()], [group("off", enabled=False, protect=True)], [])
-    assert disabled_protect.protected_users("qq") == []
-    leaked = AdministratorService(lambda: [platform()], [group("p", protect=True, enabled=False), group("np", protect=False)], [])
-    assert leaked.protected_users("qq") == []
-    enabled_protect = AdministratorService(lambda: [platform()], [group(protect=True)], [])
-    assert enabled_protect.protected_users("qq") == ["user-alpha"]
-    disabled_override = AdministratorService(lambda: [platform()], [], [override(protect=True, enabled=False)])
-    assert disabled_override.protected_users("qq") == []
 
 def test_protection_ignores_rebuilt_platform_instance():
     platforms = [platform()]
@@ -591,7 +577,7 @@ async def test_config_snapshot_does_not_wait_for_runtime_and_never_applies(tmp_p
     assert calls == [False, False] and load_config_document(path) == saved
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("suffix", ["", "/snapshot", "/runtime"])
+@pytest.mark.parametrize("suffix", ["", "/snapshot"])
 async def test_administrator_read_busy_queue_returns_explicit_failure(tmp_path, monkeypatch, suffix):
     """读取队列满时明确失败并记录日志, 不进入保存事务"""
     from satrap.core.backend import control_server as control

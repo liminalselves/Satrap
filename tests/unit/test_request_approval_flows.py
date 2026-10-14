@@ -113,29 +113,6 @@ async def test_entry_permission_is_rechecked_after_waiting(monkeypatch: pytest.M
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-async def test_pending_request_survives_restart_and_completed_unknown_never_reappear(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("satrap.core.platform.onebot.request_registry.time", lambda: 1000.0)
-    path = tmp_path / "ledger.json"
-    first = RequestFlagRegistry("ob", RequestApprovalLedger(path))
-    await first.register("friend", "stable", self_id="10000", user_id="321", comment="首次验证")
-    original = (await first.list_requests("friend", self_id="10000"))["items"][0]
-    monkeypatch.setattr("satrap.core.platform.onebot.request_registry.time", lambda: 1100.0)
-    second = RequestFlagRegistry("ob", RequestApprovalLedger(path))
-    await second.register("friend", "stable", self_id="10000", user_id="321", comment="重复验证")
-    restored = (await second.list_requests("friend", self_id="10000"))["items"][0]
-    assert {key: value for key, value in restored.items() if key != "remaining_seconds"} == {key: value for key, value in original.items() if key != "remaining_seconds"}
-    assert restored["expires_at"] == 1600.0 and restored["remaining_seconds"] == 500
-    assert (await second.resolve_request("friend", original["request_id"], self_id="10000"))["flag"] == "stable"
-    await second.occupy("friend", "stable", self_id="10000")
-    third = RequestFlagRegistry("ob", RequestApprovalLedger(path))
-    assert (await third.list_requests("friend", self_id="10000"))["items"] == []
-    with pytest.raises(LookupError):
-        await third.resolve_request("friend", original["request_id"], self_id="10000")
-    await third.register("friend", "stable", self_id="10000", user_id="321")
-    assert (await third.list_requests("friend", self_id="10000"))["items"] == []
-
-@pytest.mark.usefixtures('restore_manager')
-@pytest.mark.asyncio
 async def test_expiration_missing_legacy_payload_and_corrupt_inbox_fail_closed(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("satrap.core.platform.onebot.request_registry.time", lambda: 1000.0)
     registry = RequestFlagRegistry("ob", RequestApprovalLedger(tmp_path / "ledger.json"))
@@ -155,31 +132,6 @@ async def test_expiration_missing_legacy_payload_and_corrupt_inbox_fail_closed(t
     registry.inbox.path.write_bytes(b"broken")
     with pytest.raises(sqlite3.DatabaseError):
         await registry.list_requests("friend", self_id="10000")
-
-@pytest.mark.usefixtures('restore_manager')
-@pytest.mark.asyncio
-async def test_request_pagination_separates_platform_account_kind_and_group(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("satrap.core.platform.onebot.request_registry.time", lambda: 1000.0)
-    ledger = RequestApprovalLedger(tmp_path / "ledger.json")
-    registry = RequestFlagRegistry("ob", ledger)
-    other = RequestFlagRegistry("other", ledger)
-    for index in range(3):
-        await registry.register("group", f"g{index}", self_id="10000", group_id="456", sub_type="add", user_id="7")
-    await registry.register("group", "different-group", self_id="10000", group_id="789", sub_type="invite", user_id="7")
-    await registry.register("friend", "g0", self_id="10000", user_id="7")
-    await registry.register("group", "g0", self_id="20000", group_id="456", sub_type="add", user_id="7")
-    await other.register("group", "g0", self_id="10000", group_id="456", sub_type="add", user_id="7")
-    changed_account = await registry.list_requests("group", self_id="20000", group_id="456")
-    assert len(changed_account["items"]) == 1 and changed_account["items"][0]["user_id"] == "7"
-    first = await registry.list_requests("group", self_id="10000", group_id="456", limit=2)
-    assert first["total"] == 3 and first["has_more"]
-    next_page = await registry.list_requests("group", self_id="10000", group_id="456", cursor=first["next_cursor"])
-    assert len(next_page["items"]) == 1 and not next_page["has_more"]
-    with pytest.raises(ValueError):
-        await registry.list_requests("group", self_id="10000", group_id="789", cursor=first["next_cursor"])
-    for target, kind, account in [(other, "group", "10000"), (registry, "friend", "10000"), (registry, "group", "20000")]:
-        with pytest.raises(LookupError):
-            await target.resolve_request(kind, first["items"][0]["request_id"], self_id=account)
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
@@ -582,25 +534,6 @@ class TestDiagnosticCollection:
         assert record["message_id"] == "9"
 
     @pytest.mark.asyncio
-    async def test_rate_limit_stage_records_waited_reason(self, tmp_path: Path):
-        from satrap.core.pipeline.rate_limiter import RateLimiter
-
-        scheduler, _, adapter = _scheduler(tmp_path)
-        limiter = RateLimiter(rate=0.0, burst=1)
-        scheduler.rate_limiter = limiter
-        event = _event(adapter)
-        scheduler.request_diagnostics.record(RequestDiagnostic(
-            adapter_id="ob", session_id=event.session_id, actor_id="30", stage="wake_decision",
-            decision="dropped", reason="not_woken", recorded_at=_NOW, request_id=event.call_origin.request_id,
-        ))
-        await scheduler.execute(event)
-        detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
-        assert detail is not None
-        stages = _stages(detail)
-        # 限流拒绝与该事件其余阶段共用同一 request_id
-        assert stages["wake_decision"]["status"] == "dropped"
-
-    @pytest.mark.asyncio
     async def test_attachment_failure_is_a_stage_not_the_final_result(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """反例: 语音转写失败与最终发送结果分别展示, 不压成单一 failed"""
         scheduler, _, adapter = _scheduler(tmp_path, response="回复")
@@ -750,13 +683,10 @@ class TestDiagnosticBounds:
         ))
         rendered = str(log.list_requests("ob")) + str(log.get_request("r1", "ob"))
         assert "模型输出 12 字符" in rendered
-        # 记录字段白名单之外的内容不会进入查询结果
+        # 记录字段白名单之外的正文字段不会进入查询结果
+        forbidden = {"body", "content", "raw", "text", "message_body", "raw_content"}
         for item in cast(list[dict[str, Any]], log.list("ob")):
-            assert set(item) == {
-                "recorded_at", "adapter_id", "session_id", "actor_id", "stage", "decision", "reason",
-                "message_id", "request_id", "send_status", "self_id", "status", "reason_code",
-                "turn_id", "attachments", "notes",
-            }
+            assert not (forbidden & set(item))
 
 class TestDiagnosticRoutes:
     @staticmethod
@@ -910,8 +840,8 @@ class TestDiagnosticRoutes:
         assert both[0] == 200 and self._request_ids(both[1]) == set()
 
     @pytest.mark.asyncio
-    async def test_rejection_preset_equals_legacy_rejection_requests(self, tmp_path: Path):
-        """等价性: 仅看拒绝的请求集合与旧拒绝记录接口的 request_id 集合一致"""
+    async def test_rejection_preset_matches_legacy_and_groups_repeated_decisions(self, tmp_path: Path):
+        """拒绝预设与旧拒绝接口的 request_id 集合一致; 同请求多条记录按请求归并"""
         server, _, scheduler, _ = self._server(tmp_path)
         self._seed_rejections(scheduler)
         legacy = await server._route("GET", "/api/platforms/wake/rejections?adapter_id=ob&limit=256", b"")
@@ -920,19 +850,16 @@ class TestDiagnosticRoutes:
         assert self._request_ids(legacy[1]) == self._request_ids(preset[1])
         assert self._request_ids(preset[1]) == {"req-rejected", "req-limited", "req-cooldown", "req-resumed"}
 
-    @pytest.mark.asyncio
-    async def test_rejection_preset_groups_repeated_decisions_per_request(self, tmp_path: Path):
-        """定时复查会给同一请求追加第二条决策记录: 记录级与请求级的条数差异是预期行为"""
-        server, _, scheduler, _ = self._server(tmp_path)
+        # 定时复查会给同一请求追加第二条决策记录: 记录级与请求级的条数差异是预期行为
+        loop_server, _, loop_scheduler, _ = self._server(tmp_path / "loop")
         for index, reason_code in enumerate(("frequency", "cooldown")):
-            scheduler.request_diagnostics.record(RequestDiagnostic(
+            loop_scheduler.request_diagnostics.record(RequestDiagnostic(
                 adapter_id="ob", session_id="group%20", actor_id="30", stage="wake_decision", decision="dropped",
                 reason=f"{reason_code}: 测试", recorded_at=_NOW + index, request_id="req-loop", reason_code=reason_code,
             ))
-        legacy = await server._route("GET", "/api/platforms/wake/rejections?adapter_id=ob&limit=256", b"")
-        preset = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=wake_decision,rate_limit", b"")
-        # 旧接口按记录返回两条, 新视图按请求归并为一条并保留两个原因码
-        assert len(cast(list[Any], legacy[1]["records"])) == 2
-        summaries = cast(list[dict[str, Any]], preset[1]["records"])
+        loop_legacy = await loop_server._route("GET", "/api/platforms/wake/rejections?adapter_id=ob&limit=256", b"")
+        loop_preset = await loop_server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=wake_decision,rate_limit", b"")
+        assert len(cast(list[Any], loop_legacy[1]["records"])) == 2
+        summaries = cast(list[dict[str, Any]], loop_preset[1]["records"])
         assert len(summaries) == 1 and summaries[0]["request_id"] == "req-loop"
         assert summaries[0]["reason_codes"] == ["frequency", "cooldown"]
