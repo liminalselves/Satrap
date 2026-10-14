@@ -6,12 +6,15 @@
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import copy
 
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
 from satrap.core.utils.async_worker import RAG_WORKERS
 from satrap.core.utils.context import ContextManager, AsyncContextManager
+
+if TYPE_CHECKING:
+    from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 
 
 def perform_data_operation(database: str, conversation: str, layer: str, payload: dict[str, Any], context: ContextManager | AsyncContextManager | None = None) -> dict[str, Any]:
@@ -44,7 +47,7 @@ def perform_data_operation(database: str, conversation: str, layer: str, payload
     return {**result, **{key: saved[key] for key in ("saved", "backup_id") if key in saved}}
 
 
-async def manage_platform_data(database: str, manager: Any, conversation: str, layer: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def manage_platform_data(database: str, manager: SessionManager | None, conversation: str, layer: str, payload: dict[str, Any]) -> dict[str, Any]:
     """
     协调平台活动实例, 不实例化未激活的会话
 
@@ -58,7 +61,7 @@ async def manage_platform_data(database: str, manager: Any, conversation: str, l
     返回:
     - 数据快照, 忙碌或多实例共享同一上下文时拒绝编辑
     """
-    matches = []
+    matches: list[tuple[SessionEntry, ContextManager | AsyncContextManager]] = []
     if manager is not None:
         for entry in manager.pool.list_entries().values():
             for context in entry.session._all_contexts().values():

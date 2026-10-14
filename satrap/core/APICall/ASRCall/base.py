@@ -20,7 +20,7 @@ class _ASRBase(Generic[_ClientT]):
         suppress_error: bool = True,
         lock_api_key: bool = True,
         allow_insecure_base_url: bool = False,
-    ):
+    ) -> None:
         """
         ASR API 共用配置初始化
 

@@ -1,7 +1,7 @@
 """插件管理目录, 汇总来源与配置引用而不导入插件代码"""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import hashlib
 
 from satrap.display.plugins import ChatPluginRegistry
@@ -11,11 +11,15 @@ from satrap.edictum.plugin_settings import validate_plugin_settings
 from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 from satrap.core.config.agent_routing import validate_session_bindings
 from satrap.core.config.document import ConfigRevisionConflict, config_document_revision
+from satrap.core.config.model_snapshot import ModelConfigReader
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.edictum.plugin_spec import parse_plugin_specs
 from satrap.edictum.registry import EDICTUM_PROVIDER
+
+if TYPE_CHECKING:
+    from satrap.core.rag import RagService
 
 
 class PluginManagementService:
@@ -28,8 +32,8 @@ class PluginManagementService:
         chat: ChatPluginRegistry,
         *,
         manager: PluginConfigManager | None = None,
-        models: Any = None,
-        rag: Any = None,
+        models: ModelConfigReader | None = None,
+        rag: RagService | None = None,
         edictum: EdictumConfigService | None = None,
     ) -> None:
         """

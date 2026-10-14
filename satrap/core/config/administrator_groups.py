@@ -369,7 +369,7 @@ class AdministratorGrant:
     revision: str = ""
 
 
-def _freeze(value: Any) -> Any:
+def _freeze(value: object) -> object:
     """
     冻结已规范化的管理员结构
 
@@ -398,7 +398,7 @@ def _frozen_groups(groups: list[dict[str, Any]]) -> tuple[Mapping[str, Any], ...
     返回:
     - 深只读的元组, 读取时不需再复制或解析
     """
-    return _freeze(groups)
+    return cast(tuple[Mapping[str, Any], ...], _freeze(groups))
 
 
 class AdministratorService:

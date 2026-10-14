@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from time import monotonic
 from typing import Any, cast
 import asyncio
@@ -149,7 +150,7 @@ async def resolve_media(event: MessageEvent, selection: MediaSelection) -> tuple
 
 
 async def _resolve_item(
-    event: MessageEvent, item: MediaItem, get_image: Any,
+    event: MessageEvent, item: MediaItem, get_image: Callable[[str], Awaitable[dict[str, Any]]] | None,
     trusted: tuple[str, ...], verify_tls: bool, allow_plaintext: bool,
 ) -> MediaResult:
     """
@@ -196,7 +197,7 @@ async def _resolve_item(
     return MediaResult(source, "video", "failed", "video_download_failed" if is_http else "video_unsupported_by_implementation")
 
 
-async def _refresh_image_url(get_image: Any, key: str) -> str:
+async def _refresh_image_url(get_image: Callable[[str], Awaitable[dict[str, Any]]], key: str) -> str:
     """
     经实现动作取回刷新后的图片地址
 

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,7 +60,7 @@ def free_ports() -> list[int]:
             listener.close()
 
 
-def get(url: str, json_body: bool = True):
+def get(url: str, json_body: bool = True) -> Any:
     """使用当前发行目录的令牌访问测试服务"""
     token = (ROOT / ".satrap/credentials/api-token").read_text(encoding="utf-8").strip()
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})

@@ -19,7 +19,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict, cast, Generator
+from typing import Any, Literal, TypeVar, TypedDict, cast, Generator
 from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -75,6 +75,8 @@ MAIN_FILE_STATES = frozenset({"present", "missing"})
 """主文件应存在 (present) 或已被隔离 (missing, 仅出现在降级清单中)"""
 ARCHIVE_FILE_STATES = frozenset({"absent", "present", "missing"})
 """归档尚未创建 (absent), 已创建 (present), 或应存在但丢失 (missing)"""
+
+_T = TypeVar("_T")
 
 
 class RequestRecord(TypedDict):
@@ -915,7 +917,7 @@ class ManualWakeStore:
         return "no_op" if archived["status"] == status else "conflict"
 
     @staticmethod
-    def _restore_record(records: dict[str, Any], key: str, previous: Any) -> None:
+    def _restore_record(records: dict[str, _T], key: str, previous: _T) -> None:
         """写入失败时恢复内存快照, 不向查询展示未持久确认的终态"""
         records[key] = previous
 

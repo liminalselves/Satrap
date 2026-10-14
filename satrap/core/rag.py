@@ -16,6 +16,7 @@ import uuid
 from satrap.edictum.plugin_resources import build_model_client, named_model_config
 from satrap.core.storage.file_lock import FileLock, session_storage_lock
 from satrap.core.utils.text_utils import TextSplitter
+from satrap.core.type import EmbeddingConfig
 from satrap.core.database import DataBase
 from satrap.core.storage import StorageLayout
 
@@ -58,7 +59,7 @@ def ensure_rag_tables(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS rag_kb_default ON rag_knowledge_bases(session_id) WHERE is_default=1 AND scope='session'")
 
 
-def embedding_identity(config: Any) -> str:
+def embedding_identity(config: EmbeddingConfig) -> str:
     """索引身份排除 API Key, 更换相同模型凭据不要求重新向量化"""
     return json.dumps({"model": config.model, "base_url": (config.base_url or "").rstrip("/"), "dimensions": config.dimensions}, sort_keys=True)
 
@@ -237,7 +238,7 @@ class RagService:
         if callable(close):
             close()
 
-    def _embed_source(self, index: DataBase, config: dict[str, Any], source: dict[str, Any], model: Any) -> int:
+    def _embed_source(self, index: DataBase, config: dict[str, Any], source: dict[str, Any], model: EmbeddingConfig) -> int:
         chunks = TextSplitter(config["chunk_size"], config["chunk_overlap"]).split_text(source["source_text"])
         if not chunks:
             raise ValueError("文档没有可索引的文本")

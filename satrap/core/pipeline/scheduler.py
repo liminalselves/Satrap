@@ -41,6 +41,7 @@ from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import (
     MEDIA_FAILED_FEEDBACK,
+    ProjectedInput,
     media_sources,
     project_input,
     resolve_forwards,
@@ -331,7 +332,7 @@ class PipelineScheduler:
 
     def _record_projection(
         self, event: MessageEvent, quote_status: str, forward_status: str,
-        attachments: Sequence[Any], projected: Any,
+        attachments: Sequence[object], projected: ProjectedInput,
     ) -> None:
         """
         补全与投影阶段诊断: 附件与引用补全结果独立成条, 不与最终发送结果混同

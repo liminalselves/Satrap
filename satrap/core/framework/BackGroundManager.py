@@ -68,7 +68,7 @@ class ModelConfigManager:
         auto_create: bool = True,
         asr_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
         llm_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
-    ):
+    ) -> None:
         """
         初始化 ModelConfigManager
 
@@ -641,7 +641,7 @@ class ModelConfigManager:
         with self._lock:
             return self._to_payload_locked(mask_api_key=mask_api_key)["asr"]
 
-    def set_asr_config(self, config: ASRConfig, name: str | None = None):
+    def set_asr_config(self, config: ASRConfig, name: str | None = None) -> None:
         """
         设置 ASR 配置
 
@@ -656,7 +656,7 @@ class ModelConfigManager:
             self._asr_configs[key] = ASRConfig(**payload)
             self._save_locked()
 
-    def update_asr_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
+    def update_asr_config(self, name: str = DEFAULT_NAME, **kwargs: object) -> None:
         """
         更新 ASR 配置
 
