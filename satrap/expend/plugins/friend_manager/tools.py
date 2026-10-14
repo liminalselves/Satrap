@@ -1,19 +1,20 @@
 """独立好友管理模型工具, 只调用通用好友宿主"""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 import copy
 import secrets
 from dataclasses import replace
 
-from satrap.core.call_context import current_call_origin, is_private_origin, is_group_origin
+from satrap.core.call_context import CallOrigin, current_call_origin, is_private_origin, is_group_origin
 from satrap.core.config.model_tool_authorization import bind_tool_session, model_tool_authorization
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.platform import current_adapter_manager
+from satrap.core.platform import PlatformAdapter, current_adapter_manager
 from satrap.core.friends import FriendError
-from satrap.core.friends.service import failure, text_id
+from satrap.core.friends.service import FriendService, failure, text_id
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
+from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.plugin_authorization import PluginEntryBinding, authorize_management_permissions, require_plugin_entry_permission, bind_plugin_factory_tools, permission_id_list
 from satrap.edictum.plugin_resources import PluginResources
 from satrap.core.log import logger
@@ -57,14 +58,13 @@ def _failure_result(parsed: tuple[str, str, bool]) -> dict[str, Any]:
     return {"ok": False, "error": {"code": code, "message": message, "retryable": retryable}}
 
 
-class _FriendMixin:
+class _FriendMixin(_ToolBase):
     """声明保持稳定, 执行时核验可信平台来源和本人范围"""
-    tool_name: str | None
     tool_enabled: bool
     config: dict[str, Any]
     _plugin_entry_binding: PluginEntryBinding
 
-    def _resolve(self, *, preview: bool = False) -> tuple[Any, Any]:
+    def _resolve(self, *, preview: bool = False) -> tuple[PlatformAdapter, CallOrigin]:
         """
         核验来源账号, 群聊或私聊及当前工具状态
 
@@ -148,7 +148,7 @@ class _FriendMixin:
 
             # Step.1 验证当前会话范围, 本人服务和管理服务共享宿主边界
             await (adapter.group_chat_private_scope(origin) if is_private_origin(origin) else adapter.group_chat_scope(origin))
-            host = adapter.friend_host
+            host = cast(FriendService, adapter.friend_host)
             scope = self._scope(write=name in {"friend_manager_handle_request", "friend_manager_delete_friend", "friend_manager_send_request"})
             owner = origin.actor_id if scope == "self" else ""
 
@@ -170,7 +170,7 @@ class _FriendMixin:
                         raise FriendError("permission_denied", "普通用户只能管理本人的好友关系")
                 elif owner:
                     await host.recheck_request(origin.self_id, kwargs["request_id"], owner_user_id=owner)
-                def permission(live: Any, target: str) -> None:
+                def permission(live: _FriendMixin, target: str) -> None:
                     """
                     等待和审批后复核本插件权限及目标保护
 

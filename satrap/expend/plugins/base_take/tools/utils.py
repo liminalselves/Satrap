@@ -11,11 +11,14 @@ base_take 插件工具集: search / fetch_page / code_sandbox / read_document
 from __future__ import annotations
 import inspect
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from typing import Awaitable, Callable
 from satrap.core.utils.paths import get_project_root
 from satrap.core.type import safe_getattr, safe_getattr_callable
 from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+if TYPE_CHECKING:
+    from .base import _DocumentCore
 
 
 SessionType = SimpleSession | AsyncSimpleSession
@@ -175,7 +178,7 @@ def _resolve_doc_path(
     return abs_path
 
 
-def _doc_workspace_root(tool: Any) -> Path:
+def _doc_workspace_root(tool: _DocumentCore) -> Path:
     """
     文档工具的工作区根 (调用时解析): 会话鸭子属性优先 (项目会话), 否则安装期基线
 
@@ -191,7 +194,7 @@ def _doc_workspace_root(tool: Any) -> Path:
     return cast(Path, tool._base_root)
 
 
-def _doc_upload_root(tool: Any) -> Path | None:
+def _doc_upload_root(tool: _DocumentCore) -> Path | None:
     """
     获取当前会话独占 uploads 目录
 

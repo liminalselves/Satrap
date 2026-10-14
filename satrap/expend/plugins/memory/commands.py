@@ -7,7 +7,7 @@ memory 插件命令: /memory (同步 + 异步)
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import json
 
@@ -81,10 +81,13 @@ def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
         memories = store.execute("list_all")
         if isinstance(memories, dict):
             return str(memories.get("error", "读取失败"))
-        if not memories:
+        if not isinstance(memories, list):
+            return "读取失败"
+        rows = cast(list[dict[str, Any]], memories)
+        if not rows:
             return "当前没有长期记忆"
-        lines = [f"共 {len(memories)} 条记忆:"]
-        for m in memories:
+        lines = [f"共 {len(rows)} 条记忆:"]
+        for m in rows:
             tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
             lines.append(f"- {m['id']} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
         return "\n".join(lines)
@@ -94,12 +97,18 @@ def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
             return "用法: /memory add <标题> <内容>"
         parts = rest.split(" ", 1)
         result = store.execute("add", parts[0], parts[1] if len(parts) > 1 else "")
-        return f"记忆已添加: [{result['title']}] {result['content']}" if result.get("ok") else f"添加失败: {result.get('error')}"
+        if not isinstance(result, dict):
+            return "添加失败: 返回格式异常"
+        added = cast(dict[str, Any], result)
+        return f"记忆已添加: [{added['title']}] {added['content']}" if added.get("ok") else f"添加失败: {added.get('error')}"
     if sub in ("del", "delete", "删除"):
         if len(args) < 2:
             return "用法: /memory del <记忆 ID>"
         result = store.execute("delete", args[1])
-        return f"记忆已删除: {args[1]}" if result.get("ok") else f"删除失败: {result.get('error')}"
+        if not isinstance(result, dict):
+            return "删除失败: 返回格式异常"
+        deleted = cast(dict[str, Any], result)
+        return f"记忆已删除: {args[1]}" if deleted.get("ok") else f"删除失败: {deleted.get('error')}"
     if sub in ("clear", "清空"):
         if not store.store.can_write():
             return store.store.write_denied_reason("清空")

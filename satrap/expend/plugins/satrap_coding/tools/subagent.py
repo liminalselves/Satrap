@@ -1,17 +1,22 @@
 from __future__ import annotations
-from typing import Any
+from typing import Any, Generic, TypeVar, cast
 import uuid
 from satrap.core.framework.Base import (
     AsyncModelWorkflowFramework,
     ModelWorkflowFramework,
 )
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
+from satrap.core.utils.TCBuilder import AsyncToolsManager, ToolsManager
+
+_LLMT = TypeVar("_LLMT", LLM, AsyncLLM)
+_ManagerT = TypeVar("_ManagerT", ToolsManager, AsyncToolsManager)
 
 
-class _SubAgentCore:
+class _SubAgentCore(Generic[_LLMT, _ManagerT]):
     def __init__(
         self,
-        llm: Any,
-        tools_manager: Any,
+        llm: _LLMT,
+        tools_manager: _ManagerT,
         system_prompt: str,
         tools: list[str] | None = None,
     ):
@@ -30,14 +35,15 @@ class _SubAgentCore:
             for name in tools:
                 tool = tools_manager.tools.get(name)
                 if tool is not None:
-                    sub_manager.register_tool(tool)
+                    # 工具与注册目标同属一种管理器, 约束泛型无法表达这层关联
+                    sub_manager.register_tool(cast(Any, tool))
         self.llm = llm
         self.tools_manager = sub_manager
         self.system_prompt = system_prompt
         self.context_id = f"coding_sub_{uuid.uuid4().hex[:8]}"
 
 
-class _CodingSubAgent(_SubAgentCore):
+class _CodingSubAgent(_SubAgentCore[LLM, ToolsManager]):
     """独立上下文的子代理 (自定义 system prompt / 工具白名单 / 迭代上限)"""
 
     def forward(self, task: str, max_turns: int = 20) -> str:
@@ -61,7 +67,7 @@ class _CodingSubAgent(_SubAgentCore):
         return sub.tools_agent(task, max_iterations=max_turns)
 
 
-class _AsyncCodingSubAgent(_SubAgentCore):
+class _AsyncCodingSubAgent(_SubAgentCore[AsyncLLM, AsyncToolsManager]):
     """异步独立上下文的子代理"""
 
     async def forward(self, task: str, max_turns: int = 20) -> str:

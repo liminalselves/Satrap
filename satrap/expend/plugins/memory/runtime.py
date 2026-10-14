@@ -2,18 +2,23 @@
 from __future__ import annotations
 
 from collections.abc import Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.plugin_authorization import plugin_tool_live
+from satrap.core.plugin_authorization import BoundPluginTool, plugin_tool_live
 from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.memory.scoped import MemoryError
 from satrap.core.call_context import current_call_origin, is_group_origin
 from satrap.core.platform import current_adapter_manager
 from satrap.core.log import logger
 
+if TYPE_CHECKING:
+    from satrap.edictum import AsyncSimpleSession, SimpleSession
 
-def active_config(session: Any, config: dict[str, Any], kind: str, name: str, tool: Any = None) -> dict[str, Any]:
+    SessionType = SimpleSession | AsyncSimpleSession
+
+
+def active_config(session: SessionType | None, config: dict[str, Any], kind: str, name: str, tool: BoundPluginTool | None = None) -> dict[str, Any]:
     """
     每次读取当前插件及独立能力状态, 不依赖安装时的旧权限结论
 
@@ -52,7 +57,10 @@ def group_call() -> bool:
     return is_group_origin(current_call_origin())
 
 
-def wait_host(coroutine: Coroutine[Any, Any, Any]) -> Any:
+T = TypeVar("T")
+
+
+def wait_host(coroutine: Coroutine[Any, Any, T]) -> T | dict[str, Any]:
     """
     从同步会话的工作线程调用原平台事件循环
 

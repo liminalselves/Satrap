@@ -10,7 +10,8 @@ import asyncio
 from typing import Any
 
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
-from satrap.core.utils.TCBuilder import AsyncTool
+from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager
 from .sync_interaction import ShellTool, _shell_definition
 from satrap.edictum import AsyncSimpleSession
 from .contracts import require_bound_session
@@ -184,7 +185,7 @@ class AsyncSubAgentTool(AsyncTool):
         "max_turns": ("number", "最大工具迭代轮数, 范围 1-100, 默认 20"),
     }
 
-    def __init__(self, llm: Any, tools_manager: Any) -> None:
+    def __init__(self, llm: AsyncLLM, tools_manager: AsyncToolsManager) -> None:
         """
         初始化 AsyncSubAgentTool
 

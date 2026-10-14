@@ -13,10 +13,13 @@ from satrap.core.config.group_action_origin import ModelActionAuthorization, bin
 from satrap.core.config.group_approval import model_plugin_requires_approval
 from satrap.core.platform.onebot.admin import (OneBotAdmin, AdminActionRejected, AdminActionUnconfirmed,
                                              PlatformAdminError, UnsupportedAdminAction)
+from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
+from satrap.core.plugin_authorization import (BoundPluginTool, PluginEntryBinding, authorize_plugin_entry,
+                                              require_plugin_entry_permission, bind_plugin_factory_tools)
 from satrap.edictum.plugin_resources import PluginResources
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error
+from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.call_context import CallOrigin, require_call_origin, is_group_origin, bind_call_origin
 from satrap.core.platform import current_adapter_manager
@@ -97,7 +100,7 @@ _ACTION_NAMES: dict[str, str] = {
 }
 
 
-def _as_bool(value: Any, name: str) -> bool:
+def _as_bool(value: object, name: str) -> bool:
     """严格解析布尔参数, 拒绝真值语义"""
     if isinstance(value, bool):
         return value
@@ -106,7 +109,7 @@ def _as_bool(value: Any, name: str) -> bool:
     raise ValueError(f"{name} 必须为布尔值")
 
 
-def _resolve(tool: Any, write: bool, *, preview: bool = False) -> tuple[Any, CallOrigin, list[str]]:
+def _resolve(tool: BoundPluginTool, write: bool, *, preview: bool = False) -> tuple[OneBotAdapter, CallOrigin, list[str]]:
     """
     校验来源身份, 写操作开关, 调用者与群范围, 返回来源适配器
 
@@ -131,12 +134,12 @@ def _resolve(tool: Any, write: bool, *, preview: bool = False) -> tuple[Any, Cal
     adapter = manager.get_adapter(origin.adapter_id) if manager is not None else None
     if adapter is None:
         raise ValueError("来源平台实例不存在或未运行")
-    if not isinstance(getattr(adapter, "admin", None), OneBotAdmin):
+    if not isinstance(adapter, OneBotAdapter):
         raise UnsupportedAdminAction("当前平台不支持 OneBot 群管理动作")
     return adapter, origin, _lines(config.get("allowed_groups"))
 
 
-def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any], *, tool: Any = None) -> str:
+def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any], *, tool: BoundPluginTool | None = None) -> str:
     """
     解析目标群, 默认当前群聊上下文, 私聊必须显式指定
 
@@ -160,7 +163,7 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any], *,
     return group_id
 
 
-def _uses_platform_group_admin(tool: Any) -> bool:
+def _uses_platform_group_admin(tool: BoundPluginTool) -> bool:
     """
     判断当前入口是否依赖平台群管理员授权
 
@@ -174,7 +177,7 @@ def _uses_platform_group_admin(tool: Any) -> bool:
     return any(grant.source == "platform_group_admin" for grant in decision.grants)
 
 
-async def _refresh_group_role(tool: Any, adapter: Any, origin: CallOrigin, target: str) -> None:
+async def _refresh_group_role(tool: BoundPluginTool, adapter: OneBotAdapter, origin: CallOrigin, target: str) -> None:
     """
     对依赖本群管理员身份的调用回源复核角色
 
@@ -199,7 +202,7 @@ async def _refresh_group_role(tool: Any, adapter: Any, origin: CallOrigin, targe
         raise PermissionError("调用者当前不是该 QQ 群的群主或管理员, 或平台身份无法确认")
 
 
-def _request_access(tool: Any, origin: CallOrigin, adapter: Any) -> None:
+def _request_access(tool: BoundPluginTool, origin: CallOrigin, adapter: OneBotAdapter) -> None:
     """
     对申请查询和处理单独授权, 不跨目标群读取申请
 
@@ -215,7 +218,7 @@ def _request_access(tool: Any, origin: CallOrigin, adapter: Any) -> None:
         raise PermissionError("申请来源机器人账号已变化或未确认")
 
 
-def _write_authorization(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> ModelActionAuthorization:
+def _write_authorization(tool: BoundPluginTool, admin: OneBotAdmin, origin: CallOrigin) -> ModelActionAuthorization:
     """
     用本插件配置复核管理写授权, 来源存活校验由宿主完成
 
@@ -227,7 +230,7 @@ def _write_authorization(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> M
     返回:
     - 可交给宿主审批的写授权
     """
-    def permission(live: Any, target_group: str) -> None:
+    def permission(live: BoundPluginTool, target_group: str) -> None:
         """
         从管理插件当前配置复核目标与调用者
 
@@ -263,7 +266,7 @@ def _write_authorization(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> M
 
 
 def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str],
-                kwargs: dict[str, Any], source_tool: Any) -> Coroutine[Any, Any, Any]:
+                kwargs: dict[str, Any], source_tool: BoundPluginTool) -> Coroutine[Any, Any, object]:
     """
     按工具名组装管理动作协程, 群目标默认取当前群
 
@@ -284,7 +287,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
         if not isinstance(kwargs["nickname"], str) or len(kwargs["nickname"]) > 60:
             raise ValueError("nickname 必须是最多 60 字符的文本")
     if name in {"group_admin_list_group_requests", "group_admin_handle_group_request"}:
-        async def request_call() -> Any:
+        async def request_call() -> object:
             """
             先解析申请身份, 等待后重验权限并沿用原有审批执行路径
 
@@ -332,7 +335,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
 
 
 def _dispatch_action(name: str, admin: OneBotAdmin, origin: CallOrigin, gid: str, kwargs: dict[str, Any],
-                     source_tool: Any) -> Coroutine[Any, Any, Any]:
+                     source_tool: BoundPluginTool) -> Coroutine[Any, Any, object]:
     """
     把已授权且已解析群目标的动作组装成待执行协程
 
@@ -385,7 +388,7 @@ def _dispatch_action(name: str, admin: OneBotAdmin, origin: CallOrigin, gid: str
     if name == "group_admin_set_anonymous":
         return admin.set_group_anonymous(gid, _as_bool(kwargs.get("enable"), "enable"))
     if name == "group_admin_set_group_nickname":
-        return admin.set_group_card(gid, kwargs.get("user_id", ""), kwargs.get("nickname"))
+        return admin.set_group_card(gid, kwargs.get("user_id", ""), cast(str, kwargs.get("nickname")))
     if name == "group_admin_set_name":
         return admin.set_group_name(gid, kwargs.get("name", ""))
     if name == "group_admin_set_title":
@@ -431,10 +434,9 @@ def _error_result(tool_name: str | None, error: Exception) -> dict[str, Any]:
     return tool_error(name, "管理操作暂不可用, 请查看后端日志", "execution_error")
 
 
-class _GroupAdminMixin:
+class _GroupAdminMixin(_ToolBase):
     """权限解析与执行归一, 同步入口把协程桥接到平台事件循环"""
 
-    tool_name: str | None
     config: dict[str, Any]
     _plugin_entry_binding: PluginEntryBinding
 

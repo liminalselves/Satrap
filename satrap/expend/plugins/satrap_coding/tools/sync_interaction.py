@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
-from satrap.core.utils.TCBuilder import Tool
+from satrap.core.APICall.LLMCall import LLM
+from satrap.core.utils.TCBuilder import Tool, ToolsManager
 from satrap.edictum import SimpleSession
 from .contracts import require_bound_session
 from .constants import _SUBAGENT_PROMPT
@@ -202,7 +203,7 @@ class SubAgentTool(Tool):
         "max_turns": ("number", "最大工具迭代轮数, 范围 1-100, 默认 20"),
     }
 
-    def __init__(self, llm: Any, tools_manager: Any) -> None:
+    def __init__(self, llm: LLM, tools_manager: ToolsManager) -> None:
         """
         初始化 SubAgentTool
 

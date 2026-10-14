@@ -7,15 +7,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar, cast
 import weakref
 
 from satrap.core.config.group_action_origin import ModelActionAuthorization
 from satrap.core.call_context import CallOrigin, bind_call_origin
-from satrap.core.plugin_authorization import plugin_tool_live
+from satrap.core.plugin_authorization import BoundPluginTool, plugin_tool_live
+
+_ToolT = TypeVar("_ToolT", bound=BoundPluginTool)
 
 
-def config_ids(value: Any) -> list[str]:
+def config_ids(value: object) -> list[str]:
     """
     宽松解析业务配置里的逐行或列表 ID, 保留顺序并逐项转成文字
 
@@ -28,11 +30,11 @@ def config_ids(value: Any) -> list[str]:
     返回:
     - 去除空值后的 ID 列表, 顺序与原始配置一致
     """
-    values = value if isinstance(value, list) else str(value or "").splitlines()
+    values = cast(list[Any], value) if isinstance(value, list) else str(value or "").splitlines()
     return [str(item).strip() for item in values if str(item).strip()]
 
 
-def bind_tool_session(tool: Any, session: Any) -> None:
+def bind_tool_session(tool: BoundPluginTool, session: object) -> None:
     """
     保留来源会话弱引用, 不使审批延长会话存活
 
@@ -41,14 +43,14 @@ def bind_tool_session(tool: Any, session: Any) -> None:
     - session: 安装工具的会话
     """
     try:
-        tool._model_tool_session_ref = weakref.ref(session)
+        setattr(tool, "_model_tool_session_ref", weakref.ref(session))
     except TypeError:
-        tool._model_tool_session_ref = None
-    tool._model_tool_session_id = str(getattr(session, "session_id", ""))
+        setattr(tool, "_model_tool_session_ref", None)
+    setattr(tool, "_model_tool_session_id", str(getattr(session, "session_id", "")))
 
 
-def model_tool_authorization(tool: Any, origin: CallOrigin, plugin_name: str,
-                             permission: Callable[[Any, str], None]) -> ModelActionAuthorization:
+def model_tool_authorization(tool: _ToolT, origin: CallOrigin, plugin_name: str,
+                             permission: Callable[[_ToolT, str], None]) -> ModelActionAuthorization:
     """
     固定模型写工具身份, 等待和审批时读取当前权限
 

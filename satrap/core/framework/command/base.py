@@ -1,5 +1,10 @@
 """命令注册与解析, 支持宿主绑定的管理权限声明"""
-from typing import Any, Optional, Dict, List, Tuple
+from __future__ import annotations
+from typing import TYPE_CHECKING, Any, Optional, Dict, List, Tuple
+from collections.abc import Callable
+
+if TYPE_CHECKING:
+    from satrap.core.plugin_authorization import PluginEntryBinding
 
 DEFAULT_COMMAND_PREFIX = "/"
 """默认命令前缀, 命令处理器构造默认值与平台命令入口判定共用同一事实来源"""
@@ -15,7 +20,7 @@ class _CommandRegistry:
     pref_len: int
     param_split: str
     _disabled_commands: set[str]
-    _permission_bindings: Dict[str, Any]
+    _permission_bindings: Dict[str, PluginEntryBinding]
 
     def _parse(self, message: str) -> Tuple[Optional[str], Optional[List[str]]]:
         """
@@ -79,7 +84,7 @@ class _CommandRegistry:
         """
         return self.intros.copy()
 
-    def register_command(self, name: str, handler: Any, intro: str = "None", *, permission_binding: Any = None):
+    def register_command(self, name: str, handler: Callable[..., Any], intro: str = "None", *, permission_binding: PluginEntryBinding | None = None) -> None:
         """
         注册命令处理函数
 

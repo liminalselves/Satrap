@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 import traceback
 import copy
 import json
@@ -18,6 +18,7 @@ from satrap.core.group_chat.reminder_service import execute_reminder_tool, REMIN
 from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.group_chat.types import GroupChatLimits
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.call_context import current_call_origin, is_group_origin, is_private_origin
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
@@ -28,6 +29,11 @@ from satrap.core.config.model_tool_authorization import bind_tool_session, model
 from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, plugin_tool_live, permission_id_list
 from satrap.core.config.group_action_origin import bind_model_action_authorization
 from satrap.core.group_chat.types import GroupChatError
+
+if TYPE_CHECKING:
+    from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+    SessionType = SimpleSession | AsyncSimpleSession
 
 
 def _string(description: str) -> dict[str, object]:
@@ -126,12 +132,11 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
 }
 
 
-class _GroupChatMixin:
+class _GroupChatMixin(_ToolBase):
     """在工具边界处理配置与来源, 不把读取失败包装为空成功"""
 
-    tool_name: str | None
     config: Mapping[str, object]
-    session: Session | AsyncSession
+    session: SessionType
     deferred_platform_reply = False
     _plugin_entry_binding: PluginEntryBinding
     _static_limits: GroupChatLimits | None = None
@@ -191,7 +196,7 @@ class _GroupChatMixin:
                 raise GroupChatError("forbidden", "机器人自身群昵称修改未获授权")
         if self.tool_name in REMINDER_ARGUMENTS:
             if (not callable(getattr(self.session, "list_plugins", None))
-                    or plugin_tool_live(self.session, "group_chat", self.tool_name, self) is not None):
+                    or plugin_tool_live(self.session, "group_chat", str(self.tool_name), self) is not None):
                 raise GroupChatError("stale_call", "提醒工具已从来源 Agent 移除或停用")
             if self.tool_name == "group_chat_create_reminder" and self.config.get("reminders_enabled") is not True:
                 raise GroupChatError("write_disabled", "请先在群聊插件配置中开启提醒")
@@ -213,7 +218,7 @@ class _GroupChatMixin:
             if adapter is not None:
                 capabilities = adapter.group_chat_capabilities()
                 media = self.config.get("media_reply_enabled", True) is True
-                schema: Any = properties["components"]
+                schema = cast(dict[str, Any], properties["components"])
                 schema["items"]["oneOf"] = [variant for variant in schema["items"]["oneOf"]
                     if capabilities.get(variant["properties"]["type"]["const"], {}).get("state") == "supported"
                     or variant["properties"]["type"]["const"] == "sticker" and media and capabilities.get("image", {}).get("state") == "supported"]
@@ -268,7 +273,7 @@ class _GroupChatMixin:
                     raise PermissionError("工具缺少当前来源")
                 adapter_manager = current_adapter_manager()
                 adapter = adapter_manager.get_adapter(origin.adapter_id) if adapter_manager else None
-                def permission(live: Any, target_group: str) -> None:
+                def permission(live: _GroupChatMixin, target_group: str) -> None:
                     """
                     固定账号和平台实例后复核机器人自身修改权限
 
@@ -462,7 +467,7 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
     for name, (description, _, _) in DEFINITIONS.items():
         tool = kind(name, description, {})
         tool.config = dict(config)
-        tool.session = session
+        tool.session = cast("SessionType", session)
         bind_tool_session(tool, session)
         tool.deferred_platform_reply = name == "group_chat_reply"
         tool.recovery_policy = "manual" if name in {"group_chat_reply", "group_chat_set_group_nickname", "group_chat_create_reminder"} else "retry"

@@ -1,7 +1,7 @@
 """账号级入群邀请工具, 不依赖群管理或好友插件"""
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 from dataclasses import replace
 import traceback
 from typing import Any, cast
@@ -10,12 +10,14 @@ import copy
 from satrap.core.config.model_tool_authorization import bind_tool_session, model_tool_authorization
 from satrap.core.config.group_action_origin import bind_model_action_authorization
 from satrap.core.platform.onebot.admin import OneBotAdmin, AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
+from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from satrap.core.plugin_authorization import PluginEntryBinding, bind_plugin_factory_tools, require_plugin_entry_permission, permission_id_list
 from satrap.edictum.plugin_resources import PluginResources
 from satrap.core.utils.TCBuilder import Tool, AsyncTool, tool_error
+from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.framework.Base import Session, AsyncSession
-from satrap.core.call_context import require_call_origin, is_private_origin, is_group_origin
+from satrap.core.call_context import CallOrigin, require_call_origin, is_private_origin, is_group_origin
 from satrap.core.platform import current_adapter_manager
 
 from satrap.core.log import logger
@@ -68,15 +70,13 @@ def _error(name: str | None, error: Exception) -> dict[str, Any]:
     return tool_error(str(name), str(error), kind)
 
 
-class _AccountRequestMixin:
+class _AccountRequestMixin(_ToolBase):
     """执行时检查真实发言者与账号权限, 声明不随调用者授权改变"""
 
-    tool_name: str | None
     config: dict[str, Any]
     _plugin_entry_binding: PluginEntryBinding
-    is_enabled: Callable[[], bool]
 
-    def _resolve(self, *, preview: bool = False) -> tuple[Any, Any, tuple[str, ...]]:
+    def _resolve(self, *, preview: bool = False) -> tuple[OneBotAdapter, CallOrigin, tuple[str, ...]]:
         """
         核验来源机器人账号与独立插件权限
 
@@ -90,8 +90,8 @@ class _AccountRequestMixin:
         if origin.actor_kind != "platform_user" or not (is_private_origin(origin) or is_group_origin(origin)):
             raise PermissionError("入群邀请工具需要有效的平台发送者身份")
         manager = current_adapter_manager()
-        adapter: Any = manager.get_adapter(origin.adapter_id) if manager else None
-        if adapter is None or not isinstance(getattr(adapter, "admin", None), OneBotAdmin):
+        adapter = manager.get_adapter(origin.adapter_id) if manager else None
+        if adapter is None or not isinstance(adapter, OneBotAdapter):
             raise UnsupportedAdminAction("当前平台未提供账号入群邀请能力")
         if not origin.self_id or adapter.bot_self_id != origin.self_id:
             raise PermissionError("机器人账号未确认或已变化")
@@ -154,13 +154,13 @@ class _AccountRequestMixin:
                 if current is not adapter or current.connection_generation() != generation or allowed != groups:
                     raise PermissionError("邀请查询范围已变化, 请重新查询")
             else:
-                handler: Any = getattr(adapter, "account_request_handler", None)
+                handler = getattr(adapter, "account_request_handler", None)
                 if not callable(handler):
                     raise PlatformLoopUnavailable("unavailable", "账号邀请审批服务未装配")
                 approval_policy = (self.config.get("approval_required", True) is not False,
                                    self.config.get("administrator_invites_auto_approve") is True)
 
-                def permission(live: Any, target: str) -> None:
+                def permission(live: _AccountRequestMixin, target: str) -> None:
                     """
                     执行和人工审批后重验来源及邀请目标
 

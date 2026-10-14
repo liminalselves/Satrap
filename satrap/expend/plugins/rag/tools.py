@@ -31,7 +31,7 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str]]] = {
 }
 
 
-def read_session_document(session: Any, path: str) -> tuple[str, str]:
+def read_session_document(session: Session | AsyncSession, path: str) -> tuple[str, str]:
     """校验解析后的路径位于明确允许的工作区或会话文件目录"""
     roots = [Path(str(value)).resolve() for key in ("coding_workspace_root", "coding_upload_root", "coding_sandbox_root", "coding_artifacts_root") if (value := getattr(session, key, None))]
     if not roots:

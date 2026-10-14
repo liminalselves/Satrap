@@ -6,13 +6,12 @@
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from contextvars import ContextVar
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Protocol, cast
 import hashlib
 import json
 import weakref
@@ -23,6 +22,10 @@ from satrap.core.log import logger
 if TYPE_CHECKING:
     from satrap.edictum.plugin_permissions import PluginPermissions
     from satrap.core.config.administrator_groups import AdministratorService
+    from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+    from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+    SessionType = SimpleSession | AsyncSimpleSession
 
 
 @dataclass(frozen=True)
@@ -160,8 +163,24 @@ class PluginEntryBinding:
     name: str
     permissions: PluginPermissions
     config: Mapping[str, Any]
-    entry_ref: Any
-    session_ref: Any = None
+    entry_ref: Callable[[], object | None]
+    session_ref: Callable[[], SessionType | None] | None = None
+
+
+class BoundPluginTool(Protocol):
+    """
+    bind_plugin_tool 绑定后的插件工具面
+
+    config 与 _plugin_entry_binding 由安装流程注入, 各插件工具类以属性声明满足本契约;
+    授权复核只依赖此面, 不绑定具体工具实现
+    """
+
+    tool_name: str | None
+    _plugin_entry_binding: PluginEntryBinding
+    is_enabled: Callable[[], bool]
+
+    @property
+    def config(self) -> Mapping[str, Any]: ...
 
 
 @dataclass
@@ -233,7 +252,8 @@ def bind_native_command(binding: PluginEntryBinding) -> Iterator[None]:
         _NATIVE_COMMAND.reset(token)
 
 
-def bind_plugin_tool(tool: Any, plugin_name: str, permissions: PluginPermissions, config: Mapping[str, Any], session: Any = None) -> None:
+def bind_plugin_tool(tool: _ToolBase, plugin_name: str, permissions: PluginPermissions, config: Mapping[str, Any],
+                     session: SessionType | None = None) -> None:
     """
     为实际工具建立授权绑定, 会话仅由正式安装流程传入
 
@@ -244,8 +264,9 @@ def bind_plugin_tool(tool: Any, plugin_name: str, permissions: PluginPermissions
     - config: 此工具实际使用的配置
     - session: 正式安装的原会话, 独立工厂使用 None
     """
-    tool._plugin_entry_binding = PluginEntryBinding(plugin_name, "tools", tool.get_tool_name(), permissions, config,
-                                                   weakref.ref(tool), weakref.ref(session) if session is not None else None)
+    setattr(tool, "_plugin_entry_binding",
+            PluginEntryBinding(plugin_name, "tools", tool.get_tool_name(), permissions, config,
+                               weakref.ref(tool), weakref.ref(session) if session is not None else None))
 
 
 _FACTORY_DECLARATIONS: dict[str, tuple[tuple[int, int], str, PluginPermissions]] = {}
@@ -302,7 +323,7 @@ def bind_plugin_factory_tools(tools: list[Any], source_file: str) -> None:
         bind_plugin_tool(tool, name, permissions, tool.config)
 
 
-def plugin_tool_live(session: Any, plugin_name: str, name: str, tool: Any) -> str | None:
+def plugin_tool_live(session: SessionType, plugin_name: str, name: str, tool: BoundPluginTool) -> str | None:
     """
     判定工具是否仍是来源会话主工作流中启用的同一插件工具
 
@@ -367,14 +388,14 @@ def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None) 
         if binding.kind not in ("tools", "commands"):
             return AuthorizationDecision("denied", *identity, reason_code="unknown_entry")
         entry = binding.entry_ref()
-        if entry is None or binding.kind == "tools" and not entry.is_enabled():
+        if entry is None or binding.kind == "tools" and not cast(BoundPluginTool, entry).is_enabled():
             return AuthorizationDecision("denied", *identity, reason_code="entry_disabled")
         if binding.session_ref is not None:
             session = binding.session_ref()
             if session is None:
                 return AuthorizationDecision("denied", *identity, reason_code="stale_authorization")
             if binding.kind == "tools":
-                reason = plugin_tool_live(session, binding.plugin_name, binding.name, entry)
+                reason = plugin_tool_live(session, binding.plugin_name, binding.name, cast(BoundPluginTool, entry))
                 if reason is not None:
                     return AuthorizationDecision("denied", *identity, reason_code=reason)
             else:

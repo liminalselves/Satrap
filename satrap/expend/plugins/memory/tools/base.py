@@ -1,7 +1,7 @@
 """记忆工具的公共执行核心"""
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 import copy
 
 from satrap.expend.plugins.memory.runtime import active_config, group_call, wait_host
@@ -9,9 +9,14 @@ from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.utils.TCBuilder import tool_error
 from satrap.core.memory.service import MemoryService
 from satrap.core.memory.store import MemoryStore
+from satrap.core.plugin_authorization import PluginEntryBinding
+
+T = TypeVar("T")
 
 
 class _MemoryBinding(_ToolBase):
+    _plugin_entry_binding: PluginEntryBinding
+
     def __init__(self, store: MemoryStore, *, service: MemoryService | None = None) -> None:
         """
         初始化 _MemoryToolBase
@@ -47,7 +52,7 @@ class _MemoryBinding(_ToolBase):
         """
         return await self.service.group_operation(operation, values, access=self._access)
 
-    def _visible(self, result: Any) -> Any:
+    def _visible(self, result: T) -> T | dict[str, Any]:
         """
         把面向模型的失败结果补成框架扁平形状
 
@@ -137,9 +142,12 @@ class _AddMemoryToolCore(_MemoryBinding):
         if not self.store.can_write():
             return self._visible(self.store.write_denied_error("添加"))
         result = self.service.execute("add", title, content, tags, importance)
-        if result.get("ok"):
+        if not isinstance(result, dict):
+            return tool_error(str(self.tool_name), "添加失败: 返回格式异常", "execution_error")
+        added = cast(dict[str, Any], result)
+        if added.get("ok"):
             return f"记忆已添加: [{title}] {content}"
-        return self._visible(result)
+        return self._visible(added)
 
 
 class _UpdateMemoryToolCore(_MemoryBinding):
@@ -196,9 +204,12 @@ class _UpdateMemoryToolCore(_MemoryBinding):
         if title:
             fields["title"] = title
         result = self.service.execute("update", memory_id, **fields)
-        if result.get("ok"):
-            return f"记忆已更新: [{result['title']}] {result['content']}"
-        return self._visible(result)
+        if not isinstance(result, dict):
+            return tool_error(str(self.tool_name), "更新失败: 返回格式异常", "execution_error")
+        updated = cast(dict[str, Any], result)
+        if updated.get("ok"):
+            return f"记忆已更新: [{updated['title']}] {updated['content']}"
+        return self._visible(updated)
 
 
 class _DeleteMemoryToolCore(_MemoryBinding):
@@ -239,9 +250,12 @@ class _DeleteMemoryToolCore(_MemoryBinding):
         if not self.store.can_write():
             return self._visible(self.store.write_denied_error("删除"))
         result = self.service.execute("delete", memory_id)
-        if result.get("ok"):
+        if not isinstance(result, dict):
+            return tool_error(str(self.tool_name), "删除失败: 返回格式异常", "execution_error")
+        deleted = cast(dict[str, Any], result)
+        if deleted.get("ok"):
             return f"记忆已删除: {memory_id}"
-        return self._visible(result)
+        return self._visible(deleted)
 
 
 class _ListMemoriesToolCore(_MemoryBinding):
@@ -267,11 +281,14 @@ class _ListMemoriesToolCore(_MemoryBinding):
             return self._visible(wait_host(self._group("list", filters)))
         memories = self.service.execute("list_all")
         if isinstance(memories, dict):
-            return self._visible(memories)
+            return self._visible(cast(dict[str, Any], memories))
+        if not isinstance(memories, list):
+            return tool_error(str(self.tool_name), "读取失败: 返回格式异常", "execution_error")
         if not memories:
             return "当前没有长期记忆"
-        lines = [f"共 {len(memories)} 条记忆:"]
-        for m in memories:
+        rows = cast(list[dict[str, Any]], memories)
+        lines = [f"共 {len(rows)} 条记忆:"]
+        for m in rows:
             tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
             lines.append(
                 f"- {m['id'][:8]} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})"
@@ -311,7 +328,10 @@ class _GetMemoryToolCore(_MemoryBinding):
         """
         if group_call():
             return self._visible(wait_host(self._group("get", self._group_values(memory_id))))
-        return self._visible(self.service.execute("get", memory_id))
+        result = self.service.execute("get", memory_id)
+        if not isinstance(result, dict):
+            return tool_error(str(self.tool_name), "读取失败: 返回格式异常", "execution_error")
+        return self._visible(cast(dict[str, Any], result))
 
 
 _TEXT = {"type": "string", "minLength": 1, "maxLength": 256}
