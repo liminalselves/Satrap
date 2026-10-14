@@ -1,8 +1,15 @@
-"""独立记忆插件的当前安装状态与同步协程桥接"""
+"""
+长期记忆插件的状态复核与宿主等待边界
+
+基于可信调用来源和当前安装状态复核记忆能力,
+同步操作桥接到原平台循环, 异步操作直接等待宿主,
+统一约束等待期限并转换失败结果, 保留外部任务取消信号
+"""
 from __future__ import annotations
 
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any, TypeVar
+import asyncio
 
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from satrap.core.plugin_authorization import BoundPluginTool, plugin_tool_live
@@ -58,30 +65,57 @@ def group_call() -> bool:
 
 
 T = TypeVar("T")
+HOST_TIMEOUT_SECONDS = 30
+
+
+async def await_host(coroutine: Coroutine[Any, Any, T]) -> T | dict[str, Any]:
+    """
+    异步等待当前循环的记忆宿主操作, 超时取消协程并转换失败结果
+
+    参数:
+    - coroutine: 需要在当前来源平台循环执行的宿主操作, 等待期限为 HOST_TIMEOUT_SECONDS
+
+    返回:
+    - 宿主结果原样返回; 超时或其他操作异常返回 ok 为 False 的失败结果, 外部任务取消继续向上传播
+    """
+    # Step.1 限制等待期限, 超时取消宿主协程并保留外部任务取消信号
+    try:
+        try:
+            return await asyncio.wait_for(coroutine, timeout=HOST_TIMEOUT_SECONDS)
+        except TimeoutError:
+            raise MemoryError("unavailable", "记忆操作超时, 已取消等待")
+    except Exception as exc:
+        # Step.2 记录已隔离的操作失败, 以稳定错误结构交给命令入口转换
+        logger.warning(f"[长期记忆] 异步等待失败: {exc}")
+        return {"ok": False, "error": str(exc), "error_type": getattr(exc, "code", "unavailable")}
 
 
 def wait_host(coroutine: Coroutine[Any, Any, T]) -> T | dict[str, Any]:
     """
-    从同步会话的工作线程调用原平台事件循环
+    同步等待记忆宿主操作, 从工作线程桥接到原平台事件循环
 
     参数:
-    - coroutine: 需要在原平台循环执行的宿主操作
+    - coroutine: 需要在原平台循环执行的宿主操作, 等待期限为 HOST_TIMEOUT_SECONDS
 
     返回:
-    - 宿主结果; 循环不可用或超时返回 ok 为 False 的失败结果, 且已取消提交
+    - 宿主结果原样返回; 循环不可用, 同循环阻塞, 超时或其他操作异常返回 ok 为 False 的失败结果
+    - 拒绝桥接时关闭未提交的协程, 超时取消已提交的协程
     """
+    # Step.1 解析来源循环, 回复轮次持有的循环优先于适配器循环
     origin = current_call_origin()
     manager = current_adapter_manager()
     adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
     turn = current_reply_turn()
     loop = turn.loop if turn is not None else getattr(adapter, "_loop", None)
+    # Step.2 在线程中等待宿主结果, 区分来源循环不可用与同循环阻塞
     try:
         try:
-            return run_on_platform_loop(coroutine, loop, 30)
+            return run_on_platform_loop(coroutine, loop, HOST_TIMEOUT_SECONDS)
         except PlatformLoopUnavailable as error:
-            raise MemoryError("unavailable", "同步记忆操作需要有效的平台工作线程") from error
+            raise MemoryError("unavailable", str(error)) from error
         except TimeoutError:
             raise MemoryError("unavailable", "记忆操作超时, 已取消等待")
     except Exception as exc:
+        # Step.3 记录已隔离的操作失败, 以稳定错误结构交给命令或工具入口转换
         logger.warning(f"[长期记忆] 同步桥接失败: {exc}")
         return {"ok": False, "error": str(exc), "error_type": getattr(exc, "code", "unavailable")}

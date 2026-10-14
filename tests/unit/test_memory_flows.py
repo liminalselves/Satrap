@@ -1,6 +1,7 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
 
+import asyncio
 from urllib.parse import urlencode
 import json
 import time
@@ -34,6 +35,8 @@ from satrap.edictum.plugin_spec import parse_plugin_specs
 from contextlib import closing
 import threading
 from satrap.core.memory.scoped import MemoryError
+from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.type import UserCall
 
 @pytest.mark.asyncio
 async def test_cold_memory_management_is_authenticated_and_revision_bound(monkeypatch, tmp_path):
@@ -113,6 +116,204 @@ async def test_memory_plugin_works_without_group_chat_or_base_take(tmp_path, asy
     await PipelineScheduler(Invoker(instance, asynchronous)).execute(next_event)
     assert "称呼我为小明" in str(script.requests[-1][0])
     assert "长期记忆资料" in str(script.requests[-1][0])
+
+
+async def _platform_memory_command_session(tmp_path, asynchronous, private=False, config=None):
+    """
+    构建离线平台会话, 通过真实命令分发调用记忆插件
+
+    参数:
+    - tmp_path: 测试独占的临时目录, 用于隔离会话数据库与消息档案
+    - asynchronous: 为 True 时构建异步会话, 为 False 时构建同步会话
+    - private: 是否使用私聊来源, 可选, 默认为 False, 即使用群聊来源
+    - config: 插件配置, 可选, 默认为 None; None 或空字典使用开启群记忆写入的配置
+
+    返回:
+    - 适配器, 消息事件, 离线模型脚本及异步命令调用函数; 模型脚本为空, 意外模型调用会失败
+    """
+    # Step.1 隔离平台来源和存储, 使用离线模型防止命令意外调用外部服务
+    adapter, event, _ = setup(tmp_path, private=private)
+    adapter._loop = asyncio.get_running_loop()
+    script = Script([])
+    instance = await _memory_platform_session(tmp_path, script, asynchronous, False)
+    instance.memory_db = str(adapter.message_archive.database)
+    plugin_dir = str(Path(__file__).resolve().parents[2] / "satrap/expend/plugins/memory")
+    # Step.2 为对应会话类型安装插件, 复用生产代码的命令注册路径
+    if asynchronous:
+        await instance.install_plugin(plugin_dir, config=config or {"group_write_enabled": True})
+    else:
+        instance.install_plugin(plugin_dir, config=config or {"group_write_enabled": True})
+
+    # Step.3 提供统一的异步驱动入口, 保留同步会话在工作线程执行的生产约束
+    async def invoke(message):
+        """
+        异步驱动平台命令分发, 同步会话通过工作线程执行
+
+        参数:
+        - message: 包含命令前缀的完整输入文字, 来源固定为测试消息事件
+
+        返回:
+        - 会话返回的命令结果文字; 分发异常由 SessionManager 隔离并返回空文字
+        """
+        call = UserCall(session_id=instance.session_id, message=message, origin=event.call_origin)
+        if asynchronous:
+            return await SessionManager._invoke_async_session(instance, call)
+        return await asyncio.to_thread(SessionManager._invoke_sync_session, instance, call)
+
+    return adapter, event, script, invoke
+
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("private", [False, True])
+async def test_memory_commands_through_platform_session(tmp_path, asynchronous, private, caplog):
+    """
+    验证同步与异步群聊和私聊命令的记忆生命周期及帮助说明
+
+    参数:
+    - tmp_path: 测试独占的临时目录
+    - asynchronous: 是否通过异步会话执行命令
+    - private: 是否使用私聊来源, 为 False 时使用群聊来源
+    - caplog: 日志捕获夹具, 用于确认正常命令没有同步桥接失败
+    """
+    # Step.1 检查命令简介和空记忆提示, 覆盖真实注册与分发路径
+    adapter, event, script, invoke = await _platform_memory_command_session(tmp_path, asynchronous, private)
+    help_text = await invoke("/help")
+    assert "/memory: 管理长期记忆" in help_text
+    assert "/memory: None" not in help_text
+    initial = await invoke("/memory")
+    assert initial == ("当前没有长期记忆" if private else "当前没有可查看的长期记忆")
+    # Step.2 添加并查询记忆, 核对群范围的所有者, 来源和修订号
+    added = await invoke("/memory add 称呼 称呼我为小明")
+    assert "记忆已添加: [称呼] 称呼我为小明" in added
+    listed = await invoke("/memory list")
+    if private:
+        assert "称呼我为小明" in listed
+        memory_id = listed.split("- ")[1].split(" ")[0]
+    else:
+        items = ScopedMemories(adapter.message_archive, SCOPE).list()["items"]
+        assert len(items) == 1 and items[0]["owner_user_id"] == event.call_origin.actor_id
+        assert items[0]["source_message_ids"] == [event.call_origin.source_message_id]
+        memory_id = items[0]["id"]
+        assert f"- {memory_id} [称呼] 称呼我为小明 (我的偏好)" in listed
+        assert ScopedMemories(adapter.message_archive, SCOPE).get(memory_id)["memory"]["revision"] == 1
+    # Step.3 删除刚保存的记录, 确认结果文字与实际存储一致
+    deleted = await invoke(f"/memory del {memory_id}")
+    assert deleted == f"记忆已删除: {memory_id}"
+    final = await invoke("/memory")
+    assert final == initial
+    # Step.4 检查群命令限制及调用边界, 确认不触发模型或桥接失败
+    if not private:
+        assert ScopedMemories(adapter.message_archive, SCOPE).list()["items"] == []
+        assert "群内不能" in await invoke("/memory clear")
+        assert "群内不能" in await invoke("/memory mode full")
+    assert not script.requests
+    assert not [record for record in caplog.records if "同步桥接失败" in record.getMessage()]
+
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(("config", "error_message"), [
+    ({"group_write_enabled": False}, "群记忆写入未在记忆插件中开启"),
+    ({"group_write_enabled": True, "memory_mode": "base"}, "群记忆写入未在记忆插件中开启"),
+    ({"group_write_enabled": True, "memory_mode": "disabled"}, "记忆功能已禁用"),
+])
+async def test_group_memory_commands_preserve_write_restrictions(tmp_path, asynchronous, config, error_message):
+    """
+    验证群命令在写入关闭或记忆模式受限时拒绝保存且不改变存储
+
+    参数:
+    - tmp_path: 测试独占的临时目录
+    - asynchronous: 是否通过异步会话执行命令
+    - config: 本场景限制写入的插件配置
+    - error_message: 预期的宿主拒绝原因, 命令应以中文失败提示展示
+    """
+    # Step.1 安装受限配置, 通过生产命令入口验证写入限制
+    adapter, _, _, invoke = await _platform_memory_command_session(tmp_path, asynchronous, config=config)
+    result = await invoke("/memory add 称呼 称呼我为小明")
+    # Step.2 核对拒绝原因与存储结果, 避免失败提示掩盖实际写入
+    assert result == f"添加失败: {error_message}"
+    assert ScopedMemories(adapter.message_archive, SCOPE).list()["items"] == []
+
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_group_memory_commands_cannot_delete_other_members_preferences(tmp_path, asynchronous):
+    """
+    验证群命令删除他人偏好时保留原记录和修订号
+
+    参数:
+    - tmp_path: 测试独占的临时目录
+    - asynchronous: 是否通过异步会话执行命令
+    """
+    # Step.1 通过可信管理入口准备其他成员的偏好, 与命令调用者身份区分
+    adapter, _, _, invoke = await _platform_memory_command_session(tmp_path, asynchronous)
+    repository = ScopedMemories(adapter.message_archive, SCOPE)
+    saved = repository.mutate("create", {"kind": "member_preference", "owner_user_id": "789", "key": "name", "content": "乙的称呼"},
+                              actor="operator", operator=True, operation_id="seed")
+    # Step.2 检查越权删除的拒绝文字及存储结果
+    result = await invoke(f"/memory del {saved['memory_id']}")
+    assert result == "删除失败: 只能修改你本人在当前群的偏好"
+    memory = repository.get(saved["memory_id"])["memory"]
+    assert memory["content"] == "乙的称呼" and memory["revision"] == 1
+
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "cancel"])
+async def test_async_group_memory_command_cancels_before_writing(tmp_path, monkeypatch, failure):
+    """
+    验证异步群命令超时或被取消时终止宿主等待, 不产生延迟写入
+
+    参数:
+    - tmp_path: 测试独占的临时目录
+    - monkeypatch: 替换宿主等待点和超时时间的夹具, 测试结束后自动恢复
+    - failure: timeout 表示等待超时, cancel 表示命令任务被外部取消
+    """
+    from satrap.expend.plugins.memory import runtime
+
+    # Step.1 在写入前阻塞来源核验, 观察宿主等待是否被取消
+    adapter, _, _, invoke = await _platform_memory_command_session(tmp_path, True)
+    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_scope = adapter.group_chat_scope
+
+    async def delayed_scope(origin):
+        """
+        异步阻塞来源核验, 在等待结束或取消时标记退出
+
+        参数:
+        - origin: 当前命令绑定的可信来源, 放行后交给原核验逻辑
+
+        返回:
+        - 放行后返回原群范围; 等待期间被取消时继续抛出 CancelledError
+        """
+        entered.set()
+        try:
+            await release.wait()
+            return await original_scope(origin)
+        finally:
+            cancelled.set()
+
+    # Step.2 触发超时或外部取消, 核对失败提示及取消信号
+    monkeypatch.setattr(adapter, "group_chat_scope", delayed_scope)
+    monkeypatch.setattr(runtime, "HOST_TIMEOUT_SECONDS", 0.05 if failure == "timeout" else 30)
+    task = asyncio.create_task(invoke("/memory add 称呼 称呼我为小明"))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    if failure == "timeout":
+        result = await asyncio.wait_for(task, timeout=2)
+        assert result == "记忆操作超时, 已取消等待"
+    else:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    # Step.3 放行原等待点, 确认已结束的命令没有继续写入
+    assert cancelled.is_set()
+    release.set()
+    await asyncio.sleep(0)
+    assert ScopedMemories(adapter.message_archive, SCOPE).list()["items"] == []
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio

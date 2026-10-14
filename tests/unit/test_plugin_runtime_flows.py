@@ -61,9 +61,15 @@ def _friend_tool(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 @pytest.mark.usefixtures('_clear_manager')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["group_chat", "group_chat_in_loop", "friend_manager", "memory"])
+@pytest.mark.parametrize("kind", ["group_chat", "group_chat_in_loop", "friend_manager", "memory", "memory_in_loop"])
 async def test_sync_tools_without_usable_platform_loop_report_unavailable(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
-    """三插件缺少可用平台事件循环时都返回不可用, 不执行任何副作用"""
+    """
+    验证同步工具在平台循环不可用或同循环阻塞时拒绝执行, 不产生副作用
+
+    参数:
+    - monkeypatch: 替换工具来源解析的夹具, 用于构造无可用平台循环的场景
+    - kind: 插件及调用场景标识, 带 in_loop 后缀时验证同循环阻塞的拒绝原因
+    """
     if kind.startswith("group_chat"):
         in_loop = kind.endswith("in_loop")
         tool = _group_chat_tool(asyncio.get_running_loop() if in_loop else None)
@@ -77,10 +83,14 @@ async def test_sync_tools_without_usable_platform_loop_report_unavailable(monkey
             result = tool.execute()
         assert result == {"ok": False, "error": {"code": "unavailable", "message": "来源平台事件循环不可用于同步工具", "retryable": False}}
     else:
-        set_current_adapter_manager(None)
+        in_loop = kind.endswith("in_loop")
+        adapter = SimpleNamespace(_loop=asyncio.get_running_loop() if in_loop else None)
+        set_current_adapter_manager(cast(Any, _ManagerStub(adapter)))
         coroutine = _never()
-        result = memory_runtime.wait_host(coroutine)
-        assert result == {"ok": False, "error": "同步记忆操作需要有效的平台工作线程", "error_type": "unavailable"}
+        with bind_call_origin(_origin("group")):
+            result = memory_runtime.wait_host(coroutine)
+        message = "同步工具不能在平台事件循环内阻塞调用" if in_loop else "来源平台事件循环不可用"
+        assert result == {"ok": False, "error": message, "error_type": "unavailable"}
         assert coroutine.cr_frame is None
 
 @pytest.mark.usefixtures('_clear_manager')
