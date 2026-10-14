@@ -371,13 +371,15 @@ def authorize_plugin_entry(binding: PluginEntryBinding, *, subcommand: str | Non
     return decision
 
 
-def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None) -> AuthorizationDecision:
+def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None, *,
+                           additional_permissions: tuple[str, ...] = ()) -> AuthorizationDecision:
     """
     从真实作用域校验当前插件入口与名单
 
     参数:
     - binding: 宿主创建的入口绑定
     - subcommand: 原生命令解析后的子命令
+    - additional_permissions: 宿主业务分支追加的权限, 不替代入口基础权限
 
     返回:
     - 当前授权结果, 失效或意外异常按拒绝处理并记录日志
@@ -411,7 +413,15 @@ def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None) 
                 return AuthorizationDecision("denied", *identity, reason_code="identity_missing")
         adapter_manager = current_adapter_manager()
         administrators = getattr(adapter_manager, "administrator_service", None)
-        return evaluate_plugin_permissions(binding.plugin_name, binding.permissions, binding.kind, binding.name,
+        spec = binding.permissions
+        if additional_permissions:
+            from satrap.edictum.plugin_permissions import CommandPermissions
+            required = tuple(dict.fromkeys((*spec.required(binding.kind, binding.name, subcommand), *additional_permissions)))
+            if binding.kind == "tools":
+                spec = replace(spec, tools={**spec.tools, binding.name: required})
+            else:
+                spec = replace(spec, commands={**spec.commands, binding.name: CommandPermissions(required, {})})
+        return evaluate_plugin_permissions(binding.plugin_name, spec, binding.kind, binding.name,
                                            binding.config, current_call_origin(), administrators, subcommand=subcommand)
     except Exception:
         logger.error(f"[管理权限] 授权检查异常, 插件={binding.plugin_name}, 入口={binding.name}: {traceback.format_exc()}")
@@ -446,18 +456,19 @@ def require_plugin_entry_permission(binding: PluginEntryBinding, *, subcommand: 
     return result
 
 
-def authorize_management_permissions(binding: PluginEntryBinding, required: tuple[str, ...]) -> AuthorizationDecision:
+def authorize_management_permissions(binding: PluginEntryBinding, required: tuple[str, ...], *,
+                                     subcommand: str | None = None) -> AuthorizationDecision:
     """
-    对当前工具的业务分支核验额外管理权限, 每次读取当前可信来源
+    对实际工具或原生命令的业务分支追加管理权限, 保留原入口与命令作用域
 
     参数:
-    - binding: 实际工具入口, 仍检查安装和会话存活
+    - binding: 实际工具或原生命令入口, 仍检查安装和会话存活
     - required: 宿主代码指定的权限名称, 不接受模型参数
+    - subcommand: 宿主解析后的原生命令子命令
 
     返回:
-    - 当前管理权限结果, 未声明的权限或非工具入口按拒绝处理
+    - 基础权限与追加权限必须同时满足, 未声明权限或非原生命令按拒绝处理
     """
-    if binding.kind != "tools" or any(name not in binding.permissions.rules for name in required):
+    if binding.kind not in {"tools", "commands"} or any(name not in binding.permissions.rules for name in required):
         return AuthorizationDecision("denied", binding.plugin_name, binding.kind, binding.name, reason_code="unknown_permission")
-    spec = replace(binding.permissions, tools={**binding.permissions.tools, binding.name: required})
-    return _evaluate_plugin_entry(replace(binding, permissions=spec), None)
+    return _evaluate_plugin_entry(binding, subcommand, additional_permissions=required)

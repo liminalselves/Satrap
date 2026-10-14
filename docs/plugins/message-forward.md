@@ -20,12 +20,14 @@ OneBot 优先发送原消息引用节点, 已有卡片使用原生单条转发�
 `compose` 属于新内容, 每段最多 2000 字符, 不能称作原文转发
 `status=success` 表示平台返回了可确认的消息回执; `failed` 或 `unknown` 均不能称作已送达, `unknown` 不自动重发
 
-发送开关 `send_enabled` 默认关闭; `write_callers` 留空不授予名单写权限
-`read_callers` 留空不额外限制当前对话读取; 所有调用仍受来源账号和平台对话范围限制
+发送开关 `send_enabled` 默认开启; 已在全局, 命名配置或会话覆盖中显式保存的 `false` 保持关闭
+`read_callers` 和 `write_callers` 留空时, 当前群聊或私聊的普通用户可让模型读取, 转发原消息或创建文字合集; 填写名单后限制为指定成员或已获本插件授权的系统管理员
+原消息转发同时要求读取和发送权限, 创建文字合集只要求发送权限; 所有调用仍受来源账号和平台对话范围限制
 插件不再提供 `allow_private` 或 `allowed_groups`, 群聊与私聊统一遵守平台自身的对话范围; 系统管理员仍受本插件排除规则与功能开关限制
 
 跨对话允许模型直接调用, 不强制使用命令; 来源或目标不是当前对话时追加检查 cross 权限, 读取其他对话也受此限制
 需开启 `cross_conversation_enabled`, 并授予 `cross_callers` 或对应系统管理员权限
+跨对话开关默认关闭, `cross_callers` 留空仍不授予跨对话权限. `message_forward_compose` 发往其他对话也遵守这一规则
 
 ```text
 /forward read <卡片消息 ID>
@@ -34,6 +36,7 @@ OneBot 优先发送原消息引用节点, 已有卡片使用原生单条转发�
 ```
 
 命令从当前对话取来源, 转发资料不会作为命令或授权解析
+命令与模型工具使用同一对话范围判定: 同群或当前私聊发送只要求 read 和 write, 来源或目标不是当前对话时才追加 cross. 命令必须通过实际注册的原生入口执行, 模型不能借调用命令绕过权限
 旧 `group_admin_get_forward` 迁移为 `message_forward_read`, 旧 `group_admin_send_forward` 迁移为 `message_forward_compose`
 迁移不启用原消息发送, 跨对话, 命令或 skill; 保留调用者名单, 清除废弃的私聊开关和插件群名单, 对话范围改由平台统一管理
 系统管理员针对旧插件的授权不会隐式授予新插件, 需要在管理员设置中配置 `message_forward`

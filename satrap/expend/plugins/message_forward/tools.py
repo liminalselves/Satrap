@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from collections.abc import Mapping
 from copy import deepcopy
 import traceback
 
@@ -52,8 +53,8 @@ def _failure(error: Exception) -> dict[str, Any]:
     return {"ok": False, "error": {"code": "unconfirmed", "message": "转发结果无法确认, 请核查后再操作", "retryable": False}}
 
 
-def resolve(config: dict[str, Any], check: Any, params: dict[str, Any], *, command: bool = False,
-            binding: PluginEntryBinding | None = None) -> tuple[Any, Any]:
+def resolve(config: Mapping[str, Any], check: Any, params: dict[str, Any], *, command: bool = False,
+            binding: PluginEntryBinding | None = None, subcommand: str | None = None) -> tuple[Any, Any]:
     """
     核验当前可信身份, 对话范围与独立发送开关
 
@@ -62,7 +63,8 @@ def resolve(config: dict[str, Any], check: Any, params: dict[str, Any], *, comma
     - check: 本入口的实时权限检查
     - params: 模型或命令输入的对话地址
     - command: 是否经过真实命令入口授权, 默认 False
-    - binding: 模型工具入口, 跨对话工具调用时必须存在
+    - binding: 实际工具或原生命令入口, 跨对话时必须存在
+    - subcommand: 宿主解析的命令子命令, 不来自模型工具参数
 
     返回:
     - 当前适配器和可信来源, 权限或对话范围不符合时抛出错误
@@ -87,13 +89,11 @@ def resolve(config: dict[str, Any], check: Any, params: dict[str, Any], *, comma
     if cross:
         if config.get("cross_conversation_enabled") is not True:
             raise ForwardError("feature_disabled", "跨对话功能未开启")
-        if not command:
-            if binding is None:
-                raise ForwardError("permission_denied", "跨对话调用缺少有效工具入口")
-            required = binding.permissions.required("tools", binding.name)
-            decision = authorize_management_permissions(binding, tuple(dict.fromkeys((*required, "cross"))))
-            if decision.status != "allowed":
-                raise PluginPermissionDenied(decision)
+        if binding is None or binding.kind != ("commands" if command else "tools"):
+            raise ForwardError("permission_denied", "跨对话调用缺少有效授权入口")
+        decision = authorize_management_permissions(binding, ("cross",), subcommand=subcommand)
+        if decision.status != "allowed":
+            raise PluginPermissionDenied(decision)
     return adapter, origin
 
 
@@ -118,7 +118,7 @@ class _ForwardMixin:
     def _check(self) -> None:
         """实时复核入口权限与发送开关"""
         require_plugin_entry_permission(self._plugin_entry_binding, refresh=True)
-        if self.tool_name != "message_forward_read" and self.config.get("send_enabled") is not True:
+        if self.tool_name != "message_forward_read" and self.config.get("send_enabled", True) is not True:
             raise ForwardError("permission_denied", "本插件的发送功能未开启")
 
     def is_available_for_call(self) -> bool:

@@ -13,7 +13,7 @@ management_permissions:
   write:
     description: 发送原消息或文字合集
     caller_list: write_callers
-    empty_policy: deny
+    empty_policy: allow
     system_admin: true
     requirements: [需开启发送功能, 仍受平台和对话范围限制]
   cross:
@@ -30,13 +30,13 @@ command_permissions:
   forward:
     default: [read]
     subcommands:
-      merge: [read, write, cross]
-      relay: [read, write, cross]
+      merge: [read, write]
+      relay: [read, write]
 config_schema:
   send_enabled:
     type: bool
-    default: false
-    description: 允许发送原消息和文字合集, 不影响查询
+    default: true
+    description: 允许发送原消息和文字合集, 默认开启; 关闭后禁止发送, 不影响查询
   cross_conversation_enabled:
     type: bool
     default: false
@@ -48,7 +48,7 @@ config_schema:
   write_callers:
     type: textarea
     default: ""
-    description: 允许发送转发的成员 ID, 每行一个; 留空不授予名单权限, 系统管理员遵守本插件授权
+    description: 允许发送转发和创建文字合集的成员 ID, 每行一个; 留空允许当前对话的普通用户, 跨对话另需授权; 系统管理员遵守本插件授权
   cross_callers:
     type: textarea
     default: ""

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import cast
+from pathlib import Path
 from unittest.mock import AsyncMock
 from aiocqhttp.exceptions import ActionFailed
 import pytest
@@ -21,11 +22,18 @@ from types import SimpleNamespace
 import asyncio
 import json
 import weakref
-from satrap.core.call_context import bind_call_origin
+from satrap.core.call_context import bind_call_origin, bind_tool_workflow
 from satrap.core.message_forward import ForwardError
 from satrap.core.platform import set_current_adapter_manager
 from satrap.core.platform.onebot.forwarding import OneBotForwarding
-from satrap.edictum import AsyncSimpleSession
+from satrap.edictum import AsyncSimpleSession, SimpleSession
+from satrap.core.APICall.LLMCall import LLM, AsyncLLM
+from satrap.core.type import LLMCallResponse, UserCall
+from satrap.core.framework.SessionManager import SessionManager
+from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin_settings import PluginSettingsService
+from support.group_models import Script, Model, AsyncModel
 from satrap.core.framework.Base import Session
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_migrations import migrate_forward_tool_specs
@@ -472,6 +480,137 @@ async def test_native_command_requires_actual_native_scope_then_cross_forwards(t
 
 @pytest.mark.usefixtures('cleanup')
 @pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("kind,chat_id", [("group", "456"), ("private", "123")])
+async def test_default_plugin_allows_ordinary_user_model_read_send_and_compose(tmp_path, monkeypatch, asynchronous, kind, chat_id):
+    """真实插件安装与模型调用链覆盖默认普通用户, 群聊私聊及同步异步"""
+    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "config")
+    adapter = setup()
+    adapter._loop = asyncio.get_running_loop()
+    adapter._bot.get_msg.return_value = message(kind, chat_id, forward=True)
+    adapter._bot.get_forward_msg.return_value = forward_payload()
+    calls = [
+        ("message_forward_read", {"source_message_id": "77"}),
+        ("message_forward_send", {"message_ids": ["77"]}),
+        ("message_forward_compose", {"nodes": [{"content": "第一段"}, {"content": "第二段"}]}),
+    ]
+    script = Script([LLMCallResponse("tools_call", "", tool_calls=[{"id": f"f{i}", "name": name, "arguments": params}])
+                     for i, (name, params) in enumerate(calls)] + [LLMCallResponse("message", "完成")])
+    env = PluginEnvironment(session_type="platform", platform_type="onebot")
+    path = str(Path(__file__).resolve().parents[2] / "satrap/expend/plugins/message_forward")
+    origin = _origin("GroupMessage" if kind == "group" else "FriendMessage", chat_id)
+    call = UserCall(message="查看转发后发送原文, 再创建文字合集", origin=origin)
+    if asynchronous:
+        session = AsyncSimpleSession("main", cast(AsyncLLM, AsyncModel(script)), system_prompt="基础提示词",
+                                     enable_checkpoint=False, db_path=str(tmp_path / "ctx.db"), plugin_environment=env)
+        await session.initialize()
+        await session.install_plugin(path)
+        result = await SessionManager._invoke_async_session(session, call)
+    else:
+        sync_session = SimpleSession("main", cast(LLM, Model(script)), system_prompt="基础提示词",
+                                     enable_checkpoint=False, db_path=str(tmp_path / "ctx.db"), plugin_environment=env)
+        sync_session.install_plugin(path)
+        result = await asyncio.to_thread(SessionManager._invoke_sync_session, sync_session, call)
+    assert result == "完成" and len(script.requests) == 4
+    names = {definition["function"]["name"] for definition in script.requests[0][1]["tools"]}
+    assert {name for name, _ in calls} <= names
+    adapter._bot.get_forward_msg.assert_awaited_once()
+    sender = adapter._bot.send_group_forward_msg if kind == "group" else adapter._bot.send_private_forward_msg
+    assert sender.await_count == 2
+    assert sender.await_args_list[0].kwargs["messages"] == [{"type": "node", "data": {"id": "77"}}]
+    composed = sender.await_args_list[1].kwargs["messages"]
+    assert [node["data"]["content"][0]["data"]["text"] for node in composed] == ["第一段", "第二段"]
+    assert all(node["data"]["user_id"] == "10000" for node in composed)
+
+@pytest.mark.usefixtures('cleanup')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["read", "send", "compose"])
+async def test_model_cross_branches_require_switch_cross_grant_and_base_permission(operation):
+    """跨对话读取, 原件发送及文字合集都检查独立授权, 不覆盖入口基础权限"""
+    adapter = setup()
+    class FakeSession(AsyncSimpleSession):
+        def __init__(self):
+            pass
+    handle = next(tool for tool in get_tools(FakeSession()) if tool.tool_name == f"message_forward_{operation}")
+    address = {"conversation_kind": "private", "conversation_id": "789"}
+    params = {"source_message_id": "77", "source": address} if operation == "read" else (
+        {"message_ids": ["77"], "target": address} if operation == "send" else {"nodes": [{"content": "合集"}], "target": address})
+    adapter._bot.get_msg.return_value = message("private", "789", forward=True) if operation == "read" else message("group", "456")
+    adapter._bot.get_forward_msg.return_value = forward_payload()
+    with bind_call_origin(_origin()):
+        assert (await handle.execute(**params))["error"]["code"] == "feature_disabled"
+        handle.config["cross_conversation_enabled"] = True
+        assert (await handle.execute(**params))["error"]["code"] == "permission_denied"
+        handle.config["cross_callers"] = "123"
+        base_field = "read_callers" if operation == "read" else "write_callers"
+        handle.config[base_field] = "other"
+        assert (await handle.execute(**params))["error"]["code"] == "permission_denied"
+        adapter._bot.get_msg.assert_not_awaited()
+        adapter._bot.send_private_forward_msg.assert_not_awaited()
+        handle.config[base_field] = ""
+        assert (await handle.execute(**params))["ok"]
+        if operation != "read":
+            handle.config["send_enabled"] = False
+            assert (await handle.execute(**params))["error"]["code"] == "permission_denied"
+            adapter._bot.send_private_forward_msg.assert_awaited_once()
+
+@pytest.mark.usefixtures('cleanup')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("subcommand", ["merge", "relay"])
+async def test_native_commands_default_local_dynamic_cross_and_live_revocation(tmp_path, subcommand):
+    """原生命令只对实际跨对话追加授权, 等待中撤销开关或名单阻止发送"""
+    adapter = setup()
+    adapter._bot.get_msg.return_value = message("group", "456", forward=True)
+    class FakeSession(AsyncSimpleSession):
+        def __init__(self):
+            self.command_handler = cast(Any, SimpleNamespace(_permission_bindings={}))
+    session = FakeSession()
+    config = {}
+    _, commands = build_commands(session, config)
+    handler = commands["forward"]
+    entry = PluginCatalog(user_dir=tmp_path / "plugins").get("message_forward")
+    assert entry is not None
+    binding = PluginEntryBinding("message_forward", "commands", "forward", entry.permissions, config, weakref.ref(handler))
+    session.command_handler._permission_bindings["forward"] = binding
+    with bind_call_origin(_origin()), bind_native_command(binding), bind_authorization_step():
+        assert json.loads(await handler(subcommand, "group", "456", "77"))["status"] == "success"
+        assert "跨对话功能未开启" in await handler(subcommand, "private", "789", "77")
+        config["cross_conversation_enabled"] = True
+        assert "权限" in await handler(subcommand, "private", "789", "77")
+        config["cross_callers"] = "123"
+        assert json.loads(await handler(subcommand, "private", "789", "77"))["status"] == "success"
+        with bind_tool_workflow(object()):
+            assert "权限" in await handler(subcommand, "private", "789", "77")
+        for field, revoked in (("send_enabled", False), ("write_callers", "other"), ("cross_callers", "")):
+            async def revoke(**kwargs):
+                config[field] = revoked
+                return message("group", "456", forward=True)
+            adapter._bot.get_msg.side_effect = revoke
+            denied = await handler(subcommand, "private", "789", "77")
+            assert "权限" in denied or "尚未开启" in denied
+            config.pop(field)
+            config["cross_callers"] = "123"
+    sender = adapter._bot.send_private_forward_msg if subcommand == "merge" else adapter._bot.forward_friend_single_msg
+    sender.assert_awaited_once()
+
+def test_default_send_preserves_explicit_false_at_every_config_layer(tmp_path):
+    """新默认值不覆盖全局, 命名或实例中已显式关闭的发送开关"""
+    entry = PluginCatalog(user_dir=tmp_path / "plugins").get("message_forward")
+    assert entry is not None
+    manager = PluginConfigManager(tmp_path / "config")
+    service = PluginSettingsService(tmp_path / "settings.db", manager)
+    assert service.get("main", entry.name, entry.config_schema)["config"]["send_enabled"] is True
+    manager.save_global(entry.name, entry.config_schema, {"send_enabled": False})
+    global_result = service.get("main", entry.name, entry.config_schema)
+    assert global_result["config"]["send_enabled"] is False
+    named = {"send_enabled": False}
+    manager.save_global(entry.name, entry.config_schema, {"send_enabled": True})
+    assert service.get("main", entry.name, entry.config_schema, named)["config"]["send_enabled"] is False
+    service.save("main", entry.name, entry.config_schema, {"send_enabled": False}, expected_revision=global_result["revision"])
+    assert service.get("main", entry.name, entry.config_schema, {"send_enabled": True})["config"]["send_enabled"] is False
+
+@pytest.mark.usefixtures('cleanup')
+@pytest.mark.asyncio
 async def test_preview_truncation_does_not_change_original_forward_payload():
     adapter = setup()
     adapter._bot.get_msg.return_value = message("group", "456", forward=True)
@@ -606,7 +745,7 @@ async def test_permission_revocation_during_lookup_bypasses_step_cache():
             pass
     handle = next(item for item in get_tools(FakeSession(), {"send_enabled": True, "write_callers": "123"}) if item.tool_name == "message_forward_send")
     async def lookup(**kwargs):
-        handle.config["write_callers"] = ""
+        handle.config["write_callers"] = "other"
         return message("group", "456")
     adapter._bot.get_msg.side_effect = lookup
     with bind_call_origin(_origin()), bind_authorization_step():
