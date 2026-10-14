@@ -6,6 +6,8 @@
 """
 
 from __future__ import annotations
+from satrap.core.type import RequestContextBlock
+from satrap.core.utils.context.request import freeze_request_blocks
 import threading
 from typing import Any, Callable, Iterable
 import time
@@ -188,6 +190,7 @@ class SimpleSession(Session, _SessionFeatures):
         thinking: str | None = None,
         max_iterations: int = 10,
         video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str | CommandAction:
         """
         串行执行一轮同步 Agent 流程
@@ -207,7 +210,7 @@ class SimpleSession(Session, _SessionFeatures):
                 user_input,
                 img_urls,
                 thinking=self.default_thinking if thinking is None else thinking,
-                max_iterations=max_iterations, video_urls=video_urls,
+                max_iterations=max_iterations, video_urls=video_urls, request_blocks=request_blocks,
             )
 
     def _run_once(
@@ -218,6 +221,7 @@ class SimpleSession(Session, _SessionFeatures):
         thinking: str = "off",
         max_iterations: int = 10,
         video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str | CommandAction:
         """
         执行一轮 Agent 流程 (React 范式), 返回最终模型输出
@@ -261,6 +265,7 @@ class SimpleSession(Session, _SessionFeatures):
                     call_id=call_id,
                 ),
                 text=user_input,
+                request_blocks=list(freeze_request_blocks(request_blocks)),
             )
             text = user_input
             final_override: str | None = None
@@ -311,6 +316,7 @@ class SimpleSession(Session, _SessionFeatures):
             if self.recoverable:
                 recovery.prepare_session_recovery(self)
 
+            frozen_blocks = freeze_request_blocks(ctx.request_blocks)
             result: str | None = None
             ctx.error = None
             try:
@@ -321,14 +327,14 @@ class SimpleSession(Session, _SessionFeatures):
                         text,
                         img_urls=img_urls,
                         thinking=thinking,
-                        max_iterations=max_iterations, video_urls=video_urls,
+                        max_iterations=max_iterations, video_urls=video_urls, request_blocks=frozen_blocks,
                     )
                 else:
                     result = self._wf.full_agent(
                         text,
                         img_urls=img_urls,
                         thinking=thinking,
-                        max_iterations=max_iterations, video_urls=video_urls,
+                        max_iterations=max_iterations, video_urls=video_urls, request_blocks=frozen_blocks,
                     )
             except BaseException as e:
                 ctx.error = e

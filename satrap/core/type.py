@@ -248,6 +248,19 @@ class LLMCallRequest:
     img_urls: Optional[List[str]] = None
     """LLM 调用请求图片 URL 列表"""
 
+@dataclass(frozen=True)
+class RequestContextBlock:
+    """可信生产者提供的本轮资料, 内容不作为系统指令或授权来源"""
+
+    name: str
+    producer: str
+    content: str
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(value, str) and value.strip() for value in (self.name, self.producer, self.content)):
+            raise ValueError("请求资料的名称, 生产者和内容必须是非空文本")
+
+
 @dataclass
 class UserCall:
     """用户调用数据结构"""
@@ -273,6 +286,8 @@ class UserCall:
     """本轮会话覆盖对应的群配置修订号"""
     group_route_generation: int | None = None
     """本轮会话覆盖对应的群路由代次"""
+    request_blocks: tuple[RequestContextBlock, ...] = ()
+    """本轮平台资料, 独立于需要保存的正文"""
 
 @dataclass
 class LLMConfig:

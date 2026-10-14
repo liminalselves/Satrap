@@ -12,12 +12,56 @@ from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.core.type import RequestContextBlock
 
 
 CALL = {"id": "c1", "name": "noop", "arguments": {}}
 TOOLS = LLMCallResponse("tools_call", "工具说明", tool_calls=[CALL], thinking="思考")
 ANSWER = LLMCallResponse("message", "完成", thinking="思考")
 Workflow = ModelWorkflowFramework | AsyncModelWorkflowFramework
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("recoverable", [False, True])
+async def test_request_environment_survives_tools_but_never_enters_history(tmp_path: Path, asynchronous: bool, stream: bool, recoverable: bool) -> None:
+    """连续发言和工具循环只携带本轮快照, 原始历史与数据库均不累积资料"""
+    script = Script([TOOLS, ANSWER, ANSWER])
+    wf, _ = await make_workflow(tmp_path, script, asynchronous, recoverable)
+    first = (RequestContextBlock("identity", "platform", "机器人当前身份"), RequestContextBlock("environment", "group_chat", "当前发言人甲"))
+    second = (RequestContextBlock("environment", "group_chat", "当前发言人乙"),)
+    assert await invoke(wf, stream, 2, first) == "完成"
+    assert await invoke(wf, stream, 2, second) == "完成"
+    for request in script.requests[:2]:
+        body = str(request["messages"])
+        assert body.count("机器人当前身份") == body.count("当前发言人甲") == 1
+    body = str(script.requests[-1]["messages"])
+    assert body.count("当前发言人乙") == 1 and "当前发言人甲" not in body and "机器人当前身份" not in body
+    assert "当前发言人" not in str(wf.ctx.get_context())
+    assert "机器人当前身份" not in str(stored_history(wf))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_request_environment_recovery_uses_original_snapshot(tmp_path: Path, asynchronous: bool, stream: bool) -> None:
+    """中断后不接受新来源资料覆盖原轮快照, 执行记录保留快照但历史不保留"""
+    from satrap.core.framework.Base.execution.engine import run_async, run_sync
+    script = Script([TOOLS, RuntimeError("临时失败"), ANSWER])
+    wf, _ = await make_workflow(tmp_path, script, asynchronous, True)
+    blocks = (RequestContextBlock("environment", "group_chat", "原轮发言人甲"),)
+    with pytest.raises(RuntimeError, match="临时失败"):
+        await invoke(wf, stream, 2, blocks)
+    assert wf.last_run_id is not None
+    restored = (RequestContextBlock("environment", "group_chat", "后来发言人乙"),)
+    if isinstance(wf, AsyncModelWorkflowFramework):
+        assert await run_async(wf, run_id=wf.last_run_id, request_blocks=restored) == "完成"
+    else:
+        assert run_sync(wf, run_id=wf.last_run_id, request_blocks=restored) == "完成"
+    assert script.requests[1]["messages"] == script.requests[2]["messages"]
+    assert "原轮发言人甲" in str(script.requests[-1]) and "后来发言人乙" not in str(script.requests[-1])
+    assert "原轮发言人甲" not in str(stored_history(wf))
 
 
 class Script:
@@ -129,15 +173,15 @@ async def make_workflow(tmp_path: Path, script: Script, asynchronous: bool, reco
     return wf, events
 
 
-async def invoke(wf: Workflow, stream: bool, iterations: int = 1) -> str:
+async def invoke(wf: Workflow, stream: bool, iterations: int = 1, request_blocks: tuple[RequestContextBlock, ...] = ()) -> str:
     """通过指定入口调用统一工作流"""
     if isinstance(wf, AsyncModelWorkflowFramework):
         if stream:
-            return await wf.stream_full_agent("新输入", thinking="high", max_iterations=iterations)
-        return await wf.full_agent("新输入", thinking="high", max_iterations=iterations)
+            return await wf.stream_full_agent("新输入", thinking="high", max_iterations=iterations, request_blocks=request_blocks)
+        return await wf.full_agent("新输入", thinking="high", max_iterations=iterations, request_blocks=request_blocks)
     if stream:
-        return wf.stream_full_agent("新输入", thinking="high", max_iterations=iterations)
-    return wf.full_agent("新输入", thinking="high", max_iterations=iterations)
+        return wf.stream_full_agent("新输入", thinking="high", max_iterations=iterations, request_blocks=request_blocks)
+    return wf.full_agent("新输入", thinking="high", max_iterations=iterations, request_blocks=request_blocks)
 
 
 def stored_history(wf: Workflow) -> list[tuple[str, str]]:

@@ -6,6 +6,7 @@
 """
 
 from __future__ import annotations
+from satrap.core.type import RequestContextBlock
 import copy
 from typing import Optional, Callable, Any, Literal
 from satrap.core.APICall.LLMCall import LLM
@@ -221,6 +222,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         self, user_input: str, callback: bool = True, max_iterations: int = 10,
         img_urls: list[str] | None = None, *, thinking: str = "off",
         video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
         """
         同步执行完整 Agent 循环, 成功后提交本轮消息
@@ -240,7 +242,7 @@ class ModelWorkflowFramework(_WorkflowCore):
 
         return run_sync(
             self, user_input=user_input, callback=callback,
-            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls,
+            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls, request_blocks=request_blocks,
             stream=False, thinking=thinking, recoverable=self.recoverable,
         )
 
@@ -301,6 +303,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         self, user_input: str, callback: bool = True, max_iterations: int = 10,
         thinking: str = "off", img_urls: list[str] | None = None,
         *, video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
         """
         同步流式执行完整 Agent 循环, 成功后提交本轮消息
@@ -320,7 +323,7 @@ class ModelWorkflowFramework(_WorkflowCore):
 
         return run_sync(
             self, user_input=user_input, callback=callback,
-            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls,
+            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls, request_blocks=request_blocks,
             stream=True, thinking=thinking, recoverable=self.recoverable,
         )
 
@@ -331,6 +334,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         max_iterations: int = 10,
         img_urls: list[str] | None = None,
         *, video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
         """
         使用临时上下文完整执行一轮 Agent 流程, 返回最终模型输出
@@ -353,7 +357,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         try:
             return run_sync(
                 self, user_input=user_input, callback=callback, max_iterations=max_iterations,
-                img_urls=img_urls, video_urls=video_urls, recoverable=False,
+                img_urls=img_urls, video_urls=video_urls, recoverable=False, request_blocks=request_blocks,
             )
         except ModelCallError:
             return "模型调用失败"
@@ -371,6 +375,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         thinking: str = "off",
         img_urls: list[str] | None = None,
         *, video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
         """
         使用临时上下文流式执行一轮 Agent 流程, 返回最终模型输出
@@ -395,7 +400,7 @@ class ModelWorkflowFramework(_WorkflowCore):
                 callback=callback,
                 max_iterations=max_iterations,
                 thinking=thinking,
-                img_urls=img_urls, video_urls=video_urls,
+                img_urls=img_urls, video_urls=video_urls, request_blocks=request_blocks,
             )
         finally:
             self._restore_context_keep_system(system_messages)

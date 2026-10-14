@@ -11,7 +11,8 @@ SimpleSession / AsyncSimpleSession: 基于 Session 的高可扩展单 workflow A
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from satrap.core.type import RequestContextBlock
+from dataclasses import dataclass, field
 import inspect
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -145,6 +146,8 @@ class HandlerContext:
     text: str
     error: BaseException | None = None
     outcome: str | None = None
+    request_blocks: list[RequestContextBlock] = field(default_factory=list[RequestContextBlock])
+    """各生产者补充的本轮资料, 调用工作流前冻结"""
 
 
 HANDLER_TIMEOUT = 30

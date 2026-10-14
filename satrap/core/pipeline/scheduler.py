@@ -720,6 +720,7 @@ class PipelineScheduler:
                     group_session_overrides=event.group_session_overrides if not event.is_private_chat() else None,
                     group_config_revision=event.group_config_revision if not event.is_private_chat() else None,
                     group_route_generation=event.group_route_generation if not event.is_private_chat() else None,
+                    request_blocks=projected.request_blocks if command_text is None else (),
                 )
                 # Step.6 执行会话并限制等待时间
                 if manual_ticket is not None:

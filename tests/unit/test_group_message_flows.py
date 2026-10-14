@@ -858,6 +858,10 @@ async def test_first_model_request_has_skill_tools_environment_and_no_early_outp
     assert {tool["function"]["name"] for tool in args["tools"] if tool["function"]["name"].startswith("group_chat_")} == (set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"]))
     assert '"speaker_id": "123"' in str(first) and '"source_message_id": "77"' in str(first)
     assert '"nickname": "机器人"' in str(first)
+    assert "available_group_chat_tools" not in str(first)
+    assert all(str(messages).count("群聊环境资料") == 1 for messages, _ in script.requests)
+    assert "群聊环境资料" not in str(instance.ctx.get_context())
+    assert "你当前的平台机器人身份" not in str(instance.ctx.get_context())
     send_mock(adapter).assert_awaited_once()
     assert "回复甲" in "".join(c.text for c in send_mock(adapter).call_args.args[1].components if c.type == PlatformComponentType.Plain)
     assert event.last_business_receipt is not None and event.last_business_receipt.status == "success"

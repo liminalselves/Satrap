@@ -110,7 +110,8 @@ async def test_manual_explicit_window_rebuilds_images_and_original_nickname(with
     manager.handle_call_async.assert_awaited_once()
     call = manager.handle_call_async.await_args.args[0]
     prefix = "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群昵称 本群助手]\n" if with_identity else ""
-    assert call.message == prefix + "[用户 小明 (ID 30), 消息 1] [图片 1]"
+    assert call.message == "[用户 小明 (ID 30), 消息 1] [图片 1]"
+    assert tuple(block.content for block in call.request_blocks) == ((prefix.rstrip("\n"),) if with_identity else ())
     assert len(call.img_urls) == 1 and call.origin.actor_kind == "management"
     download.assert_awaited_once()
     assert (await backend.wake_platform({**payload, "request_id": "empty-picture-window"}, operator="management"))["status"] == "no_pending"

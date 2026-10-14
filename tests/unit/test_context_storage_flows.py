@@ -9,6 +9,7 @@ from typing import Any
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from unittest.mock import AsyncMock, Mock
 import json
+import copy
 from satrap.core.utils.context.utils import add_tool_message, _SUMMARY_PROMPT_VERSION
 from typing import cast
 from satrap.core.type import ContextUsageSnapshot, TokenUsage
@@ -21,6 +22,9 @@ import os
 from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
 from satrap.expend.tools.agent import SubAgentModel, AsyncSubAgentModel
 from satrap.core.utils.paths import get_db_path
+from scripts import clean_request_context as request_cleanup
+from satrap.core.type import StateScope
+from satrap.core.config.conversation_data import ConversationDataService
 
 def _row_ids(db_path: str, conversation_id: str) -> list[int]:
     """读取库中指定对话的消息行 id"""
@@ -586,3 +590,117 @@ def test_test_storage_isolation_inherited_by_child_process():
         encoding="utf-8", capture_output=True, check=True, env=os.environ.copy(),
     )
     assert root in Path(result.stdout.strip().splitlines()[-1]).resolve().parents
+
+
+@pytest.mark.parametrize("version", ["initial", "timed", "current"])
+def test_one_time_request_cleanup_covers_history_and_every_restore_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str) -> None:
+    """一次性清洗保留记忆, 目标, 身份和媒体, 检查点及备份恢复不回灌资料"""
+    database = tmp_path / "platform" / "platform.db"
+    database.parent.mkdir()
+    context = ContextManager("scope_main", db_path=str(database), enable_checkpoint=True, auto_checkpoint=False)
+    data = {"bot": {"self_id": "10", "nickname": "机器人", "group_card": "助手"},
+            "conversation": {"kind": "group", "chat_id": "20"}, "speaker_id": "30", "source_message_id": "40",
+            "quotes": [], "mentions": ["10"], "capabilities": {"text": {"state": "supported", "reason": "adapter_implemented"}}}
+    if version != "initial":
+        data["current_time"] = "2026-10-12T00:07:30+08:00"
+    data["available_group_chat_tools" if version == "current" else "available_tools"] = []
+    goal = "【持续目标】\n<active-goal>完成目标</active-goal>\n" + request_cleanup.GOAL_END
+    memory = "【长期记忆】\n<long-term-memory>\n- [约定] 保留此条\n</long-term-memory>\n"
+    if version == "timed":
+        memory = request_cleanup.MEMORY_HEADER + json.dumps({"memories": [], "has_omitted": True}) + "\n\n"
+    env = request_cleanup.GROUP_HEADER + json.dumps(data, ensure_ascii=False) + "\n\n"
+    if version == "current":
+        env += request_cleanup.TOOLS_NOTICE + "\n\n"
+    legacy = goal + memory + env + "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人, 本群昵称 助手]\n[用户 小明 (ID 30), 消息 40] 正文"
+    context.add_user_message(legacy, img_urls=["https://example.com/picture.png"])
+    context.add_bot_message("回复")
+    original = copy.deepcopy(context.get_context())
+    assert context.state_store is not None
+    checkpoint = context.state_store.create_checkpoint(StateScope("conversation", "scope_main"), materialize=True)
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE conversation_data_backups (id TEXT PRIMARY KEY,conversation_id TEXT,layer TEXT,payload TEXT,reason TEXT,created_at REAL)")
+        db.execute("INSERT INTO conversation_data_backups VALUES ('backup','scope_main','context',?,'test',0)", (json.dumps(original, ensure_ascii=False),))
+        db.execute("CREATE TABLE display_turns (id INTEGER PRIMARY KEY,conversation_id TEXT)")
+        db.execute("CREATE TABLE display_turn_variants (id INTEGER PRIMARY KEY,turn_id INTEGER,context_messages TEXT)")
+        db.execute("INSERT INTO display_turns VALUES (1,'scope_main')")
+        db.execute("INSERT INTO display_turn_variants VALUES (1,1,?)", (json.dumps(original, ensure_ascii=False),))
+        db.execute("INSERT INTO context_runtime_state (conversation_id,summary,covered_turn_count,updated_at) VALUES ('scope_main','旧环境摘要',1,0)")
+        records = {table: [dict(zip([field[0] for field in cursor.description], row)) for row in cursor.fetchall()]
+                   for table in ("chat_history", "state_snapshots", "conversation_data_backups", "display_turns", "display_turn_variants", "context_runtime_state")
+                   for cursor in [db.execute(f"SELECT * FROM {table}")]}
+    archive = database.parent / "trash" / "sessions" / "old"
+    archive.mkdir(parents=True)
+    raw = json.dumps(records, ensure_ascii=False).encode("utf-8")
+    (archive / "records.json").write_bytes(raw)
+    (archive / "manifest.json").write_text(json.dumps({"archive_version": 2, "records_sha256": request_cleanup.digest(raw)}), encoding="utf-8")
+    initial_ids = _row_ids(str(database), "scope_main")
+    context.close()
+    monkeypatch.setattr(request_cleanup, "recognizable_writers", lambda: [])
+    report = tmp_path / "report.json"
+    assert request_cleanup.main(["--database", str(database), "--report", str(report)]) == 0
+    assert request_cleanup.preview_database(database).changes
+    assert request_cleanup.main(["--database", str(database), "--apply", "--offline-confirmed", "--backup-dir", str(tmp_path / "external-backup"), "--report", str(report)]) == 0
+    assert json.loads(report.read_text(encoding="utf-8"))["completed"]
+    assert _row_ids(str(database), "scope_main") == initial_ids
+    cleaned = ContextManager("scope_main", db_path=str(database), enable_checkpoint=True, auto_checkpoint=False)
+    clean_body = str(cleaned.get_context()[0]["content"])
+    assert "完成目标" in clean_body and ("保留此条" in clean_body or "has_omitted" in clean_body)
+    assert "小明 (ID 30)" in clean_body and "消息 40" in clean_body and "正文" in clean_body
+    assert "群聊环境资料" not in clean_body and "你当前的平台机器人身份" not in clean_body
+    assert "https://example.com/picture.png" in clean_body
+    assert not request_cleanup.preview_database(database).changes
+    assert not request_cleanup.preview_archive(archive / "records.json").changed
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT summary,covered_turn_count FROM context_runtime_state WHERE conversation_id='scope_main'").fetchone() == ("", 0)
+        increment = json.loads(db.execute("SELECT context_messages FROM display_turn_variants").fetchone()[0])
+    fork = ContextManager("fork_main", db_path=str(database))
+    fork.add_turn_messages(increment)
+    assert "群聊环境资料" not in str(fork.get_context())
+    fork.close()
+    cleaned.rollback(checkpoint.checkpoint_id)
+    assert "群聊环境资料" not in str(cleaned.get_context())
+    cleaned.close()
+    store = ConversationDataService(database)
+    current = store.read("scope_main", "context")
+    store.mutate("scope_main", "context", {"action": "restore", "backup_id": "backup", "expected_revision": current["revision"]})
+    assert not request_cleanup.preview_database(database).changes
+    backup = Path(json.loads(report.read_text(encoding="utf-8"))["backup"]) / "database-0.db"
+    assert request_cleanup.preview_database(backup).changes
+
+
+@pytest.mark.parametrize("status", ["running", "interrupted", "needs_attention", "failed"])
+def test_one_time_request_cleanup_blocks_unfinished_workflows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str) -> None:
+    """实际工作流 scope 的未完成任务阻止清洗, 不修改指纹强行恢复"""
+    from satrap.core.framework.Base.execution.store import RunStore
+    database = tmp_path / "platform" / "platform.db"
+    database.parent.mkdir()
+    context = ContextManager("scope_main", db_path=str(database))
+    context.add_user_message("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人]\n原文")
+    context.close()
+    runs = RunStore(database, "scope_main")
+    run_id = runs.create({"user_input": "任务"}, runs.history_signature(), "configuration")
+    runs.update(run_id, status=status)
+    monkeypatch.setattr(request_cleanup, "recognizable_writers", lambda: [])
+    before = _row_contents(str(database), "scope_main")
+    assert request_cleanup.main(["--database", str(database), "--apply", "--offline-confirmed", "--backup-dir", str(tmp_path / "external-backup")]) == 2
+    assert _row_contents(str(database), "scope_main") == before
+    assert not (tmp_path / "external-backup").exists()
+
+
+def test_one_time_request_cleanup_preserves_ambiguous_text_and_rejects_online_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """用户引用, 未知版本和活跃进程不会被宽泛匹配或强行清洗"""
+    quoted = "用户说:\n[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人]\n原文"
+    assert request_cleanup.clean_text(quoted).text == quoted
+    ambiguous = "【持续目标】\n缺少结束标记\n" + request_cleanup.GROUP_HEADER + "{}\n\n正文"
+    result = request_cleanup.clean_text(ambiguous)
+    assert result.text == ambiguous and result.issue and not result.removed
+    database = tmp_path / "platform" / "platform.db"
+    database.parent.mkdir()
+    context = ContextManager("scope_main", db_path=str(database))
+    context.add_user_message("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人]\n原文")
+    context.close()
+    with pytest.raises(ValueError, match="offline-confirmed"):
+        request_cleanup.main(["--database", str(database), "--apply"])
+    monkeypatch.setattr(request_cleanup, "recognizable_writers", lambda: [{"pid": 123, "name": "python.exe"}])
+    assert request_cleanup.main(["--database", str(database), "--apply", "--offline-confirmed", "--backup-dir", str(tmp_path / "external-backup")]) == 2
+    assert request_cleanup.preview_database(database).changes

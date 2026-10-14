@@ -328,6 +328,7 @@ class _ContextCore:
         messages: List[Dict[str, Any]],
         threshold: int,
         method: TokenEstimateMethod,
+        *, min_turns: int = 2,
     ) -> List[Dict[str, Any]]:
         """
         保留头尾并按整轮移除中间消息直到满足阈值
@@ -336,6 +337,7 @@ class _ContextCore:
         - messages: 原始消息列表
         - threshold: 本地估算 token 上限
         - method: token 估算方法
+        - min_turns: 必须保留的历史轮数, 本轮消息由外层保护时允许裁掉全部旧轮次
 
         返回:
         - List[Dict[str, Any]]: 截断后的消息副本
@@ -357,7 +359,7 @@ class _ContextCore:
             )
 
         kept_turns = turns[:]
-        while token_of_turn_list(kept_turns) > threshold and len(kept_turns) > 2:
+        while token_of_turn_list(kept_turns) > threshold and len(kept_turns) > min_turns:
             del kept_turns[len(kept_turns) // 2]
         return self._flatten_turns(([system_turn] if system_turn else []) + kept_turns)
 

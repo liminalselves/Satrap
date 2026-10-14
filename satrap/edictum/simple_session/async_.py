@@ -6,6 +6,8 @@
 """
 
 from __future__ import annotations
+from satrap.core.type import RequestContextBlock
+from satrap.core.utils.context.request import freeze_request_blocks
 import asyncio
 from typing import Any, Callable, Iterable
 import time
@@ -227,6 +229,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         thinking: str | None = None,
         max_iterations: int = 10,
         video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str | CommandAction:
         """
         执行一轮 Agent 流程 (React 范式), 返回最终模型输出
@@ -268,6 +271,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                         call_id=uuid4().hex,
                     ),
                     text=user_input,
+                    request_blocks=list(freeze_request_blocks(request_blocks)),
                 )
                 text = user_input
                 final_override: str | None = None
@@ -318,6 +322,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                 if self.recoverable:
                     recovery.prepare_session_recovery(self)
 
+                frozen_blocks = freeze_request_blocks(ctx.request_blocks)
                 result: str | None = None
                 ctx.error = None
                 try:
@@ -328,14 +333,14 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                             text,
                             img_urls=img_urls,
                             thinking=thinking,
-                            max_iterations=max_iterations, video_urls=video_urls,
+                            max_iterations=max_iterations, video_urls=video_urls, request_blocks=frozen_blocks,
                         )
                     else:
                         result = await wf.full_agent(
                             text,
                             img_urls=img_urls,
                             thinking=thinking,
-                            max_iterations=max_iterations, video_urls=video_urls,
+                            max_iterations=max_iterations, video_urls=video_urls, request_blocks=frozen_blocks,
                         )
                 except BaseException as e:
                     ctx.error = e

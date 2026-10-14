@@ -2817,7 +2817,7 @@ class SessionManager:
     @staticmethod
     def _build_media_kwargs(run_method: Any, user_call: UserCall) -> dict[str, Any]:
         """
-        按会话签名适配新增视频参数
+        按会话签名适配视频与本轮资料参数
 
         参数:
         - run_method: 当前会话的 run 方法
@@ -2826,7 +2826,7 @@ class SessionManager:
         返回:
         - 有视频时传递关键字参数, 不支持该输入的旧会话明确报错
         """
-        if not user_call.video_urls:
+        if not user_call.video_urls and not user_call.request_blocks:
             return {}
         params = inspect.signature(run_method).parameters
         positional = [p for p in params.values() if p.kind in {
@@ -2834,9 +2834,15 @@ class SessionManager:
         }]
         if positional and positional[0].name.lower() in {"user_call", "call", "request"}:
             return {}
-        if "video_urls" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
-            return {"video_urls": user_call.video_urls}
-        raise ValueError("当前会话未提供视频输入接口")
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        kwargs: dict[str, Any] = {}
+        if user_call.video_urls:
+            if "video_urls" not in params and not accepts_kwargs:
+                raise ValueError("当前会话未提供视频输入接口")
+            kwargs["video_urls"] = user_call.video_urls
+        if user_call.request_blocks and ("request_blocks" in params or accepts_kwargs):
+            kwargs["request_blocks"] = user_call.request_blocks
+        return kwargs
 
     @staticmethod
     def _build_run_args(run_method: Any, user_call: UserCall) -> tuple[Any, ...]:

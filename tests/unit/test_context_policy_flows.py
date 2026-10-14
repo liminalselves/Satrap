@@ -27,6 +27,7 @@ from satrap.core.pipeline.wake_window import PendingImage, WakeWindow
 from satrap.core.platform.event import MessageEvent
 from satrap.core.platform.identity import BotIdentity
 from satrap.core.type import UserCall
+from satrap.core.type import RequestContextBlock
 from support.providers import RunnableRegistry
 
 class _NoCallAsyncLLM(AsyncLLM):
@@ -34,6 +35,49 @@ class _NoCallAsyncLLM(AsyncLLM):
 
     def __init__(self) -> None:
         self.model = "fake"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("strategy", ["sliding", "mid_truncate", "summarize"])
+async def test_request_blocks_are_budgeted_and_protected_without_polluting_summary(tmp_path: Path, asynchronous: bool, strategy: str) -> None:
+    """三种压缩均保留本轮资料与媒体, 摘要和历史不接收环境块"""
+    config = dict(db_path=str(tmp_path / "request.db"), max_context=2000, history_ratio=0.8,
+                  context_threshold=0.8, truncation_floor=0.4, exceed_process=strategy, summary_keep_recent_turns=1)
+    context = AsyncContextManager("request", **config) if asynchronous else ContextManager("request", **config)
+    if isinstance(context, AsyncContextManager):
+        await context.__aenter__()
+    for index in range(12):
+        if isinstance(context, AsyncContextManager):
+            await context.add_user_message(f"旧发言 {index}: " + "历史文字 " * 120)
+            await context.add_bot_message("旧回答")
+        else:
+            context.add_user_message(f"旧发言 {index}: " + "历史文字 " * 120)
+            context.add_bot_message("旧回答")
+    llm = MagicMock(model="offline", supports_visual_input=True)
+    llm.chat = AsyncMock(return_value="历史摘要") if asynchronous else MagicMock(return_value="历史摘要")
+    blocks = (RequestContextBlock("environment", "group_chat", "当前群环境身份 " * 20),)
+    pending = [{"role": "user", "content": [{"type": "text", "text": "本轮正文"}, {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}]}]
+    if isinstance(context, AsyncContextManager):
+        prepared = await context.prepare_model_context(llm=llm, pending_messages=pending, request_blocks=blocks)
+    else:
+        prepared = context.prepare_model_context(llm=llm, pending_messages=pending, request_blocks=blocks)
+    assert prepared.compressed and prepared.effective_input_tokens <= prepared.history_budget
+    assert str(prepared.messages).count(blocks[0].content) == 1 and "本轮正文" in str(prepared.messages)
+    assert "https://example.com/image.png" in str(prepared.messages)
+    assert "当前群环境身份" not in str(context.get_context()) and "当前群环境身份" not in str(llm.chat.call_args_list)
+    assert pending[0]["content"][0]["text"] == "本轮正文"
+    from satrap.core.utils.context.utils import ContextOverflowError
+    oversized = (RequestContextBlock("environment", "group_chat", "超长身份资料 " * 10000),)
+    with pytest.raises(ContextOverflowError):
+        if isinstance(context, AsyncContextManager):
+            await context.prepare_model_context(llm=llm, pending_messages=pending, request_blocks=oversized)
+        else:
+            context.prepare_model_context(llm=llm, pending_messages=pending, request_blocks=oversized)
+    if isinstance(context, AsyncContextManager):
+        await context.__aexit__(None, None, None)
+    else:
+        context.close()
 
 def test_resolve_and_apply_context_policy(tmp_path: Path):
     """策略解析后应一次性更新全部派生预算与策略字段"""
@@ -596,7 +640,7 @@ class TestTopMediaTruncation:
 class TestTinyLimitContract:
     @pytest.mark.asyncio
     async def test_quote_content_truncated_before_body(self):
-        adapter, event = await make_event({"input_text_limit": 30}, [
+        adapter, event = await make_event({"input_text_limit": 64}, [
             {"type": "reply", "data": {"id": "5"}},
             {"type": "text", "data": {"text": "这个对吗"}},
         ])
@@ -607,15 +651,15 @@ class TestTinyLimitContract:
         }
         status = await resolve_quotes(event)
         projected = project_input(event, status)
-        # 引用块单块上限先截断到 2000, 总预算再按优先级截断: 正文完整, 标记头保留, 内容截断
-        assert len(projected.message) <= 30
-        assert projected.message.endswith("\n这个对吗")
+        # 预算同时保留当前身份和正文, 余量用于引用内容
+        assert len(projected.message) <= 64
+        assert projected.message.endswith("[用户 123, 消息 77] 这个对吗")
         assert projected.message.startswith("[引用 小明 的消息: ")
         assert "…]" in projected.message
         assert "quote_truncated" in projected.notes and "quote_budget_truncated" in projected.notes
 
     @pytest.mark.asyncio
-    async def test_tiny_limit_drops_context_but_keeps_body(self):
+    async def test_tiny_limit_rejects_loss_of_sender_identity(self):
         adapter, event = await make_event({"input_text_limit": 10}, [
             {"type": "reply", "data": {"id": "5"}},
             {"type": "text", "data": {"text": "正文正文正文正文"}},
@@ -626,11 +670,8 @@ class TestTinyLimitContract:
             "message": [{"type": "text", "data": {"text": "引用原文"}}],
         }
         status = await resolve_quotes(event)
-        projected = project_input(event, status)
-        assert len(projected.message) <= 10
-        assert projected.message.startswith("正文正文")
-        assert "[引用" not in projected.message
-        assert "quote_budget_dropped" in projected.notes
+        with pytest.raises(ValueError, match="保留发言人和消息 ID"):
+            project_input(event, status)
 
 class TestWindowBlockBudget:
     @pytest.mark.asyncio
@@ -927,7 +968,8 @@ async def test_deadline_wake_preserves_picture_and_original_sender(with_identity
     manager.handle_call_async.assert_awaited_once()
     call = manager.handle_call_async.await_args.args[0]
     prefix = "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群昵称 本群助手]\n" if with_identity else ""
-    assert call.message == prefix + "[用户 小明 (ID 30), 消息 1] [图片 1]"
+    assert call.message == "[用户 小明 (ID 30), 消息 1] [图片 1]"
+    assert tuple(block.content for block in call.request_blocks) == ((prefix.rstrip("\n"),) if with_identity else ())
     assert len(call.img_urls) == 1 and downloads == ["https://cdn/timer.png"]
 
 @pytest.mark.asyncio
@@ -989,11 +1031,25 @@ async def test_own_identity_is_distinct_from_sender_and_wake_alias():
     adapter._bot.get_group_member_info.return_value = {"user_id": 10, "group_id": 20, "card": "本群助手"}
     await scheduler.execute(await incoming(adapter, 1, [AT, text("你叫什么")], sender={"user_id": 30, "nickname": "用户甲"}))
     call = manager.handle_call_async.await_args.args[0]
-    assert call.message.startswith("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群昵称 本群助手]\n")
+    assert call.request_blocks[0].content == "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群昵称 本群助手]"
+    assert "你当前的平台机器人身份" not in call.message
     assert "[用户 用户甲 (ID 30), 消息 1]" in call.message
     assert "你叫什么" in call.message and "唤醒别名" not in call.message
     assert call.origin.actor_id == "30" and call.origin.self_id == "10"
     adapter._bot.get_group_member_info.assert_awaited_once_with(self_id="10", group_id=20, user_id=10, no_cache=True)
+
+
+@pytest.mark.asyncio
+async def test_long_group_body_retains_sender_after_environment_leaves_history() -> None:
+    """正文占满字符额度时仍保存发言人和消息 ID, 不再依赖历史环境 JSON"""
+    adapter, scheduler, manager = runtime({"input_text_limit": 64})
+    event = await incoming(adapter, 123, [AT, text("长正文 " * 200)], sender={"user_id": 30, "nickname": "小明"})
+    await scheduler.execute(event)
+    call = manager.handle_call_async.await_args.args[0]
+    assert len(call.message) <= 64
+    assert call.message.startswith("[用户 小明 (ID 30), 消息 123]")
+    assert "长正文" in call.message
+    assert "sender_label_budget_dropped" not in event.get_extra("input_projection").notes
 
 @pytest.mark.asyncio
 async def test_private_message_gets_own_account_nickname():
@@ -1003,7 +1059,8 @@ async def test_private_message_gets_own_account_nickname():
         "sender": {"user_id": 30, "nickname": "用户甲"}, "message": [text("你叫什么")]})
     await scheduler.execute(adapter._event_queue.get_nowait())
     call = manager.handle_call_async.await_args.args[0]
-    assert call.message.startswith("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙]\n")
+    assert call.request_blocks[0].content == "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙]"
+    assert "你当前的平台机器人身份" not in call.message
     assert "你叫什么" in call.message and "本群昵称" not in call.message
     adapter._bot.get_group_member_info.assert_not_awaited()
 
@@ -1041,11 +1098,9 @@ async def test_identity_reserves_history_budget_without_orphan_images(limit: int
     assert len(call.message) <= limit and "现在看图" in call.message
     for number in range(1, len(call.img_urls or []) + 1):
         assert f"[图片 {number}]" in call.message
-    if limit == 32:
-        assert "你当前的平台机器人身份" not in call.message
-        assert "bot_identity_budget_dropped" in event.get_extra("input_projection").notes
-    else:
-        assert "账号昵称 机器人乙" in call.message
+    assert "你当前的平台机器人身份" not in call.message
+    assert "账号昵称 机器人乙" in call.request_blocks[0].content
+    assert "bot_identity_budget_dropped" not in event.get_extra("input_projection").notes
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("identity,expected", [
@@ -1060,7 +1115,7 @@ async def test_identity_projection_sanitizes_names_and_rejects_wrong_scope(ident
     projected = project_input(event, "none", selection=selection)
     assert "提问" in projected.message
     if expected:
-        assert expected in projected.message and "\x00" not in projected.message
-        assert projected.message.count("\n") == 1
+        assert expected in projected.request_blocks[0].content and "\x00" not in projected.request_blocks[0].content
+        assert "你当前的平台机器人身份" not in projected.message
     else:
         assert "你当前的平台机器人身份" not in projected.message

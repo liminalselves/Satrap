@@ -13,6 +13,8 @@ import inspect
 import copy
 from typing import Any, Generator, TYPE_CHECKING, TypedDict, Unpack, cast
 
+from satrap.core.type import RequestContextBlock
+from satrap.core.utils.context.request import freeze_request_blocks, serialize_request_blocks, restore_request_blocks
 from satrap.core.utils.context import PreparedModelContext
 from satrap.core.type import LLMCallResponse, TokenUsage
 from satrap.core.utils.media import user_media_content, freeze_tool_result
@@ -41,6 +43,7 @@ class ExecutionOptions(TypedDict, total=False):
     max_iterations: int
     recoverable: bool
     initial_response: LLMCallResponse | None
+    request_blocks: tuple[RequestContextBlock, ...]
 
 
 @dataclass
@@ -59,6 +62,7 @@ class Prepare:
     step: ModelStep
     tools: list[dict[str, Any]]
     images: list[str] | None
+    request_blocks: tuple[RequestContextBlock, ...]
 
 
 @dataclass
@@ -169,6 +173,7 @@ def execute(
     img_urls: list[str] | None = None, max_iterations: int = 10,
     video_urls: list[str] | None = None,
     recoverable: bool = True, initial_response: LLMCallResponse | None = None,
+    request_blocks: tuple[RequestContextBlock, ...] = (),
 ) -> Generator[Action, Any, str]:
     """
     驱动共用 Agent 循环, 按固定策略选择是否持久化步骤
@@ -201,6 +206,7 @@ def execute(
             "img_urls": img_urls, "max_iterations": max_iterations,
             "origin": getattr(wf, "recovery_origin", {}),
             "context_start": len(wf.ctx.get_context()),
+            "request_blocks": serialize_request_blocks(freeze_request_blocks(request_blocks)),
         }
         if run_id is None and (img_urls or video_urls):
             content = yield FreezeInput(user_input or "", img_urls, video_urls)
@@ -251,6 +257,7 @@ def execute(
             context_fingerprint = store.get(run_id)["context_fingerprint"]
         wf.last_run_id = run_id
         wf.reset_context_stats()
+        frozen_blocks = restore_request_blocks(payload.get("request_blocks", []))
         flow = agent_flow(payload["user_input"], payload["max_iterations"])
         step = next(flow)
         # Step.2 执行模型与工具步骤, 仅可恢复模式读取和保存执行记录
@@ -266,7 +273,7 @@ def execute(
                     seeded = initial_response if step.key == "model:0" else None
                     if saved is None and seeded is None:
                         tools = [] if step.final else wf.tools_manager.get_tools_definitions()
-                        prepared = yield Prepare(step, tools, payload["img_urls"])
+                        prepared = yield Prepare(step, tools, payload["img_urls"], frozen_blocks)
                         request = {"messages": prepared.messages, "tools": tools,
                                    "thinking": payload["thinking"], "img_urls": payload["img_urls"],
                                    "_prepared": prepared_metadata(prepared)}
@@ -348,7 +355,7 @@ async def run_async(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[ExecutionO
                 value = await asyncio.to_thread(user_media_content, action.text, action.images, action.videos, wf.llm)
             elif isinstance(action, Prepare):
                 value = await wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
-                                                           tools=action.tools, img_urls=action.images)
+                                                           tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks)
             elif isinstance(action, InvokeTool):
                 with bind_tool_workflow(wf):
                     tool_message, tool_result = await wf.tools_manager.execute_tool_call(action.call)
@@ -419,7 +426,7 @@ def run_sync(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptions]) -> 
                 value = user_media_content(action.text, action.images, action.videos, wf.llm)
             elif isinstance(action, Prepare):
                 value = wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
-                                                     tools=action.tools, img_urls=action.images)
+                                                     tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks)
             elif isinstance(action, InvokeTool):
                 with bind_tool_workflow(wf):
                     tool_message, tool_result = wf.tools_manager.execute_tool_call(action.call)

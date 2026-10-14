@@ -15,6 +15,7 @@ from satrap.core.config.platform_policy import policy_default
 from satrap.core.components import BaseMessageComponent, Forward, Image, Node, PlatformComponentType, Reply, preferred_media_source
 from satrap.core.pipeline.wake_window import PendingImage, PendingMessage, display_label, sender_label
 from satrap.core.platform.identity import BotIdentity
+from satrap.core.type import RequestContextBlock
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.core.log import logger
@@ -56,6 +57,8 @@ class ProjectedInput:
     """none, resolved, partial 或 failed"""
     """none, resolved, partial, unavailable 或 disabled"""
     notes: tuple[str, ...] = field(default_factory=tuple)
+    request_blocks: tuple[RequestContextBlock, ...] = ()
+    """仅随本轮请求传递的平台资料"""
     media_only_unavailable: bool = False
     """消息除失败媒体外没有任何可读内容, 调用方应直接反馈而不调用模型"""
 
@@ -476,9 +479,6 @@ def select_window_media(
     base = project_input(event, quote_status, forward_status, attachments, replace(selection, self_identity=None))
     text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
     reserve = len(base.message) + (1 if base.message else 0)
-    identity_header = bot_identity_block(event, selection.self_identity)
-    if identity_header and len(base.message) + len(identity_header) + 1 <= text_limit:
-        reserve += len(identity_header) + 1
     reserve += sum(len(item.components) * len(MEDIA_FAILED_TEXT[item.media_type]) for item in selection.items)
     # 当前媒体失败可能扩大占位, 先保守预留, 避免已下载窗口图片的来源标记被最终裁掉
     remaining = max(0, text_limit - reserve)
@@ -699,12 +699,13 @@ def project_input(
     if message and not event.is_private_chat() and not selection.window_synthetic and event.call_origin.actor_kind != "management":
         origin = event.call_origin
         source_label = sender_label(event.get_sender_name(), origin.actor_id, origin.source_message_id) + " "
-        if len(source_label) + len(assembled) <= text_limit:
-            message = source_label + message
-            assembled = ProjectionBudget(text_limit).assemble(message, blocks, notes)
-        else:
-            source_label = ""
-            notes.append("sender_label_budget_dropped")
+        if len(source_label) >= text_limit:
+            source_label = sender_label("", origin.actor_id, origin.source_message_id) + " "
+            notes.append("sender_name_budget_dropped")
+        if len(source_label) >= text_limit:
+            raise ValueError("输入文本额度不足以保留发言人和消息 ID")
+        message = source_label + message
+        assembled = ProjectionBudget(text_limit).assemble(message, blocks, notes)
     message = assembled
     # 判定必须在占位覆盖之后做: 覆盖后的正文非空, 不能用空正文判断是否值得调用模型
     body = message.replace(source_label, "", 1) if source_label else message
@@ -739,13 +740,9 @@ def project_input(
         body = body.replace(placeholder, "")
     media_only_unavailable = bool(failed_types) and not images and not videos and not body.strip()
     identity_header = bot_identity_block(event, selection.self_identity)
-    if identity_header and (message or images or videos):
-        if len(identity_header) + len(message) + 1 <= text_limit:
-            message = f"{identity_header}\n{message}".rstrip("\n")
-        else:
-            notes.append("bot_identity_budget_dropped")
+    request_blocks = (RequestContextBlock("bot_identity", "platform", identity_header),) if identity_header and (message or images or videos) else ()
     return ProjectedInput(
         message=message, images=tuple(images), videos=tuple(videos),
         quote_status=quote_status, forward_status=forward_status, attachment_status=attachment_status,
-        notes=tuple(notes), media_only_unavailable=media_only_unavailable,
+        notes=tuple(notes), media_only_unavailable=media_only_unavailable, request_blocks=request_blocks,
     )

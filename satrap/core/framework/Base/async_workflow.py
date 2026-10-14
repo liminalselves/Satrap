@@ -6,6 +6,7 @@
 """
 
 from __future__ import annotations
+from satrap.core.type import RequestContextBlock
 import inspect, copy
 from typing import Optional, Callable, Any, Awaitable, cast, Literal
 from satrap.core.APICall.LLMCall import AsyncLLM
@@ -228,6 +229,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         self, user_input: str, callback: bool = True, max_iterations: int = 10,
         img_urls: list[str] | None = None, *, thinking: str = "off",
         video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
         """
         异步执行完整 Agent 循环, 成功后提交本轮消息
@@ -247,7 +249,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
 
         return await run_async(
             self, user_input=user_input, callback=callback,
-            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls,
+            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls, request_blocks=request_blocks,
             stream=False, thinking=thinking, recoverable=self.recoverable,
         )
 
@@ -308,6 +310,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         self, user_input: str, callback: bool = True, max_iterations: int = 10,
         thinking: str = "off", img_urls: list[str] | None = None,
         *, video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
         """
         异步流式执行完整 Agent 循环, 成功后提交本轮消息
@@ -327,7 +330,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
 
         return await run_async(
             self, user_input=user_input, callback=callback,
-            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls,
+            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls, request_blocks=request_blocks,
             stream=True, thinking=thinking, recoverable=self.recoverable,
         )
 
@@ -338,6 +341,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         max_iterations: int = 10,
         img_urls: list[str] | None = None,
         *, video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
         """
         使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出
@@ -360,7 +364,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         try:
             return await run_async(
                 self, user_input=user_input, callback=callback, max_iterations=max_iterations,
-                img_urls=img_urls, video_urls=video_urls, recoverable=False,
+                img_urls=img_urls, video_urls=video_urls, recoverable=False, request_blocks=request_blocks,
             )
         except ModelCallError:
             return "模型调用失败"
@@ -378,6 +382,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         thinking: str = "off",
         img_urls: list[str] | None = None,
         *, video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
         """
         使用临时上下文异步流式执行一轮 Agent 流程, 返回最终模型输出
@@ -402,7 +407,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
                 callback=callback,
                 max_iterations=max_iterations,
                 thinking=thinking,
-                img_urls=img_urls, video_urls=video_urls,
+                img_urls=img_urls, video_urls=video_urls, request_blocks=request_blocks,
             )
         finally:
             await self._restore_context_keep_system(system_messages)
