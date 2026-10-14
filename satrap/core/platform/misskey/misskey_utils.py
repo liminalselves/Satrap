@@ -7,11 +7,13 @@ Misskey 消息组件与媒体来源转换
 from __future__ import annotations
 
 from typing import Any, cast
+from datetime import datetime
 
 from satrap.core.platform.event import MessageChain
 from satrap.core.utils.paths import MediaSourcePermissionError, normalize_media_source
 from satrap.core.components import At, File, Image, Plain, PlatformComponentType, Record, Video
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str
+from satrap.core.log import logger
 
 
 class FileIDExtractor:
@@ -70,7 +72,8 @@ def serialize_message_chain(chain: list[Any] | MessageChain) -> tuple[str, bool]
                 text_parts.append(f"@{name}")
             continue
         if component_type == PlatformComponentType.Image or isinstance(component, Image):
-            text_parts.append("[图片]")
+            if getattr(component, "asset_lease", None) is None:
+                text_parts.append("[图片]")
             continue
         if component_type == PlatformComponentType.Record or isinstance(component, Record):
             text_parts.append("[音频]")
@@ -315,7 +318,20 @@ def create_base_message(
         message.type = PlatformMessageType.OTHER_MESSAGE
         message.session_id = f"note%{sender_id or 'unknown'}"
     message.self_id = bot_self_id
-    message.message_id = str(raw_data.get("id", ""))
+    raw_id = raw_data.get("id")
+    message.message_id = raw_id if isinstance(raw_id, str) else ""
+    created_at = raw_data.get("createdAt")
+    if created_at is not None:
+        try:
+            if not isinstance(created_at, str):
+                raise ValueError("消息时间不是字符串")
+            parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError("消息时间缺少时区")
+            message.timestamp = int(parsed.timestamp())
+            message.timestamp_source = "platform"
+        except (ValueError, OverflowError) as exc:
+            logger.warning(f"[Misskey] 消息时间无效, 使用接收时间, 原因={type(exc).__name__}")
     message.sender = MessageMember(user_id=sender_id, nickname=sender_info["nickname"])
     message.message = []
     message.message_str = ""
@@ -369,7 +385,7 @@ def create_file_component(file_info: dict[str, Any]) -> tuple[Any, str]:
     file_name = file_info.get("name") or "未知文件"
     file_type = file_info.get("type") or ""
     if file_type.startswith("image/"):
-        return Image(file=file_url or file_name, url=file_url), f"图片[{file_name}]"
+        return Image(file=file_url or file_name, url=file_url, native_media_id=str(file_info.get("id") or "")), f"图片[{file_name}]"
     if file_type.startswith("audio/"):
         return Record(file=file_url or file_name, url=file_url), f"音频[{file_name}]"
     if file_type.startswith("video/"):

@@ -8,6 +8,7 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.cli.output import CliError, dispatch_action, ok, print_json, print_table, render_data
 from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, safe_getattr_callable
+from satrap.core.config.reference_checkers import build_reference_checker
 
 
 TYPE_MAP = {
@@ -18,7 +19,6 @@ TYPE_MAP = {
 }
 CLS_MAP = MODEL_CONFIG_CLASSES
 
-
 def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
     """
     参数:
@@ -28,14 +28,7 @@ def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
     - ModelConfigManager: 离线模型配置管理器
     """
     config = load_cli_config(args)
-
-    def _checker(config_name: str) -> list[dict[str, str]]:
-        from satrap.core.config.asr_references import list_asr_config_references
-        from satrap.core.storage import default_storage_layout
-
-        return list_asr_config_references(config_name, platforms=list(config.platforms), layout=default_storage_layout)
-
-    return ModelConfigManager(storage_path=config.model_config_path, asr_in_use_checker=_checker)
+    return ModelConfigManager(storage_path=config.model_config_path, asr_in_use_checker=build_reference_checker("asr", config))
 
 
 def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig) -> dict[str, Any]:

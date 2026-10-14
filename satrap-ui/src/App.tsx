@@ -1,8 +1,12 @@
 import { useEffect } from 'react';
 import { RouterProvider } from 'react-router-dom';
 import { router } from './router';
+import { useBackendStatusSync } from './hooks/useBackendStatusSync';
+import { ApiSessionNotice } from '@/components/common/ApiSessionNotice';
+import { ConfirmProvider } from '@/components/common/ConfirmProvider';
 
 function App() {
+  useBackendStatusSync();
   useEffect(() => {
     const syncBackgroundVisibility = () => {
       document.documentElement.classList.toggle('background-animation-paused', document.hidden);
@@ -29,7 +33,8 @@ function App() {
         <div className="fluid-blob fluid-blob-8" />
       </div>
       
-      <RouterProvider router={router} />
+      <ConfirmProvider><RouterProvider router={router} /></ConfirmProvider>
+      <ApiSessionNotice />
     </>
   );
 }

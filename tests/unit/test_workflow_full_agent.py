@@ -1,35 +1,14 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from pathlib import Path
 import pytest
-from typing import Any, cast
 import copy
 
-from satrap.core.APICall.LLMCall import AsyncLLM, LLM
-from satrap.core.utils.TCBuilder import AsyncToolsManager, ToolsManager
 from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.type import LLMCallResponse
-
-
-def _as_llm(fake: Any) -> LLM:
-    """同步 LLM 替身类型边界: 替身实现 LLM.call 调用面, cast 集中在此工厂"""
-    return cast(LLM, fake)
-
-
-def _as_async_llm(fake: Any) -> AsyncLLM:
-    """异步 LLM 替身类型边界: 替身实现 AsyncLLM.call 调用面, cast 集中在此工厂"""
-    return cast(AsyncLLM, fake)
-
-
-def _as_tools_manager(fake: Any) -> ToolsManager:
-    """同步工具管理器替身类型边界: 替身实现 ToolsManager 调用面, cast 集中在此工厂"""
-    return cast(ToolsManager, fake)
-
-
-def _as_async_tools_manager(fake: Any) -> AsyncToolsManager:
-    """异步工具管理器替身类型边界: 替身实现 AsyncToolsManager 调用面, cast 集中在此工厂"""
-    return cast(AsyncToolsManager, fake)
+from support.casts import _as_async_llm, _as_async_tools_manager, _as_llm, _as_tools_manager
 
 
 class _FakeTools:
@@ -77,195 +56,115 @@ class _FailingAsyncLLM:
         return False
 
 
-def test_model_workflow_full_agent_runs_complete_agent_flow(tmp_path: Path):
-    llm = _FakeLLM()
-    wf = ModelWorkflowFramework(
-        llm=_as_llm(llm),
-        context_id="full-agent-sync",
-        tools_manager=_as_tools_manager(_FakeTools()),
-    )
-    wf.ctx = ContextManager("full-agent-sync", db_path=str(tmp_path / "sync.db"))
+class _SharedEngineWorkflow(ModelWorkflowFramework):
+    def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
+        """覆写执行器以证明统一入口不经过它"""
+        self.executor_options = (callback, max_iterations)
+        return ([{"role": "assistant", "content": "自定义回复"}], True)
 
-    result = wf.full_agent("你好")
 
-    assert result == "同步回复"
+class _AsyncSharedEngineWorkflow(AsyncModelWorkflowFramework):
+    async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
+        """覆写执行器以证明统一入口不经过它"""
+        self.executor_options = (callback, max_iterations)
+        return ([{"role": "assistant", "content": "异步自定义回复"}], True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_full_agent_runs_complete_agent_flow(tmp_path: Path, asynchronous: bool):
+    """验证同步与异步 full_agent 完成整轮调用并传参"""
+    llm = _FakeAsyncLLM() if asynchronous else _FakeLLM()
+    if asynchronous:
+        wf = AsyncModelWorkflowFramework(
+            llm=_as_async_llm(llm),
+            context_id="full-agent-async",
+            tools_manager=_as_async_tools_manager(_FakeTools()),
+        )
+        wf.ctx = AsyncContextManager("full-agent-async", db_path=str(tmp_path / "async.db"))
+        await wf.ctx.initialize()
+        result = await wf.full_agent("你好")
+    else:
+        wf = ModelWorkflowFramework(
+            llm=_as_llm(llm),
+            context_id="full-agent-sync",
+            tools_manager=_as_tools_manager(_FakeTools()),
+        )
+        wf.ctx = ContextManager("full-agent-sync", db_path=str(tmp_path / "sync.db"))
+        result = wf.full_agent("你好")
+
+    assert result == ("异步回复" if asynchronous else "同步回复")
     assert llm.messages[0]["content"] == "你好"
     assert llm.tools == []
 
 
-def test_model_workflow_full_agent_uses_shared_engine(tmp_path: Path):
-    class _Workflow(ModelWorkflowFramework):
-        def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
-            self.executor_options = (callback, max_iterations)
-            return ([{"role": "assistant", "content": "自定义回复"}], True)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("entry", ["full", "tools"])
+async def test_agent_entry_points_use_shared_engine(tmp_path: Path, asynchronous: bool, entry: str):
+    """验证统一入口不经过子类覆写的 agent_executor, 工具入口保持无系统上下文为空"""
+    llm = _FakeAsyncLLM() if asynchronous else _FakeLLM()
+    if asynchronous:
+        wf = _AsyncSharedEngineWorkflow(
+            llm=_as_async_llm(llm),
+            context_id="shared-engine-async",
+            tools_manager=_as_async_tools_manager(_FakeTools()),
+        )
+        wf.ctx = AsyncContextManager("shared-engine-async", db_path=str(tmp_path / "shared-async.db"))
+        await wf.ctx.initialize()
+    else:
+        wf = _SharedEngineWorkflow(
+            llm=_as_llm(llm),
+            context_id="shared-engine-sync",
+            tools_manager=_as_tools_manager(_FakeTools()),
+        )
+        wf.ctx = ContextManager("shared-engine-sync", db_path=str(tmp_path / "shared-sync.db"))
 
-    wf = _Workflow(
-        llm=_as_llm(_FakeLLM()),
-        context_id="full-agent-options",
-        tools_manager=_as_tools_manager(_FakeTools()),
-    )
-    wf.ctx = ContextManager("full-agent-options", db_path=str(tmp_path / "options.db"))
+    if entry == "tools":
+        if asynchronous:
+            async_wf = cast(_AsyncSharedEngineWorkflow, wf)
+            await async_wf.ctx.add_user_message("历史消息")
+            result = await async_wf.tools_agent("本轮消息", callback=False, max_iterations=2)
+        else:
+            sync_wf = cast(_SharedEngineWorkflow, wf)
+            sync_wf.ctx.add_user_message("历史消息")
+            result = sync_wf.tools_agent("本轮消息", callback=False, max_iterations=2)
+    else:
+        if asynchronous:
+            result = await cast(_AsyncSharedEngineWorkflow, wf).full_agent("你好", callback=False, max_iterations=4)
+        else:
+            result = cast(_SharedEngineWorkflow, wf).full_agent("你好", callback=False, max_iterations=3)
 
-    result = wf.full_agent("你好", callback=False, max_iterations=3)
-
-    assert result == "同步回复"
+    assert result == ("异步回复" if asynchronous else "同步回复")
     assert not hasattr(wf, "executor_options")
+    if entry == "tools":
+        assert wf.ctx.get_context() == []
 
 
 @pytest.mark.asyncio
-async def test_async_model_workflow_full_agent_runs_complete_agent_flow(tmp_path: Path):
-    llm = _FakeAsyncLLM()
-    wf = AsyncModelWorkflowFramework(
-        llm=_as_async_llm(llm),
-        context_id="full-agent-async",
-        tools_manager=_as_async_tools_manager(_FakeTools()),
-    )
-    wf.ctx = AsyncContextManager("full-agent-async", db_path=str(tmp_path / "async.db"))
-    await wf.ctx.initialize()
-
-    result = await wf.full_agent("你好")
-
-    assert result == "异步回复"
-    assert llm.messages[0]["content"] == "你好"
-    assert llm.tools == []
-
-
-def test_model_workflow_tools_agent_keeps_only_system_context(tmp_path: Path):
-    llm = _FakeLLM()
-    wf = ModelWorkflowFramework(
-        llm=_as_llm(llm),
-        context_id="tools-agent-sync",
-        tools_manager=_as_tools_manager(_FakeTools()),
-    )
-    wf.ctx = ContextManager("tools-agent-sync", db_path=str(tmp_path / "tools-sync.db"))
-    wf.ctx.reset_system_prompt("系统提示")
-    wf.ctx.add_user_message("历史消息")
-    wf.ctx.add_bot_message("历史回复")
-
-    result = wf.tools_agent("本轮消息")
-
-    assert result == "同步回复"
-    assert [message["role"] for message in llm.messages] == ["system", "user"]
-    assert llm.messages[0]["content"] == "系统提示"
-    assert llm.messages[1]["content"] == "本轮消息"
-    assert wf.ctx.get_context() == [{"role": "system", "content": "系统提示"}]
-
-    reloaded = ContextManager("tools-agent-sync", db_path=str(tmp_path / "tools-sync.db"))
-    assert reloaded.get_context() == [{"role": "system", "content": "系统提示"}]
-
-
-def test_model_workflow_tools_agent_clears_without_system_and_uses_shared_engine(tmp_path: Path):
-    class _Workflow(ModelWorkflowFramework):
-        def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
-            self.executor_options = (callback, max_iterations)
-            return ([{"role": "assistant", "content": "临时回复"}], True)
-
-    wf = _Workflow(
-        llm=_as_llm(_FakeLLM()),
-        context_id="tools-agent-options",
-        tools_manager=_as_tools_manager(_FakeTools()),
-    )
-    wf.ctx = ContextManager("tools-agent-options", db_path=str(tmp_path / "tools-options.db"))
-    wf.ctx.add_user_message("历史消息")
-
-    result = wf.tools_agent("本轮消息", callback=False, max_iterations=2)
-
-    assert result == "同步回复"
-    assert not hasattr(wf, "executor_options")
-    assert wf.ctx.get_context() == []
-
-
-def test_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path: Path):
-    llm = _FailingLLM()
-    wf = ModelWorkflowFramework(
-        llm=_as_llm(llm),
-        context_id="tools-agent-fail",
-        tools_manager=_as_tools_manager(_FakeTools()),
-    )
-    wf.ctx = ContextManager("tools-agent-fail", db_path=str(tmp_path / "tools-fail.db"))
-    wf.ctx.reset_system_prompt("系统提示")
-
-    result = wf.tools_agent("本轮消息")
-
-    assert result == "模型调用失败"
-    assert [message["role"] for message in llm.messages] == ["system", "user"]
-    assert wf.ctx.get_context() == [{"role": "system", "content": "系统提示"}]
-
-
-def test_context_manager_del_context_keeps_only_system_messages(tmp_path: Path):
-    ctx = ContextManager("del-context-sync", db_path=str(tmp_path / "del-sync.db"))
-    ctx.add_user_message("第一条不是系统")
-    ctx.reset_system_prompt("系统提示")
-    ctx.add_bot_message("历史回复")
-
-    ctx.del_context()
-
-    assert ctx.get_context() == [{"role": "system", "content": "系统提示"}]
-
-
-@pytest.mark.asyncio
-async def test_async_model_workflow_tools_agent_keeps_only_system_context(tmp_path: Path):
-    llm = _FakeAsyncLLM()
-    wf = AsyncModelWorkflowFramework(
-        llm=_as_async_llm(llm),
-        context_id="tools-agent-async",
-        tools_manager=_as_async_tools_manager(_FakeTools()),
-    )
-    wf.ctx = AsyncContextManager("tools-agent-async", db_path=str(tmp_path / "tools-async.db"))
-    await wf.ctx.initialize()
-    await wf.ctx.reset_system_prompt("系统提示")
-    await wf.ctx.add_user_message("历史消息")
-    await wf.ctx.add_bot_message("历史回复")
-
-    result = await wf.tools_agent("本轮消息")
-
-    assert result == "异步回复"
-    assert [message["role"] for message in llm.messages] == ["system", "user"]
-    assert llm.messages[0]["content"] == "系统提示"
-    assert llm.messages[1]["content"] == "本轮消息"
-    assert wf.ctx.get_context() == [{"role": "system", "content": "系统提示"}]
-
-    reloaded = AsyncContextManager("tools-agent-async", db_path=str(tmp_path / "tools-async.db"))
-    await reloaded.initialize()
-    assert reloaded.get_context() == [{"role": "system", "content": "系统提示"}]
-
-
-@pytest.mark.asyncio
-async def test_async_model_workflow_tools_agent_clears_without_system_and_uses_shared_engine(tmp_path: Path):
-    class _Workflow(AsyncModelWorkflowFramework):
-        async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
-            self.executor_options = (callback, max_iterations)
-            return ([{"role": "assistant", "content": "异步临时回复"}], True)
-
-    wf = _Workflow(
-        llm=_as_async_llm(_FakeAsyncLLM()),
-        context_id="tools-agent-async-options",
-        tools_manager=_as_async_tools_manager(_FakeTools()),
-    )
-    wf.ctx = AsyncContextManager("tools-agent-async-options", db_path=str(tmp_path / "tools-async-options.db"))
-    await wf.ctx.initialize()
-    await wf.ctx.add_user_message("历史消息")
-
-    result = await wf.tools_agent("本轮消息", callback=False, max_iterations=2)
-
-    assert result == "异步回复"
-    assert not hasattr(wf, "executor_options")
-    assert wf.ctx.get_context() == []
-
-
-@pytest.mark.asyncio
-async def test_async_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path: Path):
-    llm = _FailingAsyncLLM()
-    wf = AsyncModelWorkflowFramework(
-        llm=_as_async_llm(llm),
-        context_id="tools-agent-async-fail",
-        tools_manager=_as_async_tools_manager(_FakeTools()),
-    )
-    wf.ctx = AsyncContextManager("tools-agent-async-fail", db_path=str(tmp_path / "tools-async-fail.db"))
-    await wf.ctx.initialize()
-    await wf.ctx.reset_system_prompt("系统提示")
-
-    result = await wf.tools_agent("本轮消息")
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_tools_agent_cleans_context_after_model_failure(tmp_path: Path, asynchronous: bool):
+    """验证模型调用失败时工具入口仍清理非系统上下文"""
+    llm = _FailingAsyncLLM() if asynchronous else _FailingLLM()
+    if asynchronous:
+        wf = AsyncModelWorkflowFramework(
+            llm=_as_async_llm(llm),
+            context_id="tools-agent-async-fail",
+            tools_manager=_as_async_tools_manager(_FakeTools()),
+        )
+        wf.ctx = AsyncContextManager("tools-agent-async-fail", db_path=str(tmp_path / "tools-async-fail.db"))
+        await wf.ctx.initialize()
+        await wf.ctx.reset_system_prompt("系统提示")
+        result = await wf.tools_agent("本轮消息")
+    else:
+        wf = ModelWorkflowFramework(
+            llm=_as_llm(llm),
+            context_id="tools-agent-fail",
+            tools_manager=_as_tools_manager(_FakeTools()),
+        )
+        wf.ctx = ContextManager("tools-agent-fail", db_path=str(tmp_path / "tools-fail.db"))
+        wf.ctx.reset_system_prompt("系统提示")
+        result = wf.tools_agent("本轮消息")
 
     assert result == "模型调用失败"
     assert [message["role"] for message in llm.messages] == ["system", "user"]
@@ -273,34 +172,21 @@ async def test_async_model_workflow_tools_agent_cleans_context_after_model_failu
 
 
 @pytest.mark.asyncio
-async def test_async_context_manager_del_context_keeps_only_system_messages(tmp_path: Path):
-    ctx = AsyncContextManager("del-context-async", db_path=str(tmp_path / "del-async.db"))
-    await ctx.initialize()
-    await ctx.add_user_message("第一条不是系统")
-    await ctx.reset_system_prompt("系统提示")
-    await ctx.add_bot_message("历史回复")
-
-    await ctx.del_context()
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_del_context_keeps_only_system_messages(tmp_path: Path, asynchronous: bool):
+    """验证 del_context 清空上下文时保留系统消息"""
+    if asynchronous:
+        ctx = AsyncContextManager("del-context-async", db_path=str(tmp_path / "del-async.db"))
+        await ctx.initialize()
+        await ctx.add_user_message("第一条不是系统")
+        await ctx.reset_system_prompt("系统提示")
+        await ctx.add_bot_message("历史回复")
+        await ctx.del_context()
+    else:
+        ctx = ContextManager("del-context-sync", db_path=str(tmp_path / "del-sync.db"))
+        ctx.add_user_message("第一条不是系统")
+        ctx.reset_system_prompt("系统提示")
+        ctx.add_bot_message("历史回复")
+        ctx.del_context()
 
     assert ctx.get_context() == [{"role": "system", "content": "系统提示"}]
-
-
-@pytest.mark.asyncio
-async def test_async_model_workflow_full_agent_uses_shared_engine(tmp_path: Path):
-    class _Workflow(AsyncModelWorkflowFramework):
-        async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
-            self.executor_options = (callback, max_iterations)
-            return ([{"role": "assistant", "content": "异步自定义回复"}], True)
-
-    wf = _Workflow(
-        llm=_as_async_llm(_FakeAsyncLLM()),
-        context_id="full-agent-async-options",
-        tools_manager=_as_async_tools_manager(_FakeTools()),
-    )
-    wf.ctx = AsyncContextManager("full-agent-async-options", db_path=str(tmp_path / "async-options.db"))
-    await wf.ctx.initialize()
-
-    result = await wf.full_agent("你好", callback=False, max_iterations=4)
-
-    assert result == "异步回复"
-    assert not hasattr(wf, "executor_options")

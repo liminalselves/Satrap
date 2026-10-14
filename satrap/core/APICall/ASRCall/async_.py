@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from openai import APIError, AsyncOpenAI
 
@@ -44,8 +44,8 @@ class AsyncASR(_ASRBase[AsyncOpenAI]):
         try:
             name, data, mime = prepare_audio_input(audio, filename=filename)
             parameters = self._transcription_parameters(model, language, prompt)
-            # SDK 对 dict 展开的 **kwargs 无法匹配重载, 响应统一收窄为已知 Any 交给解析层
-            response = cast(Any, await self.client.audio.transcriptions.create(file=(name, data, mime), **parameters))
+            # SDK 对 dict 展开的 **kwargs 无法匹配重载, 响应统一收窄为 object 交给解析层
+            response = cast(object, await self.client.audio.transcriptions.create(file=(name, data, mime), **parameters))
             return parse_transcription(response, str(parameters["model"]))
         except APIError as e:
             if not self.suppress_error:

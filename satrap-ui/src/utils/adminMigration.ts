@@ -23,6 +23,7 @@ function toBoolean(value: unknown, fallback: boolean): boolean {
 
 // 平台表单里的数值策略字段: 顺序与表单一致, 归一化与取值范围由策略字段契约提供
 export const PLATFORM_NUMERIC_KEYS = [
+  'message_archive_retention_days',
   'message_text_limit',
   'input_text_limit',
   'input_media_limit',
@@ -45,6 +46,10 @@ export function normalizePlatformSettings(
   type: string,
   settings: Record<string, unknown>,
 ): Record<string, unknown> {
+  settings = { ...settings };
+  const archiveDays = typeof settings.message_archive_retention_days === 'string' ? settings.message_archive_retention_days.trim() : settings.message_archive_retention_days;
+  if (archiveDays === '' || archiveDays === undefined || archiveDays === null) delete settings.message_archive_retention_days;
+  else settings.message_archive_retention_days = typeof archiveDays === 'string' || typeof archiveDays === 'number' ? Number(archiveDays) : archiveDays;
   if (type === 'onebot' || type === 'aiocqhttp') {
     const selfId = String(settings.self_id ?? '').trim();
     const normalized: Record<string, unknown> = {
@@ -63,7 +68,7 @@ export function normalizePlatformSettings(
       const value = settings[key];
       if (typeof value === 'string') normalized[key] = value.split('\n').map((item) => item.trim()).filter(Boolean);
     }
-    for (const key of ['notice_types', 'media_trusted_hosts']) {
+    for (const key of ['notice_types', 'media_trusted_hosts', 'command_operators']) {
       const value = settings[key];
       if (typeof value !== 'string') continue;
       const items = value.split('\n').map((item) => item.trim()).filter(Boolean);
@@ -78,7 +83,7 @@ export function normalizePlatformSettings(
       // 留空表示未设置 (删除键); 0 是有效取值, 必须按数字保存而不是当作空值丢弃
       const text = typeof value === 'string' ? value.trim() : value;
       if (text === '' || text === undefined || text === null) delete normalized[key];
-      else normalized[key] = Number(text);
+      else normalized[key] = typeof text === 'string' || typeof text === 'number' ? Number(text) : text;
     }
     for (const key of ['wake_group_overrides', 'wake_time_rules']) {
       const value = settings[key];
@@ -91,7 +96,7 @@ export function normalizePlatformSettings(
     return normalized;
   }
   if (type === 'misskey') {
-    return {
+    const normalized: Record<string, unknown> = {
       ...settings,
       base_url: String(settings.base_url ?? ''),
       api_token: String(settings.api_token ?? ''),
@@ -101,6 +106,14 @@ export function normalizePlatformSettings(
       misskey_default_visibility: String(settings.misskey_default_visibility ?? 'public'),
       misskey_local_only: Boolean(settings.misskey_local_only ?? false),
     };
+    // 命令操作员名单属平台级字段且对全部适配器生效, 表单同样以每行一项提交
+    const operators = settings.command_operators;
+    if (typeof operators === 'string') {
+      const items = operators.split('\n').map((item) => item.trim()).filter(Boolean);
+      if (items.length) normalized.command_operators = items;
+      else delete normalized.command_operators;
+    }
+    return normalized;
   }
   return settings;
 }

@@ -1,0 +1,50 @@
+name: memory
+version: 0.1.0
+author: Satrap Team
+description: "长期记忆: 保存会话约定, 管理成员偏好, 按当前身份读取和注入"
+
+config_schema:
+  memory_scope:
+    type: string
+    default: ""
+    description: "独立调用的记忆范围, 平台运行时由宿主确定"
+  memory_mode:
+    type: select
+    default: full
+    options: [disabled, base, full]
+    description: "disabled 关闭模型读取和注入, base 只读, full 允许受权限约束的写入; 人工管理独立授权"
+  group_write_enabled:
+    type: bool
+    default: false
+    description: "允许模型保存本人的群内偏好或提交群记忆提案; 不授予修改其他成员的权限"
+  injection_limit:
+    type: number
+    default: 30
+    minimum: 1
+    maximum: 50
+    integer: true
+    description: "每轮最多注入的记忆条数"
+  injection_budget:
+    type: number
+    default: 6000
+    minimum: 1000
+    maximum: 20000
+    integer: true
+    description: "每轮记忆正文的字符预算"
+
+tools:
+  add_memory: 保存当前范围内的长期记忆
+  update_memory: 修改已有长期记忆
+  delete_memory: 删除已有长期记忆
+  list_memories: 查找当前范围内的长期记忆
+  get_memory: 查看一条长期记忆的正文与状态
+handlers:
+  memory.memory_inject: 每轮按当前身份读取和注入长期记忆
+commands:
+  memory: 管理当前范围内的长期记忆
+
+compatibility:
+  satrap: ">=0.1,<0.2"
+applicability:
+  session_types: [chat, platform, embedded]
+  platforms: "*"

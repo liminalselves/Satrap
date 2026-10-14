@@ -145,6 +145,10 @@ session.disable_skill("coding-agent") / session.enable_skill("coding-agent")
 session.list_skills()
 ```
 
+会话层是"这条消息是不是命令"的唯一权威: `CommandHandler` 按已注册命令名做白名单匹配, 未注册或被 `disable_command` 停用的 `/xxx` 不按命令处理, 而是交给模型。平台层在路由之前拿不到会话的注册状态, 因此平台入口只做语法级判定 (默认前缀 + 寻址提及) 与冻结正文, 命令名与参数仍由会话层解析; 用自定义 `cmd_prefix` 构造的会话不会被平台入口识别, 其命令按普通消息进入管线。
+
+`/approve` 与 `/plan` 另有平台级 `command_operators` 名单约束, 见[平台接入](../platform/platforms.md)的"高权限命令的操作员名单"。该名单是过渡手段, 后续会由命令注册 metadata 的权限级别 (而非单一布尔位) 取代, `/goal` 也在那时取得自己的级别。
+
 ## MCP 接入 (异步版)
 
 ```python

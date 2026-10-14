@@ -21,6 +21,7 @@ import uuid
 import os
 import re
 
+from satrap.core.utils.config_text import comma_names
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionDecision,
@@ -38,6 +39,7 @@ from .async_interaction import AsyncAskUserTool, AsyncShellTool, AsyncSubAgentTo
 from satrap.core.type import safe_getattr_callable
 from .sync_interaction import AskUserTool, ShellTool, SubAgentTool
 from satrap.edictum import AsyncSimpleSession, SimpleSession
+from satrap.edictum.plugin_resources import PluginResources
 from .async_write import AsyncWriteFileTool, AsyncEditFileTool, AsyncSearchReplaceTool
 from .sync_write import WriteFileTool, EditFileTool, SearchReplaceTool
 from .async_read import (
@@ -103,11 +105,7 @@ def parse_allowed_env_vars(config: dict[str, Any]) -> frozenset[str]:
     返回:
     - frozenset[str]: 显式放行的环境变量名, 未配置或为空时返回空集合
     """
-    return frozenset(
-        name.strip()
-        for name in str(config.get("allowed_env_vars") or "").split(",")
-        if name.strip()
-    )
+    return comma_names(config.get("allowed_env_vars"))
 
 
 def get_tools(
@@ -120,7 +118,7 @@ def get_tools(
     - session: 会话
     - config: 配置信息
 
-    注: search/fetch_page/memory 已移交 base_take 插件, 本插件只保留 coding 专属能力
+    注: search/fetch_page 由 base_take 提供, memory 由独立记忆插件提供, 本插件只保留 coding 专属能力
 
     返回:
     - list[Any]: 按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)

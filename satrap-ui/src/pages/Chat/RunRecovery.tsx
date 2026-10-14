@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { useEffect, useRef, useState } from 'react';
 import { chatApi, type AgentRun } from '@/api/chat';
 
@@ -7,6 +8,7 @@ const labels: Record<string, string> = {
 };
 
 export function RunRecovery({ conversation, generating }: { conversation: string; generating: boolean }) {
+  const confirm = useConfirm(conversation);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -78,8 +80,8 @@ export function RunRecovery({ conversation, generating }: { conversation: string
         </div>}
         {run.status === 'needs_attention' && run.steps.filter(step => step.kind === 'tool' && step.status === 'running' && step.recovery_policy === 'manual').map(step => <div key={step.step_key}>
           <p>步骤 {step.step_key} 可能已经产生效果, 重试可能重复操作</p>
-          <button disabled={busy || generating} className="text-accent disabled:opacity-40" onClick={() => {
-            if (window.confirm('此工具可能已经执行成功。确认允许再次执行？')) operate(run, 'authorize_retry', step.step_key);
+          <button disabled={busy || generating} className="text-accent disabled:opacity-40" onClick={async () => {
+            if ((await confirm('此工具可能已经执行成功。确认允许再次执行？'))) operate(run, 'authorize_retry', step.step_key);
           }}>确认允许重试此步骤</button>
         </div>)}
       </div>)}

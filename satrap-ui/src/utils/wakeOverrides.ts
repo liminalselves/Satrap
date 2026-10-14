@@ -81,6 +81,7 @@ const OVERRIDE_OFF_LABELS: Record<string, string> = {
 };
 
 const MODE_OPTION_LABELS: Record<string, string> = {
+  all: '每条消息触发',
   frequency: '按消息数量触发',
   necessity: '按必要性评分',
 };
@@ -152,7 +153,7 @@ export interface RowIssue {
   message: string;
 }
 
-export interface RowsConversion<T> {
+interface RowsConversion<T> {
   // 可提交的规范化值: 只在没有 issue 时使用
   value: T;
   // 保留在草稿里的字段级错误: 有错误时阻止保存与试算, 但不删除行
@@ -179,7 +180,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // 兼容历史 JSON 文本形态, 解析失败回退为空
-export function parseOverrideJson(value: unknown, fallback: unknown): unknown {
+function parseOverrideJson(value: unknown, fallback: unknown): unknown {
   if (typeof value !== 'string') return value;
   if (!value.trim()) return fallback;
   try {

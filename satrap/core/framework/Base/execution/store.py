@@ -21,6 +21,9 @@ from uuid import uuid4
 from satrap.core.storage.file_lock import FileLock
 from . import codec
 
+from satrap.core.utils.context.utils import _message_content_json
+from satrap.core.utils.vision import content_text_projection
+
 
 class RunConflictError(RuntimeError):
     """任务作用域, 状态或上下文与恢复条件不符"""
@@ -457,8 +460,6 @@ class RunStore:
         - messages: 本轮完整消息, 仅在执行成功后提交
         - result: 步骤结果或最终回答, 保存时须可序列化
         """
-        from satrap.core.utils.context.utils import _message_content_json
-        from satrap.core.utils.vision import content_text_projection
 
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")

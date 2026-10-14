@@ -9,31 +9,37 @@
         description: "沙箱根目录"
 
 配置存储:
-- 全局默认: .satrap/plugin_config/<plugin_name>.json (所有会话共享)
+- 全局默认: .satrap/config/plugins/<plugin_name>.json (所有会话共享)
 - 会话覆盖: platform.db 按会话和配置域保存显式字段, 安装时读取
 
 合成顺序: schema.default < 全局 JSON < Edictum 命名配置 < 会话覆盖
 """
 from __future__ import annotations
 
+from satrap.core.storage.persist import atomic_write_json
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 import json
-import tempfile
 import math
 import re
 
+from satrap.edictum.migration_keys import GLOBAL_RECEIPT
+from satrap.core.config_paths import get_config_path
+
 from satrap.core.log import logger
 
-CONFIG_DIR = Path(".satrap") / "plugin_config"
-"""插件全局配置目录 (相对工作目录)"""
+CONFIG_DIR = get_config_path("plugins", legacy_name="plugin_config")
+"""插件全局配置目录, 与其它 JSON 配置共用项目 .satrap/config"""
 
 _FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "llm", "embed", "rerank", "asr", "knowledge_base", "knowledge_bases")
 """支持的配置字段类型"""
 
 _PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 """插件配置文件使用的稳定名称格式"""
+
+from satrap.core.storage.file_lock import FileLock
 
 
 @dataclass
@@ -158,6 +164,8 @@ def parse_config_schema(meta: dict[str, Any]) -> dict[str, ConfigField]:
         if isinstance(spec, dict):
             spec_dict = cast(dict[str, Any], spec)
             ftype = str(spec_dict.get("type") or "string")
+            if ftype == "boolean":
+                ftype = "bool"   # 兼容 JSON Schema 的类型名, 对外仍使用统一的 bool
             if ftype not in _FIELD_TYPES:
                 logger.warning(f"[插件配置] {name} 类型 {ftype} 非法, 按 string 处理")
                 ftype = "string"
@@ -187,7 +195,7 @@ class PluginConfigManager:
     """
     插件配置管理器: 全局 json 读写 + 两级合成
 
-    全局配置存 .satrap/plugin_config/<name>.json; 会话覆盖由调用方传入
+    全局配置存 .satrap/config/plugins/<name>.json; 会话覆盖由调用方传入
     """
 
     def __init__(self, config_dir: str | Path | None = None) -> None:
@@ -199,7 +207,7 @@ class PluginConfigManager:
         """
         self._dir = Path(config_dir) if config_dir is not None else CONFIG_DIR
 
-    def _global_path(self, name: str) -> Path:
+    def global_path(self, name: str) -> Path:
         """
         校验插件名称并返回配置目录内的真实路径
 
@@ -229,7 +237,13 @@ class PluginConfigManager:
         - dict[str, Any]: 读全局 json 并按 schema 校验 + 补默认 (无文件时全默认)
         """
         merged = {key: fld.default for key, fld in schema.items()}
-        path = self._global_path(name)
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
+        if name in {"base_take", "memory"}:
+            from satrap.edictum.memory_migration import migrate_memory_globals
+            migrate_memory_globals(self)
+        path = self.global_path(name)
         if not path.is_file():
             return merged
         try:
@@ -242,6 +256,8 @@ class PluginConfigManager:
             logger.warning(f"[插件配置] {name} 全局配置应为字典, 已忽略")
             return merged
         for key, value in cast(dict[str, Any], raw).items():
+            if name == "friend_manager" and key == GLOBAL_RECEIPT:
+                continue
             fld = schema.get(key)
             if fld is None:
                 logger.warning(f"[插件配置] {name} 配置键 {key} 未在 schema 声明, 忽略")
@@ -251,7 +267,13 @@ class PluginConfigManager:
 
     def load_global_explicit(self, name: str, schema: dict[str, ConfigField]) -> dict[str, Any]:
         """仅读取全局显式字段, 用于区分默认值和全局值来源"""
-        path = self._global_path(name)
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
+        if name in {"base_take", "memory"}:
+            from satrap.edictum.memory_migration import migrate_memory_globals
+            migrate_memory_globals(self)
+        path = self.global_path(name)
         if not path.is_file():
             return {}
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -272,6 +294,9 @@ class PluginConfigManager:
         - dict[str, Any]: 合成后的生效配置
         """
         self._dir.mkdir(parents=True, exist_ok=True)
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
         cleaned: dict[str, Any] = {}
         for key, value in config.items():
             fld = schema.get(key)
@@ -279,20 +304,16 @@ class PluginConfigManager:
                 logger.warning(f"[插件配置] {name} 配置键 {key} 未在 schema 声明, 忽略")
                 continue
             cleaned[key] = fld.validate(value)
-        path = self._global_path(name)
-        temporary = None
+        path = self.global_path(name)
         # 与 ASR 引用扫描共用同一把锁: 扫描判定无引用与删除配置之间不允许写入新引用
         from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 
-        try:
-            with REFERENCE_SCAN_LOCK:
-                with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
-                    temporary = Path(file.name)
-                    json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)
-                temporary.replace(path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
+            if name == "friend_manager" and path.is_file():
+                previous = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(previous, dict) and GLOBAL_RECEIPT in previous:
+                    cleaned[GLOBAL_RECEIPT] = previous[GLOBAL_RECEIPT]
+            atomic_write_json(path, cleaned, indent=2)
         return self.load_global(name, schema)
 
     def resolve(

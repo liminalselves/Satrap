@@ -15,13 +15,13 @@ import time
 import os
 import re
 
-from satrap.core.utils.paths import get_project_root
+from satrap.core.runtime_paths import get_credential_path
 
 
 TOKEN_ENV_NAME = "SATRAP_API_TOKEN"
 ALLOWED_ORIGINS_ENV_NAME = "SATRAP_ALLOWED_ORIGINS"
 SESSION_COOKIE_NAME = "satrap_session"
-DEFAULT_TOKEN_PATH = get_project_root() / ".satrap" / "api-token"
+DEFAULT_TOKEN_PATH = get_credential_path()
 LOOPBACK_BOOTSTRAP_ENV_NAME = "SATRAP_LOOPBACK_BOOTSTRAP"
 DEFAULT_BROWSER_SESSION_TTL = 8 * 3600
 DEFAULT_MAX_BROWSER_SESSIONS = 1024

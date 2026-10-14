@@ -13,19 +13,12 @@ from satrap.expend.plugins.satrap_coding.core.permission import (
     RiskLevel,
 )
 from satrap.core.type import safe_getattr
+from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-from .constants import (
-    WORKSPACE_ROOT,
-    _PROTECTED_DIRS,
-    _PROTECTED_FILES,
-    _SYSTEM_PROTECTED_ROOT,
-    _FILE_LINE_BREAK,
-    DEFAULT_SANDBOX_ROOT,
-)
 from .approval import _approve_async, _approve_sync
 
 
-def _workspace_root(session: Any, configured_root: Path | None = None) -> Path:
+def _workspace_root(session: SimpleSession | AsyncSimpleSession | None, configured_root: Path | None = None) -> Path:
     """
     解析工作区, 宿主属性优先于工具配置和固定默认值
 
@@ -43,7 +36,7 @@ def _workspace_root(session: Any, configured_root: Path | None = None) -> Path:
     ).resolve()
 
 
-def _tool_root(tool: Any) -> Path:
+def _tool_root(tool: _ToolBase) -> Path:
     """
     取当前宿主工作区, 未注入时使用工具实例配置
 

@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 from typing import TypeVar
-from typing import TYPE_CHECKING
 from satrap.core.utils.context import (
     AsyncContextManager,
     ContextManager,
@@ -16,12 +15,6 @@ from satrap.core.utils.context import (
 from satrap.core.type import ModelContextRequestStats, TokenUsage
 
 
-if TYPE_CHECKING:
-    from satrap.core.config.session_overrides import SessionOverrideStore
-    from satrap.core.framework.BackGroundManager import ModelConfigManager
-    from satrap.core.storage.layout import StorageLayout
-    from satrap.core.framework.SessionManager import SessionManager
-    from satrap.core.framework.UserManager import UserManager
 
 _WorkflowT = TypeVar("_WorkflowT")
 
@@ -62,15 +55,39 @@ def _build_context_request_stats(
     )
 
 
-def _new_context(context_id: str, *, db_path: str) -> ContextManager:
-    """保留兼容入口的上下文构造注入点"""
+def _new_context(context_id: str, *, db_path: str, persistent: bool = True) -> ContextManager:
+    """
+    保留兼容入口的上下文构造注入点
+
+    参数:
+    - context_id: 上下文标识
+    - db_path: 数据库路径
+    - persistent: 是否允许持久化, 默认 True
+
+    返回:
+    - 同步上下文管理器
+    """
     from . import ContextManager
 
+    if not persistent:
+        return ContextManager(context_id, db_path=db_path, persistent=False)
     return ContextManager(context_id, db_path=db_path)
 
 
-def _new_async_context(context_id: str, *, db_path: str) -> AsyncContextManager:
-    """保留兼容入口的异步上下文构造注入点"""
+def _new_async_context(context_id: str, *, db_path: str, persistent: bool = True) -> AsyncContextManager:
+    """
+    保留兼容入口的异步上下文构造注入点
+
+    参数:
+    - context_id: 上下文标识
+    - db_path: 数据库路径
+    - persistent: 是否允许持久化, 默认 True
+
+    返回:
+    - 异步上下文管理器
+    """
     from . import AsyncContextManager
 
+    if not persistent:
+        return AsyncContextManager(context_id, db_path=db_path, persistent=False)
     return AsyncContextManager(context_id, db_path=db_path)

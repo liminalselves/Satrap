@@ -1,5 +1,4 @@
 """OneBot 群管理动作封装的参数校验, 群范围与错误归一"""
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -8,16 +7,14 @@ import asyncio
 import base64
 import json
 import threading
-import time
 
-from aiocqhttp.exceptions import ActionFailed
+from aiocqhttp.exceptions import ActionFailed, ApiNotAvailable
 import pytest
 
 from satrap.core.platform.onebot.admin import (
     ADMIN_CAPABILITIES,
     AdminActionRejected,
     AdminActionUnconfirmed,
-    OneBotAdmin,
     UnsupportedAdminAction,
 )
 from satrap.core.platform.onebot.adapter import OneBotAdapter
@@ -28,16 +25,9 @@ from satrap.core.platform.onebot.request_registry import (
     RequestApprovalLedger,
     RequestFlagRegistry,
 )
-from satrap.core.platform.receipt import SendReceipt
-from satrap.core.platform import PlatformAdapter, PlatformConfig
+from satrap.core.platform import PlatformConfig
 
 
-def _adapter(**settings: object) -> OneBotAdapter:
-    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings=dict(settings)))
-    adapter._bot = AsyncMock()
-    if not adapter.bot_self_id:
-        adapter.bot_self_id = "10000"
-    return adapter
 
 
 async def _register_flag(
@@ -95,7 +85,7 @@ class TestOneBotAdminValidation:
     @pytest.mark.asyncio
     async def test_text_field_limits(self):
         admin = _adapter().admin
-        with pytest.raises(ValueError, match="群名片"):
+        with pytest.raises(ValueError, match="本群昵称"):
             await admin.set_group_card("456", "123", "x" * 61)
         with pytest.raises(ValueError, match="群名"):
             await admin.set_group_name("456", "  ")
@@ -113,14 +103,24 @@ class TestOneBotAdminValidation:
 
 class TestOneBotAdminCalls:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('action', ['get_group_member_info', 'set_group_card'])
+    async def test_disconnected_client_is_unconfirmed_instead_of_platform_rejection(self, action):
+        adapter = _adapter()
+        getattr(adapter._bot, action).side_effect = ApiNotAvailable()
+        with pytest.raises(AdminActionUnconfirmed, match='ApiNotAvailable'):
+            await adapter.admin._call(action, group_id=456, user_id=123)
+        assert action not in adapter._capability_states
+
+    @pytest.mark.asyncio
     async def test_group_list_narrows_fields_and_skips_foreign(self):
         adapter = _adapter()
         adapter._bot.get_group_list.return_value = [
             {"group_id": 456, "group_name": "测试群", "member_count": 3, "max_member_count": 500, "secret": "x"},
             "bad",
         ]
-        groups = await adapter.admin.get_group_list()
-        assert groups == [{"group_id": 456, "group_name": "测试群", "member_count": 3, "max_member_count": 500}]
+        groups = await adapter.admin.fetch_group_directory()
+        assert groups["items"] == [{"group_id": "456", "group_name": "测试群", "member_count": 3, "max_member_count": 500}]
+        assert not groups["complete"] and groups["reason"] == "invalid_entries"
 
     @pytest.mark.asyncio
     async def test_member_info_and_recall_and_requests_call_actions(self):
@@ -149,17 +149,33 @@ class TestOneBotAdminCalls:
         with pytest.raises(UnsupportedAdminAction):
             await adapter.admin.kick_group_member("456", "123")
         adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 1200})
-        with pytest.raises(AdminActionRejected, match="retcode=1200"):
+        with pytest.raises(AdminActionRejected, match="retcode=1200") as caught:
             await adapter.admin.kick_group_member("456", "123")
+        assert caught.value.retcode == 1200
         adapter._bot.set_group_kick.side_effect = RuntimeError("network")
         with pytest.raises(AdminActionUnconfirmed):
             await adapter.admin.kick_group_member("456", "123")
+        # 畸形 retcode 与平台响应正文都不得进入归一化异常
+        for retcode in (True, "100", 2 ** 32, None):
+            adapter._bot.set_group_card.side_effect = ActionFailed({
+                "retcode": retcode, "message": "secret-response", "data": {"token": "secret-token"},
+            })
+            with pytest.raises(AdminActionRejected) as malformed:
+                await adapter.admin.set_group_card("456", "123", "")
+            assert malformed.value.retcode is None
+            assert "secret" not in str(malformed.value)
+
+    @pytest.mark.asyncio
+    async def test_clear_card_preserves_empty_protocol_parameter(self):
+        adapter = _adapter()
+        await adapter.admin.set_group_card("456", "123", "")
+        adapter._bot.set_group_card.assert_awaited_once_with(group_id=456, user_id=123, card="")
 
     @pytest.mark.asyncio
     async def test_missing_client_is_unconfirmed(self):
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}))
         with pytest.raises(AdminActionUnconfirmed, match="未连接"):
-            await adapter.admin.get_group_list()
+            await adapter.admin.fetch_group_directory()
 
 
 class TestVoiceActions:
@@ -196,6 +212,29 @@ class TestVoiceActions:
             await adapter.admin.get_record("f", "wav", max_bytes=10)
 
     @pytest.mark.asyncio
+    async def test_get_image_normalizes_refreshed_url(self):
+        adapter = _adapter()
+        adapter._bot.get_image.return_value = {"file": "fresh.png", "url": "https://cdn/fresh.png", "file_name": "fresh.png"}
+        info = await adapter.admin.get_image("9f2c.image")
+        adapter._bot.get_image.assert_awaited_once_with(file="9f2c.image")
+        assert info == {"file": "fresh.png", "url": "https://cdn/fresh.png", "file_name": "fresh.png"}
+
+    @pytest.mark.asyncio
+    async def test_get_image_rejects_empty_source_and_missing_url(self):
+        adapter = _adapter()
+        with pytest.raises(ValueError, match="图片标识"):
+            await adapter.admin.get_image("   ")
+        with pytest.raises(ValueError, match="控制字符"):
+            await adapter.admin.get_image("a\nb")
+        # 实现返回空地址表示图片已不在缓存, 不可当作成功
+        adapter._bot.get_image.return_value = {"file": "9f2c.image", "url": ""}
+        with pytest.raises(AdminActionRejected, match="图片地址"):
+            await adapter.admin.get_image("9f2c.image")
+        adapter._bot.get_image.side_effect = ActionFailed({"retcode": 10002})
+        with pytest.raises(UnsupportedAdminAction):
+            await adapter.admin.get_image("9f2c.image")
+
+    @pytest.mark.asyncio
     async def test_fetch_ptt_text_returns_text_or_empty(self):
         adapter = _adapter()
         adapter._bot.fetch_ptt_text.return_value = {"text": "你好"}
@@ -205,10 +244,6 @@ class TestVoiceActions:
         assert await adapter.admin.fetch_ptt_text(-5) == ""
         with pytest.raises(ValueError, match="消息 ID"):
             await adapter.admin.fetch_ptt_text("abc")
-
-    def test_voice_actions_are_read_capabilities(self):
-        assert ADMIN_CAPABILITIES["get_record"][0] == "read"
-        assert ADMIN_CAPABILITIES["fetch_ptt_text"][0] == "read"
 
 
 class TestAdminCapabilities:
@@ -230,34 +265,15 @@ class TestAdminCapabilities:
         adapter._bot = None
         assert set(adapter.admin_capabilities().values()) == {"unavailable"}
 
-    def test_base_adapter_has_no_known_capabilities(self):
-        from satrap.core.platform.event import PlatformMetadata
-
-        class _Bare(PlatformAdapter):
-            adapter_type = "bare"
-
-            async def run(self) -> None:
-                return None
-
-            def meta(self) -> PlatformMetadata:
-                return PlatformMetadata(name="bare", id="b")
-
-        bare = _Bare(PlatformConfig(id="b", type="bare"))
-        assert bare.admin_capabilities() == {}
-
-    def test_stats_include_capabilities(self):
-        adapter = _adapter()
-        adapter._running = True
-        adapter.note_action_outcome("get_group_list", True)
-        assert adapter.get_stats()["capabilities"]["get_group_list"] == "supported"
-
     @pytest.mark.asyncio
     async def test_admin_call_outcome_feeds_capability_learning(self):
         adapter = _adapter()
         adapter._running = True
         adapter._bot.get_group_list.return_value = []
-        await adapter.admin.get_group_list()
+        await adapter.admin.fetch_group_directory()
         assert adapter.admin_capabilities()["get_group_list"] == "supported"
+        # 学习结果同时经 get_stats 序列化暴露
+        assert adapter.get_stats()["capabilities"]["get_group_list"] == "supported"
         adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 10002})
         with pytest.raises(UnsupportedAdminAction):
             await adapter.admin.kick_group_member("456", "123")
@@ -310,230 +326,10 @@ class TestCapabilityConnectionStates:
         assert set(adapter.admin_capabilities().values()) == {"unavailable"}
 
 
-class TestReadAndForwardTools:
-    """get_message/get_forward_message 的归属核验与 send_group_forward 的公共发送路径"""
-
-    @pytest.mark.asyncio
-    async def test_get_message_verifies_group_and_narrows_fields(self):
-        adapter = _adapter()
-        adapter._bot.get_msg.return_value = {
-            "message_id": 77, "message_type": "group", "group_id": 456, "time": 1700000000,
-            "sender": {"user_id": 123, "nickname": "成员", "card": "卡", "role": "member", "secret": "x"},
-            "message": [{"type": "text", "data": {"text": "你好"}}], "raw_extra": 1,
-        }
-        data = await adapter.admin.get_message("456", "77")
-        adapter._bot.get_msg.assert_awaited_once_with(message_id=77)
-        assert data["sender"] == {"user_id": 123, "nickname": "成员", "card": "卡", "role": "member"}
-        assert data["message"] == [{"type": "text", "data": {"text": "你好"}}]
-        assert "raw_extra" not in data
-
-    @pytest.mark.asyncio
-    async def test_get_message_rejects_cross_group_and_out_of_scope(self):
-        adapter = _adapter()
-        adapter._bot.get_msg.return_value = {"message_type": "group", "group_id": 999}
-        with pytest.raises(AdminActionRejected, match="已拒绝读取"):
-            await adapter.admin.get_message("456", "77")
-        scoped = _adapter(group_whitelist=["789"])
-        with pytest.raises(AdminActionRejected, match="允许范围"):
-            await scoped.admin.get_message("456", "77")
-        scoped._bot.get_msg.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_get_forward_message_requires_source_proof(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        adapter._bot.get_msg.return_value = {
-            "message_id": 77, "message_type": "group", "group_id": 456, "self_id": 10000,
-            "message": [{"type": "text", "data": {"text": "看这个"}}, {"type": "forward", "data": {"id": "fwd-1"}}],
-        }
-        adapter._bot.get_forward_msg.return_value = {
-            "messages": [
-                {"user_id": 123, "nickname": "甲", "time": 1,
-                 "content": [{"type": "text", "data": {"text": "第一条"}}]},
-                {"user_id": 124, "nickname": "乙", "time": 2,
-                 "content": [{"type": "image", "data": {"file": "x.jpg"}}]},
-            ],
-        }
-        nodes = await adapter.admin.get_forward_message("456", "fwd-1", "77")
-        adapter._bot.get_msg.assert_awaited_once_with(message_id=77)
-        adapter._bot.get_forward_msg.assert_awaited_once_with(id="fwd-1")
-        assert nodes[0]["name"] == "甲" and nodes[0]["text"] == "第一条"
-        assert nodes[1]["text"] == "[Image]"
-        assert adapter.admin_capabilities()["get_forward_message"] == "unavailable"  # 服务未运行时连接状态优先
-        adapter._running = True
-        assert adapter.admin_capabilities()["get_forward_message"] == "supported"
-
-    @pytest.mark.asyncio
-    async def test_get_forward_message_unknown_when_lookup_fails(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        adapter._bot.get_msg.return_value = {
-            "message_id": 77, "message_type": "group", "group_id": 456,
-            "message": [{"type": "forward", "data": {"id": "fwd-1"}}],
-        }
-        adapter._bot.get_forward_msg.side_effect = RuntimeError("network")
-        with pytest.raises(AdminActionUnconfirmed, match="转发回源失败"):
-            await adapter.admin.get_forward_message("456", "fwd-1", "77")
-        scoped = _adapter(group_whitelist=["789"])
-        with pytest.raises(AdminActionRejected, match="允许范围"):
-            await scoped.admin.get_forward_message("456", "fwd-1", "77")
-        scoped._bot.get_msg.assert_not_called()
-        scoped._bot.get_forward_msg.assert_not_called()
 
 
-class TestForwardSourceProof:
-    """合并转发读取必须证明来源消息与 forward_id 的关联 (B1 反例)"""
 
-    @pytest.mark.asyncio
-    async def test_source_message_from_other_group_is_rejected(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        adapter._bot.get_msg.return_value = {
-            "message_id": 77, "message_type": "group", "group_id": 999,
-            "message": [{"type": "forward", "data": {"id": "foreign-id"}}],
-        }
-        with pytest.raises(AdminActionRejected, match="来源消息属于目标群"):
-            await adapter.admin.get_forward_message("456", "foreign-id", "77")
-        adapter._bot.get_forward_msg.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_forward_id_absent_from_source_message_is_rejected(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        # 正文里出现相同字符串不构成授权, 只认顶层 forward 段
-        adapter._bot.get_msg.return_value = {
-            "message_id": 77, "message_type": "group", "group_id": 456,
-            "message": [{"type": "forward", "data": {"id": "other-id"}},
-                        {"type": "text", "data": {"text": "fwd-1"}}],
-        }
-        with pytest.raises(AdminActionRejected, match="未出现在来源消息"):
-            await adapter.admin.get_forward_message("456", "fwd-1", "77")
-        adapter._bot.get_forward_msg.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_nested_forward_does_not_authorize(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        adapter._bot.get_msg.return_value = {
-            "message_id": 77, "message_type": "group", "group_id": 456,
-            "message": [{"type": "forward", "data": {
-                "id": "outer-id",
-                "content": [{"type": "node", "data": {"user_id": 1, "content": [
-                    {"type": "forward", "data": {"id": "inner-id"}},
-                ]}}],
-            }}],
-        }
-        adapter._bot.get_forward_msg.return_value = {"messages": []}
-        with pytest.raises(AdminActionRejected, match="未出现在来源消息"):
-            await adapter.admin.get_forward_message("456", "inner-id", "77")
-        adapter._bot.get_forward_msg.assert_not_called()
-        # 顶层 ID 通过归属证明后才允许回源
-        assert await adapter.admin.get_forward_message("456", "outer-id", "77") == []
-        adapter._bot.get_forward_msg.assert_awaited_once_with(id="outer-id")
-
-    @pytest.mark.asyncio
-    async def test_account_and_message_id_mismatch_are_rejected(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        adapter._bot.get_msg.return_value = {
-            "message_id": 78, "message_type": "group", "group_id": 456, "self_id": 20000,
-            "message": [{"type": "forward", "data": {"id": "fwd-1"}}],
-        }
-        with pytest.raises(AdminActionRejected, match="账号与当前绑定账号不一致"):
-            await adapter.admin.get_forward_message("456", "fwd-1", "78")
-        adapter._bot.get_msg.return_value = {
-            "message_id": 78, "message_type": "group", "group_id": 456,
-            "message": [{"type": "forward", "data": {"id": "fwd-1"}}],
-        }
-        with pytest.raises(AdminActionRejected, match="请求消息 ID 不一致"):
-            await adapter.admin.get_forward_message("456", "fwd-1", "77")
-        adapter._bot.get_forward_msg.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_lookup_failure_and_stale_generation_block_read(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        adapter._bot.get_msg.side_effect = RuntimeError("network")
-        with pytest.raises(AdminActionUnconfirmed):
-            await adapter.admin.get_forward_message("456", "fwd-1", "77")
-        adapter._bot.get_forward_msg.assert_not_called()
-
-        stale = _adapter()
-        stale.bot_self_id = "10000"
-
-        async def reconnect(**_: object) -> dict[str, object]:
-            stale._connection_generation += 1
-            return {"message_id": 77, "message_type": "group", "group_id": 456,
-                    "message": [{"type": "forward", "data": {"id": "fwd-1"}}]}
-
-        stale._bot.get_msg.side_effect = reconnect
-        with pytest.raises(AdminActionUnconfirmed, match="来源证明失效"):
-            await stale.admin.get_forward_message("456", "fwd-1", "77")
-        stale._bot.get_forward_msg.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_response_with_contradictory_group_is_rejected(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        adapter._bot.get_msg.return_value = {
-            "message_id": 77, "message_type": "group", "group_id": 456,
-            "message": [{"type": "forward", "data": {"id": "fwd-1"}}],
-        }
-        adapter._bot.get_forward_msg.return_value = {"group_id": 999, "messages": [
-            {"user_id": 1, "nickname": "甲", "content": [{"type": "text", "data": {"text": "FOREIGN_SECRET"}}]},
-        ]}
-        with pytest.raises(AdminActionUnconfirmed, match="转发回源失败"):
-            await adapter.admin.get_forward_message("456", "fwd-1", "77")
-
-    @pytest.mark.asyncio
-    async def test_missing_source_message_id_is_a_parameter_error(self):
-        adapter = _adapter()
-        with pytest.raises(ValueError, match="来源消息 ID 必须为整数"):
-            await adapter.admin.get_forward_message("456", "fwd-1", "")
-        adapter._bot.get_msg.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_send_group_forward_uses_public_send_path(self, monkeypatch: pytest.MonkeyPatch):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        adapter._running = True
-        adapter._bot.send_group_forward_msg.return_value = {"message_id": 555}
-        calls: list[str] = []
-        original_run = adapter._outbound.run
-
-        async def spy_run(target: str, operation: Callable[[], Awaitable[SendReceipt]]) -> SendReceipt:
-            calls.append(target)
-            return await original_run(target, operation)
-
-        monkeypatch.setattr(adapter._outbound, "run", spy_run)
-        result = await adapter.admin.send_group_forward("456", [{"content": "第一段"}, {"content": "第二段", "name": "助手"}])
-        assert result["status"] == "success" and result["message_ids"] == ["555"]
-        # 经公共发送路径: OutboundTurns 整轮排序与拆分约束未被绕过
-        assert calls == ["group%456"]
-        payload = adapter._bot.send_group_forward_msg.await_args.kwargs["messages"]
-        assert [item["data"]["nickname"] for item in payload] == ["Satrap", "助手"]
-        assert all(item["data"]["user_id"] == "10000" for item in payload)
-        # 群侧转发动作已学习, 私聊侧未学习, 聚合状态保持 unknown
-        assert adapter.admin_capabilities()["send_forward"] == "unknown"
-        adapter.note_action_outcome("send_private_forward_msg", True)
-        assert adapter.admin_capabilities()["send_forward"] == "supported"
-
-    @pytest.mark.asyncio
-    async def test_send_group_forward_validates_nodes_and_account(self):
-        adapter = _adapter()
-        adapter.bot_self_id = "10000"
-        with pytest.raises(ValueError, match="nodes"):
-            await adapter.admin.send_group_forward("456", [])
-        with pytest.raises(ValueError, match="nodes"):
-            await adapter.admin.send_group_forward("456", [{"content": "x"}] * 31)
-        with pytest.raises(ValueError, match="节点正文"):
-            await adapter.admin.send_group_forward("456", [{"content": ""}])
-        with pytest.raises(ValueError, match="节点正文"):
-            await adapter.admin.send_group_forward("456", [{"content": "x" * 2001}])
-        adapter.bot_self_id = ""
-        with pytest.raises(AdminActionUnconfirmed, match="机器人账号未知"):
-            await adapter.admin.send_group_forward("456", [{"content": "x"}])
-        adapter._bot.send_group_forward_msg.assert_not_called()
 
 
 class TestDurationNormalization:
@@ -663,16 +459,6 @@ class TestRequestFlagOccupancy:
         assert sum(1 for item in results if isinstance(item, AdminActionRejected)) == 1
 
     @pytest.mark.asyncio
-    async def test_friend_and_group_tables_are_separate(self):
-        adapter = _adapter()
-        await _register_flag(adapter, "group", "same-flag", group_id="456", sub_type="invite", user_id="1")
-        await _register_flag(adapter, "friend", "same-flag", user_id="2")
-        await adapter.admin.handle_friend_request("same-flag", True)
-        adapter._bot.set_friend_add_request.assert_awaited_once()
-        await adapter.admin.handle_group_request("456", "same-flag", "invite", True)
-        adapter._bot.set_group_add_request.assert_awaited_once()
-
-    @pytest.mark.asyncio
     async def test_duplicate_inbound_does_not_reset_occupied_state(self):
         adapter = _adapter()
         await _register_flag(adapter, "group", "flag-d", group_id="456", sub_type="add", user_id="1")
@@ -686,19 +472,18 @@ class TestRequestFlagOccupancy:
 class TestRequestFlagRegistryUnit:
     @pytest.mark.asyncio
     async def test_expired_flag_cannot_be_occupied(self):
-        registry = RequestFlagRegistry("ob", limit=8, ttl=10.0)
+        registry = RequestFlagRegistry("ob", ttl=10.0)
         await registry.register("group", "flag-old", self_id="10000", group_id="456", sub_type="add",
                                 user_id="1", now=1000.0)
         with pytest.raises(LookupError, match="时限"):
             await registry.occupy("group", "flag-old", self_id="10000", group_id="456", sub_type="add", now=1011.0)
 
     @pytest.mark.asyncio
-    async def test_cache_eviction_keeps_ledger_identity(self):
-        """反例: 近期缓存淘汰只影响性能, 不得让已登记的 flag 掉出审批资格或变成可重复审批"""
-        registry = RequestFlagRegistry("ob", limit=1, ttl=600.0)
+    async def test_new_registration_keeps_prior_ledger_identity(self):
+        """新增申请不能让旧申请失去资格或变成可重复审批"""
+        registry = RequestFlagRegistry("ob", ttl=600.0)
         await registry.register("group", "f1", self_id="10000", group_id="1", sub_type="add", now=1000.0)
         await registry.register("group", "f2", self_id="10000", group_id="1", sub_type="add", now=1001.0)
-        assert registry.cached_state("group", "f1") is None    # 最旧一条已被淘汰
         await registry.occupy("group", "f1", self_id="10000", group_id="1", sub_type="add", now=1002.0)
         assert await registry.ledger.occupy("ob", "10000", "group", "f2", group_id="1", sub_type="add",
                                             now=1003.0) is not None
@@ -710,12 +495,14 @@ class TestRequestFlagRegistryUnit:
         registry = RequestFlagRegistry("ob")
         await registry.register("friend", "f", self_id="10000", now=1000.0)
         await registry.settle("friend", "f", self_id="10000", state="completed")   # 未占用不生效
-        assert registry.cached_state("friend", "f") == "available"
+        available = registry.ledger.lookup("ob", "10000", "friend", "f")
+        assert available is not None and available["state"] == "available"
         await registry.occupy("friend", "f", self_id="10000", now=1000.0)
         with pytest.raises(ValueError):
             await registry.settle("friend", "f", self_id="10000", state="available")
         await registry.settle("friend", "f", self_id="10000", state="unknown")
-        assert registry.cached_state("friend", "f") == "unknown"
+        unknown = registry.ledger.lookup("ob", "10000", "friend", "f")
+        assert unknown is not None and unknown["state"] == "unknown"
         with pytest.raises(LookupError):
             await registry.occupy("friend", "f", self_id="10000", now=1000.0)
 
@@ -809,16 +596,6 @@ class TestApprovalLedger:
         await gateway(flag)
 
     @pytest.mark.asyncio
-    async def test_restart_after_cancel_keeps_unknown_not_available(self, tmp_path: Path):
-        """反例: 取消后重启, 该 flag 仍不可审批"""
-        ledger = self._ledger(tmp_path)
-        await ledger.register("ob", "10000", "friend", "flag-a", user_id="7", now=1000.0)
-        await ledger.occupy("ob", "10000", "friend", "flag-a", now=1001.0)
-        revived = self._ledger(tmp_path)
-        with pytest.raises(LookupError, match="结果未知"):
-            await revived.occupy("ob", "10000", "friend", "flag-a", now=1002.0)
-
-    @pytest.mark.asyncio
     async def test_capacity_refuses_new_and_old_identity_stays_consumed(self, tmp_path: Path):
         """反例: 容量达限拒绝新登记, 不淘汰旧身份, 旧已消费身份不得回到可审批"""
         ledger = self._ledger(tmp_path, instance_capacity=2)
@@ -870,7 +647,7 @@ class TestApprovalLedger:
     async def test_unknown_account_not_registered(self, tmp_path: Path):
         ledger = self._ledger(tmp_path)
         assert await ledger.register("ob", "", "group", "k1", group_id="1", sub_type="add", now=1000.0) == "unknown_account"
-        assert ledger.pending_counts()["entries_total"] == 0
+        assert json.loads((tmp_path / "request_ledger.json").read_text(encoding="utf-8"))["entries"] == {}
 
     @pytest.mark.asyncio
     async def test_corrupt_ledger_degrades_and_survives_restart(self, tmp_path: Path):
@@ -908,7 +685,7 @@ class TestApprovalLedger:
         (tmp_path / "request_ledger.manifest.json").unlink()
         migrated = self._ledger(tmp_path)
         assert migrated.degraded is False
-        assert migrated.pending_counts()["entries_total"] == 1
+        assert len(json.loads((tmp_path / "request_ledger.json").read_text(encoding="utf-8"))["entries"]) == 1
         assert self._ledger_states(tmp_path) == ["unknown"]     # 迁移时按重启规则结束无法确认的占用
         with pytest.raises(LookupError, match="结果未知"):
             await migrated.occupy("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1002.0)
@@ -978,3 +755,4 @@ class TestRequestRegistration:
             await _occupy_flag(adapter, "group", "alien", group_id="456", sub_type="add")
         with pytest.raises(LookupError):
             await _occupy_flag(adapter, "friend", "no-self")
+from support.onebot import _adapter

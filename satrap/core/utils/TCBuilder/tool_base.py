@@ -1,3 +1,9 @@
+"""
+工具静态定义与执行可用性契约
+
+为同步和异步工具提供公共定义和开关,
+注册状态与当前请求来源能力分开判断, 保留旧工具默认行为
+"""
 from typing import Dict, Tuple, Any
 from satrap.core.type import safe_getattr
 from satrap.core.log import logger
@@ -95,3 +101,12 @@ class _ToolBase:
         - bool: 检查结果
         """
         return self.tool_enabled
+
+    def is_available_for_call(self) -> bool:
+        """
+        判断当前请求是否可使用此工具, 默认不额外限制来源
+
+        返回:
+        - True 表示可进入执行, 子类可依据可信轮次身份限制; 不影响模型侧声明清单
+        """
+        return True

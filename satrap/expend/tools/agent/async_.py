@@ -1,3 +1,6 @@
+"""在受限并发和超时范围内运行纯内存异步子代理"""
+
+from uuid import uuid4
 import asyncio
 from typing import Any
 from satrap.core.APICall.LLMCall import AsyncLLM
@@ -11,6 +14,8 @@ from .utils import (
     DEFAULT_SUB_AGENT_WORKERS,
 )
 from .utils import _parse_tasks
+
+from satrap.core.log import logger
 
 
 class AsyncSubAgentModel(AsyncModelWorkflowFramework):
@@ -30,6 +35,7 @@ class AsyncSubAgentModel(AsyncModelWorkflowFramework):
             context_id=f"sub_agent_{context_id}",
             tools_manager=tools_manager,
             system_prompt=SUB_AGENT_SYSTEM_PROMPT,
+            persist_context=False,
         )
 
     def forward(self, task: str):
@@ -93,10 +99,11 @@ class AsyncSubAgent(AsyncTool):
         if error is not None:
             return error
 
+        batch_id = uuid4().hex
         # Step.2 定义单个子任务的执行函数
         async def run_single(index: int, sub_task: str) -> dict[str, Any]:
             sub_agent = await AsyncSubAgentModel.create(
-                self.llm, index, self.tools_manager
+                self.llm, f"{batch_id}_{index}", self.tools_manager
             )
             result = await sub_agent.forward(sub_task)
             return {
@@ -126,6 +133,7 @@ class AsyncSubAgent(AsyncTool):
                         timeout=self.task_timeout,
                     )
                 except TimeoutError:
+                    logger.warning(f"[子代理] 子任务超时: batch={batch_id}, index={index}, timeout={self.task_timeout}")
                     return {
                         "index": index,
                         "sub_task": sub_task,
@@ -153,6 +161,7 @@ class AsyncSubAgent(AsyncTool):
                 )
 
             else:
+                logger.warning(f"[子代理] 子任务执行失败: batch={batch_id}, {res!r}")
                 output_lines.append(f"子代理执行失败: {str(res)}")
                 # 异常或其他意外类型
         return "\n".join(output_lines)

@@ -1,0 +1,16 @@
+import { scenarios as cases0 } from './access-routing.mjs';
+import { scenarios as cases1 } from './model-configuration.mjs';
+import { scenarios as cases2 } from './platform-configuration.mjs';
+import { scenarios as cases3 } from './plugin-configuration.mjs';
+import { scenarios as cases4 } from './runtime-applications.mjs';
+import { scenarios as cases5 } from './account-relations.mjs';
+import { scenarios as cases6 } from './group-configuration.mjs';
+import { scenarios as cases7 } from './group-data.mjs';
+import { scenarios as cases8 } from './conversation-management.mjs';
+import { scenarios as cases9 } from './chat-media-flows.mjs';
+import { scenarios as cases10 } from './chat-recovery-flows.mjs';
+import { scenarios as cases11 } from './logging-flows.mjs';
+import { scenarios as cases12 } from './startup-forms.mjs';
+import { scenarios as cases13 } from './knowledge-flows.mjs';
+import { runSuite } from './runtime.mjs';
+await runSuite([...cases0, ...cases1, ...cases2, ...cases3, ...cases4, ...cases5, ...cases6, ...cases7, ...cases8, ...cases9, ...cases10, ...cases11, ...cases12, ...cases13]);

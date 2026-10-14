@@ -11,33 +11,48 @@ from __future__ import annotations
 from urllib.parse import parse_qs, unquote, urlsplit
 import dataclasses
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import json
+import traceback
+
+import re
 
 from satrap.core.pipeline.request_diagnostics import DIAGNOSTIC_STAGES, parse_stages
+from satrap.core.config.conversation_runtime import manage_platform_data
+from satrap.core.config.conversation_data import ConversationDataConflict
+from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.model_service import ModelConfigService
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.utils.minihttp import MiniHTTPServer
+from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.log.stream import standard_log_stream
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageMaintenanceService
-from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.api import checkpoint as checkpoint_api
 from satrap.api import user as user_api
 
+from satrap.core.log import logger
+
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager
+    from satrap.core.framework.SessionManager import SessionManager
+    from satrap.core.framework.UserManager import UserManager
 
 STATIC_DIR = DEFAULT_STATIC_DIR
 # 静态文件目录 - 前端构建产物
 
-RouteResponse = tuple[int, dict[str, Any]]
+RouteResponse = tuple[int, Mapping[str, Any]]
 # 管理 API 响应: (状态码, JSON 体)
+
+from satrap.core.group_chat.reminders import ReminderError
+from satrap.core.group_chat.types import GroupChatError
 
 
 def _parse_json_object(body: bytes) -> dict[str, Any]:
@@ -56,7 +71,7 @@ def _parse_json_object(body: bytes) -> dict[str, Any]:
     return dict(cast(dict[str, Any], payload))
 
 
-def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[Any, Any]]:
+def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[SessionManager, UserManager]]:
     """
     获取后端的平台运行时映射
 
@@ -64,11 +79,11 @@ def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[Any, Any]]:
     - backend: 后端实例
 
     返回:
-    - dict[str, tuple[Any, Any]]: 平台 ID 到会话和用户管理器的映射
+    - dict[str, tuple[SessionManager, UserManager]]: 平台 ID 到会话和用户管理器的映射
     """
     getter = getattr(backend, "list_platform_runtimes", None)
     if callable(getter):
-        runtimes = cast(dict[str, tuple[Any, Any]], getter())
+        runtimes = cast("dict[str, tuple[SessionManager, UserManager]]", getter())
         return {
             platform_id: runtime
             for platform_id, runtime in runtimes.items()
@@ -78,7 +93,7 @@ def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[Any, Any]]:
     user_manager = getattr(backend, "user_manager", None)
     if session_manager is None:
         return {}
-    return {LOCAL_PLATFORM_ID: (session_manager, user_manager)}
+    return cast("dict[str, tuple[SessionManager, UserManager]]", {LOCAL_PLATFORM_ID: (session_manager, user_manager)})
 
 
 def _platform_db_path(backend: BackendManager, platform_id: str) -> str:
@@ -105,7 +120,7 @@ _WAKE_INPUT_REASONS = frozenset({
 """属于请求参数错误的手动唤醒拒绝原因, 返回 400 而非冲突类 409"""
 
 
-def _wake_status_code(result: dict[str, Any]) -> int:
+def _wake_status_code(result: Mapping[str, Any]) -> int:
     """
     把手动唤醒结果映射为 HTTP 状态码
 
@@ -295,7 +310,7 @@ class BackendHTTPServer(MiniHTTPServer):
         method: str,
         path: str,
         body: bytes,
-    ) -> tuple[int, dict[str, Any]]:
+    ) -> RouteResponse:
         """
         路由分发到 BackendManager 对应方法
 
@@ -309,8 +324,17 @@ class BackendHTTPServer(MiniHTTPServer):
         返回:
         - tuple[int, dict[str, Any]]: 路由分发到 BackendManager 对应方法
         """
+        operation_status = self.application_status(method, path)
+        if operation_status is not None:
+            return operation_status
         for handler in (
+            self._route_administrators,
             self._route_ui_health_reload,
+            self._route_platform_connection,
+            self._route_friends,
+            self._route_account_requests,
+            self._route_reminders,
+            self._route_groups,
             self._route_edictum_runtime_plugins,
             self._route_storage,
             self._route_shutdown,
@@ -321,6 +345,7 @@ class BackendHTTPServer(MiniHTTPServer):
             self._route_session_class_items,
             self._route_models,
             self._route_user,
+            self._route_conversation_data,
             self._route_checkpoint,
         ):
             response = await handler(method, path, body)
@@ -328,9 +353,524 @@ class BackendHTTPServer(MiniHTTPServer):
                 return response
         return 404, {"error": f"unknown route: {method} {path}"}
 
+    async def _route_administrators(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        读取或应用已保存的管理员配置, 沿用服务管理 API 鉴权
+
+        参数:
+        - method: HTTP 方法
+        - path: 精确接口路径
+        - body: 仅可携带已保存区段修订
+
+        返回:
+        - 运行修订, 非法请求 400, 保存版本冲突 409, 无关路径 None
+        """
+        from satrap.core.config.document import ConfigRevisionConflict
+
+        if method == "GET" and path == "/api/administrators/status":
+            return 200, self.backend.administrator_runtime_status()
+        if method != "POST" or path != "/api/administrators/apply":
+            return None
+        try:
+            payload = _parse_json_object(body)
+            if set(payload) != {"section_revision"}:
+                raise ValueError("应用接口只接受 section_revision, 不接受管理员配置正文")
+            result = await asyncio.to_thread(self.backend.apply_saved_administrator_groups, payload["section_revision"])
+            return 200, result
+        except ConfigRevisionConflict as error:
+            logger.warning(f"[管理员设置] 运行应用冲突: {error}")
+            return 409, {"ok": False, "code": "config_revision_conflict", "error": str(error)}
+        except (ValueError, OSError) as error:
+            logger.warning(f"[管理员设置] 运行应用失败: {error}")
+            return 400, {"ok": False, "error": str(error)}
+        except Exception:
+            logger.error(f"[管理员设置] 运行应用异常: {traceback.format_exc()}")
+            return 500, {"ok": False, "error": "管理员配置应用失败, 请查看后端日志"}
+
+    async def _route_platform_connection(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        分发平台只读通信探测请求
+
+        参数:
+        - method: HTTP 请求方法
+        - path: 请求路径
+        - body: 请求正文, 此端点不接收凭据或目标地址
+
+        返回:
+        - RouteResponse | None: 通信结果, 不匹配时返回 None
+        """
+        parts = urlsplit(path).path.split("/")
+        if method != "POST" or len(parts) != 5 or parts[:3] != ["", "api", "platforms"] or parts[4] != "connection-test":
+            return None
+        result = await self.backend.check_platform_connection(unquote(parts[3]))
+        return 200, dataclasses.asdict(result)
+
+    async def _route_reminders(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        已认证后台的人工提醒操作, 创建和恢复重新核验当前平台
+
+        参数:
+        - method: HTTP 方法
+        - path: 路径和完整群身份查询参数
+        - body: 创建或动作参数
+
+        返回:
+        - 实际任务结果, 不匹配时为 None
+        """
+        from satrap.core.group_chat.reminder_management import reminder_management, reminder_scope
+
+        parsed = urlsplit(path)
+        match = re.fullmatch(r"/api/platforms/([^/]+)/group-chat/reminders(?:/([^/]+))?(?:/(cancel|resume))?", parsed.path)
+        if match is None:
+            return None
+        try:
+            platform, identity, action = [unquote(item or "") for item in match.groups()]
+            raw_query = parse_qs(parsed.query, keep_blank_values=True)
+            if any(len(values) != 1 for values in raw_query.values()):
+                raise ReminderError("invalid_argument", "提醒参数不能重复")
+            query = {key: values[0] for key, values in raw_query.items()}
+            scope = reminder_scope(platform, query)
+            if method == "GET" and not action:
+                result = await asyncio.to_thread(reminder_management, self.backend.storage_layout, dataclasses.asdict(self.backend.config),
+                                                 platform, query, "get" if identity else "list", identity)
+                return 200, result
+            if method == "POST":
+                payload = _parse_json_object(body)
+                if not identity:
+                    return 200, await self.backend.reminder_host.create(scope, payload)
+                if set(payload) != {"expected_revision"}:
+                    raise ReminderError("invalid_argument", "提醒动作需要最近查看的 expected_revision")
+                if action == "resume":
+                    return 200, await self.backend.reminder_host.resume(scope, identity, payload["expected_revision"])
+                if action == "cancel":
+                    result = await asyncio.to_thread(reminder_management, self.backend.storage_layout, dataclasses.asdict(self.backend.config),
+                                                     platform, query, "cancel", identity, payload)
+                    return 200, result
+            return 405, {"error": "该提醒入口不支持此操作", "reason": "invalid_operation"}
+        except (ReminderError, GroupChatError) as exc:
+            logger.warning(f"[提醒接口] 操作拒绝, 错误={exc.code}: {exc}")
+            return {"not_found": 404, "revision_conflict": 409, "idempotency_conflict": 409, "permission_changed": 409,
+                    "unavailable": 503}.get(exc.code, 400), {"error": str(exc), "reason": exc.code}
+        except (ValueError, TypeError) as exc:
+            logger.warning(f"[提醒接口] 参数无效: {exc}")
+            return 400, {"error": str(exc), "reason": "invalid_argument"}
+        except Exception:
+
+            logger.error("[提醒接口] 请求失败" + "\n" + traceback.format_exc())
+            return 503, {"error": "提醒服务暂不可用", "reason": "unavailable"}
+
+    async def _route_friends(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        已登录后台的人工好友操作, 不依赖模型插件开关
+
+        参数:
+        - method: HTTP 方法
+        - path: 路径和查询参数
+        - body: JSON 请求体
+
+        返回:
+        - 好友接口响应, 不匹配时为 None
+        """
+        from satrap.core.friends.service import failure, text_id
+        parsed = urlsplit(path)
+        parts = parsed.path.split("/")
+        if len(parts) < 5 or parts[:3] != ["", "api", "platforms"] or parts[4] != "friends":
+            return None
+        query = parse_qs(parsed.query)
+        try:
+            host = self.backend.friend_service(unquote(parts[3]))
+            tail = parts[5:]
+            if method == "GET" and tail == ["info"]:
+                return 200, await host.info()
+            if method == "GET":
+                account = text_id(query.get("account", [""])[0], "机器人账号")
+                if not tail:
+                    return 200, await host.list_friends(account, actor="panel", query=query.get("q", [""])[0],
+                                                       limit=int(query.get("limit", ["20"])[0]), cursor=query.get("cursor", [None])[0])
+                if tail == ["requests"]:
+                    return 200, await host.requests(account, int(query.get("limit", ["20"])[0]), query.get("cursor", [None])[0],
+                                                     view=query.get("view", ["active"])[0], request_category=query.get("request_category", ["all"])[0])
+                if tail == ["request-policy"]:
+                    return 200, await host.request_policy(account)
+                if tail == ["actions"]:
+                    return 200, await host.actions(account, int(query.get("page", ["1"])[0]), int(query.get("limit", ["20"])[0]))
+                if len(tail) == 2 and tail[0] == "actions":
+                    host.context(account)
+                    store = await host.store()
+                    return 200, await asyncio.to_thread(store.get, account, unquote(tail[1]))
+                if tail == ["policy"]:
+                    return 200, await host.policy(account)
+            if method in {"POST", "PATCH"}:
+                payload = _parse_json_object(body)
+                account = text_id(payload.get("expected_self_id"), "机器人账号")
+                if method == "PATCH" and tail == ["request-policy"]:
+                    if set(payload) != {"expected_self_id", "credential_days", "history_days"}:
+                        raise ValueError("申请保留设置参数无效")
+                    return 200, await host.request_policy(account, {key: payload[key] for key in ("credential_days", "history_days")})
+                if method == "POST" and len(tail) == 3 and tail[0] == "requests" and tail[2] in {"recheck", "delete"}:
+                    required = {"expected_self_id"} if tail[2] == "recheck" else {"expected_self_id", "expected_revision"}
+                    if set(payload) != required:
+                        raise ValueError("申请操作参数无效")
+                    if tail[2] == "recheck":
+                        return 200, await host.recheck_request(account, unquote(tail[1]))
+                    return 200, await host.delete_request(account, unquote(tail[1]), payload["expected_revision"])
+                if method == "POST" and tail == ["actions"]:
+                    if set(payload) != {"expected_self_id", "action_id", "action_type", "params"}:
+                        raise ValueError("好友动作参数无效")
+                    result = await host.submit(account, payload["action_id"], payload["action_type"], payload["params"], actor="panel")
+                    return 200, result
+                if method == "POST" and len(tail) == 3 and tail[0] == "actions" and tail[2] == "decision":
+                    if set(payload) != {"expected_self_id", "approve"}:
+                        raise ValueError("好友审批参数无效")
+                    return 200, await host.decide(account, unquote(tail[1]), payload["approve"])
+                if method == "PATCH" and tail == ["policy"]:
+                    if set(payload) != {"expected_self_id", "protected_friend_ids"}:
+                        raise ValueError("保护名单参数无效")
+                    return 200, await host.policy(account, payload["protected_friend_ids"])
+            return 404, {"error": "好友接口不存在", "reason": "not_found"}
+        except Exception as error:
+            code, message, _ = failure(error)
+            logger.warning(f"[好友接口] 请求失败 code={code} reason={message}")
+            status = 403 if code in {"permission_denied", "protected_friend"} else 409 if code in {"stale_account", "action_conflict"} else 503 if code in {"unavailable", "unconfirmed", "busy"} else 400
+            return status, {"error": message, "reason": code}
+
+    async def _route_account_requests(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        已登录后台的账号入群邀请查询, 处理与人工审批
+
+        参数:
+        - method: HTTP 请求方法
+        - path: 路径和查询参数
+        - body: JSON 请求正文
+
+        返回:
+        - 匹配时的明确响应, 不匹配时为 None
+        """
+        parsed = urlsplit(path)
+        parts = parsed.path.split('/')
+        if len(parts) < 6 or parts[:3] != ['', 'api', 'platforms'] or parts[4:6] != ['account-requests', 'group-invites']:
+            return None
+        adapter_id = unquote(parts[3])
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        try:
+            if any(len(values) != 1 for values in query.values()) or set(query) - {'account', 'view', 'limit', 'cursor', 'state', 'page'}:
+                raise ValueError('账号邀请查询参数无效')
+            tail = parts[6:]
+            if method == 'GET':
+                account = query.get('account', [''])[0]
+                if not account:
+                    raise ValueError('必须指定机器人账号')
+                if not tail:
+                    return 200, await self.backend.account_group_invites(adapter_id, account,
+                        view=query.get('view', ['active'])[0], limit=int(query.get('limit', ['20'])[0]), cursor=query.get('cursor', [None])[0])
+                if tail == ['actions']:
+                    return 200, await self.backend.account_invite_actions(adapter_id, account,
+                        state=query.get('state', ['pending'])[0], page=int(query.get('page', ['1'])[0]))
+            if method == 'POST':
+                payload = _parse_json_object(body)
+                account = payload.get('expected_self_id')
+                if not isinstance(account, str) or not account:
+                    raise ValueError('必须确认机器人账号')
+                if not tail:
+                    if set(payload) - {'expected_self_id', 'action_id', 'request_id', 'approve', 'expected_revision', 'reason'}:
+                        raise ValueError('账号邀请参数含未知字段')
+                    action_id = payload.get('action_id')
+                    if not isinstance(action_id, str) or not action_id:
+                        raise ValueError('必须提供幂等 action_id')
+                    params = {key: value for key, value in payload.items() if key not in {'expected_self_id', 'action_id'}}
+                    result = await self.backend.submit_account_group_invite(adapter_id, account, params, actor_kind='panel', action_id=action_id)
+                    return (202 if result['state'] in {'pending', 'executing'} else 200), result
+                if len(tail) == 3 and tail[0] == 'actions' and tail[2] == 'decision':
+                    if set(payload) != {'expected_self_id', 'approve'} or type(payload.get('approve')) is not bool:
+                        raise ValueError('账号邀请审批参数无效')
+                    return 200, await self.backend.decide_account_invite(adapter_id, account, unquote(tail[1]), approve=payload['approve'])
+            return 405, {'error': '账号邀请入口不支持此操作'}
+        except PermissionError as error:
+            logger.warning(f'[账号邀请] 请求被拒绝: {error}')
+            return 403, {'error': str(error)}
+        except LookupError as error:
+            logger.warning(f'[账号邀请] 记录不可用: {error}')
+            return 404, {'error': str(error)}
+        except GroupConfigConflict as error:
+            logger.warning(f'[账号邀请] 操作冲突: {error}')
+            return 409, {'error': str(error)}
+        except (ValueError, TypeError) as error:
+            logger.warning(f'[账号邀请] 参数无效: {error}')
+            return 400, {'error': str(error)}
+        except Exception:
+            logger.error('[账号邀请] 请求失败\n' + traceback.format_exc())
+            return 503, {'error': '账号邀请服务暂不可用, 请查看后端日志'}
+
+    async def _route_groups(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        群目录分页和显式同步任务接口
+
+        参数:
+        - method: HTTP 请求方法
+        - path: 含查询参数的请求路径
+        - body: JSON 请求正文
+
+        返回:
+        - 匹配群目录路由时返回状态与响应, 其他路径返回 None
+        """
+        parsed = urlsplit(path)
+        parts = parsed.path.split("/")
+        if len(parts) < 5 or parts[:3] != ["", "api", "platforms"] or parts[4] != "groups":
+            return None
+        adapter_id = unquote(parts[3])
+        query = parse_qs(parsed.query)
+        account = query.get("account", [""])[0]
+        try:
+            if method == "GET" and parts[5:] == ["accounts"]:
+                return 200, await self.backend.group_accounts(adapter_id)
+            if method == "GET" and parts[5:] == ["settings"]:
+                if not account:
+                    return 400, {"error": "account 必填", "reason": "missing_account"}
+                return 200, await self.backend.group_settings(adapter_id, account)
+            if method == "GET" and parts[5:] == ["bindings"]:
+                if not account:
+                    return 400, {"error": "account 必填", "reason": "missing_account"}
+                return 200, await self.backend.group_binding_options(adapter_id, account)
+            if method == "PATCH" and parts[5:] == ["settings"]:
+                payload = _parse_json_object(body)
+                self_id = payload.get("expected_self_id")
+                defaults = payload.get("approval_defaults", {})
+                revision = payload.get("expected_revision")
+                mode = payload.get("mode")
+                if (not isinstance(self_id, str) or not isinstance(defaults, dict)
+                        or not isinstance(revision, int) or isinstance(revision, bool)
+                        or not isinstance(mode, str)):
+                    return 400, {"error": "群接入设置参数无效", "reason": "invalid_settings"}
+                saved = await self.backend.patch_group_settings(
+                    adapter_id, self_id, revision, mode, cast(dict[str, object], defaults),
+                )
+                return 200, saved
+            if method == "POST" and parts[5:] == ["settings", "apply"]:
+                payload = _parse_json_object(body)
+                self_id = payload.get("expected_self_id")
+                revision = payload.get("saved_revision")
+                if (not isinstance(self_id, str) or not self_id or not isinstance(revision, int)
+                        or isinstance(revision, bool)):
+                    return 400, {"error": "账号设置应用参数无效", "reason": "invalid_settings"}
+                return 200, await self.backend.apply_group_settings(adapter_id, self_id, revision)
+            if method == "GET" and len(parts) == 5:
+                if not account:
+                    return 400, {"error": "account 必填", "reason": "missing_account"}
+                page = int(query.get("page", ["1"])[0])
+                page_size = int(query.get("page_size", ["25"])[0])
+                result = await self.backend.list_groups(
+                    adapter_id, account, query=query.get("q", [""])[0],
+                    membership=query.get("membership", ["joined"])[0],
+                    response=query.get("response", ["all"])[0], page=page, page_size=page_size,
+                )
+                return 200, result
+            if method == "POST" and parts[5:] == ["sync"]:
+                payload = _parse_json_object(body)
+                expected_self_id = payload.get("expected_self_id")
+                if not isinstance(expected_self_id, str) or not expected_self_id:
+                    return 400, {"error": "expected_self_id 必填", "reason": "missing_account"}
+                return 202, await self.backend.trigger_group_sync(adapter_id, expected_self_id)
+            if method == "GET" and len(parts) == 7 and parts[5] == "sync":
+                if not account:
+                    return 400, {"error": "account 必填", "reason": "missing_account"}
+                return 200, await self.backend.group_sync_status(adapter_id, account, unquote(parts[6]))
+            if len(parts) >= 7 and parts[5] not in {"sync", "settings", "accounts", "bindings"}:
+                config_route = await self._route_group_config(method, parts, body, adapter_id, account)
+                if config_route is not None:
+                    return config_route
+            if len(parts) >= 7 and parts[5] not in {"sync", "settings", "accounts", "bindings"}:
+                action_route = await self._route_group_actions(method, parts, query, body, adapter_id, account)
+                if action_route is not None:
+                    return action_route
+        except LookupError as error:
+            return 404, {"error": str(error), "reason": "group_record_not_found"}
+        except (GroupConfigConflict, GroupLegacyConflict) as error:
+            return 409, {"error": str(error), "reason": "group_config_conflict"}
+        except ValueError as error:
+            reason = "account_changed" if "账号已变化" in str(error) else "invalid_group_query"
+            return (409 if reason == "account_changed" else 400), {"error": str(error), "reason": reason}
+        except PermissionError as error:
+            return 403, {"error": str(error), "reason": "group_action_forbidden"}
+        except RuntimeError as error:
+            return 503, {"error": str(error), "reason": "group_service_unavailable"}
+        return None
+
+    async def _route_group_config(
+        self, method: str, parts: list[str], body: bytes, adapter_id: str, account: str,
+    ) -> RouteResponse | None:
+        """分派单群策略、会话、审批配置和唤醒试算接口"""
+        if method == "GET" and len(parts) == 7 and parts[6] == "config":
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, await self.backend.group_config(adapter_id, account, unquote(parts[5]))
+        if method == "PATCH" and len(parts) == 7 and parts[6] == "config":
+            payload = _parse_json_object(body)
+            self_id = payload.get("expected_self_id")
+            revision = payload.get("expected_revision")
+            base = payload.get("base_revision")
+            section = payload.get("section")
+            values = payload.get("values")
+            if (not isinstance(self_id, str) or not isinstance(revision, int)
+                    or isinstance(revision, bool) or not isinstance(base, str)
+                    or section not in {"policy", "session", "approval", "events"} or not isinstance(values, dict)):
+                return 400, {"error": "群配置参数无效", "reason": "invalid_group_config"}
+            return 200, await self.backend.patch_group_config(
+                adapter_id, self_id, unquote(parts[5]), expected_revision=revision,
+                base_revision=base, section=section, values=cast(dict[str, object], values),
+            )
+        if method == "POST" and len(parts) == 8 and parts[6:] == ["config", "apply"]:
+            payload = _parse_json_object(body)
+            self_id = payload.get("expected_self_id")
+            revision = payload.get("saved_revision")
+            if not isinstance(self_id, str) or not isinstance(revision, int) or isinstance(revision, bool):
+                return 400, {"error": "应用参数无效", "reason": "invalid_apply_request"}
+            return 200, await self.backend.apply_group_config(adapter_id, self_id, unquote(parts[5]), revision)
+        if method == "POST" and len(parts) == 7 and parts[6] == "dry-run":
+            payload = _parse_json_object(body)
+            self_id = payload.get("expected_self_id")
+            revision = payload.get("expected_revision")
+            base = payload.get("base_revision")
+            values = payload.get("values")
+            scenario = payload.get("scenario", {})
+            if (not isinstance(self_id, str) or not isinstance(revision, int)
+                    or isinstance(revision, bool) or not isinstance(base, str)
+                    or not isinstance(values, dict) or not isinstance(scenario, dict)):
+                return 400, {"error": "群策略试算参数无效", "reason": "invalid_group_dry_run"}
+            return 200, await self.backend.dry_run_group_policy(
+                adapter_id, self_id, unquote(parts[5]), expected_revision=revision,
+                base_revision=base, values=cast(dict[str, object], values),
+                scenario=cast(dict[str, object], scenario),
+            )
+        return None
+
+    async def _route_group_actions(
+        self, method: str, parts: list[str], query: dict[str, list[str]], body: bytes,
+        adapter_id: str, account: str,
+    ) -> RouteResponse | None:
+        """按固定账号和群身份分派管理动作及人工审批接口"""
+        group_id = unquote(parts[5])
+        if method == "POST" and parts[6:] == ["send"]:
+            payload = _parse_json_object(body)
+            self_id = payload.get("expected_self_id")
+            action_id = payload.get("action_id")
+            message = payload.get("message")
+            if not all(isinstance(value, str) for value in (self_id, action_id, message)):
+                return 400, {"error": "手动发送参数无效", "reason": "invalid_group_send"}
+            result = await self.backend.send_group_message(
+                adapter_id, cast(str, self_id), group_id, cast(str, action_id), cast(str, message),
+            )
+            return 200, result
+        if method == "POST" and parts[6:] == ["wake"]:
+            payload = _parse_json_object(body)
+            self_id = payload.get("expected_self_id")
+            request_id = payload.get("request_id")
+            prompt = payload.get("prompt")
+            if not all(isinstance(value, str) for value in (self_id, request_id, prompt)):
+                return 400, {"error": "手动唤醒参数无效", "reason": "invalid_group_wake"}
+            result = await self.backend.wake_group(
+                adapter_id, cast(str, self_id), group_id, cast(str, request_id), cast(str, prompt),
+            )
+            return _wake_status_code(result), result
+        if method == "GET" and len(parts) == 8 and parts[6] == "wake":
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, await self.backend.group_wake_status(
+                adapter_id, account, group_id, unquote(parts[7]),
+            )
+        if method == "GET" and parts[6:] == ["diagnostics"]:
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, self.backend.group_request_diagnostics(
+                adapter_id, account, group_id, stage=query.get("stage", [""])[0],
+                request_id=query.get("request_id", [""])[0], limit=int(query.get("limit", ["50"])[0]),
+            )
+        if method == "GET" and len(parts) == 8 and parts[6] == "diagnostics":
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, self.backend.group_request_diagnostic_detail(
+                adapter_id, account, group_id, unquote(parts[7]),
+            )
+        if method == "GET" and parts[6:] == ["events"]:
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, await self.backend.group_events(
+                adapter_id, account, group_id, limit=int(query.get("limit", ["50"])[0]),
+            )
+        if method == "GET" and parts[6:] == ["members"]:
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, await self.backend.group_members(
+                adapter_id, account, group_id, query=query.get("q", [""])[0],
+                page=int(query.get("page", ["1"])[0]),
+                page_size=int(query.get("page_size", ["25"])[0]),
+            )
+        if method == "GET" and parts[6:] == ["info"]:
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, await self.backend.group_info(adapter_id, account, group_id)
+        if method == "GET" and parts[6:] == ["action-types"]:
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, await self.backend.group_action_types(adapter_id, account, group_id)
+        if method == "GET" and parts[6:] == ["actions"]:
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            return 200, await self.backend.group_actions(
+                adapter_id, account, group_id,
+                state=query.get("state", ["pending"])[0],
+                page=int(query.get("page", ["1"])[0]),
+                page_size=int(query.get("page_size", ["25"])[0]),
+            )
+        if method == "GET" and len(parts) == 8 and parts[6] == "actions":
+            if not account:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            record = await self.backend.group_action(adapter_id, account, group_id, unquote(parts[7]))
+            if record["action_type"] == "handle_group_request" and record["params"].get("sub_type") == "invite":
+                return 400, {"error": "机器人入群邀请请在账号入群邀请入口处理", "reason": "account_request_required"}
+            return 200, record
+        if method == "POST" and parts[6:] == ["actions"]:
+            payload = _parse_json_object(body)
+            self_id = payload.get("expected_self_id")
+            action_id = payload.get("action_id")
+            action_type = payload.get("action_type")
+            params = payload.get("params")
+            if not all(isinstance(value, str) for value in (self_id, action_id, action_type)) or not isinstance(params, dict):
+                return 400, {"error": "群动作参数无效", "reason": "invalid_group_action"}
+            if action_type == "handle_group_request" and params.get("sub_type") == "invite":
+                return 400, {"error": "机器人入群邀请请在账号入群邀请入口处理", "reason": "account_request_required"}
+            result = await self.backend.submit_group_action(
+                adapter_id, cast(str, self_id), group_id, cast(str, action_id), cast(str, action_type),
+                cast(dict[str, object], params), actor_kind="panel",
+            )
+            return (202 if result["state"] in {"pending", "executing"} else 200), result
+        if method == "POST" and len(parts) == 9 and parts[6] == "actions" and parts[8] == "decision":
+            payload = _parse_json_object(body)
+            self_id = payload.get("expected_self_id")
+            approve = payload.get("approve")
+            if not isinstance(self_id, str) or type(approve) is not bool:
+                return 400, {"error": "审批参数无效", "reason": "invalid_group_decision"}
+            record = await self.backend.group_action(adapter_id, self_id, group_id, unquote(parts[7]))
+            if record["action_type"] == "handle_group_request" and record["params"].get("sub_type") == "invite":
+                return 400, {"error": "机器人入群邀请请在账号入群邀请入口处理", "reason": "account_request_required"}
+            return 200, await self.backend.decide_group_action(
+                adapter_id, self_id, group_id, unquote(parts[7]), approve=approve,
+            )
+        return None
+
     async def _route_ui_health_reload(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """UI 配置 / 健康检查 / 配置热加载 (精确路径)"""
         backend = self.backend
+
+        if method == "POST" and path == "/api/platforms/recover-store":
+            try:
+                payload = _parse_json_object(body)
+                if set(payload) != {"store"} or not isinstance(payload["store"], str):
+                    raise ValueError("仅接受 store 字符串字段")
+                result = await backend.recover_platform_store(payload["store"])
+            except (ValueError, json.JSONDecodeError) as error:
+                return 400, {"ok": False, "error": str(error), "reason": "invalid_store"}
+            status = 200 if result["ok"] else 503 if result["reason"] == "store_unavailable" else 409
+            return status, result
 
         if method == "POST" and path == "/api/platforms/wake":
             try:
@@ -455,6 +995,8 @@ class BackendHTTPServer(MiniHTTPServer):
         if method == "POST" and path == "/api/edictum/plugins/reconcile":
             try:
                 payload = _parse_json_object(body)
+                if "plugin_name" in payload and (not isinstance(payload["plugin_name"], str) or not payload["plugin_name"].strip()):
+                    raise ValueError("plugin_name 必须是非空字符串")
                 raw_refs = payload.get("session_refs")
                 if raw_refs is not None and not isinstance(raw_refs, list):
                     raise ValueError("session_refs 必须是数组")
@@ -464,15 +1006,23 @@ class BackendHTTPServer(MiniHTTPServer):
                     for raw_ref in cast(list[object], raw_refs):
                         if isinstance(raw_ref, dict):
                             session_refs.append(dict(cast(dict[str, str], raw_ref)))
-                sessions = await backend.reconcile_edictum_plugins_async(
-                    config_name=str(payload.get("config_name") or "").strip() or None,
-                    session_refs=session_refs,
-                    concurrency=max(1, min(int(payload.get("concurrency") or 4), 16)),
-                )
-                return 200, {
-                    "ok": all(item.get("ok", False) for item in sessions),
-                    "edictum_sessions": sessions,
+                scope: dict[str, Any] = {
+                    "config_name": str(payload.get("config_name") or "").strip() or None,
+                    "session_refs": session_refs,
+                    "concurrency": max(1, min(int(payload.get("concurrency") or 4), 16)),
+                    **({"plugin_name": payload["plugin_name"].strip()} if "plugin_name" in payload else {}),
                 }
+
+                async def apply_plugins() -> dict[str, Any]:
+                    """保留原协调和逐实例结果, 任务模式只改变等待与查询方式"""
+                    sessions = await backend.reconcile_edictum_plugins_async(**scope)
+                    return {"ok": all(item.get("ok", False) for item in sessions), "edictum_sessions": sessions}
+
+                if "operation_id" in payload:
+                    return 202, self.applications.submit(payload["operation_id"], {"route": path, **scope}, apply_plugins)
+                return 200, await apply_plugins()
+            except ApplicationProgressError as error:
+                return error.status, {"error": str(error)}
             except Exception as error:
                 return 400, {"error": str(error)}
         # 接口: POST /api/edictum/plugins/reconcile
@@ -523,15 +1073,22 @@ class BackendHTTPServer(MiniHTTPServer):
                         for item in cast(list[object], raw_refs)
                         if isinstance(item, dict)
                     ]
-                sessions = await backend.reconcile_edictum_runtime_async(
-                    config_name=str(payload.get("config_name") or "").strip() or None,
-                    session_refs=session_refs,
-                    concurrency=max(1, min(int(payload.get("concurrency") or 4), 16)),
-                )
-                return 200, {
-                    "ok": all(item.get("ok", False) for item in sessions),
-                    "edictum_sessions": sessions,
+                scope = {
+                    "config_name": str(payload.get("config_name") or "").strip() or None,
+                    "session_refs": session_refs,
+                    "concurrency": max(1, min(int(payload.get("concurrency") or 4), 16)),
                 }
+
+                async def apply_runtime() -> dict[str, Any]:
+                    """完整应用仍复用原锁, 来源复核和失败回滚"""
+                    sessions = await backend.reconcile_edictum_runtime_async(**scope)
+                    return {"ok": all(item.get("ok", False) for item in sessions), "edictum_sessions": sessions}
+
+                if "operation_id" in payload:
+                    return 202, self.applications.submit(payload["operation_id"], {"route": path, **scope}, apply_runtime)
+                return 200, await apply_runtime()
+            except ApplicationProgressError as error:
+                return error.status, {"error": str(error)}
             except Exception as error:
                 return 400, {"error": str(error)}
         # 接口: POST /api/edictum/runtime/apply
@@ -736,6 +1293,7 @@ class BackendHTTPServer(MiniHTTPServer):
                 backend.edictum_config_manager,
                 backend.edictum_type_registry,
                 models=backend.model_config_manager,
+                reference_checker=lambda name: backend.group_resource_references("edictum", name),
             )
             try:
                 if method == "GET" and not action:
@@ -777,6 +1335,10 @@ class BackendHTTPServer(MiniHTTPServer):
                     if service.delete(name):
                         return 200, {"ok": True}
                     return 404, {"error": "not found"}
+            except ConfigInUseError as e:
+                return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+            except ConfigReferenceScanError as e:
+                return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
             except Exception as e:
                 return 400, {"error": str(e)}
 
@@ -1051,17 +1613,35 @@ class BackendHTTPServer(MiniHTTPServer):
             name = unquote(path[len(path_prefix):])
             try:
                 payload = _parse_json_object(body)
-                updated = SessionClassConfigService(backend.session_class_mgr).update(name, payload)
+                updated = SessionClassConfigService(
+                    backend.session_class_mgr,
+                    reference_checker=lambda current: backend.group_resource_references("session_class", current),
+                ).update(name, payload)
                 return 200, {"ok": True, "config": updated}
+            except ConfigInUseError as e:
+                return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+            except ConfigReferenceScanError as e:
+                return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: PUT /api/config/session-classes/{name}
 
         if method == "DELETE" and path.startswith(path_prefix) and backend.session_class_mgr:
             name = unquote(path[len(path_prefix):])
-            if SessionClassConfigService(backend.session_class_mgr).delete(name):
-                return 200, {"ok": True}
-            return 404, {"error": "not found"}
+            try:
+                if SessionClassConfigService(
+                    backend.session_class_mgr,
+                    reference_checker=lambda current: backend.group_resource_references("session_class", current),
+                ).delete(name):
+                    return 200, {"ok": True}
+                return 404, {"error": "not found"}
+            except ConfigInUseError as e:
+                return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+            except ConfigReferenceScanError as e:
+                return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
+            except Exception as error:
+                logger.error(f"[Agent 配置] 删除 session_class/{name} 失败: {error}\n{traceback.format_exc()}")
+                return 400, {"error": str(error)}
         # 接口: DELETE /api/config/session-classes/{name}
 
         return None
@@ -1168,6 +1748,45 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 400, {"error": str(e)}
 
         return None
+
+    async def _route_conversation_data(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        在活动实例的操作锁内查看或修改对话数据
+
+        参数:
+        - method: HTTP 方法
+        - path: 请求地址
+        - body: JSON 操作参数
+
+        返回:
+        - 明确的成功或失败响应, 不匹配时返回 None
+        """
+        if urlsplit(path).path != "/api/conversation-data" or method != "POST":
+            return None
+        platform = "local"
+        conversation = ""
+        try:
+            payload = _parse_json_object(body)
+            platform = payload.get("platform_id", "local")
+            conversation = payload.get("conversation_id", "")
+            if not isinstance(platform, str) or not platform:
+                raise ValueError("缺少平台 ID")
+            if not isinstance(conversation, str) or not conversation:
+                raise ValueError("缺少对话 ID")
+            manager = _platform_runtimes(self.backend).get(platform, (None, None))[0]
+            return 200, await manage_platform_data(_platform_db_path(self.backend, platform), manager, conversation, str(payload.get("layer", "context")), payload)
+        except ConversationDataConflict as error:
+            logger.warning(f"[对话数据] {platform}/{conversation} 编辑冲突: {error}")
+            return 409, {"error": str(error)}
+        except KeyError as error:
+            logger.warning(f"[对话数据] {platform}/{conversation} 数据不存在: {error}")
+            return 404, {"error": str(error)}
+        except (ValueError, TypeError) as error:
+            logger.warning(f"[对话数据] {platform}/{conversation} 请求无效: {error}")
+            return 400, {"error": str(error)}
+        except Exception as error:
+            logger.error(f"[对话数据] {platform}/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
+            return 500, {"error": "对话数据操作失败, 请查看后端日志"}
 
     async def _route_checkpoint(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """会话检查点 (列表 / 分支 / 血缘 / 审计 / 创建, 回滚, 重试, 分叉)"""

@@ -8,13 +8,14 @@ import hashlib
 from satrap.core.framework.Base.execution.engine import run_async, run_sync
 from satrap.core.framework.Base.execution.store import RunStore, fingerprint
 
+from satrap.edictum.plugin_resources import model_reference_fingerprint
+
 
 def plugin_fingerprint(path: Path, config: dict[str, Any], models: Any = None, schema: Any = None) -> str:
     """在加载时记录插件代码与有效配置摘要, 不保存配置明文"""
     files = [(str(file.relative_to(path)), hashlib.sha256(file.read_bytes()).hexdigest())
              for file in sorted(path.rglob("*"))
              if file.is_file() and file.suffix in {".py", ".yaml", ".yml", ".md"}]
-    from satrap.edictum.plugin_resources import model_reference_fingerprint
 
     resources = model_reference_fingerprint(models, schema, config) if models is not None and schema is not None else ""
     return fingerprint({"files": files, "config": config, "resources": resources})
@@ -32,7 +33,7 @@ def prepare_session_recovery(session: Any) -> None:
                for p in sorted(cast(list[Any], session.list_plugins()), key=lambda p: p.name)]
     scope = {key: getattr(session, key, None) for key in (
         "coding_workspace_root", "coding_session_root", "coding_sandbox_root",
-        "coding_upload_root", "coding_memory_db", "coding_memory_scope",
+        "coding_upload_root", "memory_db", "memory_scope",
     )}
     wf.recovery_plugin_fingerprint = fingerprint({"plugins": plugins, "scope": scope})
     wf.recovery_origin = getattr(session, "recovery_origin", {})

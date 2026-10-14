@@ -9,14 +9,15 @@ from __future__ import annotations
 from typing import Any
 
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
-from satrap.core.utils.TCBuilder import Tool
+from satrap.core.APICall.LLMCall import LLM
+from satrap.core.utils.TCBuilder import Tool, ToolsManager
 from satrap.edictum import SimpleSession
 from .contracts import require_bound_session
 from .constants import _SUBAGENT_PROMPT
 from .subagent import _CodingSubAgent
 from .approval import _parse_integer_argument, _ask_user_sync, _approve_sync
 from .paths import _tool_root, _resolve_path
-from .shell import _prepare_shell, _run_shell
+from .shell import _prepare_shell
 
 def _shell_definition(definition: dict[str, Any], default_timeout: int) -> dict[str, Any]:
     """
@@ -202,7 +203,7 @@ class SubAgentTool(Tool):
         "max_turns": ("number", "最大工具迭代轮数, 范围 1-100, 默认 20"),
     }
 
-    def __init__(self, llm: Any, tools_manager: Any) -> None:
+    def __init__(self, llm: LLM, tools_manager: ToolsManager) -> None:
         """
         初始化 SubAgentTool
 

@@ -13,7 +13,6 @@ from typing import Any, Callable, Dict, Literal, TypeVar, cast
 import json
 import os
 
-from satrap.core.utils.paths import get_data_dir
 from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, ReRankConfig
 
 from satrap.core.log import logger
@@ -22,6 +21,8 @@ from satrap.core.log import logger
 ConfigTarget = Literal["llm", "embedding", "rerank", "asr"]
 ResetTarget = Literal["llm", "embedding", "rerank", "asr", "all"]
 TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig)
+
+from satrap.core.config_paths import get_config_path
 
 
 class ConfigInUseError(ValueError):
@@ -66,7 +67,8 @@ class ModelConfigManager:
         storage_path: str | Path | None = None,
         auto_create: bool = True,
         asr_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
-    ):
+        llm_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
+    ) -> None:
         """
         初始化 ModelConfigManager
 
@@ -78,6 +80,7 @@ class ModelConfigManager:
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
         self._asr_in_use_checker = asr_in_use_checker
+        self._llm_in_use_checker = llm_in_use_checker
 
         self._llm_configs: Dict[str, LLMConfig] = {
             self.DEFAULT_NAME: LLMConfig(name=self.DEFAULT_NAME)
@@ -107,7 +110,8 @@ class ModelConfigManager:
         env_path = os.getenv("SATRAP_MODEL_CONFIG_PATH")
         if env_path:
             return Path(env_path)
-        return get_data_dir() / "model_config.json"
+
+        return get_config_path("model_config.json")
 
     @staticmethod
     def _safe_key(api_key: str | None) -> str | None:
@@ -233,7 +237,7 @@ class ModelConfigManager:
             json.dump(self._to_payload_locked(mask_api_key=False), f, ensure_ascii=False, indent=2)
 
     def reload(self):
-        """重新加载配置"""
+        """重新加载配置, 仅在格式迁移或归一化改变内容时写回"""
         with self._lock:
             if not self.storage_path.exists():
                 self._save_locked()
@@ -263,7 +267,8 @@ class ModelConfigManager:
                 self._asr_configs = self._deserialize_named_configs(
                     data.get("asr", {}), ASRConfig, self.DEFAULT_NAME
                 )
-                self._save_locked()
+                if self._to_payload_locked(mask_api_key=False) != data:
+                    self._save_locked()   # 避免普通读取改动文件指纹, 导致前端版本校验持续重试
             except Exception as e:
                 logger.error(f"[ModelConfigManager] 解析配置失败: {e}")
 
@@ -366,6 +371,13 @@ class ModelConfigManager:
             self._save_locked()
 
     def remove_llm_config(self, name: str) -> bool:
+        """在引用扫描锁内删除未被群配置引用的模型"""
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            return self._remove_llm_config_locked(name)
+
+    def _remove_llm_config_locked(self, name: str) -> bool:
         """
         删除 LLM 配置
 
@@ -375,16 +387,62 @@ class ModelConfigManager:
         返回:
         - bool: 删除 LLM 配置
         """
+        return self._remove_referenced_config(name, "llm", self._llm_configs, lambda key: LLMConfig(name=key), self._check_llm_in_use)
+
+    def _check_llm_in_use(self, name: str) -> list[dict[str, str]]:
+        """模型删除或重命名前执行严格群引用扫描"""
+        return self._check_model_reference("llm", name, self._llm_in_use_checker)
+
+    def _remove_referenced_config(self, name: str, target: str, configs: dict[str, TConfig],
+                                  default: Callable[[str], TConfig], checker: Callable[[str], list[dict[str, str]]]) -> bool:
+        """
+        在管理器锁内删除无引用配置, 调用方已持有公共引用扫描锁
+
+        参数:
+        - name: 原始配置名称
+        - target: llm 或 asr
+        - configs: 当前配置集合
+        - default: 最后一个配置被删除时的默认工厂
+        - checker: 当前领域引用校验
+
+        返回:
+        - 配置存在并完成保存时为 True
+        """
         with self._lock:
             key = self._normalize_name(name)
-            if key not in self._llm_configs:
+            if key not in configs:
                 return False
-            if len(self._llm_configs) <= 1:
-                self._llm_configs[key] = LLMConfig(name=key)
+            references = checker(key)
+            if references:
+                raise ConfigInUseError(target, key, references)
+            if len(configs) <= 1:
+                configs[key] = default(key)
             else:
-                self._llm_configs.pop(key, None)
+                configs.pop(key, None)
             self._save_locked()
             return True
+
+    def _check_model_reference(self, target: str, name: str,
+                               checker: Callable[[str], list[dict[str, str]]] | None) -> list[dict[str, str]]:
+        """
+        执行模型引用扫描, 不完整时保留原领域错误与 ASR 日志
+
+        参数:
+        - target: 模型类型
+        - name: 当前配置名称
+        - checker: 实际装配的检查器
+
+        返回:
+        - 完整引用清单, 未装配时沿用空清单
+        """
+        if checker is None:
+            return []
+        try:
+            return checker(name)
+        except Exception as error:
+            if target == "asr":
+                logger.error(f"[ModelConfigManager] ASR 引用扫描不完整, 拒绝变更 name={name}: {type(error).__name__}: {error}")
+            raise ConfigReferenceScanError(target, name, f"{type(error).__name__}: {error}") from error
 
     # ---------- Embedding 配置 ----------
     def get_embedding_config(self, name: str = DEFAULT_NAME) -> EmbeddingConfig:
@@ -583,7 +641,7 @@ class ModelConfigManager:
         with self._lock:
             return self._to_payload_locked(mask_api_key=mask_api_key)["asr"]
 
-    def set_asr_config(self, config: ASRConfig, name: str | None = None):
+    def set_asr_config(self, config: ASRConfig, name: str | None = None) -> None:
         """
         设置 ASR 配置
 
@@ -598,7 +656,7 @@ class ModelConfigManager:
             self._asr_configs[key] = ASRConfig(**payload)
             self._save_locked()
 
-    def update_asr_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
+    def update_asr_config(self, name: str = DEFAULT_NAME, **kwargs: object) -> None:
         """
         更新 ASR 配置
 
@@ -615,6 +673,13 @@ class ModelConfigManager:
             self._save_locked()
 
     def remove_asr_config(self, name: str) -> bool:
+        """在引用扫描锁内删除未被平台或插件引用的 ASR 配置"""
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            return self._remove_asr_config_locked(name)
+
+    def _remove_asr_config_locked(self, name: str) -> bool:
         """
         删除 ASR 配置
 
@@ -624,30 +689,11 @@ class ModelConfigManager:
         返回:
         - bool: 删除 ASR 配置
         """
-        with self._lock:
-            key = self._normalize_name(name)
-            if key not in self._asr_configs:
-                return False
-            references = self._check_asr_in_use(key)
-            if references:
-                raise ConfigInUseError("asr", key, references)
-            if len(self._asr_configs) <= 1:
-                self._asr_configs[key] = ASRConfig(name=key)
-            else:
-                self._asr_configs.pop(key, None)
-            self._save_locked()
-            return True
+        return self._remove_referenced_config(name, "asr", self._asr_configs, lambda key: ASRConfig(name=key), self._check_asr_in_use)
 
     def _check_asr_in_use(self, name: str) -> list[dict[str, str]]:
         """删除/重命名前的引用扫描, 未装配检查器时放行; 扫描不完整时拒绝但不伪称找到引用"""
-        checker = self._asr_in_use_checker
-        if checker is None:
-            return []
-        try:
-            return checker(name)
-        except Exception as error:
-            logger.error(f"[ModelConfigManager] ASR 引用扫描不完整, 拒绝变更 name={name}: {type(error).__name__}: {error}")
-            raise ConfigReferenceScanError("asr", name, f"{type(error).__name__}: {error}") from error
+        return self._check_model_reference("asr", name, self._asr_in_use_checker)
 
     # ---------- 公共配置 ----------
     def update_named_config(
@@ -657,6 +703,15 @@ class ModelConfigManager:
         changes: dict[str, Any],
         *,
         new_name: str | None = None,
+    ) -> None:
+        """在引用扫描锁内更新命名配置"""
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            self._update_named_config_locked(target, name, changes, new_name=new_name)
+
+    def _update_named_config_locked(
+        self, target: ConfigTarget, name: str, changes: dict[str, Any], *, new_name: str | None = None,
     ) -> None:
         """
         原子更新配置字段并按需重命名
@@ -679,6 +734,10 @@ class ModelConfigManager:
                 references = self._check_asr_in_use(current_key)
                 if references:
                     raise ConfigInUseError("asr", current_key, references)
+            if target == "llm" and target_key != current_key:
+                references = self._check_llm_in_use(current_key)
+                if references:
+                    raise ConfigInUseError("llm", current_key, references)
 
             payload = asdict(store[current_key])
             payload.update(changes)

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import List, Dict, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Optional, Any
 import copy
 
 from satrap.core.state import StateStore
@@ -15,13 +15,12 @@ from .utils import _SUMMARY_PROMPT_VERSION, TokenEstimateMethod, _ContextRuntime
 
 from satrap.core.log import logger
 
-if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 
 
 class _ContextCore:
     db_path: str
     conversation_id: str
+    persistent: bool
     keep_in_memory: bool
     auto_checkpoint: bool
     state_store: StateStore | None
@@ -329,6 +328,7 @@ class _ContextCore:
         messages: List[Dict[str, Any]],
         threshold: int,
         method: TokenEstimateMethod,
+        *, min_turns: int = 2,
     ) -> List[Dict[str, Any]]:
         """
         保留头尾并按整轮移除中间消息直到满足阈值
@@ -337,6 +337,7 @@ class _ContextCore:
         - messages: 原始消息列表
         - threshold: 本地估算 token 上限
         - method: token 估算方法
+        - min_turns: 必须保留的历史轮数, 本轮消息由外层保护时允许裁掉全部旧轮次
 
         返回:
         - List[Dict[str, Any]]: 截断后的消息副本
@@ -358,7 +359,7 @@ class _ContextCore:
             )
 
         kept_turns = turns[:]
-        while token_of_turn_list(kept_turns) > threshold and len(kept_turns) > 2:
+        while token_of_turn_list(kept_turns) > threshold and len(kept_turns) > min_turns:
             del kept_turns[len(kept_turns) // 2]
         return self._flatten_turns(([system_turn] if system_turn else []) + kept_turns)
 
@@ -385,11 +386,6 @@ class _ContextCore:
         logger.debug(
             f"模型上下文达触发线 ({current_tokens} > {self.trigger_tokens})，应用 {self.exceed_process} 截断到 {self.floor_tokens}"
         )
-
-        turns = self._group_messages_by_turns(messages)
-        system_turn = None
-        if turns and all(msg.get("role") == "system" for msg in turns[0]):
-            system_turn = turns.pop(0)
 
         if self.exceed_process == "sliding":  # 滑动窗口截断
             return self._apply_sliding_truncation(messages, self.floor_tokens, method)

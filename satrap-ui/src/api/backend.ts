@@ -1,5 +1,18 @@
 import { apiClient } from './client';
+import { RuntimeApplication } from './runtimeApplication';
 import type { BackendHealth, PlatformConfigApplication } from './types';
+
+export function createEdictumApplication(kind: 'plugins' | 'full', data: {
+  config_name?: string;
+  session_refs?: Array<{ platform_id: string; session_id: string }>;
+}) {
+  return new RuntimeApplication<ConfigReloadResult>(
+    kind === 'full' ? '/api/edictum/runtime/apply' : '/api/edictum/plugins/reconcile', data,
+    (value): value is ConfigReloadResult => Boolean(value && typeof value === 'object'
+      && typeof (value as ConfigReloadResult).ok === 'boolean' && Array.isArray((value as ConfigReloadResult).edictum_sessions)),
+    data.config_name || '指定会话',
+  );
+}
 
 export interface EdictumPluginReloadSessionResult {
   ok: boolean;
@@ -108,7 +121,16 @@ export interface ConfigReloadResult {
   edictum_sessions: EdictumPluginReloadSessionResult[];
 }
 
+export interface ConnectionProbeResult {
+  ok: boolean;
+  detail: string;
+  elapsed_ms: number;
+}
+
 export const backendApi = {
+  checkPlatformConnection: (platformId: string) =>
+    apiClient.post<ConnectionProbeResult>(`/api/platforms/${encodeURIComponent(platformId)}/connection-test`, {}),
+
   wakePlatform: (payload: { adapter_id: string; group_id: string; user_id: string; request_id: string; prompt?: string; message_id?: string }) =>
     apiClient.post<{ status: 'accepted' | 'already_pending' | 'no_pending' | 'rejected'; reason?: string; state?: string }>('/api/platforms/wake', payload),
 
@@ -146,7 +168,7 @@ export const backendApi = {
     config_name?: string;
     session_refs?: Array<{ platform_id: string; session_id: string }>;
     concurrency?: number;
-  }) => apiClient.post<ConfigReloadResult>('/api/edictum/plugins/reconcile', data),
+  }) => apiClient.post<ConfigReloadResult>('/api/edictum/plugins/reconcile', data, 120000),
 
   // 预览 Edictum 完整配置变更
   previewEdictumRuntime: (data: {
@@ -160,7 +182,7 @@ export const backendApi = {
     config_name?: string;
     session_refs?: Array<{ platform_id: string; session_id: string }>;
     concurrency?: number;
-  }) => apiClient.post<ConfigReloadResult>('/api/edictum/runtime/apply', data),
+  }) => apiClient.post<ConfigReloadResult>('/api/edictum/runtime/apply', data, 120000),
 
   // 关闭后端
   shutdown: () => apiClient.post<{ ok: boolean }>('/api/shutdown'),

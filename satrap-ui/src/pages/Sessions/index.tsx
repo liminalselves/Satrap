@@ -1,9 +1,14 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { RagManager } from '@/components/common/RagManager';
 import { Modal } from '@/components/ui/Modal';
 import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
 import { controlApi } from '@/api/control';
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { groupApi } from '@/api/groups';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useShallow } from 'zustand/react/shallow';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -14,11 +19,12 @@ import { sessionApi } from '@/api/session';
 import { edictumApi } from '@/api/edictum';
 import { classNameToConfigName } from '@/utils/adminMigration';
 import { PageHeader, DataTable, FormModal, ActionButtons } from '@/components/common';
-import { Plus, Power, PowerOff, Trash2, Settings, Search, FolderPlus, Play, RefreshCw, RotateCcw } from 'lucide-react';
+import { Plus, Trash2, Settings, Search, FolderPlus, RefreshCw, RotateCcw } from 'lucide-react';
 import type { Column, FormField } from '@/components/common';
 import type { DiscoveredSessionClass, RuntimeSession, SessionClassConfig } from '@/api/types';
 import { EdictumSessionsPanel } from './EdictumSessionsPanel';
 import { ManualWakeModal } from './ManualWakeModal';
+import { SessionEnabledToggle } from '@/components/common/SessionEnabledToggle';
 
 interface SessionClassItem {
   name: string;
@@ -30,7 +36,14 @@ const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>)
 );
 const PLATFORM_SESSION_EXCLUDED_IDS = new Set(['chat']);
 
-export function Sessions() {
+export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' }) {
+  const confirm = useConfirm();
+  useConfigWatch(['sessions', 'llm']);
+  const [searchParams] = useSearchParams();
+  const groupAdapter = searchParams.get('groupAdapter') || '';
+  const groupAccount = searchParams.get('groupAccount') || '';
+  const groupId = searchParams.get('groupId') || '';
+  const groupFilter = Boolean(groupAdapter && groupAccount && groupId);
   const [showWakeModal, setShowWakeModal] = useState(false);
   const [ragSession, setRagSession] = useState<RuntimeSession | null>(null);
   const [overrideSession, setOverrideSession] = useState<RuntimeSession | null>(null);
@@ -43,8 +56,9 @@ export function Sessions() {
     return () => { cancelled = true; };
   }, [overrideSession]);
 
-  const { sessionClasses, llmConfigs, fetchSessionClasses, fetchModels } = useConfigStore();
-  const { health, isRunning } = useBackendStore();
+  const { sessionClasses, llmConfigs, fetchSessionClasses } = useConfigStore(useShallow((state) => ({
+    sessionClasses: state.sessionClasses, llmConfigs: state.llmConfigs, fetchSessionClasses: state.fetchSessionClasses })));
+  const { health, isRunning } = useBackendStore(useShallow((state) => ({ health: state.health, isRunning: state.isRunning })));
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -53,6 +67,8 @@ export function Sessions() {
   const [selectedScanPath, setSelectedScanPath] = useState('');
   const [discovered, setDiscovered] = useState<DiscoveredSessionClass[]>([]);
   const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSession[]>([]);
+  const [groupSessionIds, setGroupSessionIds] = useState<string[] | null>(null);
+  const [groupFilterError, setGroupFilterError] = useState('');
   const [selectedRuntimeIds, setSelectedRuntimeIds] = useState<Set<string>>(() => new Set());
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -68,6 +84,20 @@ export function Sessions() {
     session_id: '', adapter_id: '', llm_name: '', params: '{}',
   });
   const backendRunning = isRunning;
+  useEffect(() => {
+    setSelectedRuntimeIds(new Set());
+    if (!groupFilter) { setGroupSessionIds(null); setGroupFilterError(''); return; }
+    let cancelled = false;
+    setGroupSessionIds(null); setGroupFilterError('');
+    groupApi.config(groupAdapter, groupId, groupAccount, backendRunning).then((result) => {
+      if (!cancelled) setGroupSessionIds(result.session_instances?.session_ids || []);
+    }).catch((error) => { if (!cancelled) setGroupFilterError(error instanceof Error ? error.message : '群实例筛选失败'); });
+    return () => { cancelled = true; };
+  }, [groupAdapter, groupAccount, groupId, groupFilter, backendRunning]);
+  const visibleRuntimeSessions = useMemo(() => groupFilter
+    ? runtimeSessions.filter((session) => session.platform_id === groupAdapter
+      && groupSessionIds?.includes(session.session_id))
+    : runtimeSessions, [groupFilter, runtimeSessions, groupAdapter, groupSessionIds]);
 
   const fetchRuntimeSessions = useCallback(async () => {
     try {
@@ -111,10 +141,8 @@ export function Sessions() {
   }, [fetchRuntimeSessions]);
 
   useEffect(() => {
-    fetchSessionClasses();
-    fetchModels('llm');
-    fetchRuntimeSessions();
-  }, [fetchModels, fetchRuntimeSessions, fetchSessionClasses]);
+    if (view === 'instances') void fetchRuntimeSessions();
+  }, [fetchRuntimeSessions, view]);
 
   const tableData: SessionClassItem[] = useMemo(
     () => Object.entries(sessionClasses).map(([name, config]) => ({ name, config })),
@@ -191,28 +219,8 @@ export function Sessions() {
     }
   }, [fetchSessionClasses, registerForm]);
 
-  const handleEnable = useCallback(async (name: string) => {
-    try {
-      await sessionApi.enable(name);
-      toast('success', `已启用 ${name}`);
-      await fetchSessionClasses();
-    } catch (e) {
-      toast('error', '启用失败: ' + (e instanceof Error ? e.message : '未知错误'));
-    }
-  }, [fetchSessionClasses]);
-
-  const handleDisable = useCallback(async (name: string) => {
-    try {
-      await sessionApi.disable(name);
-      toast('success', `已禁用 ${name}`);
-      await fetchSessionClasses();
-    } catch (e) {
-      toast('error', '禁用失败: ' + (e instanceof Error ? e.message : '未知错误'));
-    }
-  }, [fetchSessionClasses]);
-
   const handleUnregister = useCallback(async (name: string) => {
-    if (!confirm(`确定要注销会话类 "${name}" 吗?`)) return;
+    if (!(await confirm(`确定要注销会话类 "${name}" 吗?`))) return;
     try {
       await sessionApi.unregister(name);
       toast('success', '已注销');
@@ -220,7 +228,7 @@ export function Sessions() {
     } catch (e) {
       toast('error', '注销失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  }, [fetchSessionClasses]);
+  }, [fetchSessionClasses, confirm]);
 
   const openEdit = useCallback((name: string) => {
     const config = sessionClasses[name];
@@ -324,12 +332,12 @@ export function Sessions() {
 
   const toggleAllRuntimeSelection = useCallback((checked: boolean) => {
     setSelectedRuntimeIds(checked
-      ? new Set(runtimeSessions.map(runtimeKey))
+      ? new Set(visibleRuntimeSessions.map(runtimeKey))
       : new Set());
-  }, [runtimeSessions]);
+  }, [visibleRuntimeSessions]);
 
   const handleDeleteRuntime = useCallback(async (session: RuntimeSession) => {
-    if (!confirm(`确定要删除 ${session.platform_id} 的会话实例 "${session.session_id}" 吗? 此操作会同时清理用户绑定和上下文路由`)) return;
+    if (!(await confirm(`确定要删除 ${session.platform_id} 的会话实例 "${session.session_id}" 吗? 此操作会同时清理用户绑定和上下文路由`))) return;
     setDeleting(true);
     try {
       await sessionApi.deleteRuntime(session.platform_id, session.session_id, backendRunning);
@@ -340,10 +348,11 @@ export function Sessions() {
     } finally {
       setDeleting(false);
     }
-  }, [backendRunning, fetchRuntimeSessions]);
+  }, [backendRunning, fetchRuntimeSessions, confirm]);
 
   const handleBulkDeleteRuntime = useCallback(async (mode: 'empty' | 'single' | 'selected') => {
-    const selectedRefs = runtimeSessions
+    if (groupFilter && mode !== 'selected') return;
+    const selectedRefs = visibleRuntimeSessions
       .filter((session) => selectedRuntimeIds.has(runtimeKey(session)))
       .map((session) => ({ platform_id: session.platform_id, session_id: session.session_id }));
     if (mode === 'selected' && selectedRefs.length === 0) {
@@ -355,7 +364,7 @@ export function Sessions() {
       : mode === 'single'
         ? '所有消息数为 1 的会话实例'
         : `选中的 ${selectedRefs.length} 个会话实例`;
-    if (!confirm(`确定要删除${description}吗? 此操作会同时清理用户绑定和上下文路由`)) return;
+    if (!(await confirm(`确定要删除${description}吗? 此操作会同时清理用户绑定和上下文路由`))) return;
     setDeleting(true);
     try {
       const result = await sessionApi.bulkDeleteRuntime({
@@ -370,33 +379,31 @@ export function Sessions() {
     } finally {
       setDeleting(false);
     }
-  }, [backendRunning, fetchRuntimeSessions, runtimeSessions, selectedRuntimeIds]);
+  }, [backendRunning, fetchRuntimeSessions, visibleRuntimeSessions, selectedRuntimeIds, groupFilter, confirm]);
 
   const columns: Column<SessionClassItem>[] = useMemo(() => [
     { key: 'name', title: '名称', render: (item) => <span className="font-medium">{item.name}</span> },
     { key: 'class_path', title: 'Class Path', render: (item) => <span className="font-mono text-sm text-text-secondary">{item.config.class_path}</span> },
     {
       key: 'enabled', title: '状态', render: (item) => (
-        <Badge variant={item.config.enabled ? 'success' : 'default'}>{item.config.enabled ? '启用' : '禁用'}</Badge>
+        <SessionEnabledToggle provider="session_class" name={item.name} enabled={item.config.enabled}
+          onChanged={async () => { await fetchSessionClasses(); await fetchRuntimeSessions(); }} />
       ),
     },
     { key: 'model_key', title: '模型键', render: (item) => item.config.model_key || '-' },
     {
       key: 'actions', title: '操作', render: (item) => (
         <ActionButtons actions={[
-          item.config.enabled
-            ? { key: 'disable', icon: <PowerOff className="h-4 w-4" />, onClick: () => handleDisable(item.name), title: '禁用' }
-            : { key: 'enable', icon: <Power className="h-4 w-4" />, onClick: () => handleEnable(item.name), title: '启用' },
-          { key: 'create', icon: <Play className="h-4 w-4" />, onClick: () => openCreateSession(item.name), title: '创建会话' },
+          { key: 'create', icon: <Plus className="h-4 w-4" />, label: '创建会话', onClick: () => openCreateSession(item.name), title: '创建会话' },
           { key: 'edit', icon: <Settings className="h-4 w-4" />, onClick: () => openEdit(item.name), title: '编辑配置' },
           { key: 'delete', icon: <Trash2 className="h-4 w-4" />, onClick: () => handleUnregister(item.name), title: '注销', className: 'text-error hover:text-error' },
         ]} />
       ),
     },
-  ], [handleDisable, handleEnable, handleUnregister, openCreateSession, openEdit]);
+  ], [fetchSessionClasses, fetchRuntimeSessions, handleUnregister, openCreateSession, openEdit]);
 
-  const allRuntimeSelected = runtimeSessions.length > 0
-    && runtimeSessions.every((session) => selectedRuntimeIds.has(runtimeKey(session)));
+  const allRuntimeSelected = visibleRuntimeSessions.length > 0
+    && visibleRuntimeSessions.every((session) => selectedRuntimeIds.has(runtimeKey(session)));
   const runtimeColumns: Column<RuntimeSession>[] = useMemo(() => [
     {
       key: 'selection',
@@ -562,14 +569,15 @@ export function Sessions() {
         onClose={() => setOverrideSession(null)}
       />
       <PageHeader
-        title="会话管理"
-        description="管理扫描式会话类、Edictum 命名配置和运行时会话"
+        title={view === 'agents' ? 'Agent 配置' : '对话实例'}
+        description={view === 'agents' ? '配置 Agent 的会话类模板、模型和 Edictum 执行流程' : '管理已创建的平台实例、运行状态和实例级参数'}
+        actions={<Link className="text-sm text-accent" to={view === 'agents' ? '/conversations/instances' : '/conversations'}>{view === 'agents' ? '查看已创建实例' : '返回对话记录'}</Link>}
       />
 
-      <Tabs defaultValue="session-classes">
+      {view === 'agents' && <Tabs defaultValue={searchParams.has('edictum') ? 'edictum' : 'session-classes'}>
         <TabsList>
-          <TabsTrigger value="session-classes">会话类</TabsTrigger>
-          <TabsTrigger value="edictum">Edictum 会话</TabsTrigger>
+          <TabsTrigger value="session-classes">会话类模板</TabsTrigger>
+          <TabsTrigger value="edictum">Edictum 流程</TabsTrigger>
         </TabsList>
 
         <TabsContent value="session-classes" className="space-y-4">
@@ -611,20 +619,22 @@ export function Sessions() {
         <TabsContent value="edictum">
           <EdictumSessionsPanel llmNames={llmNames} onRuntimeCreated={fetchRuntimeSessions} />
         </TabsContent>
-      </Tabs>
+      </Tabs>}
 
-      <Card>
+      {view === 'instances' && <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold text-text-primary">会话实例</h3>
             <p className="mt-1 text-sm text-text-secondary">
               已持久化的平台 Provider 会话实例, 不包含 Chat 对话历史 · {backendRunning ? '后端热管理' : '后端已停止, 当前为冷管理'}
             </p>
+            {groupFilter && <p className="mt-1 text-sm text-text-secondary">筛选机器人 {groupAccount} 的群 {groupId}: 已归属 {groupSessionIds?.length ?? '读取中'} 个范围会话。旧版按用户共享的历史无法按群筛选。<Link className="ml-2 text-accent" to="/conversations/instances">清除筛选</Link></p>}
+            {groupFilterError && <p role="alert" className="mt-1 text-sm text-error">{groupFilterError}</p>}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button size="sm" disabled={!backendRunning} onClick={() => setShowWakeModal(true)}>手动唤醒群聊</Button>
-            <Button variant="danger" size="sm" disabled={deleting} onClick={() => handleBulkDeleteRuntime('empty')}>删除无消息</Button>
-            <Button variant="danger" size="sm" disabled={deleting} onClick={() => handleBulkDeleteRuntime('single')}>删除仅 1 条</Button>
+            <Button variant="danger" size="sm" disabled={deleting || groupFilter} onClick={() => handleBulkDeleteRuntime('empty')}>删除无消息</Button>
+            <Button variant="danger" size="sm" disabled={deleting || groupFilter} onClick={() => handleBulkDeleteRuntime('single')}>删除仅 1 条</Button>
             <Button variant="danger" size="sm" disabled={deleting || selectedRuntimeIds.size === 0} onClick={() => handleBulkDeleteRuntime('selected')}>
               删除所选{selectedRuntimeIds.size > 0 ? ` (${selectedRuntimeIds.size})` : ''}
             </Button>
@@ -635,13 +645,13 @@ export function Sessions() {
         </div>
         <DataTable
           columns={runtimeColumns}
-          data={runtimeSessions}
+          data={visibleRuntimeSessions}
           keyExtractor={runtimeKey}
-          emptyMessage="暂无会话实例"
+          emptyMessage={groupFilter ? '此群没有已加载的可归属实例' : '暂无会话实例'}
           scrollClassName="h-[32rem] max-h-[55vh]"
           stickyHeader
         />
-      </Card>
+      </Card>}
 
       {showWakeModal && <ManualWakeModal onClose={() => setShowWakeModal(false)} />}
       <FormModal open={showRegisterModal} onClose={() => setShowRegisterModal(false)} title="注册新会话类" fields={registerFields} values={registerForm} onChange={(key, value) => setRegisterForm((current) => ({ ...current, [key]: value }))} onSubmit={handleRegister} submitText="注册" loading={saving} size="lg" />

@@ -17,11 +17,16 @@ $env:PYTHONUTF8 = "1"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $DataDir = Join-Path $ProjectRoot ".satrap"
+$RuntimeDir = if ($env:SATRAP_RUNTIME_ROOT) { $env:SATRAP_RUNTIME_ROOT } else { Join-Path $DataDir "runtime" }
+$CredentialsDir = if ($env:SATRAP_CREDENTIALS_ROOT) { $env:SATRAP_CREDENTIALS_ROOT } else { Join-Path $DataDir "credentials" }
 
 function Get-SatrapAuthHeaders {
     $token = $env:SATRAP_API_TOKEN
     if ([string]::IsNullOrWhiteSpace($token)) {
-        $tokenPath = Join-Path $DataDir "api-token"
+        $tokenPath = Join-Path $CredentialsDir "api-token"
+        if (-not $env:SATRAP_CREDENTIALS_ROOT -and -not (Test-Path -LiteralPath $tokenPath)) {
+            $tokenPath = Join-Path $DataDir "api-token"
+        }
         if (Test-Path -LiteralPath $tokenPath) {
             $token = (Get-Content -Raw -Encoding UTF8 -LiteralPath $tokenPath).Trim()
         }
@@ -71,9 +76,9 @@ function Stop-SatrapServices {
     }
     
     # 清理 PID 文件
-    Remove-Item -Path (Join-Path $DataDir "control_server.pid") -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path (Join-Path $DataDir "backend.pid") -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path (Join-Path $DataDir "backend.lock") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $RuntimeDir "control_server.pid") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $RuntimeDir "backend.pid") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $RuntimeDir "backend.lock") -Force -ErrorAction SilentlyContinue
     
     Write-Host "All services stopped" -ForegroundColor Green
 }
@@ -131,7 +136,10 @@ Set-Location '$frontendDir'
     try {
         `$token = `$env:SATRAP_API_TOKEN
         if ([string]::IsNullOrWhiteSpace(`$token)) {
-            `$tokenPath = Join-Path '$DataDir' 'api-token'
+            `$tokenPath = Join-Path '$CredentialsDir' 'api-token'
+            if (-not `$env:SATRAP_CREDENTIALS_ROOT -and -not (Test-Path -LiteralPath `$tokenPath)) {
+                `$tokenPath = Join-Path '$DataDir' 'api-token'
+            }
             if (Test-Path -LiteralPath `$tokenPath) {
                 `$token = (Get-Content -Raw -Encoding UTF8 -LiteralPath `$tokenPath).Trim()
             }

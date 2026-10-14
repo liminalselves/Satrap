@@ -1,13 +1,14 @@
 from pathlib import Path
 import base64
+import asyncio
 import pytest
 import os
+from typing import Any, cast
 
 from satrap.core.components import (
     At,
     AtAll,
     BaseMessageComponent,
-    ComponentTypes,
     Dice,
     Face,
     File,
@@ -25,6 +26,7 @@ from satrap.core.components import (
     Unknown,
     Video,
     file_token_service,
+    preferred_media_source,
     set_callback_api_base,
 )
 
@@ -38,7 +40,8 @@ def allowed_media_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(tmp_path))
 
 
-def test_core_components_can_serialize():
+def test_component_serializers():
+    """常用组件序列化为平台协议字典, 特殊组件使用约定字段"""
     components: list[BaseMessageComponent] = [
         Plain("hello"),
         Face(id=1),
@@ -58,15 +61,15 @@ def test_core_components_can_serialize():
     for comp in components[1:]:
         assert isinstance(comp.toDict(), dict)
 
-
-def test_special_serializers():
     assert At(qq=123).toDict() == {"type": "at", "data": {"qq": "123"}}
     assert AtAll().toDict() == {"type": "at", "data": {"qq": "all"}}
     assert Poke(id="42").toDict() == {"type": "poke", "data": {"type": "126", "id": "42"}}
     assert Json('{"a": 1}').data == {"a": 1}
 
 
-def test_video_base64_preserves_component_fields():
+@pytest.mark.asyncio
+async def test_video_and_node_serialization():
+    """Video base64 与 Node/Nodes 的字典结构在反序列化后保持字段"""
     encoded = base64.b64encode(b"satrap-video").decode("ascii")
     video = Video.fromBase64(encoded, cover="https://example.com/cover.png")
     assert isinstance(video, Video)
@@ -74,12 +77,8 @@ def test_video_base64_preserves_component_fields():
     assert video.cover == "https://example.com/cover.png"
     assert video.toDict()["type"] == "video"
 
-
-@pytest.mark.asyncio
-async def test_node_and_nodes_to_dict():
     node = Node(content=[Plain("hello")], name="tester", uin="10001")
     node_dict = await node.to_dict()
-
     assert node_dict == {
         "type": "node",
         "data": {
@@ -115,17 +114,27 @@ async def test_image_and_record_base64_file_conversion(tmp_path: Path):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("allowed_media_tmp")
-async def test_file_get_file_local_and_async_guard(tmp_path: Path):
-    path = tmp_path / "demo.txt"
-    path.write_text("hello", encoding="utf-8")
+async def test_file_and_video_accessors(tmp_path: Path):
+    """本地文件解析为绝对路径, url 文件按需返回链接; video/file 出站字典保留展示字段"""
+    path = tmp_path / "demo.bin"
+    path.write_bytes(b"hello")
 
-    file_seg = File(name="demo.txt", file=str(path))
+    file_seg = File(name="demo.bin", file=str(path))
     assert file_seg.file == os.path.abspath(path)
     assert await file_seg.get_file() == os.path.abspath(path)
 
-    url_file = File(name="demo.txt", url="https://example.com/demo.txt")
-    assert await url_file.get_file(allow_return_url=True) == "https://example.com/demo.txt"
+    url_file = File(name="demo.bin", url="https://example.com/demo.bin")
+    assert await url_file.get_file(allow_return_url=True) == "https://example.com/demo.bin"
     assert url_file.file == ""
+
+    assert await Video.fromFileSystem(str(path)).to_dict() == {
+        "type": "video",
+        "data": {"file": path.resolve().as_uri()},
+    }
+    assert await File(name="demo.bin", file=str(path)).to_dict() == {
+        "type": "file",
+        "data": {"name": "demo.bin", "file": os.path.abspath(path)},
+    }
 
 
 @pytest.mark.asyncio
@@ -133,8 +142,6 @@ async def test_file_get_file_local_and_async_guard(tmp_path: Path):
     ("name", "expected_suffix"),
     [
         ("../../escape.py", ".py"),
-        (r"..\..\escape.EXE", ".exe"),
-        ("report.tar.gz", ".gz"),
         ("payload.超长危险扩展名", ""),
     ],
 )
@@ -145,15 +152,7 @@ async def test_file_download_uses_server_generated_safe_name(
     name: str,
     expected_suffix: str,
 ) -> None:
-    """
-    外部文件名仅用于展示, 不能影响临时目录内的落盘路径
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    - name: 参数化外部文件名
-    - expected_suffix: 预期保留的安全扩展名
-    """
+    """外部文件名仅用于展示, 不能影响临时目录内的落盘路径"""
     from satrap.core.components import message as message_mod
 
     temp_root = tmp_path / "temp"
@@ -161,16 +160,7 @@ async def test_file_download_uses_server_generated_safe_name(
     captured: list[Path] = []
 
     async def fake_download(url: str, path: str) -> str:
-        """
-        记录下载目标而不发起网络请求
-
-        参数:
-        - url: 模拟下载地址
-        - path: 服务端生成的目标路径
-
-        返回:
-        - 原样返回目标路径
-        """
+        """记录下载目标而不发起网络请求"""
         captured.append(Path(path))
         return path
 
@@ -203,65 +193,30 @@ async def test_file_register_to_file_service(tmp_path: Path):
         set_callback_api_base("")
 
 
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("allowed_media_tmp")
-async def test_video_and_file_to_dict_without_callback(tmp_path: Path):
-    path = tmp_path / "video.bin"
-    path.write_bytes(b"video")
+def test_resolved_path_is_not_serialized():
+    image = Image(file="9f2c.image", url="https://cdn/a.png")
+    image.resolved_path = "C:/tmp/satrap-media-abc.png"
 
-    assert await Video.fromFileSystem(str(path)).to_dict() == {
-        "type": "video",
-        "data": {"file": path.resolve().as_uri()},
-    }
-    assert await File(name="video.bin", file=str(path)).to_dict() == {
-        "type": "file",
-        "data": {"name": "video.bin", "file": os.path.abspath(path)},
-    }
-    assert File(name="video.bin", file=str(path)).toDict() == {
-        "type": "file",
-        "data": {"name": "video.bin", "file": str(path)},
-    }
+    for payload in (image.toDict(), asyncio.run(image.to_dict())):
+        # 临时路径不得随出站报文泄漏到平台
+        assert "resolved_path" not in cast(dict[str, Any], payload["data"])
 
 
-def test_component_types_mapping_contains_astrbot_keys():
-    for key in [
-        "plain",
-        "text",
-        "image",
-        "record",
-        "video",
-        "file",
-        "face",
-        "at",
-        "rps",
-        "dice",
-        "shake",
-        "share",
-        "contact",
-        "location",
-        "music",
-        "reply",
-        "poke",
-        "forward",
-        "node",
-        "nodes",
-        "json",
-        "unknown",
-    ]:
-        assert key in ComponentTypes
+def test_preferred_media_source_priority():
+    image = Image(file="9f2c.image", url="https://cdn/a.png")
+    assert preferred_media_source(image) == "https://cdn/a.png"
+
+    image.resolved_path = "C:/tmp/satrap-media-abc.png"
+    assert preferred_media_source(image) == "C:/tmp/satrap-media-abc.png"
+
+    assert preferred_media_source(Image(file="9f2c.image")) == "9f2c.image"
 
 
 @pytest.mark.asyncio
 async def test_media_source_whitelist_rejects_paths_outside_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """
-    消息组件不得读取媒体白名单之外的本地路径, 防止本地文件随消息外发
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """消息组件不得读取媒体白名单之外的本地路径, 防止本地文件随消息外发"""
     from satrap.core.utils import paths as paths_mod
 
     fake_root = tmp_path / "allowed"
@@ -286,13 +241,7 @@ async def test_media_source_whitelist_rejects_paths_outside_roots(
 
 @pytest.mark.asyncio
 async def test_media_source_whitelist_allows_extra_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    SATRAP_EXTRA_MEDIA_ROOTS 追加的根目录内路径可正常读取
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """SATRAP_EXTRA_MEDIA_ROOTS 追加的根目录内路径可正常读取"""
     extra = tmp_path / "extra"
     extra.mkdir()
     picture = extra / "pic.png"

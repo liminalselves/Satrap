@@ -1,0 +1,208 @@
+"""
+进程内只读资源快照缓存
+
+按资源指纹合并同步和异步加载, 只在登记及发布时持锁,
+异步等待者不占用工作线程, 取消一个等待者不取消共享加载
+"""
+from __future__ import annotations
+
+from concurrent.futures import Future
+from collections import OrderedDict
+from collections.abc import Callable, Hashable
+from typing import Generic, TypeVar
+import threading
+import traceback
+import asyncio
+
+from satrap.core.utils.async_worker import BoundedAsyncWorker
+
+from satrap.core.log import logger
+
+_T = TypeVar('_T')
+_PROBE_WORKERS = BoundedAsyncWorker('satrap-snapshot-probe', workers=2, capacity=32)
+
+
+class SnapshotChangedError(RuntimeError):
+    """资源在加载过程中变化, 本轮结果不得发布"""
+
+
+class SnapshotCache(Generic[_T]):
+    """保存私有快照, 消费者负责复制可变结果"""
+
+    def __init__(self, capacity: int = 64) -> None:
+        """
+        初始化有界缓存
+
+        参数:
+        - capacity: 最多保留的资源版本数
+        """
+        self._capacity = capacity
+        self._lock = threading.Lock()
+        self._values: OrderedDict[tuple[Hashable, Hashable, int], _T] = OrderedDict()
+        self._pending: dict[tuple[Hashable, Hashable, int], Future[_T]] = {}
+        self._epoch = 0
+
+    def invalidate(self) -> None:
+        """清除完成的快照并阻止旧在途加载发布"""
+        with self._lock:
+            self._epoch += 1
+            self._values.clear()
+
+    def _begin(self, resource: Hashable, fingerprint: Hashable) -> tuple[tuple[Hashable, Hashable, int], Future[_T], bool]:
+        """
+        登记本代加载或取得现有结果
+
+        参数:
+        - resource: 资源标识
+        - fingerprint: 来源指纹
+
+        返回:
+        - 缓存键, 共享结果及是否由本调用负责加载
+        """
+        with self._lock:
+            key = (resource, fingerprint, self._epoch)
+            if key in self._values:
+                self._values.move_to_end(key)
+                ready: Future[_T] = Future()
+                ready.set_result(self._values[key])
+                return key, ready, False
+            pending = self._pending.get(key)
+            if pending is not None:
+                return key, pending, False
+            pending = Future()
+            self._pending[key] = pending
+            return key, pending, True
+
+    def _load(self, key: tuple[Hashable, Hashable, int], fingerprint: Callable[[], Hashable], loader: Callable[[], _T]) -> _T:
+        """
+        加载并核验来源, 不在线程退出前唤醒等待者
+
+        参数:
+        - key: 本代缓存键
+        - fingerprint: 重新读取来源指纹
+        - loader: 同步快照构造器
+
+        返回:
+        - 核验通过的快照
+        """
+        value = loader()
+        current = fingerprint()
+        with self._lock:
+            if current != key[1] or self._epoch != key[2]:
+                raise SnapshotChangedError('资源在读取期间变化, 请重试')
+            self._values[key] = value
+            self._values.move_to_end(key)
+            while len(self._values) > self._capacity:
+                self._values.popitem(last=False)
+        return value
+
+    def _release(self, key: tuple[Hashable, Hashable, int], pending: Future[_T]) -> None:
+        """
+        在通知等待者之前清除本轮在途登记
+
+        参数:
+        - key: 本代缓存键
+        - pending: 当前共享结果
+        """
+        with self._lock:
+            if self._pending.get(key) is pending:
+                self._pending.pop(key, None)
+
+    def _fail(self, key: tuple[Hashable, Hashable, int], pending: Future[_T], error: Exception) -> None:
+        """
+        先清理失败登记再传播异常, 允许立即重试
+
+        参数:
+        - key: 本代缓存键
+        - pending: 当前共享结果
+        - error: 本轮加载异常
+        """
+        self._release(key, pending)
+        if not isinstance(error, SnapshotChangedError):
+            logger.error(f'[资源快照] 加载失败, 类型={type(error).__name__}\n{"".join(traceback.format_exception(error))}')
+        pending.set_exception(error)
+
+    def get(self, resource: Hashable, fingerprint: Callable[[], Hashable], loader: Callable[[], _T]) -> _T:
+        """
+        同步取得已核验快照, 变化期间最多重试三次
+
+        参数:
+        - resource: 资源标识
+        - fingerprint: 来源指纹读取器
+        - loader: 同步快照构造器
+
+        返回:
+        - 私有快照; 持续变化或加载失败时抛出异常
+        """
+        for _ in range(3):
+            key, pending, leader = self._begin(resource, fingerprint())
+            if leader:
+                try:
+                    value = self._load(key, fingerprint, loader)
+                except Exception as error:
+                    self._fail(key, pending, error)
+                else:
+                    self._release(key, pending)
+                    pending.set_result(value)
+            try:
+                return pending.result()
+            except SnapshotChangedError:
+                continue
+        logger.warning('[资源快照] 来源持续变化, 已停止重试')
+        raise SnapshotChangedError('资源持续变化, 请稍后重试')
+
+    async def get_async(self, resource: Hashable, fingerprint: Callable[[], Hashable], loader: Callable[[], _T], worker: BoundedAsyncWorker) -> _T:
+        """
+        异步取得快照, 指纹在独立有界池读取且仅领头构造快照
+
+        参数:
+        - resource: 资源标识
+        - fingerprint: 轻量来源指纹读取器
+        - loader: 同步快照构造器
+        - worker: 执行领头加载的有界线程池
+
+        返回:
+        - 私有快照; 队列满, 持续变化或加载失败时抛出异常
+        """
+        for _ in range(3):
+            try:
+                current = await _PROBE_WORKERS.run(fingerprint)
+            except Exception as error:
+                logger.error(f'[资源快照] 来源探测失败, 类型={type(error).__name__}\n{traceback.format_exc()}')
+                raise
+            key, pending, leader = self._begin(resource, current)
+            if leader:
+                async def load() -> None:
+                    """领头请求完成工作线程退出后通知等待者"""
+                    try:
+                        value = await worker.run(self._load, key, fingerprint, loader)
+                    except Exception as error:
+                        self._fail(key, pending, error)
+                    else:
+                        self._release(key, pending)
+                        pending.set_result(value)
+                task = asyncio.create_task(load())
+                def completed(done: asyncio.Task[None], shared: Future[_T] = pending, cache_key: tuple[Hashable, Hashable, int] = key) -> None:
+                    """
+                    接收后台任务异常并清理退出时的在途记录
+
+                    参数:
+                    - done: 已结束的加载任务
+                    - shared: 本轮共享结果
+                    - cache_key: 本轮登记键
+                    """
+                    if done.cancelled() and not shared.done():
+                        logger.warning('[资源快照] 服务退出时加载被取消')
+                        self._release(cache_key, shared)
+                        shared.set_exception(RuntimeError('快照加载已取消'))
+                    elif not done.cancelled():
+                        done.exception()
+                task.add_done_callback(completed)
+            waiting = asyncio.wrap_future(pending)
+            waiting.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            try:
+                return await asyncio.shield(waiting)
+            except SnapshotChangedError:
+                continue
+        logger.warning('[资源快照] 来源持续变化, 已停止重试')
+        raise SnapshotChangedError('资源持续变化, 请稍后重试')

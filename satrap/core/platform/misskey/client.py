@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlencode, urlsplit, urlunsplit
 import websockets
-import tempfile
+import mimetypes
 import aiohttp
 import asyncio
 import logging
@@ -14,6 +14,7 @@ from types import TracebackType
 import json
 import uuid
 import os
+import io
 
 from satrap.core.platform.misskey.misskey_utils import FileIDExtractor
 from satrap.core.utils.outbound import (
@@ -35,6 +36,20 @@ API_MAX_RETRIES = 5
 """Misskey API 最大重试次数"""
 HTTP_OK = 200
 """Misskey API 成功状态码"""
+
+
+def _read_file_bytes(file_path: str) -> bytes:
+    """
+    读取本地文件全部字节
+
+    参数:
+    - file_path: 本地文件路径
+
+    返回:
+    - bytes: 文件内容
+    """
+    with open(file_path, "rb") as handle:
+        return handle.read()
 
 
 class _SecretRedactionFilter(logging.Filter):
@@ -632,19 +647,36 @@ class MisskeyAPI:
         """
         if not file_path:
             raise APIError("No file path provided for upload")
+        filename = name or os.path.basename(file_path)
+        try:
+            # 磁盘读取移到工作线程, 事件循环只负责网络提交
+            data = await asyncio.to_thread(_read_file_bytes, file_path)
+        except FileNotFoundError as e:
+            raise APIError(f"File not found: {file_path}") from e
+        return await self._upload_bytes(data, filename, folder_id)
+
+    async def _upload_bytes(self, data: bytes, filename: str, folder_id: str | None) -> dict[str, Any]:
+        """
+        上传内存中的文件内容到 Misskey Drive
+
+        参数:
+        - data: 文件内容
+        - filename: Drive 中保存的文件名, 同时决定内容类型
+        - folder_id: 目标文件夹 ID, 可选
+
+        返回:
+        - dict[str, Any]: 文件 ID 与平台原始响应
+        """
         url = f"{self.instance_url}/api/drive/files/create"
         form = aiohttp.FormData()
         form.add_field("i", self.access_token)
         if folder_id:
             form.add_field("folderId", str(folder_id))
-        filename = name or os.path.basename(file_path)
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        form.add_field("file", io.BytesIO(data), filename=filename, content_type=content_type)
         try:
-            with open(file_path, "rb") as f:
-                form.add_field("file", f, filename=filename)
-                async with self.session.post(url, data=form) as response:
-                    result = await self._process_response(response, "drive/files/create")
-        except FileNotFoundError as e:
-            raise APIError(f"File not found: {file_path}") from e
+            async with self.session.post(url, data=form) as response:
+                result = await self._process_response(response, "drive/files/create")
         except aiohttp.ClientError as e:
             raise APIConnectionError(f"Upload failed: {e}") from e
 
@@ -774,17 +806,8 @@ class MisskeyAPI:
                 logger.warning("[Misskey API] 为已配置实例启用不安全 TLS 下载回退")
                 data = await self._download_bytes(url, ssl_verify=False)
 
-            suffix = os.path.splitext(name or url.split("?", 1)[0])[1]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(data)
-                tmp_path = tmp.name
-            try:
-                return await self.upload_file(tmp_path, name, folder_id)
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+            # 下载内容直接提交, 省去临时文件的阻塞写入与删除
+            return await self._upload_bytes(data, name or os.path.basename(url.split("?", 1)[0]), folder_id)
         except Exception as e:
             logger.error(f"[Misskey API] URL 文件上传失败: {type(e).__name__}")
             return None

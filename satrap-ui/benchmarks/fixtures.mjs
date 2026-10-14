@@ -34,27 +34,33 @@ export function createBenchmarkFixture(messageCount = 100) {
   }));
   return {
     messageCount,
+    errors: [],
     conversations,
     turns: Array.from({ length: turnCount }, (_, index) => createTurn(index)),
   };
 }
 
-function jsonResponse(data) {
+export function jsonResponse(data, origin) {
   return {
     status: 200,
     contentType: 'application/json; charset=utf-8',
     headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      Vary: 'Origin',
     },
     body: JSON.stringify(data),
   };
 }
 
-function responseFor(request, fixture) {
+export function responseFor(request, fixture) {
   const url = new URL(request.url());
   const path = url.pathname;
   const method = request.method();
+
+  if (path === '/auth/session' && method === 'POST') return { ok: true };
 
   if (path === '/api/chat/health') return { ok: true, conversations: fixture.conversations.length, preloaded: 0 };
   if (path === '/api/chat/models/detail') {
@@ -72,6 +78,7 @@ function responseFor(request, fixture) {
   }
   if (path === '/api/chat/models') return { models: ['benchmark-model'] };
   if (path === '/api/chat/plugins') return { plugins: [] };
+  if (path === '/api/chat/runs') return { runs: [] };
   if (path === '/api/chat/conversations' && method === 'GET') return { conversations: fixture.conversations };
   if (path === '/api/chat/conversations/preload') return { ok: true, conversation_id: 'benchmark-preloaded' };
   if (path === '/api/chat/turns') return { turns: fixture.turns };
@@ -94,9 +101,14 @@ function responseFor(request, fixture) {
     };
   }
   if (path === '/status') return { running: true, managed: true };
-  if (path.includes('/models/') || path.includes('/session')) return {};
-  if (method === 'DELETE') return { ok: true };
-  return { ok: true };
+  if (path === '/config/versions') return { ok: true, resources: Object.fromEntries(
+    (new URL(request.url()).searchParams.get('resources') || '').split(',').map((name) => [name, { change_token: 'fixture-v1', state: 'available' }]),
+  ) };
+  if (path === '/config/models/options') return { llm: ['benchmark-model'], embedding: [], rerank: [], asr: [] };
+  if (path === '/config/models' && method === 'GET') return {};
+  if (/^\/config\/models\/(llm|embedding|rerank|asr)$/.test(path)) return {};
+  if (path === '/config/session-classes' || path === '/config/edictum/sessions') return {};
+  throw new Error(`未匹配性能夹具: ${method} ${path}`);
 }
 
 /** 为页面安装与后端隔离的固定 HTTP 夹具 */
@@ -106,11 +118,21 @@ export async function installHttpMocks(context, appOrigin, fixture) {
       backend_api: 'http://127.0.0.1:19870',
       control_api: 'http://127.0.0.1:19871',
       chat_api: 'http://127.0.0.1:19872',
-    }));
+    }, appOrigin));
   });
 
   const handler = async (route) => {
-    await route.fulfill(jsonResponse(responseFor(route.request(), fixture)));
+    const request = route.request();
+    if (request.method() === 'OPTIONS') {
+      await route.fulfill(jsonResponse({}, appOrigin));
+      return;
+    }
+    try {
+      await route.fulfill(jsonResponse(responseFor(request, fixture), appOrigin));
+    } catch (error) {
+      fixture.errors.push(String(error));
+      await route.fulfill({ ...jsonResponse({ error: String(error) }, appOrigin), status: 501 });
+    }
   };
   await context.route('http://127.0.0.1:19870/**', handler);
   await context.route('http://127.0.0.1:19871/**', handler);
@@ -127,9 +149,11 @@ export async function installWebSocketMocks(page, chatSockets) {
   await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', (socket) => {
     socket.send(JSON.stringify({
       type: 'status',
-      running: true,
-      adapters: {
-        'benchmark-adapter': { status: 'running', started: true, type: 'benchmark' },
+      data: {
+        running: true,
+        adapters: {
+          'benchmark-adapter': { status: 'running', started: true, type: 'benchmark' },
+        },
       },
     }));
   });

@@ -8,10 +8,12 @@
 """
 from __future__ import annotations
 
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 import threading
+
+from satrap.core.type import RequestDiagnosticDetail, RequestDiagnosticsStats
 
 REQUEST_CAPACITY = 256
 """每适配器保留的最近请求数"""
@@ -105,11 +107,6 @@ class RequestDiagnosticLog:
         self._requests: dict[str, OrderedDict[str, list[RequestDiagnostic]]] = {}
         self._lock = threading.Lock()
 
-    @property
-    def capacity(self) -> int:
-        """每适配器保留的请求数上限"""
-        return self._per_adapter
-
     def record(self, entry: RequestDiagnostic) -> None:
         """
         追加一条阶段记录, 超出容量时淘汰最旧请求
@@ -183,6 +180,7 @@ class RequestDiagnosticLog:
 
     def list_requests(
         self, adapter_id: str | None = None, *, stages: frozenset[str] | None = None, request_id: str = "", limit: int = 50,
+        self_id: str = "", group_id: str = "",
     ) -> list[dict[str, object]]:
         """
         按请求汇总诊断, 最新在前
@@ -203,7 +201,7 @@ class RequestDiagnosticLog:
             else:
                 groups = list(self._requests.items())
         summaries: list[dict[str, object]] = []
-        for group_id, requests in groups:
+        for platform_id, requests in groups:
             for key, rows in requests.items():
                 if request_id and key != request_id:
                     continue
@@ -212,9 +210,13 @@ class RequestDiagnosticLog:
                 if not rows:
                     continue
                 latest = max(rows, key=lambda item: item.recorded_at)
+                if self_id and latest.self_id != self_id:
+                    continue
+                if group_id and latest.session_id != f"group%{group_id}":
+                    continue
                 summaries.append({
                     "request_id": latest.request_id or key,
-                    "adapter_id": group_id, "session_id": latest.session_id, "actor_id": latest.actor_id,
+                    "adapter_id": platform_id, "session_id": latest.session_id, "actor_id": latest.actor_id,
                     "self_id": latest.self_id, "message_id": latest.message_id,
                     "recorded_at": _iso_time(latest.recorded_at),
                     "stages": [item.stage for item in rows],
@@ -226,7 +228,7 @@ class RequestDiagnosticLog:
         summaries.sort(key=lambda item: str(item["recorded_at"]), reverse=True)
         return summaries[:limit]
 
-    def get_request(self, request_id: str, adapter_id: str | None = None) -> dict[str, object] | None:
+    def get_request(self, request_id: str, adapter_id: str | None = None) -> RequestDiagnosticDetail | None:
         """
         单个请求的完整诊断明细
 
@@ -255,7 +257,7 @@ class RequestDiagnosticLog:
                 }
         return None
 
-    def stats(self, adapter_id: str | None = None) -> dict[str, object]:
+    def stats(self, adapter_id: str | None = None) -> RequestDiagnosticsStats:
         """诊断容量与占用情况, 供健康检查与测试观察"""
         with self._lock:
             if adapter_id is not None:

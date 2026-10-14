@@ -33,7 +33,9 @@ def _edictum_service(args: argparse.Namespace) -> EdictumConfigService:
     config = load_cli_config(args)
     registry = create_default_edictum_type_registry()
     manager = EdictumConfigManager(registry, storage_path=config.edictum_config_path)
-    return EdictumConfigService(manager, registry)
+    from satrap.core.config.reference_checkers import build_reference_checker
+
+    return EdictumConfigService(manager, registry, reference_checker=build_reference_checker("edictum", config))
 
 
 def _online_client(args: argparse.Namespace):

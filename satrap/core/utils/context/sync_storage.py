@@ -9,8 +9,9 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 import sqlite3
-from typing import List, Dict, Any, TYPE_CHECKING
+from typing import List, Dict, Any
 import json
+import traceback
 import time
 
 from satrap.core.utils.vision import content_text_projection
@@ -23,10 +24,10 @@ from .utils import (
 )
 from .base import _ContextCore
 
+from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_WRITE, catalog_values
+
 from satrap.core.log import logger
 
-if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 
 
 class _SyncStorage(_ContextCore):
@@ -67,6 +68,8 @@ class _SyncStorage(_ContextCore):
 
     def _init_db_table(self):
         """初始化数据库表结构"""
+        if not self.persistent:
+            return
         try:
             conn = self._get_conn()
             cursor = conn.cursor()
@@ -126,10 +129,11 @@ class _SyncStorage(_ContextCore):
                 except sqlite3.OperationalError:
                     pass
 
+            conn.execute(CATALOG_SCHEMA)
             conn.commit()
         except Exception as e:
             logger.error(
-                f"[上下文管理器] 初始化数据库表失败: {e}, ID: {self.conversation_id}"
+                f"[上下文管理器] 初始化数据库表失败: {e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
 
     def _sync(self):
@@ -139,6 +143,8 @@ class _SyncStorage(_ContextCore):
 
     def load_context(self):
         """从数据库加载当前ID的上下文信息到内存中"""
+        if not self.persistent:
+            return
         try:
             conn = self._get_conn()
             cursor = conn.cursor()
@@ -163,7 +169,7 @@ class _SyncStorage(_ContextCore):
             self._load_runtime_state(conn)
         except Exception as e:
             logger.error(
-                f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}"
+                f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
             self._messages: List[Dict[str, Any]] = []
             self._saved_count = 0
@@ -245,6 +251,9 @@ class _SyncStorage(_ContextCore):
 
     def _save_runtime_state(self) -> None:
         """持久化当前对话的总结缓存和 usage 校准状态"""
+        if not self.persistent:
+            self._runtime_state_dirty = False
+            return
         conn = self._get_conn()
         self._write_runtime_state(conn)
         conn.commit()
@@ -271,6 +280,10 @@ class _SyncStorage(_ContextCore):
         增量策略: 纯追加时只 INSERT 尾部新消息 (O(1));
         编辑/外部修改 (标记 dirty) 或状态未知时全量重写
         """
+        if not self.persistent:
+            self._saved_count = len(self._messages)
+            self._runtime_state_dirty = False
+            return
         conn = self._get_conn()
         cursor = conn.cursor()
         prev_saved = self._saved_count  # 失败时恢复水位, 保证重试幂等
@@ -305,6 +318,7 @@ class _SyncStorage(_ContextCore):
                     "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     data_to_insert,
                 )
+            conn.execute(CATALOG_WRITE, catalog_values(self, appended=bool(new_messages) and prev_saved >= 0, modified=prev_saved < 0))
             if self._runtime_state_dirty:
                 self._write_runtime_state(conn)
             conn.commit()
@@ -314,7 +328,7 @@ class _SyncStorage(_ContextCore):
 
         except Exception as e:
             logger.error(
-                f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}"
+                f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
             conn.rollback()
             self._saved_count = prev_saved  # 恢复水位, 下次保存重试 (全量重写路径幂等)

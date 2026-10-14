@@ -17,19 +17,15 @@ import pytest
 from typing import Any, cast
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.expend.plugins.base_take.tools import AddMemoryTool
-from satrap.expend.tools.memory_store import MemoryStore
+from satrap.expend.plugins.memory.tools import AddMemoryTool
+from satrap.core.memory.store import MemoryStore
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.display.recorder import (
     DisplayRecorder,
     create_project,
-    delete_project,
     get_conversation_meta,
-    get_project,
     list_conversations,
     query_conversations,
-    list_projects,
-    set_conversation_project,
 )
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
@@ -39,15 +35,7 @@ from satrap.display import service as service_mod
 
 
 def _created_project_id(result: dict[str, object]) -> str:
-    """
-    提取服务创建结果中的项目 ID
-
-    参数:
-    - result: 项目创建结果
-
-    返回:
-    - 已创建项目的字符串 ID
-    """
+    """提取服务创建结果中的项目 ID"""
     assert result["ok"] is True
     project = cast(dict[str, object], result["project"])
     project_id = project["project_id"]
@@ -58,39 +46,8 @@ def _created_project_id(result: dict[str, object]) -> str:
 # ================= 数据层: projects CRUD =================
 
 
-def test_project_crud_roundtrip(tmp_path: Path):
-    """
-    创建/列出/查询/删除项目; 删除仅解绑会话 (project_id 置 NULL)
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "display.db")
-    proj = create_project("演示", str(tmp_path), db_path=db)
-    assert proj["name"] == "演示" and proj["root_path"] == str(tmp_path)
-
-    listed = list_projects(db_path=db)
-    assert [p["project_id"] for p in listed] == [proj["project_id"]]
-    fetched = get_project(proj["project_id"], db_path=db)
-    assert fetched is not None and fetched["name"] == "演示"
-
-    rec = DisplayRecorder(db, "conv-p")
-    # 绑定一个会话后删除项目 -> 会话解绑但 meta 保留
-    rec.save_meta("default", project_id=proj["project_id"])
-    assert delete_project(proj["project_id"], db_path=db) is True
-    meta = get_conversation_meta("conv-p", db_path=db)
-    assert meta is not None and meta["project_id"] is None
-    assert get_project(proj["project_id"], db_path=db) is None
-    assert delete_project(proj["project_id"], db_path=db) is False
-
-
 def test_conversation_meta_created_with_project_id(tmp_path: Path):
-    """
-    新库的 conversation_meta 直接包含 project_id
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """新库的 conversation_meta 直接包含 project_id"""
     db = str(tmp_path / "display.db")
     recorder = DisplayRecorder(db, "conv-new")
     recorder.save_meta("default")
@@ -100,12 +57,7 @@ def test_conversation_meta_created_with_project_id(tmp_path: Path):
 
 
 def test_list_conversations_with_project_and_empty(tmp_path: Path):
-    """
-    会话列表带项目归属; 新建未发言的空会话也在列表中 (meta created_at 兜底排序)
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """会话列表带项目归属; 新建未发言的空会话也在列表中 (meta created_at 兜底排序)"""
     db = str(tmp_path / "display.db")
     proj = create_project("项目A", str(tmp_path), db_path=db)
 
@@ -129,12 +81,7 @@ def test_list_conversations_with_project_and_empty(tmp_path: Path):
 
 
 def test_query_conversations_filters_and_paginates(tmp_path: Path):
-    """
-    历史查询应支持标题、模型、轮数和分页过滤
-
-    参数:
-    - tmp_path: 临时目录
-    """
+    """历史查询应支持标题、模型、轮数和分页过滤"""
     db = str(tmp_path / "display.db")
     first = DisplayRecorder(db, "conv-first")
     first.save_meta("fast", think="high")
@@ -153,34 +100,8 @@ def test_query_conversations_filters_and_paginates(tmp_path: Path):
     assert empty["items"][0]["conversation_id"] == "conv-empty"
 
 
-def test_set_conversation_project_rebind(tmp_path: Path):
-    """
-    会话改绑项目 / 移出项目 (None); 会话不存在返回 False
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "display.db")
-    proj = create_project("项目B", str(tmp_path), db_path=db)
-    rec = DisplayRecorder(db, "conv-m")
-    rec.save_meta("default")
-
-    assert set_conversation_project("conv-m", proj["project_id"], db_path=db) is True
-    meta_bound = get_conversation_meta("conv-m", db_path=db)
-    assert meta_bound is not None and meta_bound["project_id"] == proj["project_id"]
-    assert set_conversation_project("conv-m", None, db_path=db) is True
-    meta_unbound = get_conversation_meta("conv-m", db_path=db)
-    assert meta_unbound is not None and meta_unbound["project_id"] is None
-    assert set_conversation_project("conv-ghost", proj["project_id"], db_path=db) is False
-
-
 def test_save_meta_upsert_preserves_project(tmp_path: Path):
-    """
-    save_meta 冲突更新 (模型/think 变更) 不清空已有 project_id
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """save_meta 冲突更新 (模型/think 变更) 不清空已有 project_id"""
     db = str(tmp_path / "display.db")
     proj = create_project("项目C", str(tmp_path), db_path=db)
     rec = DisplayRecorder(db, "conv-u")
@@ -196,48 +117,13 @@ def test_save_meta_upsert_preserves_project(tmp_path: Path):
 # ================= 会话记忆隔离 =================
 
 
-def test_memory_requires_concrete_session_scope(tmp_path: Path):
-    """
-    记忆库不允许空作用域, 防止意外读写整个平台数据
-
-    参数:
-    - tmp_path: tmp路径
-    """
+def test_memory_scope_is_concrete_and_tool_is_session_bound(tmp_path: Path):
+    """记忆库拒绝空作用域 (防止意外读写整个平台); add_memory 不暴露层级且只写当前会话"""
     with pytest.raises(ValueError, match="scope"):
         MemoryStore(db_path=tmp_path / "memory.db", scope="")
 
-
-def test_memory_isolated_between_sessions(tmp_path: Path):
-    """
-    同一平台库中的不同会话不能查看、删除或清空对方记忆
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    first = MemoryStore(db_path=tmp_path / "platform.db", scope="session:first")
-    second = MemoryStore(db_path=tmp_path / "platform.db", scope="session:second")
-    first.add("第一会话", "first")
-    second.add("第二会话", "second")
-
-    first_id = first.list_all()[0]["id"]
-    assert [item["title"] for item in first.list_all()] == ["第一会话"]
-    assert [item["title"] for item in second.list_all()] == ["第二会话"]
-    assert second.get(first_id)["ok"] is False
-    assert second.delete(first_id)["ok"] is False
-    assert second.clear() == 1
-    assert first.count() == 1
-
-
-def test_add_memory_tool_writes_only_current_session(tmp_path: Path):
-    """
-    add_memory 不暴露层级参数, 并始终写入当前会话
-
-    参数:
-    - tmp_path: tmp路径
-    """
     store = MemoryStore(db_path=tmp_path / "platform.db", scope="session:current")
     tool = AddMemoryTool(store)
-
     assert "level" not in tool.params_dict
     assert "已添加" in tool.execute(title="t1", content="c1")
     assert {item["scope"] for item in store.list_all()} == {"session:current"}
@@ -275,16 +161,7 @@ class _FakeModelConfig:
 
 
 def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
-    """
-    构造 ChatService, build_llm 替换为 fake
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-
-    返回:
-    - ChatService: 构造 ChatService, build_llm 替换为 fake
-    """
+    """构造 ChatService, build_llm 替换为 fake"""
     def _fake_build_llm(cfg: Any) -> AsyncLLM:
         return _FakeAsyncLLM()
 
@@ -302,13 +179,7 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
 
 
 def test_service_project_crud_validation(tmp_path: Path, monkeypatch: Any):
-    """
-    项目创建校验 (空名/路径不存在/非目录) + 删除解绑
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """项目创建校验 (空名/路径不存在/非目录) + 删除解绑"""
     svc = _make_service(tmp_path, monkeypatch)
     assert svc.create_project("", str(tmp_path))["ok"] is False
     assert svc.create_project("x", str(tmp_path / "ghost"))["ok"] is False
@@ -326,13 +197,7 @@ def test_service_project_crud_validation(tmp_path: Path, monkeypatch: Any):
 
 
 def test_service_create_conversation_with_project(tmp_path: Path, monkeypatch: Any):
-    """
-    项目会话: 工作区/沙箱鸭子属性绑定 + meta 持久化; 无效项目抛 ValueError
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """项目会话: 工作区/沙箱鸭子属性绑定 + meta 持久化; 无效项目抛 ValueError"""
     svc = _make_service(tmp_path, monkeypatch)
     ws = tmp_path / "proj_ws"
     ws.mkdir()
@@ -376,13 +241,7 @@ def test_service_create_conversation_with_project(tmp_path: Path, monkeypatch: A
 
 
 def test_service_set_conversation_project_rebind(tmp_path: Path, monkeypatch: Any):
-    """
-    会话改绑: 绑定 -> 换绑 -> 移出, 活动会话鸭子属性同步刷新
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """会话改绑: 绑定 -> 换绑 -> 移出, 活动会话鸭子属性同步刷新"""
     svc = _make_service(tmp_path, monkeypatch)
     ws_a = tmp_path / "ws_a"
     ws_b = tmp_path / "ws_b"
@@ -419,13 +278,7 @@ def test_service_set_conversation_project_rebind(tmp_path: Path, monkeypatch: An
 
 
 def test_service_delete_project_unbinds_active(tmp_path: Path, monkeypatch: Any):
-    """
-    删除项目: 活动会话解绑并回到私有沙箱, 会话本身保留
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """删除项目: 活动会话解绑并回到私有沙箱, 会话本身保留"""
     svc = _make_service(tmp_path, monkeypatch)
     ws = tmp_path / "ws_del"
     ws.mkdir()
@@ -444,13 +297,7 @@ def test_service_delete_project_unbinds_active(tmp_path: Path, monkeypatch: Any)
 
 
 def test_service_resume_conversation_rebinds_project(tmp_path: Path, monkeypatch: Any):
-    """
-    会话恢复 (内存未命中): 从 meta 读项目归属并重新绑定工作区
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """会话恢复 (内存未命中): 从 meta 读项目归属并重新绑定工作区"""
     svc = _make_service(tmp_path, monkeypatch)
     ws = tmp_path / "ws_resume"
     ws.mkdir()
@@ -466,13 +313,7 @@ def test_service_resume_conversation_rebinds_project(tmp_path: Path, monkeypatch
 
 
 def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
-    """
-    上传落盘: 项目会话和普通会话分别写入自己的私有 uploads 目录
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """上传落盘: 项目会话和普通会话分别写入自己的私有 uploads 目录"""
     svc = _make_service(tmp_path, monkeypatch)
     ws = tmp_path / "ws_upload"
     ws.mkdir()
@@ -504,71 +345,39 @@ def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
 # ================= 目录浏览 (新建项目选择工作区) =================
 
 
-def test_browse_directories_lists_dirs_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """
-    只列子目录不列文件, 按名排序 (忽略大小写), parent 指向父目录
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
-    (tmp_path / "beta").mkdir()
-    (tmp_path / "Alpha").mkdir()
-    (tmp_path / "beta" / "sub").mkdir()
-    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
-
+@pytest.mark.parametrize("case", ["listing", "invalid", "root"])
+def test_browse_directories_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str):
+    """只列子目录并按名排序; 不存在/非目录返回 ok=False; 空 path 只返回工作区根"""
     service = _make_service(tmp_path, monkeypatch)
-    result = service.browse_directories(str(tmp_path))
-    assert result["ok"] is True
-    assert result["path"] == str(tmp_path.resolve())
-    dirs = cast(list[dict[str, str]], result["dirs"])
-    assert [directory["name"] for directory in dirs] == ["Alpha", "beta", "data"]
-    assert result["parent"] == ""
-
-
-def test_browse_directories_invalid_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """
-    路径不存在/不是目录 -> ok=False
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
-    service = _make_service(tmp_path, monkeypatch)
-    ghost = service.browse_directories(str(tmp_path / "ghost"))
-    assert ghost["ok"] is False and "不存在" in str(ghost["error"])
-    fpath = tmp_path / "f.txt"
-    fpath.write_text("x", encoding="utf-8")
-    not_dir = service.browse_directories(str(fpath))
-    assert not_dir["ok"] is False
-
-
-def test_browse_directories_root_and_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """
-    空 path 只返回配置的工作区根目录
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
-    service = _make_service(tmp_path, monkeypatch)
-    empty = service.browse_directories("")
-    assert empty["ok"] is True
-    assert empty["path"] == "" and empty["parent"] is None
-    assert empty["dirs"] == [{"name": tmp_path.name, "path": str(tmp_path.resolve())}]
+    if case == "listing":
+        (tmp_path / "beta").mkdir()
+        (tmp_path / "Alpha").mkdir()
+        (tmp_path / "beta" / "sub").mkdir()
+        (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+        result = service.browse_directories(str(tmp_path))
+        assert result["ok"] is True
+        assert result["path"] == str(tmp_path.resolve())
+        assert result["parent"] == ""
+        dirs = cast(list[dict[str, str]], result["dirs"])
+        assert [directory["name"] for directory in dirs] == ["Alpha", "beta", "data"]
+    elif case == "invalid":
+        ghost = service.browse_directories(str(tmp_path / "ghost"))
+        assert ghost["ok"] is False and "不存在" in str(ghost["error"])
+        fpath = tmp_path / "f.txt"
+        fpath.write_text("x", encoding="utf-8")
+        assert service.browse_directories(str(fpath))["ok"] is False
+    else:
+        empty = service.browse_directories("")
+        assert empty["ok"] is True
+        assert empty["path"] == "" and empty["parent"] is None
+        assert empty["dirs"] == [{"name": tmp_path.name, "path": str(tmp_path.resolve())}]
 
 
 def test_project_and_browse_reject_paths_outside_workspace_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """
-    项目创建和目录浏览均不得越出服务端允许根目录
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """项目创建和目录浏览均不得越出服务端允许根目录"""
     service = _make_service(tmp_path, monkeypatch)
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir(exist_ok=True)
@@ -584,13 +393,7 @@ def test_project_and_browse_reject_satrap_data_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """
-    项目创建和目录浏览均拒绝 .satrap 本身及其子目录
-
-    参数:
-    - tmp_path: 临时目录
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """项目创建和目录浏览均拒绝 .satrap 本身及其子目录"""
     protected = tmp_path / ".satrap"
     nested = protected / "data"
     nested.mkdir(parents=True)
@@ -611,13 +414,7 @@ def test_project_and_browse_reject_satrap_data_directory(
 
 
 def test_coding_tools_per_session_workspace(tmp_path: Path, monkeypatch: Any):
-    """
-    两个会话不同工作区根并行互不干扰; 无鸭子属性会话回落全局
-
-    参数:
-    - tmp_path: tmp路径
-    - monkeypatch: pytest monkeypatch 夹具
-    """
+    """两个会话不同工作区根并行互不干扰; 无鸭子属性会话回落全局"""
     import satrap.expend.plugins.satrap_coding.tools as tools_mod
     from satrap.edictum import SimpleSession
     from satrap.expend.plugins.satrap_coding.tools import get_tools

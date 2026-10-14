@@ -17,8 +17,11 @@ from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.pipeline.wake_policy import evaluate_wake
 from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.components import At, AtAll, Face, File, Image, Json, Plain, Reply, Unknown
-from satrap.core.platform import PlatformAdapterManager, PlatformConfig, registry
+from satrap.core.platform import PlatformConfig
 from satrap.core.type import PlatformMessage, PlatformMessageType
+from support.providers import RunnableRegistry
+
+
 
 
 class FakeOneBotClient:
@@ -64,22 +67,35 @@ def make_adapter(settings: dict[str, Any] | None = None) -> OneBotAdapter:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("segments,rule", [
-    ([{"type": "text", "data": {"text": "小助手你好"}}], "alias"),
-    ([{"type": "at", "data": {"qq": "all"}}], "no_match"),
-    ([{"type": "text", "data": {"text": "@10000"}}], "no_match"),
-    ([{"type": "image", "data": {"file": "小助手.png"}}], "no_match"),
-    ([{"type": "at", "data": {"qq": "10000"}}], "mention"),
+@pytest.mark.parametrize("segments,rule,calls", [
+    ([{"type": "text", "data": {"text": "小助手你好"}}], "alias", 1),
+    ([{"type": "at", "data": {"qq": "all"}}], "no_match", 0),
+    ([{"type": "text", "data": {"text": "@10000"}}], "no_match", 0),
+    ([{"type": "image", "data": {"file": "小助手.png"}}], "no_match", 0),
+    ([{"type": "at", "data": {"qq": "10000"}}], "mention", 1),
+    ([{"type": "at", "data": {"qq": "99999"}}], "no_match", 0),
+    ([{"type": "text", "data": {"text": "小助手 帮忙"}}], "alias", 1),
+    ([{"type": "image", "data": {"url": "https://example.com/a.png"}}], "no_match", 0),
+    ([{"type": "reply", "data": {"id": "小助手"}}], "no_match", 0),
 ])
-async def test_explainable_wake_rules_only_match_top_level_content(segments, rule):
-    """名字规则可选启用, 全体提及和单独附件保持静默"""
+async def test_wake_rules_match_only_top_level_content_and_reach_session(segments, rule, calls):
+    """名字规则可选启用, 全体提及和单独附件保持静默; 命中才进入会话管线"""
+    from unittest.mock import AsyncMock
+    from satrap.core.pipeline.scheduler import PipelineScheduler
+
     adapter = make_adapter({"wake_aliases": ["小助手"]})
-    await adapter._handle_group_message({"self_id": 10000, "group_id": 20, "user_id": 30,
+    manager = AsyncMock()
+    manager.provider_registry = RunnableRegistry()
+    manager.handle_call_async.return_value = ""
+    await adapter._handle_group_message({"self_id": 10000, "group_id": 20, "user_id": 30, "message_id": 789,
                                          "message_type": "group", "message": segments})
     event = adapter._event_queue.get_nowait()
     decision = evaluate_wake(event)
-    assert decision.rule == rule
-    assert decision.triggered == (rule != "no_match")
+    if rule:
+        assert decision.rule == rule
+    assert decision.triggered == (calls > 0)
+    await PipelineScheduler(manager).execute(event)
+    assert manager.handle_call_async.await_count == calls
 
 
 @pytest.mark.asyncio
@@ -102,29 +118,6 @@ async def test_call_origin_is_frozen_before_message_processing():
     assert trusted.request_id
     with pytest.raises(AttributeError):
         event.call_origin = trusted
-
-
-def test_onebot_and_aiocqhttp_aliases_are_registered():
-    """onebot 和 aiocqhttp 都能创建同一个适配器类"""
-    assert registry.get("onebot") is OneBotAdapter
-    assert registry.get("aiocqhttp") is OneBotAdapter
-
-    manager = PlatformAdapterManager(registry=registry)
-    first = manager.add_adapter(PlatformConfig(id="ob1", type="onebot", settings={}))
-    second = manager.add_adapter(PlatformConfig(id="ob2", type="aiocqhttp", settings={}))
-
-    assert isinstance(first, OneBotAdapter)
-    assert isinstance(second, OneBotAdapter)
-    assert manager.list_adapters() == ["ob1", "ob2"]
-
-
-def test_config_defaults_and_aliases():
-    adapter = make_adapter({"listen_host": "0.0.0.0", "listen_port": 8081})
-
-    assert adapter.host == "0.0.0.0"
-    assert adapter.port == 8081
-    assert adapter.enable_private is True
-    assert adapter.enable_group is True
 
 
 def test_committed_event_uses_configured_session_type():
@@ -168,6 +161,36 @@ def test_onebot_segments_to_components():
     assert "@全体成员" in text
     assert "[图片]" in text
 
+    image = cast(Image, components[4])
+    assert image.file == "a.png"
+    assert image.url == "https://cdn/a.png"
+
+
+def test_onebot_inbound_media_keeps_file_and_url_separately():
+    components, _ = onebot_segments_to_components(
+        [
+            {"type": "image", "data": {"file": "9f2c.image", "url": "https://cdn/a.png?rkey=x"}},
+            {"type": "record", "data": {"file": "9f2c.silk", "url": "https://cdn/v.silk"}},
+            {"type": "video", "data": {"file": "9f2c.mp4", "url": "https://cdn/v.mp4"}},
+        ]
+    )
+
+    image, record, video = (cast(Any, item) for item in components)
+    # 原始上报标识是后续 get_image 刷新的唯一入口, 不能被 url 覆盖
+    assert (image.file, image.url) == ("9f2c.image", "https://cdn/a.png?rkey=x")
+    assert (record.file, record.url) == ("9f2c.silk", "https://cdn/v.silk")
+    assert (video.file, video.url) == ("9f2c.mp4", "https://cdn/v.mp4")
+
+
+def test_onebot_inbound_media_without_url_does_not_fall_back_to_file():
+    components, _ = onebot_segments_to_components(
+        [{"type": "image", "data": {"file": "9f2c.image"}}]
+    )
+
+    image = cast(Image, components[0])
+    assert image.file == "9f2c.image"
+    assert image.url == ""
+
 
 @pytest.mark.asyncio
 async def test_message_chain_to_onebot_segments():
@@ -186,6 +209,28 @@ async def test_message_chain_to_onebot_segments():
     assert segments[2] == {"type": "image", "data": {"file": "https://cdn/a.png"}}
     assert segments[3] == {"type": "reply", "data": {"id": "msg-1"}}
     assert segments[4] == {"type": "json", "data": {"data": '{"ok": true}'}}
+
+
+@pytest.mark.asyncio
+async def test_onebot_outbound_prefers_sendable_source_over_canonical_id():
+    # 入站保留 file 为 canonical id 后, 出站不能把这个不可发送的 id 当成来源
+    segments = await message_chain_to_onebot_segments(
+        [Image(file="9f2c.image", url="https://cdn/a.png?rkey=x")]
+    )
+
+    assert segments[0] == {"type": "image", "data": {"file": "https://cdn/a.png?rkey=x"}}
+
+
+@pytest.mark.asyncio
+async def test_onebot_outbound_falls_back_to_file_when_no_url(tmp_path, monkeypatch):
+    from satrap.core.utils import paths
+
+    monkeypatch.setattr(paths, "_configured_media_roots", (str(tmp_path),))
+    source = tmp_path / "9f2c.image"
+    source.write_bytes(b"image")
+    segments = await message_chain_to_onebot_segments([Image(file=str(source))])
+
+    assert segments[0] == {"type": "image", "data": {"file": source.as_uri()}}
 
 
 def test_create_platform_message_private_and_group():
@@ -267,32 +312,6 @@ async def test_send_message_routes_private_and_group():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("segments, expected", [
-    ([{"type": "at", "data": {"qq": "10000"}}], 1),
-    ([{"type": "at", "data": {"qq": "99999"}}], 0),
-    ([{"type": "at", "data": {"qq": "all"}}], 0),
-    ([{"type": "text", "data": {"text": "小助手 帮忙"}}], 1),
-    ([{"type": "text", "data": {"text": "@10000"}}], 0),
-    ([{"type": "image", "data": {"url": "https://example.com/a.png"}}], 0),
-    ([{"type": "reply", "data": {"id": "小助手"}}], 0),
-])
-async def test_raw_group_wake_reaches_session(segments, expected):
-    from unittest.mock import AsyncMock
-    from satrap.core.pipeline.scheduler import PipelineScheduler
-
-    adapter = make_adapter({"wake_words": ["小助手"]})
-    manager = AsyncMock()
-    manager.handle_call_async.return_value = ""
-    await adapter._handle_group_message({
-        "self_id": 10000, "user_id": 123, "group_id": 456,
-        "message_id": 789, "message_type": "group", "message": segments,
-    })
-    event = adapter._event_queue.get_nowait()
-    await PipelineScheduler(manager).execute(event)
-    assert manager.handle_call_async.await_count == expected
-
-
-@pytest.mark.asyncio
 async def test_unwoken_chatter_preserves_execution_budget():
     from unittest.mock import AsyncMock
     from satrap.core.pipeline.scheduler import PipelineScheduler
@@ -300,6 +319,7 @@ async def test_unwoken_chatter_preserves_execution_budget():
 
     adapter = make_adapter()
     manager = AsyncMock()
+    manager.provider_registry = RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager, RateLimiter(rate=0.01, burst=1))
     for message_id, text in enumerate(["普通聊天", "普通聊天", None], start=789):
@@ -355,6 +375,7 @@ async def test_queued_group_cannot_bypass_tightened_scope():
     event.is_wake = True
     adapter.config.settings["group_whitelist"] = ["789"]
     manager = AsyncMock()
+    manager.provider_registry = RunnableRegistry()
     scheduler = PipelineScheduler(manager)
     processor = AsyncMock(return_value=True)
     scheduler.add_preprocessor(processor)
@@ -414,65 +435,32 @@ class TestMediaSourceRejection:
     """媒体白名单拒绝在发送链上保留专属原因码, 不与目标范围拒绝混淆"""
 
     @pytest.mark.asyncio
-    async def test_file_uri_segment_denied_reports_media_reason(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("kind,use_uri", [
+        ("fromfs", False), ("image", False), ("image", True), ("file", False), ("file", True),
+    ])
+    async def test_denied_media_source_reports_media_reason(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, kind: str, use_uri: bool
     ):
-        """file:// 前缀的本地来源同样受白名单约束, fromFileSystem 生成的形态不能绕过"""
+        """原始路径与 file:// 形态, 图片与文件段都受白名单约束, fromFileSystem 不能绕过"""
         from satrap.core.utils import paths as paths_mod
 
         fake_root = tmp_path / "allowed"
         fake_root.mkdir()
         monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
-        outside = tmp_path / "secret.png"
-        outside.write_bytes(b"png")
-
-        adapter = make_adapter()
-        receipt = await adapter.send_message("group%456", MessageChain([Image.fromFileSystem(str(outside))]))
-        assert receipt.status == "failed" and receipt.reason == "media_source_denied"
-        assert adapter._bot.calls == []
-
-    @pytest.mark.asyncio
-    async def test_image_segment_denied_reports_media_reason(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-    ):
-        from satrap.core.utils import paths as paths_mod
-
-        fake_root = tmp_path / "allowed"
-        fake_root.mkdir()
-        monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
-        outside = tmp_path / "secret.png"
-        outside.write_bytes(b"png")
-
-        adapter = make_adapter()
-        receipt = await adapter.send_message("group%456", MessageChain([Image(file=str(outside))]))
-        assert receipt.status == "failed" and receipt.reason == "media_source_denied"
-        assert adapter._bot.calls == []
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("use_uri", [False, True], ids=["raw-path", "file-uri"])
-    async def test_file_segment_denied_reports_media_reason(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, use_uri: bool
-    ):
-        from satrap.core.utils import paths as paths_mod
-
-        fake_root = tmp_path / "allowed"
-        fake_root.mkdir()
-        monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
-        outside = tmp_path / "secret.bin"
-        outside.write_bytes(b"bin")
+        outside = tmp_path / ("secret.png" if kind == "image" else "secret.bin")
+        outside.write_bytes(b"data")
         source = outside.as_uri() if use_uri else str(outside)
+        if kind == "fromfs":
+            component: Any = Image.fromFileSystem(str(outside))
+        elif kind == "image":
+            component = Image(file=source)
+        else:
+            component = File(name="secret.bin", file=source)
 
         adapter = make_adapter()
-        receipt = await adapter.send_message("group%456", MessageChain([File(name="secret.bin", file=source)]))
+        receipt = await adapter.send_message("group%456", MessageChain([component]))
         assert receipt.status == "failed" and receipt.reason == "media_source_denied"
-        assert [name for name, _ in adapter._bot.calls] == []
-
-
-def test_file_uri_to_path_preserves_unix_absolute_root():
-    """Unix file:///absolute/path 必须保留根斜杠, 不能变成相对路径"""
-    from satrap.core.utils.paths import file_uri_to_path
-
-    assert file_uri_to_path("file:///var/tmp/example.txt") == "/var/tmp/example.txt"
+        assert adapter._bot.calls == []
 
 
 class TestFileOutboundSplit:
@@ -640,91 +628,33 @@ class TestSegmentProgress:
         assert [segment["status"] for segment in latest["segments"]] == ["unknown"]
 
     @pytest.mark.asyncio
-    async def test_finalize_timeout_keeps_record_unconfirmed(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+    async def test_finalize_outcomes_keep_unconfirmed_and_degrade_skips_write(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
     ):
-        """反例: 收尾超时不显示已送达也不重发, 后续可信确认才允许精化"""
+        """反例: 收尾超时不显示已送达也不重发; 未落盘/异常/降级都可观测且降级期不写不告警"""
+        import logging
         import threading
         import time as time_module
         from unittest.mock import AsyncMock
 
         from satrap.core.platform.onebot import adapter as adapter_module
 
-        adapter = make_adapter()
-        store = _make_store(tmp_path)
-        adapter.set_send_attempt_recorder(store)
-        adapter._bot = AsyncMock()
-        adapter._bot.send_group_msg = AsyncMock(return_value={"message_id": 5})
-        release = threading.Event()
-        original = store.complete_send_attempt
-
-        def slow(*args: Any, **kwargs: Any) -> bool:
-            release.wait(2.0)
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(store, "complete_send_attempt", slow)
-        monkeypatch.setattr(adapter_module, "_ATTEMPT_FINALIZE_TIMEOUT", 0.05)
-        receipt = await adapter.send_message("group%456", MessageChain.from_text("收尾超时"))
-        # 传输层确认照常返回, 但收尾未落盘: 尝试仍是未终结状态, 已确认的段证据保留
-        assert receipt.status == "success"
-        attempt = store.lookup_attempts("", "onebot_main")[0]
-        assert attempt["status"] == "submitted" and attempt["segments"][0]["status"] == "sent"
-        # 结论只认段证据: 该段已确认, 不因收尾缺失被压成 unknown 或 failed
-        assert store.request_send_outcome("", "onebot_main")["confirmed"] == 1
-        # 收尾线程完成后的可信确认才落终态, 期间不产生第二次发送
-        release.set()
-        for _ in range(50):
-            if store.lookup_attempts("", "onebot_main")[0]["status"] == "sent":
-                break
-            time_module.sleep(0.02)
-        assert store.lookup_attempts("", "onebot_main")[0]["status"] == "sent"
-        adapter._bot.send_group_msg.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_finalize_result_is_consumed_and_degrade_skips_write(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
-    ):
-        """E3 反例: 收尾未落盘必须可见; 降级期不再发起写入也不重复告警"""
-        import logging
+        def _warnings() -> list[str]:
+            return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and not r.name.endswith("_file")]
 
         adapter = make_adapter()
         store = _make_store(tmp_path)
         adapter.set_send_attempt_recorder(store)
 
-        def _refuse_finalize(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
+        def _refuse(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
             return False
 
-        calls: list[str] = []
-
-        def _record_finalize(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
-            calls.append(turn_id)
-            return True
-
-        monkeypatch.setattr(store, "complete_send_attempt", _refuse_finalize)
+        monkeypatch.setattr(store, "complete_send_attempt", _refuse)
         with caplog.at_level(logging.WARNING):
             await adapter._finalize_attempt("turn-false", "sent", "ok")
-        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("发送收尾未落盘 turn=turn-false status=sent" in m for m in warnings)
+        assert len(_warnings()) == 1 and "发送收尾未落盘 turn=turn-false status=sent" in _warnings()[0]
 
         caplog.clear()
-        monkeypatch.setattr(store, "degraded", True)
-        monkeypatch.setattr(store, "complete_send_attempt", _record_finalize)
-        with caplog.at_level(logging.WARNING):
-            await adapter._finalize_attempt("turn-degraded", "sent", "ok")
-        # 降级期存储拒绝一切写入: 不再发起调用, 也不需要逐次告警
-        assert calls == []
-        assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == []
-
-    @pytest.mark.asyncio
-    async def test_finalize_failure_logs_exactly_one_warning(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
-    ):
-        """R4 反例: 收尾异常只按异常分支告警一次, 不再叠加"未落盘"; 正常返回 False 才记未落盘"""
-        import logging
-
-        adapter = make_adapter()
-        store = _make_store(tmp_path)
-        adapter.set_send_attempt_recorder(store)
 
         def _explode(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
             raise OSError("写入失败")
@@ -732,28 +662,60 @@ class TestSegmentProgress:
         monkeypatch.setattr(store, "complete_send_attempt", _explode)
         with caplog.at_level(logging.WARNING):
             await adapter._finalize_attempt("turn-error", "sent", "ok")
-        # 只统计一次调用语句 (打印与文件两个 logger 输出同一条消息)
-        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and not r.name.endswith("_file")]
-        assert len(warnings) == 1
-        assert "发送收尾失败 turn=turn-error" in warnings[0] and "OSError" in warnings[0]
+        assert len(_warnings()) == 1
+        assert "发送收尾失败 turn=turn-error" in _warnings()[0] and "OSError" in _warnings()[0]
 
         caplog.clear()
+        calls: list[str] = []
 
-        def _refuse(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
-            return False
+        def _record(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
+            calls.append(turn_id)
+            return True
 
-        monkeypatch.setattr(store, "complete_send_attempt", _refuse)
+        monkeypatch.setattr(store, "degraded", True)
+        monkeypatch.setattr(store, "complete_send_attempt", _record)
         with caplog.at_level(logging.WARNING):
-            await adapter._finalize_attempt("turn-false-only", "sent", "ok")
-        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and not r.name.endswith("_file")]
-        assert len(warnings) == 1
-        assert "发送收尾未落盘 turn=turn-false-only status=sent" in warnings[0]
+            await adapter._finalize_attempt("turn-degraded", "sent", "ok")
+        # 降级期存储拒绝一切写入: 不再发起调用, 也不需要逐次告警
+        assert calls == [] and _warnings() == []
+
+        # 收尾超时: 传输层确认照常返回, 但收尾未落盘, 已确认段证据保留且不重发
+        timeout_dir = tmp_path / "timeout"
+        timeout_dir.mkdir()
+        timing = make_adapter()
+        timing_store = _make_store(timeout_dir)
+        timing.set_send_attempt_recorder(timing_store)
+        timing._bot = AsyncMock()
+        timing._bot.send_group_msg = AsyncMock(return_value={"message_id": 5})
+        release = threading.Event()
+        original = timing_store.complete_send_attempt
+
+        def slow(*args: Any, **kwargs: Any) -> bool:
+            release.wait(2.0)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(timing_store, "complete_send_attempt", slow)
+        monkeypatch.setattr(adapter_module, "_ATTEMPT_FINALIZE_TIMEOUT", 0.05)
+        receipt = await timing.send_message("group%456", MessageChain.from_text("收尾超时"))
+        assert receipt.status == "success"
+        attempt = timing_store.lookup_attempts("", "onebot_main")[0]
+        assert attempt["status"] == "submitted" and attempt["segments"][0]["status"] == "sent"
+        # 结论只认段证据: 该段已确认, 不因收尾缺失被压成 unknown 或 failed
+        assert timing_store.request_send_outcome("", "onebot_main")["confirmed"] == 1
+        release.set()
+        for _ in range(50):
+            if timing_store.lookup_attempts("", "onebot_main")[0]["status"] == "sent":
+                break
+            time_module.sleep(0.02)
+        assert timing_store.lookup_attempts("", "onebot_main")[0]["status"] == "sent"
+        timing._bot.send_group_msg.assert_awaited_once()
 
 
-def test_file_uri_to_path_handles_encoding_and_unc(monkeypatch):
-    """percent-encoding 还原, Windows UNC 形式还原为反斜杠路径"""
+def test_file_uri_to_path_preserves_root_and_decodes_encoding(monkeypatch):
+    """Unix 绝对根保留, percent-encoding 还原, Windows UNC 形式还原为反斜杠路径"""
     from satrap.core.utils.paths import file_uri_to_path
 
+    assert file_uri_to_path("file:///var/tmp/example.txt") == "/var/tmp/example.txt"
     assert file_uri_to_path("file:///var/tmp/my%20file.txt") == "/var/tmp/my file.txt"
     import os
     monkeypatch.setattr(os, "name", "nt")

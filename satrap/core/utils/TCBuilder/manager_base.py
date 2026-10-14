@@ -1,6 +1,14 @@
+"""
+工具注册, 稳定声明与逐次执行核验
+
+声明只取决于工具和插件开关, 不随调用者权限变化;
+实际执行仍核验当前请求身份, 对话能力和管理权限
+"""
 from typing import Dict, Any, Callable, cast
 from satrap.core.log import logger
-from .utils import _create_tool_error, _safe_json_dumps
+from satrap.core.plugin_authorization import (bind_authorization_step,
+                                              require_plugin_entry_permission, PluginPermissionDenied)
+from .utils import tool_error, _safe_json_dumps
 from typing import Generic, TypeVar
 from .tool import Tool
 from .async_tool import AsyncTool
@@ -16,11 +24,14 @@ class _ToolsRegistry(Generic[_ToolT]):
         返回:
         - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
         """
-        return [
-            tool.get_tool_defined()
-            for tool in self.tools.values()
-            if tool.assert_tool() and tool.is_enabled()
-        ]
+        # Step.1 只依据安装开关构建声明, 调用者权限和对话能力在执行时检查
+        with bind_authorization_step():
+            return [
+                tool.get_tool_defined()
+                for tool in self.tools.values()
+                if tool.assert_tool() and tool.is_enabled()
+                and (self.effectiveness_guard is None or self.effectiveness_guard(tool.get_tool_name()))
+            ]
 
     def is_tool_enabled(self, tool_name: str) -> bool:
         """
@@ -109,17 +120,17 @@ class _ToolsRegistry(Generic[_ToolT]):
         - Dict[str, Any] | None: 校验工具调用信息
         """
         if not isinstance(call_info, dict):
-            return _create_tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
+            return tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
 
         tool_name = call_info.get("name", "")
         if not isinstance(tool_name, str) or not tool_name.strip():
-            return _create_tool_error(
+            return tool_error(
                 "", "工具调用缺少有效工具名称", "invalid_tool_call"
             )
 
         arguments = call_info.get("arguments", {})
         if arguments is not None and not isinstance(arguments, dict):
-            return _create_tool_error(
+            return tool_error(
                 tool_name, f"工具 {tool_name} 参数必须是字典", "invalid_arguments"
             )
 
@@ -159,7 +170,7 @@ class _ToolsRegistry(Generic[_ToolT]):
     ) -> tuple[_ToolT | None, Dict[str, Any], Dict[str, object] | None]:
         """统一工具参数和可用性校验, 执行方式由入口决定"""
         if not isinstance(tool_name, str) or not tool_name.strip():
-            return None, {}, _create_tool_error("", "工具名称无效", "invalid_tool_call")
+            return None, {}, tool_error("", "工具名称无效", "invalid_tool_call")
 
         if arguments is None:
             arguments = {}
@@ -167,7 +178,7 @@ class _ToolsRegistry(Generic[_ToolT]):
             return (
                 None,
                 {},
-                _create_tool_error(
+                tool_error(
                     tool_name, f"工具 {tool_name} 参数必须是字典", "invalid_arguments"
                 ),
             )
@@ -176,7 +187,7 @@ class _ToolsRegistry(Generic[_ToolT]):
             return (
                 None,
                 {},
-                _create_tool_error(tool_name, f"工具 {tool_name} 不存在", "not_found"),
+                tool_error(tool_name, f"工具 {tool_name} 不存在", "not_found"),
             )
 
         tool = self.tools[tool_name]
@@ -184,18 +195,30 @@ class _ToolsRegistry(Generic[_ToolT]):
             return (
                 None,
                 {},
-                _create_tool_error(tool_name, f"工具 {tool_name} 已禁用", "disabled"),
+                tool_error(tool_name, f"工具 {tool_name} 已禁用", "disabled"),
             )
         guard = self.effectiveness_guard
         if guard is not None and not guard(tool_name):
             return (
                 None,
                 {},
-                _create_tool_error(
+                tool_error(
                     tool_name,
                     f"工具 {tool_name} 当前不可用 (所属插件已禁用)",
                     "disabled",
                 ),
             )
+
+        binding = getattr(tool, "_plugin_entry_binding", None)
+        # 来源可用性与入口权限属于同一步判定, 共用同一份结果; 工具执行时的复检在此作用域之外
+        with bind_authorization_step():
+            if binding is not None:
+                try:
+                    require_plugin_entry_permission(binding)
+                except PluginPermissionDenied as error:
+                    return None, {}, tool_error(tool_name, str(error), error.code)
+            if not tool.is_available_for_call():
+                logger.warning(f"[执行工具] 当前来源不可用, 工具={tool_name}")
+                return None, {}, tool_error(tool_name, "当前对话不能使用此工具", "wrong_conversation")
 
         return tool, arguments, None

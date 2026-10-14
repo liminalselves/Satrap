@@ -165,7 +165,7 @@ def cmd_platform_remove(args: argparse.Namespace):
     info("平台实例变更需要重启后端后生效")
 
 
-def cmd_platform_wake(args: argparse.Namespace):
+def cmd_platform_wake(args: argparse.Namespace) -> None:
     """
     向运行中的后端提交 OneBot 群手动唤醒
 
@@ -203,6 +203,24 @@ def cmd_platform_wake(args: argparse.Namespace):
     render_data(result, _human)
 
 
+def cmd_platform_recover_store(args: argparse.Namespace) -> None:
+    """
+    校验修复后的平台状态文件并解除降级, 不清空防重复记录
+
+    参数:
+    - args: 存储名称与后端连接选项
+    """
+    client = daemon_client_from_args(args, timeout=30)
+    client.require_alive()
+    try:
+        result = client.recover_platform_store(args.store.replace("-", "_"))
+    except DaemonError as error:
+        raise CliError(f"存储恢复失败, 请先恢复完整原文件: {error}") from error
+    if result.get("ok") is not True:
+        raise CliError(f"存储未恢复: {result.get('reason', '未知原因')}")
+    render_data(result, lambda: ok(f"平台状态存储已校验并恢复: {args.store}"))
+
+
 def dispatch(args: argparse.Namespace):
     """
     分派命令
@@ -217,4 +235,5 @@ def dispatch(args: argparse.Namespace):
         "update": cmd_platform_upsert,
         "remove": cmd_platform_remove,
         "wake": cmd_platform_wake,
+        "recover-store": cmd_platform_recover_store,
     }, args)

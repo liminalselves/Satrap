@@ -11,7 +11,7 @@ interface DeleteRuntimeSessionsResult {
 
 export const sessionApi = {
   // 列出会话类配置
-  list: () => controlApi.listSessionClasses(),
+  list: (signal?: AbortSignal) => controlApi.listSessionClasses(signal),
 
   // 注册会话类
   register: (data: {

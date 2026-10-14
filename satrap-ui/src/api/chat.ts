@@ -1,5 +1,6 @@
 import type { LLMConfig } from './types';
 import { getChatApiUrl } from '@/utils/constants';
+import { ensureApiSession, establishApiSession } from './auth';
 import type { SessionPluginSettings } from './pluginSettings';
 import type { ModelOptions } from '@/components/common/PluginConfigFields';
 import type { RagResult } from './rag';
@@ -263,17 +264,19 @@ export type ChatEvent = (
 
 // ==================== HTTP 请求 ====================
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const send = () => fetch(`${getChatApiUrl()}${path}`, {
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const baseUrl = getChatApiUrl();
+  await ensureApiSession(baseUrl);
+  const send = () => fetch(`${baseUrl}${path}`, {
     method,
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   let resp = await send();
   if (resp.status === 401) {
-    const { establishApiSession } = await import('@/api/auth');
-    await establishApiSession(getChatApiUrl());
+    await establishApiSession(baseUrl);
     resp = await send();
   }
   const data = (await resp.json()) as T & { error?: string };
@@ -300,7 +303,7 @@ export const chatApi = {
   ragAction: (sessionId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>('POST', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId })}`, payload),
   pluginModelOptions: () => request<{ options: ModelOptions }>('GET', '/api/chat/plugin-model-options'),
   getSessionPluginConfig: (conversationId: string, plugin: string) => request<SessionPluginSettings>('GET', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`),
-  saveSessionPluginConfig: (conversationId: string, plugin: string, overrides: Record<string, unknown>, revision: number) => request<SessionPluginSettings>('PUT', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`, { overrides, expected_revision: revision }),
+  saveSessionPluginConfig: (conversationId: string, plugin: string, overrides: Record<string, unknown>, revision: number, tools?: import('./pluginSettings').SessionToolOverrides) => request<SessionPluginSettings>('PUT', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`, { overrides, expected_revision: revision, ...tools }),
   health: () => request<{ ok: boolean; conversations: number; preloaded: number }>('GET', '/api/chat/health'),
 
   listModels: () => request<{ models: string[] }>('GET', '/api/chat/models'),
@@ -420,8 +423,8 @@ export const chatApi = {
     request<{ ok: boolean; error?: string }>('DELETE', `/api/chat/models/${encodeURIComponent(name)}`),
 
   // 文件上传
-  previewMedia: (conversation: string, source: string) =>
-    request<{ data_url: string }>('GET', `/api/chat/media?conversation=${encodeURIComponent(conversation)}&source=${encodeURIComponent(source)}`),
+  previewMedia: (conversation: string, source: string, signal?: AbortSignal) =>
+    request<{ data_url: string }>('GET', `/api/chat/media?conversation=${encodeURIComponent(conversation)}&source=${encodeURIComponent(source)}`, undefined, signal),
 
   uploadFile: (conversation: string, fileName: string, fileDataBase64: string) =>
     request<{ ok: boolean; file_name: string; file_url: string; file_type: string; error?: string }>(
@@ -505,12 +508,22 @@ export type ChatEventHandler = (event: ChatEvent) => void;
 
 // 订阅会话实时事件; 返回取消订阅函数
 export function subscribeChat(conversationId: string, onEvent: ChatEventHandler): () => void {
-  const wsUrl = `${getChatApiUrl().replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
+  const baseUrl = getChatApiUrl();
+  const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
   let ws: WebSocket;
   let stopped = false;
   let retry = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const connect = () => {
+  const connect = async () => {
+    if (stopped) return;
+    try { await ensureApiSession(baseUrl); }
+    catch (error) {
+      if (!stopped) {
+        console.error('[ChatWS] 认证失败:', error);
+        timer = setTimeout(() => void connect(), Math.min(1000 * 2 ** retry++, 10000));
+      }
+      return;
+    }
     if (stopped) return;
     ws = new WebSocket(wsUrl);
     const current = ws;
@@ -547,7 +560,7 @@ export function subscribeChat(conversationId: string, onEvent: ChatEventHandler)
       }
     };
   };
-  connect();
+  void connect();
   return () => {
     stopped = true;
     clearTimeout(timer);

@@ -11,6 +11,7 @@ export function MediaAttachment({ attachment, conversationId, onRemove }: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const revision = useRef(0);
+  const pending = useRef<AbortController | null>(null);
   const isVideo = attachment.type.startsWith('video/');
   const isMedia = isVideo || attachment.type.startsWith('image/');
 
@@ -19,20 +20,24 @@ export function MediaAttachment({ attachment, conversationId, onRemove }: {
     setSource('');
     setError('');
     setLoading(false);
-    return () => { revision.current += 1; };
+    return () => { revision.current += 1; pending.current?.abort(); pending.current = null; };
   }, [conversationId, attachment.url]);
 
   async function preview() {
+    if (pending.current) return;
     if (source) { setSource(''); return; }
     const current = revision.current;
+    const controller = new AbortController();
+    pending.current = controller;
     setLoading(true);
     setError('');
     try {
-      const result = await chatApi.previewMedia(conversationId, attachment.url);
+      const result = await chatApi.previewMedia(conversationId, attachment.url, controller.signal);
       if (current === revision.current) setSource(result.data_url);
     } catch (failure) {
       if (current === revision.current) setError(failure instanceof Error ? failure.message : '预览失败');
     } finally {
+      if (pending.current === controller) pending.current = null;
       if (current === revision.current) setLoading(false);
     }
   }

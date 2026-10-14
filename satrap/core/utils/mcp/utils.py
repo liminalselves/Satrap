@@ -113,25 +113,6 @@ def _params_from_schema(schema: dict[str, Any]) -> Dict[str, Tuple[str, str]]:
     return params
 
 
-def _mcp_error(tool_name: str, message: str) -> Dict[str, Any]:
-    """
-    创建 MCP 工具错误结果 (与 ToolsManager 的错误字典格式一致)
-
-    参数:
-    - tool_name: 工具名称
-    - message: 消息内容
-
-    返回:
-    - Dict[str, Any]: 创建 MCP 工具错误结果 (与 ToolsManager 的错误字典格式一致)
-    """
-    return {
-        "error": message,
-        "ok": False,
-        "error_type": "mcp_error",
-        "tool_name": tool_name,
-    }
-
-
 async def _consume(awaitable: Awaitable[Any]) -> Any:
     """
     将任意 Awaitable 包装为协程 (run_coroutine_threadsafe 只接受 Coroutine)

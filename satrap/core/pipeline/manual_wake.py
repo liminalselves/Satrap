@@ -6,8 +6,9 @@ from time import monotonic
 import hashlib
 import json
 
-from satrap.core.pipeline.wake_window import PendingText
+from satrap.core.pipeline.wake_window import PendingMessage
 from satrap.core.platform.event import MessageEvent
+from satrap.core.type import WakeSubmitResult
 from satrap.core.log import logger
 
 
@@ -20,7 +21,7 @@ class ManualWakeTicket:
     """手动请求与可选待处理窗口快照"""
 
     request_id: str
-    snapshot: tuple[PendingText, ...] = ()
+    snapshot: tuple[PendingMessage, ...] = ()
     cancelled: bool = False
     status: str = "pending"
     event_ref: ReferenceType[MessageEvent] | None = None
@@ -48,7 +49,7 @@ class ManualWakeRequests:
         """
         return hashlib.sha256(json.dumps([operator, payload], sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
-    def check(self, request_id: str, fingerprint: str) -> dict[str, object] | None:
+    def check(self, request_id: str, fingerprint: str) -> WakeSubmitResult | None:
         """
         检查重复请求与容量
 

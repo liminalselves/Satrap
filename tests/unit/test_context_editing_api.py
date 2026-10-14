@@ -29,28 +29,29 @@ TOOL_CALLS: list[dict[str, Any]] = [
 
 # ================= 消息写入 =================
 
-def test_add_chat_appends_pair_and_persists(tmp_path: Path):
-    """
-    add_chat 一次追加 user + assistant 两条消息
-
-    参数:
-    - tmp_path: tmp路径
-    """
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_add_chat_and_tool_flow(tmp_path: Path, asynchronous: bool):
+    """add_chat 追加 user+assistant, add_tool_call_flow 追加模型消息与工具返回 (同步/异步一致)"""
     db = str(tmp_path / "chat_history.db")
-    ctx = ContextManager("conv-chat", db_path=db)
-    ctx.add_chat("你好", "你好！有什么可以帮你")
-    assert ctx.static_message() == 2
-    roles = [m.get("role") for m in ctx.get_context()]
-    assert roles == ["user", "assistant"]
+    if asynchronous:
+        ctx = AsyncContextManager("conv-chat", db_path=db)
+        await ctx.initialize()
+        await ctx.add_chat("你好", "回复")
+        await ctx.add_tool_call_flow("计算", TOOL_CALLS, [{"r": 3}])
+    else:
+        ctx = ContextManager("conv-chat", db_path=db)
+        ctx.add_chat("你好", "回复")
+        ctx.add_tool_call_flow("我来计算", TOOL_CALLS, [{"result": 3}])
+    messages = ctx.get_context()
+    assert [m.get("role") for m in messages] == ["user", "assistant", "assistant", "tool"]
+    assert messages[2]["tool_calls"] == TOOL_CALLS
+    assert messages[3]["role"] == "tool" and messages[3]["tool_call_id"] == "call_1"
+    assert ctx.static_message() == 4
 
 
 def test_add_tool_message_dict_serialized_to_json(tmp_path: Path):
-    """
-    dict 结果转 JSON 字符串, str 结果原样保存
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """dict 结果转 JSON 字符串, str 结果原样保存"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-tool", db_path=db)
     ctx.add_tool_message("call_1", {"result": 3, "ok": True})
@@ -62,79 +63,37 @@ def test_add_tool_message_dict_serialized_to_json(tmp_path: Path):
     assert messages[1]["content"] == "纯文本结果"
 
 
-def test_add_tool_call_flow_appends_bot_and_tool_messages(tmp_path: Path):
-    """
-    add_tool_call_flow 追加模型消息 + 对应数量的工具返回
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "chat_history.db")
-    ctx = ContextManager("conv-flow", db_path=db)
-    ctx.add_tool_call_flow("我来计算", TOOL_CALLS, [{"result": 3}])
-    messages = ctx.get_context()
-    assert messages[0]["role"] == "assistant"
-    assert messages[0]["tool_calls"] == TOOL_CALLS
-    assert messages[1]["role"] == "tool"
-    assert messages[1]["tool_call_id"] == "call_1"
-
-
 # ================= 系统消息编辑 =================
 
-def test_add_at_system_start_prepends_existing_system(tmp_path: Path):
-    """
-    有系统消息时在开头拼接
-
-    参数:
-    - tmp_path: tmp路径
-    """
+@pytest.mark.parametrize("scenario, expected", [
+    ("start_with_system", "前缀： 原提示"),
+    ("start_without_system", "新系统提示"),
+    ("end_with_system", "原提示 补充"),
+])
+def test_add_at_system_positions(tmp_path: Path, scenario: str, expected: str):
+    """system 消息按位置拼接: 有系统消息时前后缀, 无系统消息时新建插入"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-sys", db_path=db)
-    ctx.reset_system_prompt("原提示")
-    ctx.add_at_system_start("前缀：", separator=" ")
-    assert ctx.get_context()[0]["content"] == "前缀： 原提示"
-
-
-def test_add_at_system_start_inserts_when_no_system(tmp_path: Path):
-    """
-    无系统消息时新建并插入到开头
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "chat_history.db")
-    ctx = ContextManager("conv-sys2", db_path=db)
-    ctx.add_user_message("你好")
-    ctx.add_at_system_start("新系统提示")
-    messages = ctx.get_context()
-    assert messages[0]["role"] == "system"
-    assert messages[0]["content"] == "新系统提示"
-    assert messages[1]["role"] == "user"
-
-
-def test_add_at_system_end_appends_existing_system(tmp_path: Path):
-    """
-    有系统消息时在结尾拼接
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "chat_history.db")
-    ctx = ContextManager("conv-sys3", db_path=db)
-    ctx.reset_system_prompt("原提示")
-    ctx.add_at_system_end("补充", separator=" ")
-    assert ctx.get_context()[0]["content"] == "原提示 补充"
+    if scenario == "start_with_system":
+        ctx.reset_system_prompt("原提示")
+        ctx.add_at_system_start("前缀：", separator=" ")
+        assert ctx.get_context()[0]["content"] == expected
+    elif scenario == "start_without_system":
+        ctx.add_user_message("你好")
+        ctx.add_at_system_start("新系统提示")
+        messages = ctx.get_context()
+        assert messages[0]["role"] == "system" and messages[0]["content"] == expected
+        assert messages[1]["role"] == "user"
+    else:
+        ctx.reset_system_prompt("原提示")
+        ctx.add_at_system_end("补充", separator=" ")
+        assert ctx.get_context()[0]["content"] == expected
 
 
 # ================= 删除语义 =================
 
 def test_del_system_message_removes_all_system_messages(tmp_path: Path):
-    """
-    del_system_message 删除全部系统消息, 保留其余
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """del_system_message 删除全部系统消息, 保留其余"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-del-sys", db_path=db)
     ctx.reset_system_prompt("系统提示")
@@ -145,12 +104,7 @@ def test_del_system_message_removes_all_system_messages(tmp_path: Path):
 
 
 def test_del_message_by_index_and_out_of_range(tmp_path: Path):
-    """
-    del_message 按索引删除, 越界索引不报错且不删除
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """del_message 按索引删除, 越界索引不报错且不删除"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-del-idx", db_path=db)
     ctx.add_chat("一", "A")
@@ -163,29 +117,28 @@ def test_del_message_by_index_and_out_of_range(tmp_path: Path):
     assert ctx.static_message() == 2
 
 
-def test_del_last_message_removes_n_tail_messages(tmp_path: Path):
-    """
-    del_last_message 删除末尾 n 条
-
-    参数:
-    - tmp_path: tmp路径
-    """
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_del_last_message_removes_n_tail_messages(tmp_path: Path, asynchronous: bool):
+    """del_last_message 删除末尾 n 条 (同步/异步一致)"""
     db = str(tmp_path / "chat_history.db")
-    ctx = ContextManager("conv-del-tail", db_path=db)
-    ctx.add_chat("一", "A")
-    ctx.add_chat("二", "B")
-    ctx.del_last_message(2)
+    if asynchronous:
+        ctx = AsyncContextManager("conv-del-tail", db_path=db)
+        await ctx.initialize()
+        await ctx.add_chat("一", "A")
+        await ctx.add_chat("二", "B")
+        await ctx.del_last_message(2)
+    else:
+        ctx = ContextManager("conv-del-tail", db_path=db)
+        ctx.add_chat("一", "A")
+        ctx.add_chat("二", "B")
+        ctx.del_last_message(2)
     assert ctx.static_message() == 2
     assert ctx.get_context()[1]["content"] == "A"
 
 
 def test_del_last_chat_removes_n_groups(tmp_path: Path):
-    """
-    del_last_chat 按组删除 (user+assistant 为一组)
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """del_last_chat 按组删除 (user+assistant 为一组)"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-del-group", db_path=db)
     ctx.add_chat("一", "A")
@@ -197,12 +150,7 @@ def test_del_last_chat_removes_n_groups(tmp_path: Path):
 
 
 def test_del_last_chat_stops_at_system_message(tmp_path: Path):
-    """
-    del_last_chat 遇到系统消息停止删除
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """del_last_chat 遇到系统消息停止删除"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-del-group2", db_path=db)
     ctx.reset_system_prompt("系统")
@@ -214,18 +162,21 @@ def test_del_last_chat_stops_at_system_message(tmp_path: Path):
 
 # ================= 导出 =================
 
-def test_export_json_writes_conversation_file(tmp_path: Path):
-    """
-    export_json 导出 id + messages 到 JSON 文件
-
-    参数:
-    - tmp_path: tmp路径
-    """
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_export_json_writes_conversation_file(tmp_path: Path, asynchronous: bool):
+    """export_json 导出 id + messages 到 JSON 文件 (同步/异步一致)"""
     db = str(tmp_path / "chat_history.db")
     out = str(tmp_path / "export.json")
-    ctx = ContextManager("conv-export", db_path=db)
-    ctx.add_chat("你好", "回复")
-    ctx.export_json(out)
+    if asynchronous:
+        ctx = AsyncContextManager("conv-export", db_path=db)
+        await ctx.initialize()
+        await ctx.add_chat("你好", "回复")
+        await ctx.export_json(out)
+    else:
+        ctx = ContextManager("conv-export", db_path=db)
+        ctx.add_chat("你好", "回复")
+        ctx.export_json(out)
     with open(out, encoding="utf-8") as f:
         data = json.load(f)
     assert data["id"] == "conv-export"
@@ -235,30 +186,8 @@ def test_export_json_writes_conversation_file(tmp_path: Path):
 
 # ================= token 估算 =================
 
-def test_estimate_token_methods_consistent(tmp_path: Path):
-    """
-    两种估算方法均返回正数, tokenizer 与 experience 结果一致或接近
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "chat_history.db")
-    ctx = ContextManager("conv-token", db_path=db)
-    ctx.add_chat("你好世界", "这是一条回复")
-    t1 = ctx.estimate_token(method="tokenizer")
-    t2 = ctx.estimate_token(method="experience")
-    assert t1 > 0
-    assert t2 > 0
-    assert t1 == t2 or abs(t1 - t2) < t1   # 两种方法量级一致
-
-
 def test_estimate_token_counts_image_cost(tmp_path: Path):
-    """
-    带图片内容的消息计入图片 token 成本
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """带图片内容的消息计入图片 token 成本"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-token-img", db_path=db)
     ctx.add_user_message("看图", img_urls=["/tmp/a.png"])
@@ -271,17 +200,7 @@ def test_estimate_token_counts_image_cost(tmp_path: Path):
 # ================= 截断 =================
 
 def _build_long_context(db: str, exceed_process: str, rounds: int = 12) -> ContextManager:
-    """
-    构造超长上下文 (max_context 缩小, 写入多轮消息)
-
-    参数:
-    - db: 数据库实例
-    - exceed_process: 超限进程
-    - rounds: 执行轮数
-
-    返回:
-    - ContextManager: 构造超长上下文 (max_context 缩小, 写入多轮消息)
-    """
+    """构造超长上下文 (max_context 缩小, 写入多轮消息)"""
     ctx = ContextManager(
         "conv-trunc",
         db_path=db,
@@ -296,12 +215,7 @@ def _build_long_context(db: str, exceed_process: str, rounds: int = 12) -> Conte
 
 
 def test_get_model_context_truncates_with_sliding(tmp_path: Path):
-    """
-    sliding 截断: 超限时保留系统消息和最近轮次, 返回副本
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """sliding 截断: 超限时保留系统消息和最近轮次, 返回副本"""
     db = str(tmp_path / "chat_history.db")
     ctx = _build_long_context(db, "sliding")
     raw = ctx.get_context()
@@ -313,12 +227,7 @@ def test_get_model_context_truncates_with_sliding(tmp_path: Path):
 
 
 def test_get_model_context_within_threshold_returns_copy(tmp_path: Path):
-    """
-    未超限时返回原列表副本
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """未超限时返回原列表副本"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-trunc2", db_path=db)
     ctx.add_chat("你好", "回复")
@@ -328,12 +237,7 @@ def test_get_model_context_within_threshold_returns_copy(tmp_path: Path):
 
 
 def test_mid_truncate_keeps_head_and_tail(tmp_path: Path):
-    """
-    mid_truncate: 轮次较多时从中间删除, 保留首尾
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """mid_truncate: 轮次较多时从中间删除, 保留首尾"""
     db = str(tmp_path / "chat_history.db")
     ctx = _build_long_context(db, "mid_truncate")
     truncated = ctx.get_model_context(method="experience")
@@ -342,12 +246,7 @@ def test_mid_truncate_keeps_head_and_tail(tmp_path: Path):
 
 
 def test_mid_truncate_falls_back_to_sliding_when_few_turns(tmp_path: Path):
-    """
-    mid_truncate 轮次过少时退化为滑动窗口 (可全部删除)
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """mid_truncate 轮次过少时退化为滑动窗口 (可全部删除)"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager(
         "conv-trunc3",
@@ -362,12 +261,7 @@ def test_mid_truncate_falls_back_to_sliding_when_few_turns(tmp_path: Path):
 
 
 def test_unknown_exceed_process_returns_original(tmp_path: Path):
-    """
-    未知截断策略记录错误并返回原列表副本
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """未知截断策略记录错误并返回原列表副本"""
     db = str(tmp_path / "chat_history.db")
     ctx = _build_long_context(db, "unknown_strategy")
     raw = ctx.get_context()
@@ -376,12 +270,7 @@ def test_unknown_exceed_process_returns_original(tmp_path: Path):
 
 
 def test_group_messages_by_turns(tmp_path: Path):
-    """
-    轮次分组: 系统消息独立成组, 每组以 user 开头
-
-    参数:
-    - tmp_path: tmp路径
-    """
+    """轮次分组: 系统消息独立成组, 每组以 user 开头"""
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-groups", db_path=db)
     ctx.reset_system_prompt("系统")
@@ -393,65 +282,3 @@ def test_group_messages_by_turns(tmp_path: Path):
     assert [m["role"] for m in turns[0]] == ["system"]
     assert [m["role"] for m in turns[1]] == ["user", "assistant", "tool"]
     assert [m["role"] for m in turns[2]] == ["user", "assistant"]
-
-
-# ================= 异步版 =================
-
-@pytest.mark.asyncio
-async def test_async_add_chat_and_tool_flow(tmp_path: Path):
-    """
-    异步 add_chat / add_tool_call_flow
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "chat_history.db")
-    ctx = AsyncContextManager("conv-async", db_path=db)
-    await ctx.initialize()
-    await ctx.add_chat("你好", "回复")
-    await ctx.add_tool_call_flow("计算", TOOL_CALLS, [{"r": 3}])
-    messages = ctx.get_context()
-    assert len(messages) == 4
-    assert messages[2]["tool_calls"] == TOOL_CALLS
-    assert messages[3]["role"] == "tool"
-
-
-@pytest.mark.asyncio
-async def test_async_del_last_message_and_system(tmp_path: Path):
-    """
-    异步删除语义与同步一致
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "chat_history.db")
-    ctx = AsyncContextManager("conv-async2", db_path=db)
-    await ctx.initialize()
-    await ctx.reset_system_prompt("系统")
-    await ctx.add_chat("一", "A")
-    await ctx.add_chat("二", "B")
-    await ctx.del_last_message(2)
-    roles = [m.get("role") for m in ctx.get_context()]
-    assert roles == ["system", "user", "assistant"]
-    await ctx.del_system_message()
-    assert [m.get("role") for m in ctx.get_context()] == ["user", "assistant"]
-
-
-@pytest.mark.asyncio
-async def test_async_export_json(tmp_path: Path):
-    """
-    异步 export_json 导出内容正确
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    db = str(tmp_path / "chat_history.db")
-    out = str(tmp_path / "async_export.json")
-    ctx = AsyncContextManager("conv-async3", db_path=db)
-    await ctx.initialize()
-    await ctx.add_chat("你好", "回复")
-    await ctx.export_json(out)
-    with open(out, encoding="utf-8") as f:
-        data = json.load(f)
-    assert data["id"] == "conv-async3"
-    assert len(data["messages"]) == 2

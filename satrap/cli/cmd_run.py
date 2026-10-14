@@ -66,6 +66,7 @@ async def cmd_run(args: argparse.Namespace):
     参数:
     - args: 额外位置参数
     """
+    logger.set_service("backend")
     install_standard_stream_capture()
     apply_log_level(args)
     config = load_run_config(args)

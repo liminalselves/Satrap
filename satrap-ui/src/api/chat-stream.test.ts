@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { subscribeChat } from './chat';
 
 vi.mock('@/utils/constants', () => ({ getChatApiUrl: () => 'http://localhost:19872' }));
+vi.mock('./auth', () => ({ ensureApiSession: vi.fn().mockResolvedValue(undefined), establishApiSession: vi.fn() }));
 
 class FakeSocket {
   static OPEN = 1;
@@ -28,28 +29,30 @@ describe('聊天订阅重同步', () => {
   });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-  it('发现序号断层后重连, 丢弃重复事件并接收权威快照', () => {
+  it('发现序号断层后重连, 丢弃重复事件并接收权威快照', async () => {
     const received = vi.fn();
     const stop = subscribeChat('audit', received);
+    await vi.advanceTimersByTimeAsync(0);
     const first = FakeSocket.instances[0];
     first.receive(snapshot(4));
     first.receive({ type: 'content_delta', delta: 'a', seq: 5, stream_id: 'server-one' });
     first.receive({ type: 'content_delta', delta: 'a', seq: 5, stream_id: 'server-one' });
     first.receive({ type: 'turn_done', answer: 'ab', seq: 7, stream_id: 'server-one' });
     expect(received).toHaveBeenCalledTimes(2);
-    vi.advanceTimersByTime(1000);
+    await vi.advanceTimersByTimeAsync(1000);
     expect(FakeSocket.instances).toHaveLength(2);
     FakeSocket.instances[1].receive({ ...snapshot(7), turns: [{ answer: 'ab' }] });
     expect(received.mock.lastCall?.[0].turns[0].answer).toBe('ab');
     stop();
   });
 
-  it('服务重启和缓冲溢出均重新建立快照, 取消订阅后不重连', () => {
+  it('服务重启和缓冲溢出均重新建立快照, 取消订阅后不重连', async () => {
     const received = vi.fn();
     const stop = subscribeChat('audit', received);
+    await vi.advanceTimersByTimeAsync(0);
     FakeSocket.instances[0].receive(snapshot(10));
     FakeSocket.instances[0].receive({ type: 'content_delta', delta: 'new', seq: 1, stream_id: 'server-two' });
-    vi.advanceTimersByTime(1000);
+    await vi.advanceTimersByTimeAsync(1000);
     FakeSocket.instances[1].receive(snapshot(0, 'server-two'));
     FakeSocket.instances[1].receive({ type: 'resync_required' });
     stop();

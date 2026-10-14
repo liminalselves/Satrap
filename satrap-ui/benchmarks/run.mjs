@@ -28,7 +28,7 @@ const historySizes = smokeMode ? [100] : [100, 500, 1_000];
 
 function startPreviewServer() {
   const viteBin = path.join(projectDir, 'node_modules', 'vite', 'bin', 'vite.js');
-  return spawn(process.execPath, [viteBin, 'preview', '--host', '127.0.0.1', '--port', '4173'], {
+  return spawn(process.execPath, [viteBin, 'preview', '--host', '127.0.0.1', '--port', '4173', '--strictPort'], {
     cwd: projectDir,
     env: { ...process.env, FORCE_COLOR: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -63,10 +63,17 @@ async function openPage(browser, { pathName, theme, messageCount }) {
     localStorage.setItem('satrap.chat.think', 'off');
   }, theme);
   const page = await context.newPage();
+  page.on('pageerror', (error) => fixture.errors.push(`pageerror: ${error.message}`));
+  page.on('requestfailed', (request) => {
+    if (request.failure()?.errorText !== 'net::ERR_ABORTED') {
+      fixture.errors.push(`requestfailed: ${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`);
+    }
+  });
   const chatSockets = new Set();
   await installWebSocketMocks(page, chatSockets);
   await page.goto(`${appOrigin}${pathName}`, { waitUntil: 'domcontentloaded' });
   await page.locator(`[data-theme="${theme}"]`).waitFor({ state: 'attached' });
+  if (pathName === '/') await page.getByText('benchmark-adapter', { exact: true }).first().waitFor();
   return { context, page, fixture, chatSockets };
 }
 
@@ -96,7 +103,9 @@ async function runMeasured(browser, setup, action, settleMs = 250) {
   const opened = await setup();
   const session = await opened.context.newCDPSession(opened.page);
   try {
-    return await measureScenario(opened.page, session, () => action(opened), settleMs);
+    const result = await measureScenario(opened.page, session, () => action(opened), settleMs);
+    if (opened.fixture.errors.length) throw new Error(opened.fixture.errors.join('\n'));
+    return result;
   } finally {
     await session.detach();
     await opened.context.close();

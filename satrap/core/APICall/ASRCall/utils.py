@@ -69,14 +69,14 @@ def prepare_audio_input(audio: str | Path | bytes | bytearray, *, filename: str 
     return name, data, _MIME_BY_SUFFIX[suffix]
 
 
-def _response_field(response: Any, name: str) -> Any:
+def _response_field(response: object, name: str) -> object:
     """兼容 SDK 响应对象与字典两种形态读取字段"""
     if isinstance(response, dict):
         return cast(dict[str, Any], response).get(name)
     return getattr(response, name, None)
 
 
-def parse_transcription(response: Any, model: str) -> ASRResponse:
+def parse_transcription(response: object, model: str) -> ASRResponse:
     """
     从转录响应提取文本与可选元信息
 

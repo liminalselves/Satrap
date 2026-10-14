@@ -9,7 +9,9 @@ interface TabsContextValue {
 const TabsContext = createContext<TabsContextValue | null>(null);
 
 export interface TabsProps {
-  defaultValue: string;
+  defaultValue?: string;
+  // 受控模式: 传入 value 后高亮完全由调用方决定 (拒绝切换等场景无需重挂载)
+  value?: string;
   children: ReactNode;
   className?: string;
   onValueChange?: (value: string) => void;
@@ -17,15 +19,17 @@ export interface TabsProps {
 
 export function Tabs({
   defaultValue,
+  value,
   children,
   className,
   onValueChange,
 }: TabsProps) {
-  const [activeTab, setActiveTabState] = useState(defaultValue);
+  const [innerTab, setInnerTab] = useState(defaultValue ?? value ?? '');
+  const activeTab = value ?? innerTab;
 
-  const setActiveTab = useCallback((value: string) => {
-    setActiveTabState(value);
-    onValueChange?.(value);
+  const setActiveTab = useCallback((next: string) => {
+    setInnerTab(next);
+    onValueChange?.(next);
   }, [onValueChange]);
 
   return (
@@ -79,16 +83,19 @@ export function TabsContent({
   value,
   children,
   className,
+  forceMount = false,
 }: {
   value: string;
   children: ReactNode;
   className?: string;
+  // 保持挂载: 非活动页仅隐藏不卸载, 用于持有未保存草稿的面板
+  forceMount?: boolean;
 }) {
   const context = useContext(TabsContext);
   if (!context) throw new Error('TabsContent must be used within Tabs');
 
   const { activeTab } = context;
-  if (activeTab !== value) return null;
+  if (activeTab !== value && !forceMount) return null;
 
-  return <div className={cn('pt-4 animate-fade-in', className)}>{children}</div>;
+  return <div hidden={activeTab !== value} className={cn('pt-4 animate-fade-in', className)}>{children}</div>;
 }

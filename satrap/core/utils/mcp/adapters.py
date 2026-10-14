@@ -2,14 +2,13 @@ from __future__ import annotations
 import asyncio
 from asyncio import AbstractEventLoop
 from typing import Any, Dict, Optional
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.utils.TCBuilder import AsyncTool, Tool, tool_error
 from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.core.log import logger
 from .utils import (
     content_to_text,
     _input_schema_of,
     _params_from_schema,
-    _mcp_error,
     MCPSessionProtocol,
 )
 
@@ -80,11 +79,11 @@ class MCPToolAdapter(AsyncTool):
             )
         except Exception as e:
             logger.error(f"[MCP适配器] 工具 {self.get_tool_name()} 调用失败: {e}")
-            return _mcp_error(self.get_tool_name(), f"MCP 工具调用异常: {str(e)}")
+            return tool_error(self.get_tool_name(), f"MCP 工具调用异常: {str(e)}", "mcp_error")
 
         if safe_getattr(result, "is_error") or safe_getattr(result, "isError"):
-            return _mcp_error(
-                self.get_tool_name(), content_to_text(safe_getattr(result, "content"))
+            return tool_error(
+                self.get_tool_name(), content_to_text(safe_getattr(result, "content")), "mcp_error"
             )
         return content_to_text(safe_getattr(result, "content"))
 
@@ -146,9 +145,9 @@ class SyncMCPToolAdapter(Tool):
             logger.error(
                 f"[MCP同步适配器] 工具 {self.get_tool_name()} 调用超时 ({self._timeout}s)"
             )
-            return _mcp_error(
-                self.get_tool_name(), f"MCP 工具调用超时 ({self._timeout}s)"
+            return tool_error(
+                self.get_tool_name(), f"MCP 工具调用超时 ({self._timeout}s)", "mcp_error"
             )
         except Exception as e:
             logger.error(f"[MCP同步适配器] 工具 {self.get_tool_name()} 调用失败: {e}")
-            return _mcp_error(self.get_tool_name(), f"MCP 工具调用异常: {str(e)}")
+            return tool_error(self.get_tool_name(), f"MCP 工具调用异常: {str(e)}", "mcp_error")

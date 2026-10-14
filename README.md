@@ -17,6 +17,8 @@ Satrap 是一个面向 Python Agent 应用的轻量框架。它提供 OpenAI-com
 
 ## 安装
 
+Windows 用户可使用内置 Python、依赖与 Web 管理面板的便携 release 包, 解压后双击 `start.bat` 即可启动。使用、升级和自行构建方法见 [发行包说明](docs/getting-started/release.md)。
+
 ```bash
 pip install -e .
 ```
@@ -26,6 +28,7 @@ pip install -e .
 ```bash
 pip install -e .[vector]  # faiss 向量检索
 pip install -e .[audio]   # PyAV 本地语音转码 (amr 等非 ASR 接口格式)
+pip install -e .[documents] # Word / Excel / PDF 文档解析
 pip install -e .[all]     # 全部可选依赖
 ```
 

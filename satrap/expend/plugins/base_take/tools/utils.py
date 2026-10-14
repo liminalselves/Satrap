@@ -1,22 +1,24 @@
 """
-base_take 插件工具集: search / fetch_page / code_sandbox / read_document / memory
+base_take 插件工具集: search / fetch_page / code_sandbox / read_document
 
 约定:
 - get_tools(session, config) 工厂: 按会话形态返回同步/异步工具, 配置经合成后注入
 - search/fetch_page 复用 expend.tools.search, timeout 从 config
 - code_sandbox 复用 expend.tools.sandbox_tools, sandbox_root 从 config (全局共享目录)
 - read_document 提取文档文本, 按模型能力分页渲染 PDF 页面
-- memory 复用公共 MemoryStore (expend.tools.memory_store), scope 从 config
 """
 
 from __future__ import annotations
 import inspect
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from typing import Awaitable, Callable
 from satrap.core.utils.paths import get_project_root
 from satrap.core.type import safe_getattr, safe_getattr_callable
 from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+if TYPE_CHECKING:
+    from .base import _DocumentCore
 
 
 SessionType = SimpleSession | AsyncSimpleSession
@@ -176,7 +178,7 @@ def _resolve_doc_path(
     return abs_path
 
 
-def _doc_workspace_root(tool: Any) -> Path:
+def _doc_workspace_root(tool: _DocumentCore) -> Path:
     """
     文档工具的工作区根 (调用时解析): 会话鸭子属性优先 (项目会话), 否则安装期基线
 
@@ -192,7 +194,7 @@ def _doc_workspace_root(tool: Any) -> Path:
     return cast(Path, tool._base_root)
 
 
-def _doc_upload_root(tool: Any) -> Path | None:
+def _doc_upload_root(tool: _DocumentCore) -> Path | None:
     """
     获取当前会话独占 uploads 目录
 

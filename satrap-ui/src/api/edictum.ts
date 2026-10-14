@@ -7,7 +7,7 @@ export const edictumApi = {
 
   listPlugins: () => controlApi.listEdictumPlugins(),
 
-  list: () => controlApi.listEdictumSessions(),
+  list: (signal?: AbortSignal) => controlApi.listEdictumSessions(signal),
 
   get: (name: string) => controlApi.getEdictumSession(name),
 
@@ -37,8 +37,6 @@ export const edictumApi = {
 
   remove: (name: string) => controlApi.deleteEdictumSession(name),
 
-  applyRuntimeChanges: () => backendApi.reloadConfig(),
-
   previewRuntimeChanges: (
     configName: string,
     plugins?: EdictumSessionConfig['plugins'],
@@ -63,4 +61,5 @@ export const edictumApi = {
   applyFullRuntimeChanges: (configName?: string) => backendApi.reconcileEdictumRuntime({
     config_name: configName,
   }),
+
 };

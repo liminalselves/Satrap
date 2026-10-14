@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import inspect
+import traceback
 from typing import Any, Awaitable, Callable, Iterable
 import time
 import asyncio
@@ -10,8 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from satrap.edictum.plugin_spec import PluginSpec
-from satrap.edictum.plugin_settings import EffectivePluginConfig
-from satrap.edictum.plugin import CAPABILITY_KINDS
+from satrap.edictum.plugin_settings import EffectivePluginConfig, PluginInstallConfig
+from satrap.edictum.plugin import CAPABILITY_KINDS, Plugin
+from satrap.core.utils.performance import PhaseTimings
+from satrap.core.utils.application_progress import progress_phase
+
+from satrap.core.log import logger
+from satrap.core.config.model_snapshot import ModelConfigReader
+from satrap.edictum.plugin_resources import PluginResources
 
 
 _CAPABILITY_SINGULAR = {
@@ -98,6 +105,21 @@ class PluginRuntimeState:
     def restart_required(self) -> bool:
         """判断当前漂移是否只能通过重新激活会话恢复"""
         return self.last_operation_status == "restart_required"
+
+    def to_payload(self) -> dict[str, Any]:
+        """
+        返回不包含参数值的运行快照, 区分声明开关与实际加载能力
+
+        返回:
+        - 聚合状态、错误、漂移及能力状态; 非标准句柄不推测其加载能力
+        """
+        loaded = {kind: dict(getattr(self.handle, kind)) for kind in CAPABILITY_KINDS} if isinstance(self.handle, Plugin) else {}
+        return {"name": self.name, "enabled": self.enabled, "status": self.status, "error": self.error,
+                "last_error": self.last_error, "last_operation_status": self.last_operation_status, "revision": self.revision,
+                "capabilities": {"applied": self.applied_spec.capabilities if self.applied_spec else {},
+                                 "desired": self.desired_spec.capabilities if self.desired_spec else {}, "loaded": loaded,
+                                 "loaded_known": isinstance(self.handle, Plugin) or self.handle is None},
+                "drift": self.drift, "restart_required": self.restart_required}
 
     def mark(
         self,
@@ -243,7 +265,8 @@ def install_plugin_spec(installer: PluginInstaller, spec: PluginSpec) -> tuple[o
     """
     if not spec.path:
         raise ValueError(f"插件不存在: {spec.name}")
-    plugin = installer(spec.path, EffectivePluginConfig(spec.config) if spec.config_resolved else spec.config)
+    config_type = EffectivePluginConfig if spec.config_resolved else PluginInstallConfig
+    plugin = installer(spec.path, config_type(spec.config, initial_skills=spec.capabilities.get("skills")))
     try:
         changes = apply_plugin_capabilities(plugin, spec)
     except Exception as error:
@@ -254,6 +277,7 @@ def install_plugin_spec(installer: PluginInstaller, spec: PluginSpec) -> tuple[o
 async def install_plugin_spec_async(
     installer: AsyncPluginInstaller,
     spec: PluginSpec,
+    *, model_snapshot: ModelConfigReader | None = None,
 ) -> tuple[object, list[str]]:
     """
     异步安装插件并应用全部子能力状态
@@ -261,13 +285,15 @@ async def install_plugin_spec_async(
     参数:
     - installer: 插件安装器
     - spec: 插件运行规格
+    - model_snapshot: 回滚时捕获的实际旧模型资源, 默认使用安装环境来源
 
     返回:
     - tuple[object, list[str]]: 插件句柄和能力变更
     """
     if not spec.path:
         raise ValueError(f"插件不存在: {spec.name}")
-    plugin = installer(spec.path, EffectivePluginConfig(spec.config) if spec.config_resolved else spec.config)
+    config_type = EffectivePluginConfig if spec.config_resolved else PluginInstallConfig
+    plugin = installer(spec.path, config_type(spec.config, initial_skills=spec.capabilities.get("skills"), model_snapshot=model_snapshot))
     if inspect.isawaitable(plugin):
         plugin = await plugin
     try:
@@ -355,6 +381,7 @@ async def _uninstall_plugin_async(
 async def _rollback_install_async(
     installer: AsyncPluginInstaller,
     previous: PluginSpec,
+    model_snapshot: ModelConfigReader | None,
 ) -> tuple[object, list[str]]:
     """
     重新安装旧规格完成生命周期回滚
@@ -362,11 +389,13 @@ async def _rollback_install_async(
     参数:
     - installer: 插件安装器
     - previous: 旧插件规格
+    - model_snapshot: 旧句柄实际资源, 不重新查最新模型文件
 
     返回:
     - tuple[object, list[str]]: 恢复后的句柄和能力变更
     """
-    return await install_plugin_spec_async(installer, previous)
+    with progress_phase("rollback_ms"):
+        return await install_plugin_spec_async(installer, previous, model_snapshot=model_snapshot)
 
 
 async def reconcile_plugin_states_async(
@@ -387,6 +416,42 @@ async def reconcile_plugin_states_async(
     返回:
     - dict[str, Any]: 逐插件结果与漂移汇总
     """
+    timings = PhaseTimings()
+    original_installer, original_uninstaller = installer, uninstaller
+
+    async def timed_install(path: str, config: dict[str, Any] | None) -> object:
+        """
+        记录插件安装及回滚安装耗时
+
+        参数:
+        - path: 插件入口路径
+        - config: 本次有效配置
+
+        返回:
+        - 原安装器的插件句柄
+        """
+        with timings.phase('install_ms'):
+            result = original_installer(path, config)
+            return await result if inspect.isawaitable(result) else result
+
+    async def timed_uninstall(name: str) -> bool:
+        """
+        记录卸载及失败清理耗时
+
+        参数:
+        - name: 插件名称
+
+        返回:
+        - 原卸载器的结果
+        """
+        if original_uninstaller is None:
+            raise RuntimeError('不支持插件热卸载')
+        with timings.phase('uninstall_ms'):
+            result = original_uninstaller(name)
+            return await result if inspect.isawaitable(result) else result
+
+    installer = timed_install
+    uninstaller = timed_uninstall if original_uninstaller is not None else None
     desired_by_name = {item.name: item for item in desired_specs}
     state_by_name = {item.name: item for item in states if item.name}
     results: list[dict[str, Any]] = []
@@ -447,15 +512,19 @@ async def reconcile_plugin_states_async(
             elif operation == "reinstall":
                 if previous is None or desired is None:
                     raise RuntimeError(f"插件重装缺少规格: {name}")
+                resources = getattr(state.handle, "resources", None)
+                previous_models = resources.snapshot_models() if isinstance(resources, PluginResources) else None
                 await _uninstall_plugin_async(uninstaller, name)
                 state.handle = None
                 try:
                     handle, changes = await install_plugin_spec_async(installer, desired)
                 except Exception as install_error:
+                    logger.error(f"[插件协调] 重装失败, 插件={name}\n{traceback.format_exc()}")
                     if isinstance(install_error, PluginInstallationError):
                         try:
                             await _uninstall_plugin_async(uninstaller, name)
                         except Exception as cleanup_error:
+                            logger.error(f"[插件协调] 失败插件清理失败, 插件={name}\n{traceback.format_exc()}")
                             message = f"{install_error}; 清理失败插件失败: {cleanup_error}"
                             state.applied_spec = None
                             state.mark("rollback_error", status="error", error=message)
@@ -463,12 +532,13 @@ async def reconcile_plugin_states_async(
                             results.append(result)
                             continue
                     try:
-                        rollback_handle, _ = await _rollback_install_async(installer, previous)
+                        rollback_handle, _ = await _rollback_install_async(installer, previous, previous_models)
                         state.handle = rollback_handle
                         state.applied_spec = previous
                         state.mark("rolled_back", status="loaded", error=str(install_error))
                         result.update(status="rolled_back", error=str(install_error))
                     except Exception as rollback_error:
+                        logger.error(f"[插件协调] 回滚失败, 插件={name}\n{traceback.format_exc()}")
                         if isinstance(rollback_error, PluginInstallationError):
                             try:
                                 await _uninstall_plugin_async(uninstaller, name)
@@ -492,12 +562,14 @@ async def reconcile_plugin_states_async(
                 try:
                     changes = await apply_plugin_capabilities_async(state.handle, desired, previous)
                 except Exception as apply_error:
+                    logger.error(f"[插件协调] 能力更新失败, 插件={name}\n{traceback.format_exc()}")
                     try:
                         await apply_plugin_capabilities_async(state.handle, previous, desired)
                         state.applied_spec = previous
                         state.mark("rolled_back", status="loaded", error=str(apply_error))
                         result.update(status="rolled_back", error=str(apply_error))
                     except Exception as rollback_error:
+                        logger.error(f"[插件协调] 能力回滚失败, 插件={name}\n{traceback.format_exc()}")
                         message = f"{apply_error}; 回滚失败: {rollback_error}"
                         state.mark("rollback_error", status="error", error=message)
                         result.update(status="rollback_error", error=message)
@@ -510,9 +582,11 @@ async def reconcile_plugin_states_async(
                 raise RuntimeError(f"未知插件协调动作: {operation}")
         except RuntimeError as error:
             if "不支持插件热卸载" in str(error):
+                logger.warning(f"[插件协调] 插件={name}, 动作={operation}, 原因={error}")
                 state.mark("restart_required", error=str(error))
                 result.update(status="restart_required", error=str(error))
             elif operation in {"disable", "remove", "reinstall"} and previous is not None:
+                logger.error(f"[插件协调] 插件={name}, 动作={operation}\n{traceback.format_exc()}")
                 state.mark(
                     "rolled_back",
                     status="loaded" if previous.enabled else "disabled",
@@ -520,9 +594,11 @@ async def reconcile_plugin_states_async(
                 )
                 result.update(status="rolled_back", error=str(error))
             else:
+                logger.error(f"[插件协调] 插件={name}, 动作={operation}\n{traceback.format_exc()}")
                 state.mark("error", status="error", error=str(error))
                 result.update(status="error", error=str(error))
         except Exception as error:
+            logger.error(f"[插件协调] 插件={name}, 动作={operation}\n{traceback.format_exc()}")
             state.mark("error", status="error", error=str(error))
             result.update(status="error", error=str(error))
         results.append(result)
@@ -535,11 +611,14 @@ async def reconcile_plugin_states_async(
     failed_statuses = {"error", "rolled_back", "rollback_error", "restart_required"}
     failed = sum(item["status"] in failed_statuses for item in results)
     drift = sum(item.drift for item in states)
+    timing_payload = timings.to_payload()
+    logger.debug(f"[插件协调] 插件={len(desired_by_name)}, 变更={len(results)}, 失败={failed}, timings_ms={timing_payload}")
     return {
         "ok": failed == 0 and drift == 0,
         "plugins": results,
         "failed": failed,
         "drift": drift,
+        "timings_ms": timing_payload,
         "restart_required": any(
             item["status"] == "restart_required" for item in results
         ),

@@ -5,7 +5,7 @@ from time import monotonic
 from copy import copy, deepcopy
 import asyncio
 
-from satrap.core.pipeline.wake_window import WakeWindow, PendingText
+from satrap.core.pipeline.wake_window import WakeWindow, PendingMessage
 from satrap.core.config.platform_policy import policy_default
 from satrap.core.platform.event import MessageEvent
 from satrap.core.components import Plain
@@ -20,14 +20,14 @@ MIN_RESCHEDULE_DELAY = 0.5
 class DeadlineTicket:
     """排队后的补偿请求可在配置变更时撤销"""
 
-    snapshot: tuple[PendingText, ...] = ()
+    snapshot: tuple[PendingMessage, ...] = ()
     cancelled: bool = False
 
 
 class WakeTimers:
     """每路由最多一个计时任务, 使用窗口容量限制全局数量"""
 
-    def __init__(self, window: WakeWindow):
+    def __init__(self, window: WakeWindow) -> None:
         """
         初始化窗口计时器
 
@@ -40,7 +40,7 @@ class WakeTimers:
 
     def schedule(self, event: MessageEvent, *, earliest: float | None = None) -> None:
         """
-        按最早正文的到期时间安排一次复查, 不持有附件资源
+        按最早消息的到期时间安排一次复查, 不持有附件资源
 
         参数:
         - event: 已通过权限检查的原事件
@@ -56,8 +56,8 @@ class WakeTimers:
             return
         message = copy(event.platform_message)
         message.raw_message = {}
-        message.message = [Plain(text=snapshot[-1].text)]
-        message.message_str = snapshot[-1].text
+        message.message = [Plain(text=snapshot[-1].preview)]
+        message.message_str = snapshot[-1].preview
         message.sender = deepcopy(message.sender)
         message.group = deepcopy(message.group)
         lightweight = MessageEvent(message.message_str, message, event.platform_meta, event.session_id,
@@ -89,16 +89,22 @@ class WakeTimers:
 
         self.tasks[key] = asyncio.create_task(enqueue())
 
-    def cancel_route(self, event: MessageEvent) -> None:
+    def cancel_route(self, event: MessageEvent, *, invalidate_tickets: bool = False) -> None:
         """
         已提交窗口后取消同路由计时
 
         参数:
-        - event: 已消费正文的事件
+        - event: 已消费消息的事件
+        - invalidate_tickets: 切换全触发时同时撤销该路由已排队的旧补偿事件
         """
         task = self.tasks.pop(self.window.key(event), None)
         if task is not None:
             task.cancel()
+        if invalidate_tickets:
+            key = self.window.key(event)
+            for queued, ticket in list(self.tickets.items()):
+                if self.window.key(queued) == key:
+                    ticket.cancelled = True
 
     def clear_adapter(self, adapter_id: str) -> None:
         """

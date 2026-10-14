@@ -6,6 +6,8 @@
 """
 
 from __future__ import annotations
+from satrap.core.type import RequestContextBlock
+from satrap.core.utils.context.request import freeze_request_blocks
 import threading
 from typing import Any, Callable, Iterable
 import time
@@ -29,6 +31,7 @@ from .utils import (
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from .base import _SessionFeatures
 from . import recovery
+from satrap.edictum.settings import normalize_session_settings
 from . import sync_plugins, sync_capabilities
 
 
@@ -50,6 +53,8 @@ class SimpleSession(Session, _SessionFeatures):
         llm: LLM,
         *,
         system_prompt: str | None = None,
+        thinking: str = "off",
+        model_params: dict[str, Any] | None = None,
         tools: Iterable[Tool] | None = None,
         content_callback: Callable[[str], None] | None = None,
         db_path: str = get_db_path(),
@@ -67,6 +72,8 @@ class SimpleSession(Session, _SessionFeatures):
         - session_id: 会话 ID
         - llm: 主模型实例
         - system_prompt: 系统提示词, 默认 None 保留已有系统提示词, 提供时在初始化阶段重置
+        - thinking: 默认思考强度, 默认 off; run 可逐次覆盖
+        - model_params: temperature/top_p/max_tokens 的会话覆盖, 默认 None 继承模型配置
         - tools: 初始工具列表, 默认 None 表示不预注册工具
         - content_callback: 内容回调, 用于模型与命令输出, 默认 None 表示不回调
         - db_path: 上下文, 检查点与执行记录数据库路径, 默认使用 get_db_path() 返回的路径
@@ -83,6 +90,11 @@ class SimpleSession(Session, _SessionFeatures):
         - recoverable 不等同于检查点, 也不表示进程启动后自动恢复任务
         """
         self.recoverable = recoverable
+        settings = normalize_session_settings({"thinking": thinking, "model_params": {} if model_params is None else model_params})
+        self.default_thinking: str = thinking
+        self._model_params: dict[str, Any] = settings["model_params"]
+        if self._model_params:
+            llm.set_parameters(**self._model_params)
         self.plugin_environment = plugin_environment or PluginEnvironment()
         super().__init__(
             session_id,
@@ -175,9 +187,10 @@ class SimpleSession(Session, _SessionFeatures):
         user_input: str,
         img_urls: list[str] | None = None,
         *,
-        thinking: str = "off",
+        thinking: str | None = None,
         max_iterations: int = 10,
         video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str | CommandAction:
         """
         串行执行一轮同步 Agent 流程
@@ -185,7 +198,7 @@ class SimpleSession(Session, _SessionFeatures):
         参数:
         - user_input: 用户输入
         - img_urls: 附加图片 URL 列表, 默认 None
-        - thinking: 模型思考强度, 默认 off, 流式和非流式均支持
+        - thinking: 模型思考强度, 默认 None 使用会话配置, 流式和非流式均支持
         - max_iterations: 最大工具迭代次数, 默认 10
         - video_urls: 视频来源列表, 默认 None
 
@@ -196,8 +209,8 @@ class SimpleSession(Session, _SessionFeatures):
             return self._run_once(
                 user_input,
                 img_urls,
-                thinking=thinking,
-                max_iterations=max_iterations, video_urls=video_urls,
+                thinking=self.default_thinking if thinking is None else thinking,
+                max_iterations=max_iterations, video_urls=video_urls, request_blocks=request_blocks,
             )
 
     def _run_once(
@@ -208,6 +221,7 @@ class SimpleSession(Session, _SessionFeatures):
         thinking: str = "off",
         max_iterations: int = 10,
         video_urls: list[str] | None = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str | CommandAction:
         """
         执行一轮 Agent 流程 (React 范式), 返回最终模型输出
@@ -251,6 +265,7 @@ class SimpleSession(Session, _SessionFeatures):
                     call_id=call_id,
                 ),
                 text=user_input,
+                request_blocks=list(freeze_request_blocks(request_blocks)),
             )
             text = user_input
             final_override: str | None = None
@@ -301,6 +316,7 @@ class SimpleSession(Session, _SessionFeatures):
             if self.recoverable:
                 recovery.prepare_session_recovery(self)
 
+            frozen_blocks = freeze_request_blocks(ctx.request_blocks)
             result: str | None = None
             ctx.error = None
             try:
@@ -311,14 +327,14 @@ class SimpleSession(Session, _SessionFeatures):
                         text,
                         img_urls=img_urls,
                         thinking=thinking,
-                        max_iterations=max_iterations, video_urls=video_urls,
+                        max_iterations=max_iterations, video_urls=video_urls, request_blocks=frozen_blocks,
                     )
                 else:
                     result = self._wf.full_agent(
                         text,
                         img_urls=img_urls,
                         thinking=thinking,
-                        max_iterations=max_iterations, video_urls=video_urls,
+                        max_iterations=max_iterations, video_urls=video_urls, request_blocks=frozen_blocks,
                     )
             except BaseException as e:
                 ctx.error = e

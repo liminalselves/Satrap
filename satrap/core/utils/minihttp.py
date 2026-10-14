@@ -24,6 +24,7 @@ from http import HTTPStatus
 import json
 
 from satrap.core.server_auth import ServerAuth
+from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError
 
 from satrap.core.log import logger
 
@@ -281,6 +282,18 @@ class MiniHTTPServer:
         self._active_connections = 0
         self._active_websockets = 0
         self._server: asyncio.Server | None = None
+        self.applications = ApplicationOperations()
+
+    def application_status(self, method: str, path: str) -> tuple[int, dict[str, Any]] | None:
+        """经过原 HTTP 鉴权后查询当前服务的任务, 不跨进程共享状态或触发写操作"""
+        prefix = "/api/runtime-operations/"
+        clean = urlsplit(path).path
+        if method != "GET" or not clean.startswith(prefix):
+            return None
+        try:
+            return 200, self.applications.get(clean[len(prefix):])
+        except ApplicationProgressError as error:
+            return error.status, {"error": str(error)}
 
     # ---------- 生命周期 ----------
 
@@ -548,7 +561,12 @@ class MiniHTTPServer:
             await asyncio.gather(*pending, return_exceptions=True)
             for task in done:
                 error = None if task.cancelled() else task.exception()
-                if error is not None and self._log_errors:
+                if error is None or not self._log_errors:
+                    continue
+                if isinstance(error, (ConnectionError, asyncio.IncompleteReadError)):
+                    # 客户端断开与半包截断属于正常断连: 平台实例替换与客户端重连都会走到这里
+                    logger.debug(f"[WebSocket] 连接已断开: {type(error).__name__}")
+                else:
                     logger.error(f"[WebSocket] 连接处理异常: {type(error).__name__}")
         finally:
             self._active_websockets -= 1
@@ -712,7 +730,7 @@ class MiniHTTPServer:
 
     # ---------- 钩子 (子类实现) ----------
 
-    async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
+    async def _route(self, method: str, path: str, body: bytes) -> tuple[int, Mapping[str, Any]]:
         """
         路由分发 (子类实现)
 
@@ -722,7 +740,7 @@ class MiniHTTPServer:
         - body: 请求体
 
         返回:
-        - tuple[int, dict[str, Any]]: 路由分发 (子类实现)
+        - tuple[int, Mapping[str, Any]]: 路由分发 (子类实现)
         """
         raise NotImplementedError
 

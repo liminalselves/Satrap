@@ -1,3 +1,8 @@
+"""
+同步会话框架
+
+协调共享和工作流上下文, 登记精确归属并聚合会话检查点
+"""
 from __future__ import annotations
 import uuid
 from pathlib import Path
@@ -8,6 +13,7 @@ from satrap.core.framework.command import CommandHandler
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.state.mutation import state_mutation_context
 from satrap.core.utils.context import ContextManager, _messages_domain
+from satrap.core.storage.context_catalog import bind_context
 from satrap.core.utils.paths import get_db_path
 from satrap.core.state import StateStore
 from satrap.core.type import LLMConfig, StateCheckpoint
@@ -15,9 +21,8 @@ from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.config.session_overrides import SessionOverrideStore
-    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.config.model_snapshot import ModelConfigReader
     from satrap.core.storage.layout import StorageLayout
-    from satrap.core.framework.SessionManager import SessionManager
     from satrap.core.framework.UserManager import UserManager
 
 from .base import _SessionCore
@@ -28,7 +33,7 @@ class Session(_SessionCore[ContextManager, CommandHandler]):
     """会话类, 用于管理多个模型工作流的会话"""
 
     plugin_override_store: "SessionOverrideStore | None" = None
-    plugin_model_manager: "ModelConfigManager | None" = None
+    plugin_model_manager: "ModelConfigReader | None" = None
     storage_layout: "StorageLayout | None" = None
     storage_platform_id: str | None = None
 
@@ -84,6 +89,7 @@ class Session(_SessionCore[ContextManager, CommandHandler]):
         self.command_handler = self.cmd_handler
         self.session_ctx.load_context()
         self.session_id = session_id
+        bind_context(self.session_ctx, session_id, "shared")
         self.wf_list: list[str] = []
 
         self.content_callback = content_callback
@@ -187,7 +193,12 @@ class Session(_SessionCore[ContextManager, CommandHandler]):
         """
         if wf_id in self._workflow_contexts:
             logger.warning(f"[会话] 工作流 {wf_id} 已注册, 将被覆盖")
+        if not getattr(ctx, "persistent", True):
+            logger.warning(f"[会话] 纯内存工作流不加入持久化检查点: {wf_id}")
+            return
         self._workflow_contexts[wf_id] = ctx
+        workflow_name = wf_id.removeprefix(self.session_id + "_")
+        bind_context(ctx, self.session_id, "main" if workflow_name == "main" else "workflow", workflow_name)
         if self._context_config is not None:
             apply_context_policy(ctx, self._context_config)
         if self._state_store is not None:

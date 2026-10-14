@@ -3,6 +3,8 @@ from satrap.core.framework.providers.session_class import SessionClassProvider
 from satrap.core.framework.providers.edictum import EdictumProvider
 from satrap.core.framework.providers.base import (
     SESSION_CLASS_PROVIDER,
+    BindingState,
+    BindingStatus,
     SessionProvider,
     SessionProviderDefinition,
     SessionProviderRegistry,
@@ -10,6 +12,8 @@ from satrap.core.framework.providers.base import (
 
 __all__ = [
     "SESSION_CLASS_PROVIDER",
+    "BindingState",
+    "BindingStatus",
     "EdictumProvider",
     "SessionClassProvider",
     "SessionProvider",

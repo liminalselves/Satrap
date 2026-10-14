@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 from urllib.parse import urlsplit
 import asyncio
 import os
@@ -29,6 +29,9 @@ from satrap.core.platform import PlatformAdapter
 from satrap.core.type import ASRConfig, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
+
+if TYPE_CHECKING:
+    from satrap.core.config.model_snapshot import ModelConfigReader
 
 AUDIO_MAX_BYTES = 16 * 1024 * 1024
 """单条语音允许下载的最大字节数"""
@@ -461,7 +464,7 @@ def render_attachments(results: tuple[AttachmentResult, ...]) -> str:
     return "\n".join(blocks)
 
 
-def asr_resolver_from_manager(manager: Any) -> AsrResolver | None:
+def asr_resolver_from_manager(manager: ModelConfigReader | None) -> AsrResolver | None:
     """
     由 ModelConfigManager 构造名称到 ASRConfig 的解析器
 

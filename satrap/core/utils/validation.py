@@ -1,0 +1,27 @@
+"""平台无关的有限文字基础规则, 领域边界保留自己的错误与空白语义"""
+from __future__ import annotations
+
+from typing import TypeGuard
+
+
+def is_bounded_text(value: object, *, maximum: int = 256, non_blank: bool = False,
+                    trimmed: bool = False, measure_stripped: bool = False) -> TypeGuard[str]:
+    """
+    检查字符串类型, 长度与 ASCII 控制字符, 不隐式转换身份
+
+    参数:
+    - value: 外部提供的字段
+    - maximum: 最大字符数
+    - non_blank: 是否拒绝只含空白的字段
+    - trimmed: 是否要求原值没有首尾空白
+    - measure_stripped: 是否按去除首尾空白后的长度计数
+
+    返回:
+    - 字段符合当前领域选择的规则时为 True
+    """
+    if not isinstance(value, str):
+        return False
+    clean = value.strip() if non_blank or trimmed or measure_stripped else value
+    counted = clean if measure_stripped else value
+    return (0 < len(counted) <= maximum and not any(ord(char) < 32 for char in value)
+            and (not non_blank or bool(clean)) and (not trimmed or value == clean))

@@ -138,13 +138,14 @@ class OutboundTurns:
         self.tasks: set[asyncio.Future[Any]] = set()
         self.closed = False
 
-    async def run(self, target: str, operation: Callable[[], Awaitable[T]]) -> T:
+    async def run(self, target: str, operation: Callable[[], Awaitable[T]], *, on_settle: Callable[[], None] | None = None) -> T:
         """
         在一个平台目标的有界发送机会内执行发送
 
         参数:
         - target: 平台原生会话 ID
         - operation: 已获取执行权后运行的发送协程工厂
+        - on_settle: 发送子任务实际结束时释放资源, 队列拒绝时也执行
 
         返回:
         - T: 发送结果; 关闭或满载时抛出 RuntimeError, 等待超过 30 秒抛出 TimeoutError
@@ -153,6 +154,8 @@ class OutboundTurns:
         任务与目标锁登记由子任务实际终态驱动清理 (_settle), 调用方退出不摘除登记
         """
         if self.closed or len(self.tasks) >= 64:
+            if on_settle is not None:
+                on_settle()
             logger.warning(f"[OutboundTurns] 发送队列不可用 closed={self.closed} inflight={len(self.tasks)} target={target}")
             raise RuntimeError("发送队列不可用")
         lock, users = self.locks.get(target, (asyncio.Lock(), 0))
@@ -160,6 +163,8 @@ class OutboundTurns:
         self.tasks.add(task)
         self.locks[target] = (lock, users + 1)
         task.add_done_callback(lambda finished: self._settle(target, finished))
+        if on_settle is not None:
+            task.add_done_callback(lambda finished: on_settle())
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:

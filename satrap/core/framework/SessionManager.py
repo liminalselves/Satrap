@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from contextlib import contextmanager
+from functools import partial
 import threading
 import asyncio
 import inspect
@@ -16,9 +17,11 @@ from pathlib import Path
 import secrets
 import sqlite3
 import string
-from typing import Any, Awaitable, Dict, List, Optional, Type, cast, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, cast, TYPE_CHECKING
 import json
 import time
+
+import traceback
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_overrides import SessionOverrideStore
@@ -28,12 +31,17 @@ from satrap.core.framework.providers import (
     SessionProvider,
     SessionProviderRegistry,
 )
+from satrap.core.framework.providers.base import SessionProviderDefinition
+from satrap.core.config.model_snapshot import llm_config_fingerprint
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
+from satrap.core.utils.performance import PhaseTimings
+from satrap.core.utils.application_progress import progress_instance, progress_locks, progress_phase, progress_result, progress_source_check
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.paths import get_db_path
 from satrap.edictum.registry import EDICTUM_PROVIDER
+from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
 from satrap.core.storage import (
     LOCAL_PLATFORM_ID,
     StorageLayout,
@@ -43,6 +51,7 @@ from satrap.core.storage import (
 )
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.call_context import bind_call_origin
+from satrap.core.group_chat.reply import buffer_session_reply, abort_reply_turn
 
 from satrap.core.log import logger
 
@@ -51,6 +60,9 @@ if TYPE_CHECKING:
     from satrap.core.framework.UserManager import UserManager
 
 _UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
+
+from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.core.config.group_session import resolve_group_session
 
 
 def _short_uid(n: int = 6) -> str:
@@ -78,6 +90,8 @@ class SessionEntry:
     """会话创建时间戳"""
     last_used: float
     """会话最近使用时间戳"""
+    instance_generation: str = field(default_factory=lambda: secrets.token_urlsafe(16))
+    """会话对象的生命周期标识"""
     sync_operation_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     """串行化同步会话运行和运行时配置更新"""
     async_operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -548,6 +562,8 @@ class SessionPool:
 
             if session_id in self._sessions:
                 entry = self._sessions[session_id]
+                if entry.session is not session:
+                    entry.instance_generation = secrets.token_urlsafe(16)
                 entry.session = session
                 entry.session_type = session_type
                 entry.last_used = now
@@ -574,6 +590,7 @@ class SessionPool:
         session_id: str,
         expected: SessionEntry,
         replacement: SessionEntry,
+        *, expected_generation: str | None = None,
     ) -> bool:
         """
         仅在当前条目仍匹配时原子替换会话
@@ -582,6 +599,7 @@ class SessionPool:
         - session_id: 会话 ID
         - expected: 预期被替换的旧条目
         - replacement: 新会话条目
+        - expected_generation: 可选旧运行代次, 防止同一条目对象被再次替换后误提交
 
         返回:
         - 成功替换返回 True; 当前条目已变化时返回 False
@@ -590,9 +608,12 @@ class SessionPool:
             current = self._sessions.get(session_id)
             if current is None or current is not expected:
                 return False
+            if expected_generation is not None and current.instance_generation != expected_generation:
+                return False
             if current.active_calls > 0 or current.retiring:
                 return False
             current.session = replacement.session
+            current.instance_generation = replacement.instance_generation
             current.session_type = replacement.session_type
             current.created_at = replacement.created_at
             current.last_used = replacement.last_used
@@ -602,6 +623,7 @@ class SessionPool:
         self,
         session_id: str,
         expected: SessionEntry | None = None,
+        *, expected_generation: str | None = None,
     ) -> Optional[SessionEntry]:
         """
         从池中移除会话条目
@@ -609,6 +631,7 @@ class SessionPool:
         参数:
         - session_id: 会话 ID
         - expected: 可选的预期条目, 用于阻止并发替换后的新条目被误删
+        - expected_generation: 可选运行代次, 阻止同一条目对象的新实例被误删
 
         返回:
         - 匹配并移除的会话条目; 条目不存在或与 expected 不匹配时返回 None
@@ -616,6 +639,8 @@ class SessionPool:
         with self._lock:
             entry = self._sessions.get(session_id)
             if entry is None or (expected is not None and entry is not expected):
+                return None
+            if expected_generation is not None and entry.instance_generation != expected_generation:
                 return None
             removed = self._sessions.pop(session_id)
             removed.retiring = True
@@ -747,7 +772,6 @@ class SessionManager:
         self.default_session_type = default_session_type
         self._default_checkpoint = default_checkpoint
         self._default_checkpoint_db = default_checkpoint_db
-        from satrap.edictum.plugin_compatibility import PluginEnvironment
 
         self.plugin_environment = PluginEnvironment()
         self.platform_id = platform_id.strip() or LOCAL_PLATFORM_ID
@@ -763,6 +787,8 @@ class SessionManager:
         self._class_cfg_mgr: SessionClassConfigManager | None = None
         self._user_mgr: UserManager | None = None
         self._model_cfg_mgr: ModelConfigManager | None = None
+        self.group_apply_reporter: Callable[[UserCall, str, str, str | None], None] | None = None
+        self.group_apply_observer: Callable[[UserCall, str, str], None] | None = None
         self.provider_registry = SessionProviderRegistry()
         self.session_class_provider = SessionClassProvider(
             self.registry,
@@ -1088,80 +1114,127 @@ class SessionManager:
                 **({} if activated else {"error": "会话激活失败"}),
             }
 
-        async def restart_locked() -> dict[str, Any]:
-            """在会话操作锁内构建并切换候选实例"""
-            config = self.store.get(session_id)
-            if config is None:
-                return {
-                    "ok": False,
-                    "action": "restart",
-                    "session_id": session_id,
-                    "platform_id": self.platform_id,
-                    "error": "会话冷配置不存在",
-                }
-            old_session = entry.session
+        async with entry.async_operation_lock:
+            if isinstance(entry.session, AsyncSession):
+                return await self._restart_entry_locked(session_id, entry)
+            with entry.sync_operation_lock:
+                return await self._restart_entry_locked(session_id, entry)
 
-            def mark_failed(error: str) -> None:
-                """把热重启失败写入旧 Provider 运行时状态"""
-                provider_name = str(safe_getattr(old_session, "_satrap_provider_name") or "")
-                provider = self.provider_registry.get(provider_name) if provider_name else None
-                marker = safe_getattr_callable(provider, "mark_runtime_restart_failed")
-                if marker is not None:
-                    marker(old_session, error)
+    async def _restart_entry_locked(self, session_id: str, entry: SessionEntry, *,
+                                    apply_snapshot: EdictumPluginApplySnapshot | None = None,
+                                    runtime_is_current: Callable[[], bool] | None = None) -> dict[str, Any]:
+        """
+        在已取得会话操作锁后构建并切换候选实例, 保留失败兜底
 
-            self._sync_runtime_to_store(session_id, old_session)
-            refreshed = self.store.get(session_id) or config
-            candidate = self._create_entry(refreshed, add_to_pool=False)
-            if candidate is None:
-                mark_failed("候选会话创建失败")
-                return {
-                    "ok": False,
-                    "action": "restart",
-                    "session_id": session_id,
-                    "platform_id": self.platform_id,
-                    "old_runtime_preserved": True,
-                    "error": "候选会话创建失败",
-                }
-            try:
-                if isinstance(candidate.session, AsyncSession):
-                    await self._prepare_session_async(candidate.session)
-            except Exception as error:
-                await self._release_session_memory_async(candidate.session)
-                mark_failed(str(error))
-                return {
-                    "ok": False,
-                    "action": "restart",
-                    "session_id": session_id,
-                    "platform_id": self.platform_id,
-                    "old_runtime_preserved": True,
-                    "error": str(error),
-                }
+        参数:
+        - session_id: 活跃会话 ID
+        - entry: 调用者已锁定的当前条目
+        - apply_snapshot: 可选本次固定来源, 默认保持手动重启行为
+        - runtime_is_current: 可选平台管理器复核, 候选准备后提交前再次检查
 
-            if not self.pool.replace(session_id, entry, candidate):
-                await self._release_session_memory_async(candidate.session)
-                return {
-                    "ok": False,
-                    "action": "restart",
-                    "session_id": session_id,
-                    "platform_id": self.platform_id,
-                    "old_runtime_preserved": True,
-                    "error": "会话运行时已变化",
-                }
-            await self._release_session_memory_async(old_session)
-            logger.info(f"[SessionManager] 会话已热重启: {session_id}")
+        返回:
+        - 热重启结果, 来源变化或候选失败时保留旧实例
+        """
+        if self.pool.list_entries().get(session_id) is not entry:
+            return {"ok": False, "action": "restart", "session_id": session_id, "platform_id": self.platform_id,
+                    "error": "会话运行时已变化", "old_runtime_preserved": True}
+        config = self.store.get(session_id)
+        if config is None:
             return {
-                "ok": True,
+                "ok": False,
                 "action": "restart",
                 "session_id": session_id,
                 "platform_id": self.platform_id,
-                "runtime": self.get_session_runtime_metadata(session_id),
+                "error": "会话冷配置不存在",
+            }
+        old_session = entry.session
+        generation = entry.instance_generation
+
+        def mark_failed(error: str) -> None:
+            """把热重启失败写入旧 Provider 运行时状态"""
+            provider_name = str(safe_getattr(old_session, "_satrap_provider_name") or "")
+            provider = self.provider_registry.get(provider_name) if provider_name else None
+            marker = safe_getattr_callable(provider, "mark_runtime_restart_failed")
+            if marker is not None:
+                marker(old_session, error)
+
+        self._sync_runtime_to_store(session_id, old_session)
+        refreshed = self.store.get(session_id) or config
+        snapshot_args = {"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}
+        candidate = await asyncio.to_thread(self._create_entry, refreshed, add_to_pool=False, **snapshot_args)
+        if candidate is None:
+            await self._persist_session_contexts(old_session)
+            mark_failed("候选会话创建失败")
+            return {
+                "ok": False,
+                "action": "restart",
+                "session_id": session_id,
+                "platform_id": self.platform_id,
+                "old_runtime_preserved": True,
+                "error": "候选会话创建失败",
+            }
+        try:
+            if isinstance(candidate.session, AsyncSession):
+                with progress_phase("candidate_prepare_ms"):
+                    await self._prepare_session_async(candidate.session, **snapshot_args)
+            if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
+                raise RuntimeError("配置在候选准备期间已变化, 请重试应用")
+            self._check_apply_runtime(runtime_is_current)
+        except Exception as error:
+            logger.error(f"[SessionManager] 候选会话准备失败: {session_id}, {error}\n{traceback.format_exc()}")
+            with progress_phase("uninstall_ms"):
+                await self._release_session_memory_async(candidate.session)
+            await self._persist_session_contexts(old_session)
+            mark_failed(str(error))
+            return {
+                "ok": False,
+                "action": "restart",
+                "session_id": session_id,
+                "platform_id": self.platform_id,
+                "old_runtime_preserved": True,
+                "error": str(error),
             }
 
-        async with entry.async_operation_lock:
-            if isinstance(entry.session, AsyncSession):
-                return await restart_locked()
-            with entry.sync_operation_lock:
-                return await restart_locked()
+        if not self.pool.replace(session_id, entry, candidate, expected_generation=generation):
+            with progress_phase("uninstall_ms"):
+                await self._release_session_memory_async(candidate.session)
+            current = self.pool.get(session_id)
+            if current is not None:
+                await self._persist_session_contexts(current.session)
+            return {
+                "ok": False,
+                "action": "restart",
+                "session_id": session_id,
+                "platform_id": self.platform_id,
+                "runtime_changed": True,
+                "error": "会话运行时已变化",
+            }
+        with progress_phase("uninstall_ms"):
+            await self._release_session_memory_async(old_session)
+        await self._persist_session_contexts(candidate.session)
+        logger.info(f"[SessionManager] 会话已热重启: {session_id}")
+        return {
+            "ok": True,
+            "action": "restart",
+            "session_id": session_id,
+            "platform_id": self.platform_id,
+            "runtime": self.get_session_runtime_metadata(session_id),
+        }
+    @staticmethod
+    async def _persist_session_contexts(session: Session | AsyncSession) -> None:
+        """
+        在热重启操作锁内恢复最终实例的上下文数据库
+
+        参数:
+        - session: 成功时的新实例或失败时保留的旧实例
+        """
+        if safe_getattr(session, "session_ctx") is None:
+            return
+        for context in session._all_contexts().values():
+            context._mark_dirty()   # 候选初始化与插件清理可能改写同一数据库, 最终实例的上下文为准
+            synced = context._sync()
+            if inspect.isawaitable(synced):
+                await synced
 
     async def unload_session_async(self, session_id: str) -> dict[str, Any]:
         """
@@ -1183,21 +1256,24 @@ class SessionManager:
                 "active": False,
             }
 
-        async def unload_locked() -> dict[str, Any]:
-            """在会话操作锁内卸载当前条目"""
-            if self.pool.list_entries().get(session_id) is not entry:
-                return {
-                    "ok": True,
-                    "action": "unload",
-                    "session_id": session_id,
-                    "platform_id": self.platform_id,
-                    "active": False,
-                }
-            self._sync_runtime_to_store(session_id, entry.session)
-            removed = self.pool.remove(session_id)
-            if removed is not None:
-                await self._release_session_memory_async(removed.session)
-            logger.info(f"[SessionManager] 会话运行时已卸载: {session_id}")
+        async with entry.async_operation_lock:
+            if isinstance(entry.session, AsyncSession):
+                return await self._unload_entry_locked(session_id, entry)
+            with entry.sync_operation_lock:
+                return await self._unload_entry_locked(session_id, entry)
+
+    async def _unload_entry_locked(self, session_id: str, entry: SessionEntry) -> dict[str, Any]:
+        """
+        在已取得会话锁后卸载选定条目
+
+        参数:
+        - session_id: 活跃实例 ID
+        - entry: 已取得操作锁的实例条目
+
+        返回:
+        - 卸载结果; 已替换条目不影响当前运行实例
+        """
+        if self.pool.list_entries().get(session_id) is not entry:
             return {
                 "ok": True,
                 "action": "unload",
@@ -1205,13 +1281,24 @@ class SessionManager:
                 "platform_id": self.platform_id,
                 "active": False,
             }
-
-        async with entry.async_operation_lock:
-            if isinstance(entry.session, AsyncSession):
-                return await unload_locked()
-            with entry.sync_operation_lock:
-                return await unload_locked()
-
+        generation = entry.instance_generation
+        self._sync_runtime_to_store(session_id, entry.session)
+        removed = self.pool.remove(session_id, expected=entry, expected_generation=generation)
+        if removed is None and session_id in self.pool.list_entries():
+            logger.warning(f"[SessionManager] 卸载未提交, 会话运行代次已变化: {session_id}")
+            return {"ok": False, "action": "unload", "session_id": session_id, "platform_id": self.platform_id,
+                    "error": "会话运行时已变化, 请重试卸载"}
+        if removed is not None:
+            with progress_phase("uninstall_ms"):
+                await self._release_session_memory_async(removed.session)
+        logger.info(f"[SessionManager] 会话运行时已卸载: {session_id}")
+        return {
+            "ok": True,
+            "action": "unload",
+            "session_id": session_id,
+            "platform_id": self.platform_id,
+            "active": False,
+        }
     def list_session_configs(self, limit: int = 200) -> List[SessionConfig]:
         """
         列出持久化 SessionConfig (来自 SQLite)
@@ -1327,6 +1414,7 @@ class SessionManager:
 
             entry = await self._acquire_or_create_entry_async(session_cfg)
             if entry is None:
+                abort_reply_turn()
                 logger.error(f"[SessionManager] handle_call_async 失败：会话创建失败，session_id={session_id}")
                 return ""
 
@@ -1334,7 +1422,16 @@ class SessionManager:
                 async with entry.async_operation_lock:
                     if self.pool.list_entries().get(session_id) is not entry:
                         return ""
-                    await self._prepare_session_async(entry.session)
+                    self._observe_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""))
+                    try:
+                        group_plugins = self._group_plugin_target(session_cfg, user_call)
+                        setattr(entry.session, "_satrap_group_plugins", group_plugins)
+                        await self._prepare_session_async(entry.session)
+                        await self._apply_group_session_overrides(session_cfg, entry.session, user_call, group_plugins)
+                    except Exception as error:
+                        self._report_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""), str(error))
+                        raise
+                    self._report_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""), None)
 
                     if isinstance(entry.session, AsyncSession):
                         response = await self._invoke_async_session(entry.session, user_call)
@@ -1350,7 +1447,7 @@ class SessionManager:
                 new_id = new_cfg.session_id
                 if not new_id:
                     logger.error(f"[SessionManager] handle_call_async 失败：切换会话时无法获取新 session_id，原 session_id={session_id}")
-                    return f"切换失败：无法获取新会话 ID"
+                    return "切换失败：无法获取新会话 ID"
 
                 new_entry = await self._get_or_create_entry_async(new_cfg)
 
@@ -1395,10 +1492,132 @@ class SessionManager:
             return "" if response is None else str(response)   # 正常返回
 
         except WorkerBusyError:
+            abort_reply_turn()
+            logger.warning(f"[SessionManager] 同步会话处理繁忙, session_id={user_call.session_id}")
             return "同步会话处理繁忙, 请稍后重试"
         except Exception as e:
-            logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
+            abort_reply_turn()
+            logger.error(f"[SessionManager] handle_call_async 发生异常: {e}, 堆栈={traceback.format_exc()}")
             return ""
+
+    def _observe_group_apply(self, user_call: UserCall, session_id: str, instance_generation: str) -> None:
+        """把群调用与当前实例的可信关联交给平台运行时"""
+        observer = getattr(self, "group_apply_observer", None)
+        if observer is None or user_call.group_config_revision is None:
+            return
+        try:
+            observer(user_call, session_id, instance_generation)
+        except Exception as error:
+            logger.error(f"[SessionManager] 群会话实例关联上报失败: {error}")
+
+    def _report_group_apply(
+        self, user_call: UserCall, session_id: str, instance_generation: str, error: str | None,
+    ) -> None:
+        """将群会话安全轮次的应用结果交给平台运行时"""
+        reporter = getattr(self, "group_apply_reporter", None)
+        if reporter is None or user_call.group_config_revision is None:
+            return
+        try:
+            reporter(user_call, session_id, instance_generation, error)
+        except Exception as report_error:
+            logger.error(f"[SessionManager] 群配置应用状态上报失败: {report_error}")
+
+    async def retry_group_session_apply_async(
+        self, session_id: str, user_call: UserCall, instance_generation: str,
+        is_current: Callable[[], bool],
+    ) -> bool:
+        """在现有实例的会话锁内重试覆盖应用, 不发起模型对话"""
+        entry = self.pool.list_entries().get(session_id)
+        session_cfg = self.store.get(session_id)
+        if entry is None or session_cfg is None or entry.instance_generation != instance_generation:
+            return False
+        async with entry.async_operation_lock:
+            if (self.pool.list_entries().get(session_id) is not entry
+                    or entry.instance_generation != instance_generation or not is_current()):
+                return False
+            try:
+                plugins = self._group_plugin_target(session_cfg, user_call)
+                setattr(entry.session, "_satrap_group_plugins", plugins)
+                await self._prepare_session_async(entry.session)
+                await self._apply_group_session_overrides(session_cfg, entry.session, user_call, plugins)
+            except Exception as error:
+                self._report_group_apply(user_call, session_id, instance_generation, str(error))
+                return False
+            if not is_current():
+                return False
+            self._report_group_apply(user_call, session_id, instance_generation, None)
+            return True
+
+    def _group_plugin_target(self, session_cfg: SessionConfig, user_call: UserCall) -> list[object] | None:
+        """合并群插件设置, 保留会话实例插件配置的最高优先级"""
+        overrides = user_call.group_session_overrides or {}
+        if getattr(session_cfg, "provider_name", SESSION_CLASS_PROVIDER) != EDICTUM_PROVIDER:
+            return None
+        instance = session_cfg.session_config or {}
+        if "plugins" in instance:
+            plugins = instance["plugins"]
+            return plugins if isinstance(plugins, list) else None
+        if "plugins" not in overrides:
+            return None
+
+        resolved = self.provider_registry.resolve_definition(
+            session_cfg.session_type_name or "", EDICTUM_PROVIDER,
+        )
+        if resolved is None:
+            raise ValueError("群会话命名配置不可用")
+        explicit = {"plugins": {"mode": "value", "value": overrides["plugins"]}}
+        effective, _ = resolve_group_session(
+            {}, explicit, {"plugins": resolved[1].metadata.get("plugins", [])},
+        )
+        plugins = effective["plugins"]
+        return plugins if isinstance(plugins, list) else None
+
+    async def _apply_group_session_overrides(
+        self, session_cfg: SessionConfig, session: Session | AsyncSession,
+        user_call: UserCall, group_plugins: list[object] | None,
+    ) -> None:
+        """在本轮会话锁内应用群配置, 不覆盖持久化的实例显式设置"""
+        if getattr(session_cfg, "provider_name", SESSION_CLASS_PROVIDER) != EDICTUM_PROVIDER:
+            return
+        overrides = user_call.group_session_overrides or {}
+        resolved = self.provider_registry.resolve_definition(
+            session_cfg.session_type_name or "", EDICTUM_PROVIDER,
+        )
+        if resolved is None:
+            raise ValueError("群会话命名配置不可用")
+        provider, definition = resolved
+        instance = session_cfg.session_config or {}
+        base_model = instance.get("model_name") or definition.params.get("model_name") or "default"
+        model_name = str(base_model if "model_name" in instance else overrides.get("model", base_model))
+        applied_model = getattr(session, "_satrap_group_model_name", str(base_model))
+        if model_name != applied_model:
+            model_cfg = self._model_cfg_mgr.get_llm_config(name=model_name) if self._model_cfg_mgr else None
+            if model_cfg is None or not model_cfg.api_key:
+                raise ValueError("群模型配置不存在或缺少必要凭据")
+            llm = build_llm_from_config(model_cfg, async_=isinstance(session, AsyncSession))
+            self._apply_model_reload(session_cfg.session_id or "", session, llm, model_cfg)
+        base_prompt = instance.get("system_prompt", definition.params.get("system_prompt"))
+        prompt = base_prompt if "system_prompt" in instance else overrides.get("prompt", base_prompt)
+        if prompt is None and hasattr(session, "_satrap_group_prompt"):
+            prompt = ""
+        if isinstance(prompt, str) and prompt != getattr(session, "_satrap_group_prompt", base_prompt):
+            setattr(session, "_init_system_prompt", prompt)
+            contexts = session._all_contexts()
+            for context in contexts.values():
+                compose_prompt = safe_getattr_callable(session, "compose_system_prompt")
+                effective_prompt = compose_prompt(prompt, context) if compose_prompt is not None else prompt
+                result = context.reset_system_prompt(effective_prompt)
+                if inspect.isawaitable(result):
+                    await result
+            setattr(session, "_satrap_group_prompt", prompt)
+        if group_plugins is not None:
+            reconcile = getattr(provider, "reconcile_session_plugins_async", None)
+            if callable(reconcile):
+                outcome = reconcile(session, desired_plugins=group_plugins)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome
+                if not isinstance(outcome, dict) or not outcome.get("ok", False):
+                    raise RuntimeError("群插件配置应用失败")
 
     def reload_model_configs(self) -> None:
         """同步重载活跃同步会话的 LLM 实例"""
@@ -1441,13 +1660,182 @@ class SessionManager:
                     with entry.sync_operation_lock:
                         self._apply_model_reload(session_id, entry.session, new_llm, llm_cfg)
 
+    def _edictum_plugin_entries(self, config_name: str | None, session_ids: set[str] | None) -> list[tuple[str, SessionEntry, str]]:
+        """
+        选择应用候选实例, 只读取会话目录与运行时名称
+
+        参数:
+        - config_name: 可选命名配置过滤
+        - session_ids: 可选实例范围
+
+        返回:
+        - 会话 ID, 条目及配置名称, 保持池顺序
+        """
+        provider = self.provider_registry.get("edictum")
+        runtime_name = safe_getattr_callable(provider, "plugin_config_name")
+        selected: list[tuple[str, SessionEntry, str]] = []
+        for session_id, entry in self.pool.list_entries().items():
+            if str(safe_getattr(entry.session, "_satrap_provider_name") or "") != "edictum":
+                continue
+            if session_ids is not None and session_id not in session_ids:
+                continue
+            record = self.store.get(session_id)
+            name = str(record.session_type_name if record is not None else runtime_name(entry.session) if runtime_name is not None else "")
+            if config_name is not None and name != config_name:
+                continue
+            selected.append((session_id, entry, name))
+        return selected
+
+    def edictum_plugin_apply_scope(self, *, config_name: str | None = None, session_ids: set[str] | None = None,
+                                 plugin_name: str | None = None,
+                                 apply_targets: list[tuple[str, SessionEntry, str, str]] | None = None) -> dict[str, bool]:
+        """
+        汇总候选命名配置及旧引用, 新引用在捕获新文件后判断
+
+        参数:
+        - config_name: 可选命名配置过滤
+        - session_ids: 可选实例范围
+        - plugin_name: 可选旧插件引用标记
+        - apply_targets: 可选来源准备前固定的实例范围
+
+        返回:
+        - 配置名称到旧引用是否存在的映射
+        """
+        references = safe_getattr_callable(self.provider_registry.get("edictum"), "references_plugin")
+        scope: dict[str, bool] = {}
+        targets = apply_targets if apply_targets is not None else self.edictum_runtime_apply_targets(config_name=config_name, session_ids=session_ids)
+        for _session_id, entry, name, _generation in targets:
+            old = bool(plugin_name is not None and references is not None and references(entry.session, plugin_name, desired_plugins=[]))
+            scope[name] = scope.get(name, False) or old
+        return scope
+
+    def edictum_runtime_apply_targets(self, *, config_name: str | None = None,
+                                      session_ids: set[str] | None = None) -> list[tuple[str, SessionEntry, str, str]]:
+        """
+        在来源准备前固定完整配置或插件应用实例范围与运行代次
+
+        参数:
+        - config_name: 可选命名配置过滤
+        - session_ids: 可选实例范围
+
+        返回:
+        - 会话 ID, 条目, 原绑定及运行代次, 后续绑定变化明确失败
+        """
+        return [(sid, entry, name, entry.instance_generation) for sid, entry, name in self._edictum_plugin_entries(config_name, session_ids)]
+
+    def _check_edictum_apply_entry(self, session_id: str, entry: SessionEntry, generation: str,
+                                   runtime_is_current: Callable[[], bool] | None) -> None:
+        """
+        同步核验所属平台与当前驻留实例, 每次调用均读取实时状态
+
+        参数:
+        - session_id: 原计划会话
+        - entry: 原计划驻留对象
+        - generation: 原计划实例代次
+        - runtime_is_current: 所属平台管理器实时核验器
+        """
+        self._check_apply_runtime(runtime_is_current)
+        if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
+            raise RuntimeError("会话运行时已变化")
+
+    async def _verify_edictum_apply_entry(
+        self, session_id: str, entry: SessionEntry, planned_name: str, generation: str,
+        snapshot: EdictumPluginApplySnapshot | None, runtime_is_current: Callable[[], bool] | None,
+        source_error: str,
+    ) -> SessionConfig | None:
+        """
+        持有原操作锁时复核来源, await 前后都确认实例身份并检查持久化绑定
+
+        参数:
+        - session_id: 原计划会话
+        - entry: 原计划驻留对象
+        - planned_name: 捕获来源前固定的 Agent 名称
+        - generation: 原实例代次
+        - snapshot: 本次共享配置来源, None 保留实时读取入口
+        - runtime_is_current: 所属平台管理器实时核验器
+        - source_error: 原入口的来源变化说明
+
+        返回:
+        - 本轮重新读取的会话配置, 不沿用来源捕获前的绑定
+        """
+        self._check_edictum_apply_entry(session_id, entry, generation, runtime_is_current)
+        if snapshot is not None and not await progress_source_check(snapshot.sources.is_current):
+            raise RuntimeError(source_error)
+        self._check_edictum_apply_entry(session_id, entry, generation, runtime_is_current)
+        stored = self.store.get(session_id)
+        if stored is not None and stored.session_type_name != planned_name:
+            raise RuntimeError("Agent 绑定在等待期间已变化, 请重试应用")
+        return stored
+
+    async def _reconcile_edictum_entry(
+        self, session_id: str, entry: SessionEntry, semaphore: asyncio.Semaphore,
+        apply_locked: Callable[[], Awaitable[object]], snapshot: EdictumPluginApplySnapshot | None,
+        *, plugin_only: bool,
+    ) -> dict[str, Any]:
+        """
+        共用逐实例协调的锁顺序, 观测范围和失败封装, 保留两种应用的计时契约
+
+        参数:
+        - session_id: 原计划会话
+        - entry: 原计划驻留对象
+        - semaphore: 本批次的并发限制
+        - apply_locked: 取得会话锁后执行的领域动作, 内部仍需实时核验
+        - snapshot: 可选共享来源, 用于报告捕获耗时
+        - plugin_only: 插件应用保留同步锁计时和原调试日志
+
+        返回:
+        - 含平台, 会话及原计时字段的逐实例结果, 取消仍向上传播
+        """
+        with progress_instance(self.platform_id, session_id):
+            timings = PhaseTimings()
+            started = time.perf_counter()
+            lock_wait_ms = 0.0
+            sync_lock_wait_ms = 0.0
+            label = "Edictum 插件热更新" if plugin_only else "Edictum 完整应用"
+
+            def timing_payload(*, failed: bool = False) -> dict[str, float]:
+                """保留成功和失败路径原有的共享读取与同步锁耗时字段"""
+                values = timings.to_payload() if plugin_only else {'total_ms': round((time.perf_counter() - started) * 1000, 3)}
+                values['queue_and_lock_wait_ms'] = round(lock_wait_ms, 3)
+                if plugin_only:
+                    values['sync_lock_wait_ms'] = round(sync_lock_wait_ms, 3)
+                if snapshot is not None and (plugin_only or not failed):
+                    values['shared_config_read_ms'] = round(snapshot.read_ms, 3)
+                return values
+
+            try:
+                async with progress_locks(semaphore, entry.async_operation_lock):
+                    lock_wait_ms = (time.perf_counter() - started) * 1000
+                    if isinstance(entry.session, AsyncSession):
+                        result = await apply_locked()
+                    else:
+                        sync_started = time.perf_counter()
+                        with entry.sync_operation_lock:
+                            sync_lock_wait_ms = (time.perf_counter() - sync_started) * 1000
+                            result = await apply_locked()
+                payload: dict[str, Any] = cast(dict[str, Any], result).copy() if isinstance(result, dict) else {"ok": True}
+                payload.update(session_id=session_id, platform_id=self.platform_id)
+                payload['timings_ms'] = {**payload.get('timings_ms', {}), **timing_payload()}
+                if plugin_only:
+                    logger.debug(f"[SessionManager] 插件协调完成, 会话={session_id}, timings_ms={payload['timings_ms']}")
+            except Exception as error:
+                logger.error(f"[SessionManager] {label}失败: {session_id}, {error}\n{traceback.format_exc()}")
+                payload = {"ok": False, "session_id": session_id, "platform_id": self.platform_id,
+                           "error": str(error), "timings_ms": timing_payload(failed=True)}
+            progress_result(payload)
+            return payload
+
     async def reconcile_edictum_plugins_async(
         self,
         *,
         config_name: str | None = None,
         session_ids: set[str] | None = None,
         desired_plugins: object | None = None,
+        plugin_name: str | None = None,
         concurrency: int = 4,
+        apply_snapshot: EdictumPluginApplySnapshot | None = None,
+        apply_targets: list[tuple[str, SessionEntry, str, str]] | None = None,
+        runtime_is_current: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         """
         对当前平台选定的活跃 Edictum 会话应用完整插件差量
@@ -1456,61 +1844,57 @@ class SessionManager:
         - config_name: 可选 Edictum 配置名称过滤
         - session_ids: 可选会话 ID 过滤
         - desired_plugins: 可选目标插件配置覆盖
+        - plugin_name: 可选插件引用过滤, 旧引用移除也需要协调
         - concurrency: 最大并发协调数
+        - apply_snapshot: 可选后端跨平台共享快照, 默认由 Provider 准备
+        - apply_targets: 可选来源准备前固定的实例范围与运行代次
+        - runtime_is_current: 可选后端平台管理器身份复核, 不缓存结果
 
         返回:
         - list[dict[str, Any]]: 逐会话应用结果
         """
         provider = self.provider_registry.get("edictum")
         reconcile = safe_getattr_callable(provider, "reconcile_session_plugins_async")
+        references = safe_getattr_callable(provider, "references_plugin")
         if reconcile is None:
             return []
+        targets = apply_targets if apply_targets is not None else self.edictum_runtime_apply_targets(config_name=config_name, session_ids=session_ids)
+        capture = safe_getattr_callable(provider, "capture_plugin_application")
+        if apply_snapshot is None and capture is not None:
+            scope = self.edictum_plugin_apply_scope(plugin_name=plugin_name, apply_targets=targets)
+            apply_snapshot = await asyncio.to_thread(capture, scope, desired_plugins=desired_plugins, plugin_name=plugin_name,
+                                                     model_managers=(self._model_cfg_mgr,) if targets and self._model_cfg_mgr is not None else (), include_main_models=False)
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
-        async def reconcile_one(session_id: str, entry: SessionEntry) -> dict[str, Any]:
+        async def reconcile_one(session_id: str, entry: SessionEntry, planned_name: str, generation: str) -> dict[str, Any]:
             """协调一个活跃 Edictum 会话"""
-            try:
-                async with semaphore, entry.async_operation_lock:
-                    if isinstance(entry.session, AsyncSession):
-                        result = reconcile(entry.session, desired_plugins=desired_plugins)
-                        if inspect.isawaitable(result):
-                            result = await result
-                    else:
-                        with entry.sync_operation_lock:
-                            result = reconcile(entry.session, desired_plugins=desired_plugins)
-                            if inspect.isawaitable(result):
-                                result = await result
-                payload: dict[str, Any] = (
-                    cast(dict[str, Any], result).copy()
-                    if isinstance(result, dict)
-                    else {"ok": True}
+            async def apply_locked() -> object:
+                """执行插件差量前核验同一实例, 绑定及来源"""
+                await self._verify_edictum_apply_entry(
+                    session_id, entry, planned_name, generation, apply_snapshot, runtime_is_current,
+                    "插件配置在等待期间已变化, 请重试应用",
                 )
-                payload["session_id"] = session_id
-                payload["platform_id"] = self.platform_id
-                return payload
-            except Exception as error:
-                logger.warning(f"[SessionManager] Edictum 插件热更新失败: {session_id}, {error}")
-                return {
-                    "ok": False,
-                    "session_id": session_id,
-                    "platform_id": self.platform_id,
-                    "error": str(error),
-                }
+                runtime_name = safe_getattr_callable(provider, "plugin_config_name")
+                if runtime_name is not None and runtime_name(entry.session) != planned_name:
+                    raise RuntimeError("运行时 Agent 绑定与目标不一致, 请应用完整 Agent 配置")
+                snapshot_args = {"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}
+                result = reconcile(entry.session, desired_plugins=desired_plugins, **snapshot_args)
+                result = await result if inspect.isawaitable(result) else result
+                self._check_apply_runtime(runtime_is_current)
+                return result
+
+            return await self._reconcile_edictum_entry(
+                session_id, entry, semaphore, apply_locked, apply_snapshot, plugin_only=True,
+            )
 
         pending: list[Awaitable[dict[str, Any]]] = []
-        for session_id, entry in self.pool.list_entries().items():
-            provider_name = str(safe_getattr(entry.session, "_satrap_provider_name") or "")
-            if provider_name != "edictum":
+        for session_id, entry, name, generation in targets:
+            if apply_snapshot is not None and not apply_snapshot.includes_config(name):
                 continue
-            if session_ids is not None and session_id not in session_ids:
+            selected_plugins = [spec.name for spec in apply_snapshot.specs_for(name)] if apply_snapshot is not None else desired_plugins
+            if plugin_name is not None and references is not None and not references(entry.session, plugin_name, desired_plugins=selected_plugins):
                 continue
-            session_config = self.store.get(session_id)
-            if config_name is not None and (
-                session_config is None
-                or session_config.session_type_name != config_name
-            ):
-                continue
-            pending.append(reconcile_one(session_id, entry))
+            pending.append(reconcile_one(session_id, entry, name, generation))
         return list(await asyncio.gather(*pending)) if pending else []
 
     def preview_edictum_plugins(
@@ -1611,6 +1995,9 @@ class SessionManager:
         session_ids: set[str] | None = None,
         desired_config: dict[str, Any] | None = None,
         concurrency: int = 4,
+        apply_snapshot: EdictumPluginApplySnapshot | None = None,
+        apply_targets: list[tuple[str, SessionEntry, str, str]] | None = None,
+        runtime_is_current: Callable[[], bool] | None = None,
     ) -> list[dict[str, Any]]:
         """
         对活跃 Edictum 会话应用插件差量、热重启或卸载
@@ -1620,6 +2007,9 @@ class SessionManager:
         - session_ids: 可选会话 ID 过滤
         - desired_config: 可选目标配置覆盖
         - concurrency: 最大并发会话数
+        - apply_snapshot: 可选后端跨平台共享目标, 默认由 Provider 捕获
+        - apply_targets: 可选准备前固定的实例范围, 默认在本入口捕获
+        - runtime_is_current: 可选后端平台管理器身份复核, 不缓存结果
 
         返回:
         - list[dict[str, Any]]: 逐会话协调结果
@@ -1629,57 +2019,62 @@ class SessionManager:
         reconcile_plugins = safe_getattr_callable(provider, "reconcile_session_plugins_async")
         if preview is None:
             return []
+        targets = apply_targets if apply_targets is not None else self.edictum_runtime_apply_targets(config_name=config_name, session_ids=session_ids)
+        capture = safe_getattr_callable(provider, "capture_plugin_application")
+        if apply_snapshot is None and capture is not None:
+            scope = {name: False for _sid, _entry, name, _generation in targets}
+            apply_snapshot = await asyncio.to_thread(capture, scope, desired_config=desired_config,
+                                                     model_managers=(self._model_cfg_mgr,) if targets and self._model_cfg_mgr is not None else ())
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
-        async def reconcile_one(session_id: str, entry: SessionEntry) -> dict[str, Any]:
+        async def reconcile_one(session_id: str, entry: SessionEntry, planned_name: str, generation: str) -> dict[str, Any]:
             """协调一个活跃 Edictum 会话"""
-            async with semaphore:
-                raw_plan = preview(entry.session, desired_config=desired_config)
+            async def apply_locked() -> dict[str, Any]:
+                """在共同生命周期核验后执行完整目标预览与协调"""
+                stored = await self._verify_edictum_apply_entry(
+                    session_id, entry, planned_name, generation, apply_snapshot, runtime_is_current,
+                    "配置在等待期间已变化, 请重试应用",
+                )
+                snapshot_args: dict[str, Any] = {}
+                if apply_snapshot is not None:
+                    runtime_name = safe_getattr_callable(provider, "plugin_config_name")
+                    name = stored.session_type_name if stored is not None else runtime_name(entry.session) if runtime_name is not None else None
+                    snapshot_args = {"apply_snapshot": apply_snapshot, "target_config_name": name,
+                                     "instance_overrides": dict(stored.session_config or {}) if stored is not None else None}
+                raw_plan = preview(entry.session, desired_config=desired_config, **snapshot_args)
                 plan = (
                     cast(dict[str, Any], raw_plan)
                     if isinstance(raw_plan, dict)
                     else {}
                 )
+                if not plan.get("ok", True):
+                    return {**plan, "session_id": session_id, "platform_id": self.platform_id}
+                if apply_snapshot is not None and plan.get("action") != "unload" and self._model_cfg_mgr is not None and stored is not None:
+                    getter = safe_getattr_callable(provider, "get_definition")
+                    definition = getter(planned_name, apply_snapshot=apply_snapshot) if getter is not None else None
+                    if definition is None:
+                        raise RuntimeError("Agent 定义在模型核验时不存在")
+                    llm_config = self._model_config_for(stored, definition, apply_snapshot=apply_snapshot)
+                    if llm_config is not None and safe_getattr(entry.session, "_satrap_model_config_fingerprint") != llm_config_fingerprint(llm_config):
+                        plan["action"] = "restart"
+                        plan["changed_fields"] = [*plan.get("changed_fields", []), "model_config"]
+                if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
+                    raise RuntimeError("配置在目标核验期间已变化, 请重试应用")
+                self._check_edictum_apply_entry(session_id, entry, generation, runtime_is_current)
                 action = str(plan.get("action", "noop"))
                 if action == "restart":
-                    return await self.restart_session_async(session_id)
+                    return await self._restart_entry_locked(session_id, entry, apply_snapshot=apply_snapshot, runtime_is_current=runtime_is_current)
                 if action == "unload":
-                    return await self.unload_session_async(session_id)
+                    return await self._unload_entry_locked(session_id, entry)
                 if action == "reconcile_plugins" and reconcile_plugins is not None:
-                    stored_config = self.store.get(session_id)
-                    target_config_name = (
-                        stored_config.session_type_name
-                        if stored_config is not None
-                        else config_name
-                    )
-                    if desired_config is not None:
-                        desired_plugins: object | None = desired_config.get("plugins", [])
-                    else:
-                        definition = (
-                            provider.get_definition(target_config_name or "")
-                            if provider is not None
-                            else None
-                        )
-                        desired_plugins = (
-                            definition.metadata.get("plugins", [])
-                            if definition is not None
-                            else None
-                        )
-                    async with entry.async_operation_lock:
-                        if self.pool.list_entries().get(session_id) is not entry:
-                            return {
-                                "ok": False,
-                                "action": action,
-                                "session_id": session_id,
-                                "platform_id": self.platform_id,
-                                "error": "会话运行时已变化",
-                            }
-                        result = reconcile_plugins(
-                            entry.session,
-                            desired_plugins=desired_plugins,
-                        )
-                        if inspect.isawaitable(result):
-                            result = await result
+                    target_name = stored.session_type_name if stored is not None else config_name
+                    definition = provider.get_definition(target_name or "") if apply_snapshot is None and desired_config is None and provider is not None else None
+                    desired_plugins = desired_config.get("plugins", []) if desired_config is not None else definition.metadata.get("plugins", []) if definition is not None else None
+                    result = reconcile_plugins(entry.session, desired_plugins=desired_plugins,
+                                               **({"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}))
+                    if inspect.isawaitable(result):
+                        result = await result
+                    self._check_apply_runtime(runtime_is_current)
                     payload: dict[str, Any] = (
                         cast(dict[str, Any], result).copy()
                         if isinstance(result, dict)
@@ -1696,20 +2091,20 @@ class SessionManager:
                     "platform_id": self.platform_id,
                 }
 
+            return await self._reconcile_edictum_entry(
+                session_id, entry, semaphore, apply_locked, apply_snapshot, plugin_only=False,
+            )
+
         pending: list[Awaitable[dict[str, Any]]] = []
-        for session_id, entry in self.pool.list_entries().items():
-            provider_name = str(safe_getattr(entry.session, "_satrap_provider_name") or "")
-            if provider_name != EDICTUM_PROVIDER:
-                continue
-            if session_ids is not None and session_id not in session_ids:
-                continue
-            stored = self.store.get(session_id)
-            if config_name is not None and (
-                stored is None or stored.session_type_name != config_name
-            ):
-                continue
-            pending.append(reconcile_one(session_id, entry))
+        for session_id, entry, name, generation in targets:
+            pending.append(reconcile_one(session_id, entry, name, generation))
         return list(await asyncio.gather(*pending)) if pending else []
+
+    @staticmethod
+    def _check_apply_runtime(runtime_is_current: Callable[[], bool] | None) -> None:
+        """每次应用边界实时检查所属平台, 已失效批次交给原错误封装记录并返回"""
+        if runtime_is_current is not None and not runtime_is_current():
+            raise RuntimeError("平台运行管理器已变化, 请重试应用")
 
     # ---------- 查询/清理 ----------
     def list_sessions(self) -> List[SessionMetadata]:
@@ -2007,6 +2402,7 @@ class SessionManager:
         session_cfg: SessionConfig,
         *,
         add_to_pool: bool = True,
+        apply_snapshot: EdictumPluginApplySnapshot | None = None,
     ) -> Optional[SessionEntry]:
         """
         根据 SessionConfig 创建活跃会话并放入会话池
@@ -2014,6 +2410,7 @@ class SessionManager:
         参数:
         - session_cfg: 会话配置 (SessionConfig)
         - add_to_pool: 是否立即放入活跃池, 热重启候选实例传 False
+        - apply_snapshot: 可选命名定义和插件来源, 默认沿用正常创建流程
 
         返回:
         - 会话条目 (SessionEntry)
@@ -2022,7 +2419,13 @@ class SessionManager:
         session_type = session_cfg.session_type_name or self.default_session_type
 
         provider_name = session_cfg.provider_name or SESSION_CLASS_PROVIDER
-        resolved = self.provider_registry.resolve_definition(session_type, provider_name)
+        if apply_snapshot is not None and provider_name == EDICTUM_PROVIDER:
+            provider = self.provider_registry.get(provider_name)
+            definition_getter = safe_getattr_callable(provider, "get_definition")
+            definition = definition_getter(session_type, apply_snapshot=apply_snapshot) if definition_getter is not None else None
+            resolved = (provider, definition) if provider is not None and definition is not None else None
+        else:
+            resolved = self.provider_registry.resolve_definition(session_type, provider_name)
         if resolved is None:
             logger.error(
                 f"[SessionManager] 创建会话失败：未知会话定义 provider={provider_name}, "
@@ -2031,6 +2434,7 @@ class SessionManager:
             return None
         provider, definition = resolved
 
+        session: Session | AsyncSession | None = None
         try:
             current_params = dict(session_cfg.session_config or {})
             merged = dict(definition.params)
@@ -2049,27 +2453,23 @@ class SessionManager:
             llm_instance = None
             llm_cfg = None
             if model_cfg_mgr:
-                cfg_params = session_cfg.session_config or {}
-                model_name_key = definition.model_key or "model_name"
-                model_name = cfg_params.get(model_name_key)
-                if not model_name:
-                    model_name = definition.params.get(model_name_key)
-                if not model_name:
-                    model_name = "default"
-                llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
+                llm_cfg = self._model_config_for(session_cfg, definition, apply_snapshot=apply_snapshot)
                 if llm_cfg and llm_cfg.api_key:
-                    llm_instance = build_llm_from_config(
-                        llm_cfg, async_=definition.is_async
-                    )
+                    with progress_phase("model_build_ms"):
+                        llm_instance = build_llm_from_config(
+                            llm_cfg, async_=definition.is_async
+                        )
                 else:
                     logger.warning(
-                        f"[SessionManager] LLM 配置 '{model_name}' 不存在或缺少 api_key, "
+                        f"[SessionManager] LLM 配置 '{llm_cfg.name if llm_cfg is not None else 'default'}' 不存在或缺少 api_key, "
                         f"请先通过 'satrap model set' 配置"
                     )
-            session = provider.create_session(session_cfg, llm=llm_instance)
+            snapshot_args = {"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}
+            session = provider.create_session(session_cfg, llm=llm_instance, **snapshot_args)
             setattr(session, "plugin_environment", self.plugin_environment)
             if llm_cfg is not None:
                 self._apply_session_context_config(session, llm_cfg)
+                setattr(session, "_satrap_model_config_fingerprint", llm_config_fingerprint(llm_cfg))
             self._apply_storage_scope(session, session_id)
             try:
                 setattr(session, "_satrap_provider_name", provider.provider_name)
@@ -2081,12 +2481,17 @@ class SessionManager:
             if user_mgr is not None:
                 session._user_manager = user_mgr
             if not isinstance(session, AsyncSession):
-                self._prepare_session_sync(session)
+                self._prepare_session_sync(session, **snapshot_args)
         except Exception as e:
             logger.error(
                 f"[SessionManager] 创建会话实例失败：session_type_name={session_type}, "
-                f"session_id={session_id}, 错误={e}"
+                f"session_id={session_id}, 错误={e}\n{traceback.format_exc()}"
             )
+            if session is not None and not isinstance(session, AsyncSession):
+                try:
+                    self._release_session_memory(session)
+                except Exception as cleanup_error:
+                    logger.error(f"[SessionManager] 失败候选清理失败: {session_id}, {cleanup_error}\n{traceback.format_exc()}")
             return None
 
         if not add_to_pool:
@@ -2122,6 +2527,26 @@ class SessionManager:
             logger.error(f"[SessionManager] 创建会话条目失败：session_id={session_id}")
             return None
         return entry
+
+    def _model_config_for(self, session_cfg: SessionConfig, definition: SessionProviderDefinition, *,
+                          apply_snapshot: EdictumPluginApplySnapshot | None = None) -> LLMConfig | None:
+        """
+        以同一合成规则选择主模型, 完整应用时只读捕获来源
+
+        参数:
+        - session_cfg: 最新实例覆盖
+        - definition: 当前或已捕获命名定义
+        - apply_snapshot: 可选完整运行应用来源
+
+        返回:
+        - 独立模型配置, 未接入模型服务时为 None
+        """
+        if self._model_cfg_mgr is None:
+            return None
+        key = definition.model_key or "model_name"
+        name = (session_cfg.session_config or {}).get(key) or definition.params.get(key) or "default"
+        models = apply_snapshot.models_for(self._model_cfg_mgr) if apply_snapshot is not None else self._model_cfg_mgr
+        return models.get_llm_config(name=name) if models is not None else None
 
     def _get_or_create_entry(self, session_cfg: SessionConfig) -> SessionEntry | None:
         """
@@ -2243,6 +2668,7 @@ class SessionManager:
         - new_llm: 新模型实例
         - llm_cfg: 新模型配置
         """
+        setattr(session, "_satrap_group_model_name", None)   # 外部模型替换前失效群覆盖缓存, 失败后下一轮仍会重试
         # 同步与异步模型类型由会话类型决定, reload_llm 恒被调用
         if isinstance(session, AsyncSession):
             session.reload_llm(cast(AsyncLLM, new_llm))
@@ -2256,6 +2682,10 @@ class SessionManager:
                 reset_llm(new_llm)
             elif workflow is not None and hasattr(workflow, "llm"):
                 workflow.llm = new_llm
+        applied_name = getattr(llm_cfg, "name", None)
+        setattr(session, "_satrap_model_config_fingerprint", llm_config_fingerprint(llm_cfg))
+        setattr(session, "_satrap_group_model_name", applied_name if isinstance(applied_name, str) else None)
+        # 所有模型引用更新成功后记录实际应用名称, 未命名配置保留待重试状态
         logger.info(f"[SessionManager] 已刷新会话 LLM 配置: {session_id}")
 
     def _persist_config(self, config: SessionConfig) -> None:
@@ -2319,8 +2749,8 @@ class SessionManager:
         setattr(session, "coding_artifacts_root", str(root / "artifacts"))
         setattr(session, "coding_indexes_root", str(root / "indexes"))
         setattr(session, "coding_cache_root", str(root / "cache"))
-        setattr(session, "coding_memory_db", str(self.storage_layout.platform_db(self.platform_id)))
-        setattr(session, "coding_memory_scope", f"session:{session_id}")
+        setattr(session, "memory_db", str(self.storage_layout.platform_db(self.platform_id)))
+        setattr(session, "memory_scope", f"session:{session_id}")
 
     def _sync_runtime_to_store(self, session_id: str, session: Session | AsyncSession):
         """
@@ -2355,10 +2785,11 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin):
+            with bind_call_origin(user_call.origin), buffer_session_reply(session):
                 return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
-            logger.error(f"[SessionManager] 同步会话执行失败：{e}")
+            abort_reply_turn()
+            logger.error(f"[SessionManager] 同步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
             return ""
 
     @staticmethod
@@ -2376,16 +2807,17 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin):
+            with bind_call_origin(user_call.origin), buffer_session_reply(session):
                 return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
-            logger.error(f"[SessionManager] 异步会话执行失败：{e}")
+            abort_reply_turn()
+            logger.error(f"[SessionManager] 异步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
             return ""
 
     @staticmethod
     def _build_media_kwargs(run_method: Any, user_call: UserCall) -> dict[str, Any]:
         """
-        按会话签名适配新增视频参数
+        按会话签名适配视频与本轮资料参数
 
         参数:
         - run_method: 当前会话的 run 方法
@@ -2394,7 +2826,7 @@ class SessionManager:
         返回:
         - 有视频时传递关键字参数, 不支持该输入的旧会话明确报错
         """
-        if not user_call.video_urls:
+        if not user_call.video_urls and not user_call.request_blocks:
             return {}
         params = inspect.signature(run_method).parameters
         positional = [p for p in params.values() if p.kind in {
@@ -2402,9 +2834,15 @@ class SessionManager:
         }]
         if positional and positional[0].name.lower() in {"user_call", "call", "request"}:
             return {}
-        if "video_urls" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
-            return {"video_urls": user_call.video_urls}
-        raise ValueError("当前会话未提供视频输入接口")
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        kwargs: dict[str, Any] = {}
+        if user_call.video_urls:
+            if "video_urls" not in params and not accepts_kwargs:
+                raise ValueError("当前会话未提供视频输入接口")
+            kwargs["video_urls"] = user_call.video_urls
+        if user_call.request_blocks and ("request_blocks" in params or accepts_kwargs):
+            kwargs["request_blocks"] = user_call.request_blocks
+        return kwargs
 
     @staticmethod
     def _build_run_args(run_method: Any, user_call: UserCall) -> tuple[Any, ...]:
@@ -2485,35 +2923,37 @@ class SessionManager:
             self._sync_runtime_to_store(session_id, entry.session)
             return response
 
-    def _prepare_session_sync(self, session: Session | AsyncSession) -> None:
+    def _prepare_session_sync(self, session: Session | AsyncSession, *, apply_snapshot: EdictumPluginApplySnapshot | None = None) -> None:
         """
         执行 Provider 的同步会话准备生命周期
 
         参数:
         - session: 已创建的会话实例
+        - apply_snapshot: 可选候选应用来源, 不进入后续请求上下文
         """
         provider_name = str(safe_getattr(session, "_satrap_provider_name") or "")
         provider = self.provider_registry.get(provider_name) if provider_name else None
         prepare = safe_getattr_callable(provider, "prepare_session")
         if prepare is not None:
-            prepare(session)
+            prepare(session, **({"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}))
 
-    async def _prepare_session_async(self, session: Session | AsyncSession) -> None:
+    async def _prepare_session_async(self, session: Session | AsyncSession, *, apply_snapshot: EdictumPluginApplySnapshot | None = None) -> None:
         """
         执行 Provider 的异步会话准备生命周期
 
         参数:
         - session: 已创建的会话实例
+        - apply_snapshot: 可选候选应用来源, 不进入后续请求上下文
         """
         provider_name = str(safe_getattr(session, "_satrap_provider_name") or "")
         provider = self.provider_registry.get(provider_name) if provider_name else None
         prepare_async = safe_getattr_callable(provider, "prepare_session_async")
         if prepare_async is not None:
-            result = prepare_async(session)
+            result = prepare_async(session, **({"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}))
             if inspect.isawaitable(result):
                 await result
             return
-        await SESSION_WORKERS.run(self._prepare_session_sync, session)
+        await SESSION_WORKERS.run(partial(self._prepare_session_sync, session, apply_snapshot=apply_snapshot))
 
     def get_session_runtime_metadata(self, session_id: str) -> dict[str, Any]:
         """

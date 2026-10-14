@@ -1,0 +1,79 @@
+"""
+memory 处理器: 长期记忆注入模型输入 (从 coding 插件迁入, 仅记忆部分)
+
+注入点: before_user_send (用户消息进入模型前), 把记忆块拼接到消息头部;
+每轮读取内容并比较缓存, 内容变化时重新拼接注入文本
+"""
+from __future__ import annotations
+from typing import Any
+
+from satrap.expend.plugins.memory.state import get_plugin_state
+from satrap.core.memory.service import MemoryService
+from satrap.expend.plugins.memory.runtime import active_config, group_call
+from satrap.edictum import (
+    AsyncSimpleSession,
+    HandlerContext,
+    SessionHandler,
+    SimpleSession,
+)
+
+_HEADER = "【长期记忆】\n"
+
+SessionType = SimpleSession | AsyncSimpleSession
+"""插件支持的会话类型"""
+
+
+class _MemoryInjector:
+    """记忆注入器 (带缓存失效)"""
+
+    def __init__(self, store: MemoryService) -> None:
+        """
+        初始化 _MemoryInjector
+
+        参数:
+        - store: 存储实例
+        """
+        self.store = store
+        self._cache: tuple[str, str] = ("", "")
+        """缓存: (记忆块, 拼接结果)"""
+
+    def inject(self, text: str) -> str:
+        """
+        返回注入后的文本 (无内容时透传)
+
+        参数:
+        - text: 待处理文本
+
+        返回:
+        - str: 注入后的文本 (无内容时透传)
+        """
+        memory_block = self.store.context_block()
+        if not memory_block:
+            return text
+        if memory_block != self._cache[0]:
+            self._cache = (memory_block, _HEADER + memory_block + "\n")
+        return self._cache[1] + text
+
+def build_handlers(session: SessionType, config: dict[str, Any] | None = None) -> list[SessionHandler]:
+    """
+    构建处理器: 注入记忆到模型输入
+
+    参数:
+    - session: 会话
+    - config: 已解析的插件配置
+
+    返回:
+    - list[SessionHandler]: 构建处理器: 注入记忆到模型输入
+    """
+    state = get_plugin_state(session, config)
+    store = state["service"]
+    assert isinstance(store, MemoryService)
+    injector = _MemoryInjector(store)
+
+    def before_user_send(text: str, ctx: HandlerContext) -> str:
+        if group_call():
+            block = store.group_context_sync(access=lambda: active_config(session, dict(config or {}), "handlers", "memory.memory_inject"))
+            return block + "\n\n" + text if block else text
+        return injector.inject(text)
+
+    return [SessionHandler(name="memory.memory_inject", priority=0, before_user_send=before_user_send)]

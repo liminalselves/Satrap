@@ -1,5 +1,6 @@
 """OneBot 消息段与 Satrap 消息组件转换工具"""
 from __future__ import annotations
+import re
 
 from pydantic import ValidationError
 from pathlib import Path
@@ -22,8 +23,10 @@ from satrap.core.components import (
     Reply,
     Unknown,
     Video,
+    preferred_media_source,
 )
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
+from satrap.core.log import logger
 
 
 PRIVATE_SESSION_PREFIX = "private%"
@@ -164,14 +167,15 @@ def onebot_segments_to_components(segments: list[dict[str, Any]], depth: int = 0
             components.append(Face(id=data.get("id", "")))
             text_parts.append(f"[表情:{data.get('id', '')}]")
         elif seg_type == "image":
-            source = str(data.get("url") or data.get("file") or "")
-            components.append(Image(file=source, url=str(data.get("url", ""))))
+            native = str(data.get("file", ""))
+            native = native if re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", native) else ""
+            components.append(Image(file=str(data.get("file", "")), url=str(data.get("url", "")), native_media_id=native))
             text_parts.append("[图片]")
         elif seg_type == "record":
-            components.append(Record(file=str(data.get("url") or data.get("file") or "")))
+            components.append(Record(file=str(data.get("file", "")), url=str(data.get("url", ""))))
             text_parts.append("[语音]")
         elif seg_type == "video":
-            components.append(Video(file=str(data.get("url") or data.get("file") or "")))
+            components.append(Video(file=str(data.get("file", "")), url=str(data.get("url", ""))))
             text_parts.append("[视频]")
         elif seg_type == "file":
             components.append(
@@ -205,33 +209,6 @@ def onebot_segments_to_components(segments: list[dict[str, Any]], depth: int = 0
             text_parts.append(f"[{seg_type or 'unknown'}]")
 
     return components, "".join(text_parts)
-
-
-def forward_ids_in_message(message: Any, limit: int = 8) -> set[str]:
-    """
-    提取消息顶层组件中的合并转发 ID, 不递归推断嵌套转发
-
-    参数:
-    - message: OneBot message 字段, 支持 segment 列表与纯文本
-    - limit: 最多收集的 ID 数, 防止超长消息拖慢归属核验
-
-    返回:
-    - set[str]: 顶层 forward 段的 id 集合; 段类型按组件规范同样归一为小写, 空值不计入
-    """
-    ids: set[str] = set()
-    for segment in normalize_segments(message):
-        if str(segment.get("type", "")).lower() != "forward":
-            continue
-        data = segment.get("data")
-        if not isinstance(data, dict):
-            continue
-        raw = cast(dict[str, Any], data).get("id")
-        text = str(raw).strip() if isinstance(raw, (str, int)) and not isinstance(raw, bool) else ""
-        if text:
-            ids.add(text)
-        if len(ids) >= max(1, limit):
-            break
-    return ids
 
 
 def parse_forward_nodes(items: list[Any], limit: int = FORWARD_NODE_LIMIT, depth: int = 1) -> list[Node]:
@@ -290,11 +267,11 @@ async def component_to_onebot_segment(component: BaseMessageComponent) -> dict[s
     if isinstance(component, Face):
         return {"type": "face", "data": {"id": str(component.id)}}
     if isinstance(component, Image):
-        return {"type": "image", "data": {"file": _normalize_file_source(component.file or component.url or "")}}
+        return {"type": "image", "data": {"file": _normalize_file_source(preferred_media_source(component))}}
     if isinstance(component, Record):
-        return {"type": "record", "data": {"file": _normalize_file_source(component.file or component.url or "")}}
+        return {"type": "record", "data": {"file": _normalize_file_source(preferred_media_source(component))}}
     if isinstance(component, Video):
-        return {"type": "video", "data": {"file": _normalize_file_source(component.file or component.url or "")}}
+        return {"type": "video", "data": {"file": _normalize_file_source(preferred_media_source(component))}}
     if isinstance(component, File):
         return await component.to_dict()
     if isinstance(component, Reply):
@@ -333,18 +310,23 @@ def create_platform_message(raw_event: dict[str, Any], self_id: str) -> Platform
     message = PlatformMessage()
     message.raw_message = raw_event
     message.self_id = str(raw_event.get("self_id") or self_id or "")
-    message.message_id = str(raw_event.get("message_id", ""))
+    raw_id = raw_event.get("message_id")
+    message.message_id = str(raw_id) if isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool) else ""
     try:
         message.timestamp = int(raw_event.get("time") or message.timestamp)
-    except (TypeError, ValueError):
-        pass
+        if raw_event.get("time"):
+            message.timestamp_source = "platform"
+    except (TypeError, ValueError, OverflowError) as exc:
+        logger.warning(f"[OneBot] 消息时间无效, 使用接收时间, 原因={type(exc).__name__}")
     # time 字段非数字时保留默认时间戳, 不丢整条消息
 
     raw_sender = raw_event.get("sender")
     sender = cast(dict[str, Any], raw_sender) if isinstance(raw_sender, dict) else {}
     user_id = str(raw_event.get("user_id") or sender.get("user_id") or "")
     nickname = str(sender.get("nickname") or sender.get("card") or user_id)
-    message.sender = MessageMember(user_id=user_id, nickname=nickname)
+    role = sender.get("role")
+    message.sender = MessageMember(user_id=user_id, nickname=nickname, card=str(sender.get("card") or ""),
+                                   role=role if role in ("owner", "admin", "member") and str(sender.get("user_id")) == user_id else "")
 
     segments = normalize_segments(raw_event.get("message"))
     message.message, message.message_str = onebot_segments_to_components(segments)

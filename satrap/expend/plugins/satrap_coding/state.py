@@ -4,7 +4,7 @@ satrap_coding 插件级共享状态: 工具/命令/处理器共享同一实例
 关键: /plan 设置的计划模式必须作用于工具审批引擎, /goal 注入必须与命令写入的目标一致,
 因此 tools.py / commands.py / handlers.py 通过本模块获取同一份状态 (按会话隔离)
 
-注: 长期记忆已移交 base_take 插件, 本插件不再持有 MemoryStore
+注: 长期记忆已移交 memory 插件, 本插件不再持有 MemoryStore
 """
 from __future__ import annotations
 

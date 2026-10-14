@@ -7,7 +7,7 @@ from typing import IO
 from types import TracebackType
 import os
 
-from satrap.core.utils.paths import get_data_dir
+from satrap.core.runtime_paths import get_runtime_path
 
 
 class BackendInstanceLock:
@@ -20,7 +20,7 @@ class BackendInstanceLock:
         参数:
         - path: 路径
         """
-        self.path = Path(path) if path is not None else get_data_dir() / "backend.lock"
+        self.path = Path(path) if path is not None else get_runtime_path("backend.lock", require_idle=True)
         self._fh: IO[str] | None = None
 
     def acquire(self, host: str, port: int) -> bool:

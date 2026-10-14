@@ -9,9 +9,9 @@ from typing import Any, cast
 import re
 
 from satrap.core.config.platform_policy import POLICY_DEFAULTS, normalize_group_whitelist, policy_default, validate_wake_policy
-from satrap.core.config.wake_overrides import SOURCE_PLATFORM, resolve_wake_policy_sources, resolve_wake_settings
+from satrap.core.config.wake_overrides import resolve_wake_policy_sources, resolve_wake_settings
 from satrap.core.pipeline.wake_policy import NEVER_TRIGGER_THRESHOLD, WakeDecision, evaluate_wake, resolve_message_threshold
-from satrap.core.pipeline.wake_window import PendingText, WakeWindow
+from satrap.core.pipeline.wake_window import PendingMessage, WakeWindow
 from satrap.core.platform import PlatformConfig
 from satrap.core.platform.event import MessageEvent
 from satrap.core.platform.onebot.adapter import OneBotAdapter
@@ -39,6 +39,10 @@ def _threshold_preview(settings: dict[str, Any]) -> dict[str, object]:
     返回:
     - dict[str, object]: 阈值, 来源与覆盖提示; 关闭时 value 为 None 且 closed 为 True
     """
+    if settings.get("wake_mode") == "all":
+        return {"applicable": False, "value": None, "source": "not_applicable", "label": "每条消息触发无需条数阈值",
+                "talk_value": settings.get("wake_talk_value"), "talk_value_effective": False, "closed": False, "overridden": False,
+                "hint": "数量/必要性阈值, 冷却和最长等待在此模式下不生效; 平台准入和限流仍生效"}
     resolution = resolve_message_threshold(settings)
     overridden = resolution.talk_value is not None and not resolution.talk_value_effective
     return {
@@ -220,9 +224,9 @@ async def dry_run_wake(payload: object) -> dict[str, Any]:
         probe_text = probe_data.get("text", "")
         if not isinstance(probe_text, str) or len(probe_text) > MAX_STEP_TEXT:
             raise ValueError(f"probe.text 必须为不超过 {MAX_STEP_TEXT} 字符的字符串")
-        if probe_data.get("quote_self") is True:
+        if probe_data.get("quote_self") is True and resolved.get("wake_mode") != "all":
             explicit = _undetermined("引用回源内容无法在试算中获取, 真实路径将回源后按 wake_on_quote_self 评估")
-        elif not probe_text.strip() and probe_data.get("at_self") is not True:
+        elif not probe_text.strip() and probe_data.get("at_self") is not True and resolved.get("wake_mode") != "all":
             explicit = _undetermined("探测消息既无正文也未提及机器人, 无显式规则可评估")
         else:
             probe_event = await scenario_event(
@@ -234,7 +238,14 @@ async def dry_run_wake(payload: object) -> dict[str, Any]:
     # 自动路径: 隔离窗口按样例时间推进, submit 步骤经 decide+claim 真实标记提交以覆盖冷却
     window = WakeWindow()
     now = _BASE_NOW
-    snapshot: tuple[PendingText, ...] = ()
+    snapshot: tuple[PendingMessage, ...] = ()
+    all_mode = resolved.get("wake_mode") == "all"
+
+    def window_decision(event: MessageEvent, rows: tuple[PendingMessage, ...], *, deadline: bool = False) -> WakeDecision:
+        """全触发共用正常唤醒判定, 不送入自动阈值或冷却计算"""
+        if all_mode:
+            return evaluate_wake(event) if rows else WakeDecision(False, "no_pending", "没有可处理消息")
+        return window.decide(event, rows, now, deadline=deadline)
     last_event: MessageEvent | None = None
     step_results: list[dict[str, object]] = []
     for index, step in enumerate(steps):
@@ -243,8 +254,8 @@ async def dry_run_wake(payload: object) -> dict[str, Any]:
             if last_event is None:
                 step_results.append({"index": index, "kind": "submit", "decision": _undetermined("尚无可评估消息")})
                 continue
-            decision = window.decide(last_event, snapshot, now)
-            claimed = window.claim(last_event, snapshot, True, now)
+            decision = window_decision(last_event, snapshot)
+            claimed = window.claim(last_event, snapshot, not all_mode, now) if decision.triggered else ()
             if claimed:
                 snapshot = ()
             step_results.append({
@@ -264,9 +275,9 @@ async def dry_run_wake(payload: object) -> dict[str, Any]:
         deadline_decision = _undetermined("场景不含消息, 无法评估自动参与")
         cooldown_remaining = 0.0
     else:
-        final_decision = _decision_dict(window.decide(last_event, snapshot, now))
-        deadline_decision = _decision_dict(window.decide(last_event, snapshot, now, deadline=True))
-        cooldown_remaining = window.cooldown_remaining(last_event, now)
+        final_decision = _decision_dict(window_decision(last_event, snapshot))
+        deadline_decision = _decision_dict(WakeDecision(False, "no_timer", "每条消息触发不使用最长等待计时器") if all_mode else window_decision(last_event, snapshot, deadline=True))
+        cooldown_remaining = 0.0 if all_mode else window.cooldown_remaining(last_event, now)
 
     return {
         "ok": True,

@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 from satrap.core.config.platform_policy import POLICY_FIELD_CONTRACT, PolicyField  # noqa: E402
 
 TARGET = ROOT / "satrap-ui" / "src" / "generated" / "wake-policy-contract.json"
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 """契约 JSON 结构版本; 字段增删或语义变化时递增"""
 
 SERIALIZED_KEYS = (

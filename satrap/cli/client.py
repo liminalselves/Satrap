@@ -152,6 +152,18 @@ class DaemonClient:
         """
         return self._request("POST", "/api/platforms/wake", payload)
 
+    def recover_platform_store(self, name: str) -> dict[str, Any]:
+        """
+        请求后端校验修复后的平台状态存储, 不执行申请或重发唤醒
+
+        参数:
+        - name: manual_wake 或 request_ledger
+
+        返回:
+        - 存储恢复结果, 拒绝恢复时以 DaemonError 抛出
+        """
+        return self._request("POST", "/api/platforms/recover-store", {"store": name})
+
     def shutdown(self) -> dict[str, Any]:
         """
         关闭

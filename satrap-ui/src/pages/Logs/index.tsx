@@ -5,20 +5,17 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { Select } from '@/components/ui/Select';
 import { LOG_LEVELS } from '@/utils/constants';
-import { appendWithLimit, filterLogs, visibleLogs } from '@/utils/adminMigration';
+import { filterLogs } from '@/utils/adminMigration';
+import { LogBuffer } from '@/utils/logBuffer';
+import { VirtualLogList, type LogEntry } from './VirtualLogList';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { PageHeader } from '@/components/common';
 import { Play, Pause, Trash2, Download, Search, Wifi, WifiOff } from 'lucide-react';
 
-interface LogLine {
-  id: number;
-  content: string;
-  level: string;
-  timestamp: Date;
-}
+
 
 // 日志行组件 - 使用 memo 优化渲染
-const LogLineItem = memo(function LogLineItem({ log }: { log: LogLine }) {
+const LogLineItem = memo(function LogLineItem({ log }: { log: LogEntry }) {
   const levelColor = useMemo(() => {
     switch (log.level) {
       case 'ERROR':
@@ -58,34 +55,51 @@ const LogLineItem = memo(function LogLineItem({ log }: { log: LogLine }) {
   );
 });
 
+const renderLog = (log: LogEntry) => <LogLineItem log={log} />;
+
 export function Logs() {
-  const [logs, setLogs] = useState<LogLine[]>([]);
-  const [pausedLogs, setPausedLogs] = useState<LogLine[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [bufferedCount, setBufferedCount] = useState(0);
   const [paused, setPaused] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [levelFilter, setLevelFilter] = useState<string[]>(LOG_LEVELS.slice());
   const [historyLines, setHistoryLines] = useState(100);
   const [autoScroll, setAutoScroll] = useState(true);
-  const containerRef = useRef<HTMLDivElement>(null);
   const logIdRef = useRef(0);
+  const buffer = useRef(new LogBuffer<LogEntry>());
+  const flushTimer = useRef<ReturnType<typeof setTimeout>>();
+  const flush = useCallback(() => {
+    if (flushTimer.current !== undefined) clearTimeout(flushTimer.current);
+    flushTimer.current = undefined;
+    const snapshot = buffer.current.read();
+    setLogs(snapshot.logs); setBufferedCount(snapshot.bufferedCount);
+  }, []);
 
   const { connect, disconnect, isConnected } = useWebSocket(`/ws/logs?lines=${historyLines}`);
 
   const handleLog = useCallback((data: { content: string; level: string }) => {
-    const newLog: LogLine = {
+    const newLog: LogEntry = {
       id: logIdRef.current++,
       content: data.content,
       level: data.level,
-      timestamp: new Date(),
     };
-    setLogs((prev) => appendWithLimit(prev, newLog, 5000));
-  }, []);
+    buffer.current.append(newLog);
+    if (flushTimer.current === undefined) flushTimer.current = setTimeout(flush, 100);
+  }, [flush]);
 
   useEffect(() => {
-    setLogs([]);
-    setPausedLogs([]);
-    logIdRef.current = 0;
-  }, [historyLines]);
+    buffer.current.clear(); flush();
+  }, [historyLines, flush]);
+
+  useEffect(() => {
+    const visible = () => { if (!document.hidden) flush(); };
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      document.removeEventListener('visibilitychange', visible);
+      if (flushTimer.current !== undefined) clearTimeout(flushTimer.current);
+      flushTimer.current = undefined;
+    };
+  }, [flush]);
 
   useEffect(() => {
     connect({
@@ -95,31 +109,13 @@ export function Logs() {
     return () => disconnect();
   }, [connect, disconnect, handleLog]);
 
-  useEffect(() => {
-    if (autoScroll && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
-  }, [logs, autoScroll]);
-
-  const handleScroll = useCallback(() => {
-    if (!containerRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
-    const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
-    setAutoScroll(isAtBottom);
-  }, []);
-
   const clearLogs = useCallback(() => {
-    setLogs([]);
-    setPausedLogs([]);
-  }, []);
+    buffer.current.clear(); flush();
+  }, [flush]);
 
   const togglePaused = useCallback(() => {
-    setPaused((current) => {
-      if (!current) setPausedLogs(logs);
-      else setPausedLogs([]);
-      return !current;
-    });
-  }, [logs]);
+    buffer.current.pause(!paused); setPaused(!paused); flush();
+  }, [paused, flush]);
 
   const toggleLevel = useCallback((level: string) => {
     setLevelFilter((current) => (
@@ -130,11 +126,12 @@ export function Logs() {
   }, []);
 
   const filteredLogs = useMemo(
-    () => filterLogs(visibleLogs(logs, pausedLogs, paused), levelFilter, searchQuery),
-    [levelFilter, logs, paused, pausedLogs, searchQuery]
+    () => filterLogs(logs, levelFilter, searchQuery),
+    [levelFilter, logs, searchQuery]
   );
-
-  const bufferedCount = paused ? Math.max(0, logs.length - pausedLogs.length) : 0;
+  const empty = useMemo(() => <div className="text-text-tertiary text-center py-8">
+    {isConnected ? '等待日志...' : '未连接到日志服务'}
+  </div>, [isConnected]);
 
   const exportLogs = useCallback(() => {
     const content = filteredLogs.map((l) => l.content).join('\n');
@@ -236,21 +233,7 @@ export function Logs() {
 
       {/* 日志终端 */}
       <Card className="flex-1 min-h-0 p-0 overflow-hidden flex flex-col">
-        <div
-          ref={containerRef}
-          onScroll={handleScroll}
-          className="flex-1 min-h-0 overflow-auto custom-scrollbar p-4 font-mono text-sm"
-        >
-          {filteredLogs.length === 0 ? (
-            <div className="text-text-tertiary text-center py-8">
-              {isConnected ? '等待日志...' : '未连接到日志服务'}
-            </div>
-          ) : (
-            filteredLogs.map((log) => (
-              <LogLineItem key={log.id} log={log} />
-            ))
-          )}
-        </div>
+        <VirtualLogList logs={filteredLogs} render={renderLog} empty={empty} autoScroll={autoScroll} onBottomChange={setAutoScroll} />
 
         {/* 状态栏 */}
         <div className="shrink-0 px-4 py-2 border-t border-glass-border flex items-center justify-between text-xs text-text-tertiary">

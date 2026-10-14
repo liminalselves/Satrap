@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useBlocker } from 'react-router-dom';
 
 export const DISCARD_MESSAGE = '当前表单有未保存的修改, 确定放弃吗?';
@@ -9,14 +9,15 @@ export function confirmDiscard(): boolean {
 }
 
 /**
- * 脏状态保护:
- * - 浏览器关闭/刷新 (beforeunload): 交给浏览器原生确认;
- * - 站内导航 (侧栏链接/代码跳转) 与浏览器前进/后退: 数据路由的 useBlocker 统一拦截,
- *   确认后按原意图继续跳转, 拒绝则留在当前页面且草稿保持。
- * 确认只决定是否离开, 不改写草稿; 草稿不写入 localStorage/sessionStorage。
+ * 脏状态保护, 接受布尔值或实时读取多个编辑区域的状态函数
+ * 浏览器关闭和刷新交给原生确认; 站内导航及前进后退由 useBlocker 拦截
+ * 确认后继续原导航, 拒绝则保留页面和草稿; 草稿不写入浏览器存储
  */
-export function useDirtyGuard(active: boolean): void {
-  const blocker = useBlocker(active);
+export function useDirtyGuard(active: boolean | (() => boolean)): void {
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const isActive = useCallback(() => typeof activeRef.current === 'function' ? activeRef.current() : activeRef.current, []);
+  const blocker = useBlocker(isActive);   // 保存后立即按最新状态判断, 避免路由回调仍使用上一帧的脏状态
 
   useEffect(() => {
     if (blocker.state !== 'blocked') return;
@@ -27,10 +28,11 @@ export function useDirtyGuard(active: boolean): void {
   useEffect(() => {
     if (!active) return;
     const handler = (event: BeforeUnloadEvent) => {
+      if (!isActive()) return;
       event.preventDefault();
       event.returnValue = DISCARD_MESSAGE;
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [active]);
+  }, [active, isActive]);
 }

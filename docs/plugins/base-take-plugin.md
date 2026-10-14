@@ -1,6 +1,6 @@
 # base_take 插件: 基础能力集
 
-`base_take` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 提供通用基础能力: 网页搜索、网页抓取、代码沙箱、文档解析与长期记忆。与 `satrap_coding` 插件互补, 可独立或组合使用。
+`base_take` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 提供通用基础能力: 网页搜索、网页抓取、代码沙箱、文档解析。与 `satrap_coding` 插件互补, 可独立或组合使用。
 
 ## 安装
 
@@ -12,9 +12,9 @@ session.install_plugin("./satrap/expend/plugins/base_take")
 
 plugin = session.list_plugins()[0]
 plugin.name          # "base_take"
-plugin.tools         # 8 个工具
-plugin.handlers      # base_take.memory_inject
-plugin.commands      # memory
+plugin.tools         # 4 个工具
+plugin.handlers      # 无记忆处理器
+plugin.commands      # 无记忆命令
 ```
 
 异步版 `AsyncSimpleSession` 同样支持 (`await session.install_plugin(path)`)。
@@ -26,9 +26,6 @@ plugin.commands      # memory
 | 搜索 | search / fetch_page | 网页搜索与抓取 (复用 expend.tools.search) |
 | 沙箱 | code_sandbox | 在隔离目录中执行 Python 代码 |
 | 文档 | read_document | 解析 xlsx / docx / pdf / 纯文本为纯文本 |
-| 记忆 | add_memory / update_memory / delete_memory / list_memories | 长期记忆增删改查 |
-| 处理器 | base_take.memory_inject | 用户消息进入模型前注入记忆块 |
-| 命令 | /memory | 记忆管理 (list / add / del / clear / mode) |
 
 ## 插件配置
 
@@ -39,25 +36,20 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | sandbox_root | path | 空 | 独立调用的兜底值; 平台运行时始终使用会话私有 sandbox |
 | workspace_root | path | 项目根 | read_document 白名单根目录 |
 | search_timeout | number | 10 | 搜索超时 (秒) |
-| memory_scope | string | 空 | 独立调用的作用域覆盖; 平台运行时固定按会话注入 |
-| memory_mode | select | full | 记忆模式: disabled (不注入/不可写) / base (只读) / full (可增删改); 仅约束模型工具与注入, web 管理接口 (前端面板) 恒定可写 |
+| allowed_env_vars | string | 空 | 代码子进程显式放行的环境变量名, 多个名称用逗号分隔 |
 
-安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/base_take.json`。
+安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/base_take.json`。
 
 ## 沙箱协调
 
 base_take 与 satrap_coding 在同一会话内共享该会话的私有 sandbox, 不与其他会话共享。当两插件同时启用时, ChatService 自动停用 base_take 的 `code_sandbox` 工具, 避免能力重复。
 
-## 长期记忆
+代码子进程默认移除密钥类环境变量, `allowed_env_vars` 可按名称显式放行; Windows 按不区分大小写的名称匹配. 目录约束和环境过滤不等同于操作系统级隔离
 
-记忆存储使用当前平台的 `platform.db`, 按 scope 隔离, 默认 `session:<session_id>`。记忆由注入处理器自动拼接到后续用户消息头部 (importance 降序, 上限 30 条), 保证模型每轮都携带已知约定。
+## 记忆能力拆分
 
-**记忆隔离**: 平台运行时始终使用 `session:<session_id>`。项目绑定不改变记忆边界, 不允许通过插件配置覆盖平台注入的作用域。
-
-两点语义说明:
-
-- **与计划模式隔离**: 记忆是元信息, 不属于工作区写操作, satrap_coding 的 `/plan` 计划模式不会拦截记忆增删改 (有意设计)。
-- **memory_mode 的作用范围**: 只约束模型侧 (记忆工具 + 注入); `/memory` 命令与 web 记忆管理接口 (前端面板 / HTTP API) 是管理员工具, 恒定可写, 不受 memory_mode 约束。`/memory mode` 切换仅影响当前会话的内存状态, 不持久化, 会话重建后回落到插件配置值。
+长期记忆已独立为 [memory 插件](memory-plugin.md), 本插件不再持有记忆状态, 工具, 命令或注入处理器
+旧 Agent 配置中的记忆设置与能力开关由配置迁移逻辑移交, 已有数据库记录与 ID 保留
 
 ## 文档解析
 

@@ -16,6 +16,7 @@ export function SessionPluginSettingsModal({ context, plugins, onClose }: Props)
   const [plugin, setPlugin] = useState('');
   const [data, setData] = useState<SessionPluginSettings | null>(null);
   const [overrides, setOverrides] = useState<Record<string, unknown>>({});
+  const [toolOverrides, setToolOverrides] = useState<Record<string, boolean>>({});
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
@@ -36,6 +37,7 @@ export function SessionPluginSettingsModal({ context, plugins, onClose }: Props)
       if (cancelled) return;
       setData(result);
       setOverrides(result.overrides);
+      setToolOverrides(result.tool_overrides || {});
       if (Object.values(result.schema).some((field) => field.type.startsWith('knowledge_base'))) {
         const libraries = await ragApi.list({ platformId, sessionId });
         if (!cancelled) setKnowledgeBases(libraries.knowledge_bases.map((item) => ({ value: item.id, label: item.name, scope: item.scope })));
@@ -48,11 +50,15 @@ export function SessionPluginSettingsModal({ context, plugins, onClose }: Props)
     if (!context || !data) return;
     setSaving(true);
     setError('');
+    setNotice('');
     try {
-      const result = await pluginSettingsApi.save(context, selected, overrides, data.revision);
+      const result = await pluginSettingsApi.save(context, selected, overrides, data.revision, data.tool_descriptions ? {
+        tool_overrides: toolOverrides, expected_tool_revision: data.tool_revision || 0,
+      } : undefined);
       setData(result);
       setOverrides(result.overrides);
-      setNotice(result.runtime?.ok === false ? '参数已保存, 运行时应用失败, 请检查配置' : result.runtime?.ok ? '已保存并应用' : '已保存, 将在下一轮或下次激活时应用');
+      setToolOverrides(result.tool_overrides || {});
+      setNotice(result.runtime?.ok === false ? '配置已保存, 运行时应用失败, 请检查配置' : result.runtime?.ok ? '已保存并应用' : '已保存, 将在下一轮或下次激活时应用');
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(message);
@@ -72,9 +78,19 @@ export function SessionPluginSettingsModal({ context, plugins, onClose }: Props)
         onChange={(key, value) => setOverrides((current) => ({ ...current, [key]: value }))}
         onReset={(key) => setOverrides((current) => { const next = { ...current }; delete next[key]; return next; })} />
         : selected && !error && <p className="text-sm text-text-tertiary">加载中...</p>}
+      {data?.tool_descriptions && <div className="space-y-3"><p className="font-medium">当前会话的工具开关</p>
+        {Object.entries(data.tool_descriptions).map(([name, description]) => <div key={name} className="space-y-1">
+          <label className="flex items-center gap-2"><input type="checkbox" disabled={saving} aria-label={name}
+            checked={toolOverrides[name] ?? data.inherited_tools?.[name] ?? true}
+            onChange={(event) => setToolOverrides((current) => ({ ...current, [name]: event.target.checked }))} /><span>{description}</span></label>
+          <p className="text-xs text-text-secondary">{name} · {Object.prototype.hasOwnProperty.call(toolOverrides, name) ? '当前会话覆盖' : '继承上层工具配置'}</p>
+          {Object.prototype.hasOwnProperty.call(toolOverrides, name) && <Button size="sm" variant="ghost" disabled={saving} onClick={() => setToolOverrides((current) => {
+            const next = { ...current }; delete next[name]; return next;
+          })}>恢复工具继承</Button>}
+        </div>)}</div>}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" disabled={saving} onClick={() => setRefresh((value) => value + 1)}>重新加载</Button>
-        <Button variant="ghost" disabled={!data || saving} onClick={() => setOverrides({})}>全部恢复继承</Button>
+        <Button variant="ghost" disabled={!data || saving} onClick={() => { setOverrides({}); setToolOverrides({}); }}>全部恢复继承</Button>
         <Button variant="primary" disabled={!data || saving} onClick={save}>{saving ? '保存中...' : '保存'}</Button>
       </div>
     </div>

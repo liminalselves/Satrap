@@ -260,6 +260,8 @@ def set_llm(self: SimpleSession, llm: LLM):
     - llm: 模型实例
     """
     self._wf.llm = llm
+    if self._model_params:
+        llm.set_parameters(**self._model_params)
 
 
 def set_model_parameters(self: SimpleSession, **kwargs: Any):
@@ -270,6 +272,7 @@ def set_model_parameters(self: SimpleSession, **kwargs: Any):
     - kwargs: 额外关键字参数
     """
     self._wf.llm.set_parameters(**kwargs)
+    self._model_params.update(kwargs)
 
 
 def reload_llm(self: SimpleSession, llm: LLM):

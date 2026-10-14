@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { formatBytes } from '@/utils/format';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArchiveRestore, RefreshCw, Trash2 } from 'lucide-react';
@@ -41,6 +42,7 @@ export function ChatHistoryManager({
   onOpenConversation,
   onChanged,
 }: ChatHistoryManagerProps) {
+  const confirm = useConfirm(`${open}:${activeConversationId || ""}:${preferCold}`);
   const [tab, setTab] = useState<'history' | 'trash'>('history');
   const [result, setResult] = useState<ChatHistoryResult>(EMPTY_RESULT);
   const [trash, setTrash] = useState<ChatHistoryArchive[]>([]);
@@ -144,10 +146,10 @@ export function ChatHistoryManager({
       setError('没有符合条件的会话');
       return;
     }
-    if (!window.confirm(`确定将 ${estimatedCount} 个匹配会话移入回收站吗？`)) return;
+    if (!(await confirm(`确定将 ${estimatedCount} 个匹配会话移入回收站吗？`))) return;
     const force = mode === 'selected'
       && selectedItems.some((item) => item.generating)
-      && window.confirm('所选会话中有正在生成的任务, 是否强制停止并继续删除？');
+      && (await confirm('所选会话中有正在生成的任务, 是否强制停止并继续删除？'));
     setWorking(true);
     setError('');
     try {
@@ -172,7 +174,7 @@ export function ChatHistoryManager({
     } finally {
       setWorking(false);
     }
-  }, [loadHistory, onChanged, query, result.items, result.mode, result.total, selected]);
+  }, [loadHistory, onChanged, query, result.items, result.mode, result.total, selected, confirm]);
 
   const restoreArchive = useCallback(async (archiveId: string) => {
     setWorking(true);
@@ -193,7 +195,7 @@ export function ChatHistoryManager({
   }, [loadTrash, onChanged, preferCold, result.mode]);
 
   const purgeArchive = useCallback(async (archiveId: string) => {
-    if (!window.confirm('永久删除后无法恢复, 是否继续？')) return;
+    if (!(await confirm('永久删除后无法恢复, 是否继续？'))) return;
     setWorking(true);
     setError('');
     try {
@@ -208,7 +210,7 @@ export function ChatHistoryManager({
     } finally {
       setWorking(false);
     }
-  }, [loadTrash, preferCold, result.mode]);
+  }, [loadTrash, preferCold, result.mode, confirm]);
 
   const allSelected = result.items.length > 0
     && result.items.every((item) => selected.has(item.conversation_id));

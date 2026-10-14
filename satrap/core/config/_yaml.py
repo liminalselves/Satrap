@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any, TextIO, cast
 import yaml
 
-_SAFE_LOADER: Any = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+_SAFE_LOADER: type[yaml.SafeLoader] = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 # libyaml 可用时用 C 解析器, 配置文档较大时快一个量级; 语义与 SafeLoader 一致
 
 

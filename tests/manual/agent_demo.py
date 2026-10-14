@@ -199,7 +199,7 @@ def run_once(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Satrap DeepSeek v4 flash Agent 工具调用演示")
     parser.add_argument("--message", help="单次发送的消息")
-    parser.add_argument("--profile", help=".satrap/model_config.json 中的 LLM 配置名")
+    parser.add_argument("--profile", help=".satrap/config/model_config.json 中的 LLM 配置名")
     parser.add_argument("--conversation-id", default="agent_demo", help="上下文 ID")
     parser.add_argument("--clear", action="store_true", help="再次清空当前上下文, 启动时默认已清空")
     parser.add_argument("--repl", action="store_true", help="进入交互模式")

@@ -2,7 +2,7 @@
 // 字段类型/范围/枚举/作用域/覆盖关闭值都从这里读取; label 与 placeholder 的语义提示保留在各编辑器手写
 import contract from '@/generated/wake-policy-contract.json';
 
-export type PolicyFieldKind =
+type PolicyFieldKind =
   | 'int'
   | 'number'
   | 'bool'
@@ -17,7 +17,7 @@ export type PolicyFieldKind =
   | 'time_rules';
 
 // platform: 仅平台级; group: 平台与群覆盖; time: 平台, 时段规则与群覆盖
-export type PolicyFieldScope = 'platform' | 'group' | 'time';
+type PolicyFieldScope = 'platform' | 'group' | 'time';
 
 export interface PolicyField {
   key: string;
@@ -40,7 +40,7 @@ export interface PolicyField {
   nullable?: boolean;
 }
 
-export interface PolicyIssue {
+interface PolicyIssue {
   key: string;
   message: string;
 }
@@ -88,13 +88,14 @@ function toPolicyField(raw: RawPolicyField): PolicyField {
 
 const RAW_FIELDS: RawPolicyField[] = contract.fields;
 
-export const POLICY_FIELDS: PolicyField[] = RAW_FIELDS.map(toPolicyField);
+const POLICY_FIELDS: PolicyField[] = RAW_FIELDS.map(toPolicyField);
 export const POLICY_FIELD_BY_KEY: ReadonlyMap<string, PolicyField> = new Map(
   POLICY_FIELDS.map((field) => [field.key, field]),
 );
 
 // 校验提示里的字段名: 只用于拼接文案, 与表单 label 无关
-export const POLICY_FIELD_LABELS: Record<string, string> = {
+const POLICY_FIELD_LABELS: Record<string, string> = {
+  message_archive_retention_days: '平台消息档案保留天数',
   message_text_limit: '每条消息文本上限',
   input_text_limit: '单条消息输入文本预算',
   input_media_limit: '单条消息输入媒体上限',
@@ -108,6 +109,7 @@ export const POLICY_FIELD_LABELS: Record<string, string> = {
   media_insecure_tls: '跳过 TLS 校验',
   media_plaintext_http: '允许明文 HTTP',
   media_trusted_hosts: '媒体主机列表',
+  command_operators: '命令操作员名单',
   notice_types: '通知订阅类型',
   wake_mode: '自动参与模式',
   wake_message_threshold: '自动参与消息阈值',
@@ -134,7 +136,7 @@ export function policyField(key: string): PolicyField | undefined {
   return POLICY_FIELD_BY_KEY.get(key);
 }
 
-export function policyFieldLabel(key: string): string {
+function policyFieldLabel(key: string): string {
   return POLICY_FIELD_LABELS[key] ?? key;
 }
 

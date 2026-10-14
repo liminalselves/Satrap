@@ -1,0 +1,68 @@
+name: message_forward
+version: 0.1.0
+author: Satrap Team
+description: 按原消息 ID 合并转发群聊和私聊消息, 也可创建机器人署名的文字合集
+permission_schema_version: 1
+management_permissions:
+  read:
+    description: 查看当前对话的合并转发
+    caller_list: read_callers
+    empty_policy: allow
+    system_admin: true
+    requirements: [核验来源对话和机器人账号]
+  write:
+    description: 发送原消息或文字合集
+    caller_list: write_callers
+    empty_policy: deny
+    system_admin: true
+    requirements: [需开启发送功能, 仍受平台和对话范围限制]
+  cross:
+    description: 从其他对话读取或向其他对话转发
+    caller_list: cross_callers
+    empty_policy: deny
+    system_admin: true
+    requirements: [需开启跨对话功能, 来源和目标仍受平台自身范围限制]
+tool_permissions:
+  message_forward_read: [read]
+  message_forward_send: [read, write]
+  message_forward_compose: [write]
+command_permissions:
+  forward:
+    default: [read]
+    subcommands:
+      merge: [read, write, cross]
+      relay: [read, write, cross]
+config_schema:
+  send_enabled:
+    type: bool
+    default: false
+    description: 允许发送原消息和文字合集, 不影响查询
+  cross_conversation_enabled:
+    type: bool
+    default: false
+    description: 允许模型或命令跨群聊和私聊读取或转发, 仍须当前发送者具有跨对话权限
+  read_callers:
+    type: textarea
+    default: ""
+    description: 允许查看当前对话转发内容的成员 ID, 每行一个; 留空不额外限制
+  write_callers:
+    type: textarea
+    default: ""
+    description: 允许发送转发的成员 ID, 每行一个; 留空不授予名单权限, 系统管理员遵守本插件授权
+  cross_callers:
+    type: textarea
+    default: ""
+    description: 允许跨对话读取和转发的成员 ID, 每行一个; 留空不授予名单权限, 获本插件授权的系统管理员无需重复填写
+tools:
+  message_forward_read: 查看合并转发内容
+  message_forward_send: 转发原消息
+  message_forward_compose: 创建文字合集
+commands:
+  forward: 按明确命令转发原消息
+skills:
+  message_forward: 区分原文转发与创建文字合集
+compatibility:
+  satrap: ">=0.1,<0.2"
+applicability:
+  session_types: [platform]
+  platforms: "*"

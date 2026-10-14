@@ -1,3 +1,4 @@
+import { useConfirm } from '@/hooks/useConfirm';
 import { useCallback, useEffect, useState } from 'react';
 import { ragApi, ragErrorMessage, type KnowledgeBase, type RagContext, type RagResult } from '@/api/rag';
 import type { EdictumPluginConfigField } from '@/api/types';
@@ -16,6 +17,7 @@ const schema: Record<string, EdictumPluginConfigField> = {
 const defaults = Object.fromEntries(Object.entries(schema).map(([key, field]) => [key, field.default]));
 
 export function RagManager({ context }: { context: RagContext }) {
+  const confirm = useConfirm(`${context.platformId}:${context.sessionId || ""}:${context.via || ""}`);
   const [data, setData] = useState<RagResult | null>(null);
   const [selectedId, setSelectedId] = useState('');
   const [editing, setEditing] = useState<KnowledgeBase | 'new' | null>(null);
@@ -86,14 +88,14 @@ export function RagManager({ context }: { context: RagContext }) {
         <td className="p-2"><button className="text-accent" onClick={() => setSelectedId(item.id)}>{item.name}{item.is_default ? ' (默认)' : ''}</button></td>
         <td>{item.scope === 'global' ? '全局' : `会话 ${item.session_id}`}</td><td>{item.document_count} / {item.chunk_count}</td>
         <td title={item.last_error}>{item.status === 'error' ? '上次操作失败' : '可用'}</td>
-        <td><Button size="sm" variant="ghost" disabled={!!busy || !data?.upload} onClick={() => { setSelectedId(item.id); setImportTarget(item); }}>上传文档</Button><Button size="sm" variant="ghost" disabled={!!busy} onClick={() => edit(item)}>配置</Button><Button size="sm" variant="ghost" disabled={!!busy} onClick={() => { if (window.confirm(`删除知识库“${item.name}”？已有引用将失效。`)) void run('删除', { action: 'delete', kb_id: item.id }); }}>删除</Button></td>
+        <td><Button size="sm" variant="ghost" disabled={!!busy || !data?.upload} onClick={() => { setSelectedId(item.id); setImportTarget(item); }}>上传文档</Button><Button size="sm" variant="ghost" disabled={!!busy} onClick={() => edit(item)}>配置</Button><Button size="sm" variant="ghost" disabled={!!busy} onClick={async () => { if ((await confirm(`删除知识库“${item.name}”？已有引用将失效。`))) void run('删除', { action: 'delete', kb_id: item.id }); }}>删除</Button></td>
       </tr>)}
     </tbody></table>{data && !data.knowledge_bases.length && <p className="p-6 text-center text-sm text-text-tertiary">暂无知识库，创建后可导入文档</p>}</div>
     {selected && <div className="space-y-4 rounded-xl border border-glass-border p-4">
       <h3 className="font-medium">{selected.name}</h3>
       {selected.last_error && <p className="text-xs text-error">{selected.last_error}</p>}
       <Button disabled={!!busy || !data?.upload} onClick={() => setImportTarget(selected)}>导入文档</Button>
-      <ul className="space-y-2">{data?.documents.map((document) => <li key={document.source_id} className="flex items-center justify-between text-sm"><span>{document.source} · {document.chunk_count} 块</span><Button size="sm" variant="ghost" disabled={!!busy} onClick={() => { if (window.confirm(`删除文档“${document.source}”？`)) void run('删除文档', { action: 'delete_document', kb_id: selected.id, source_id: document.source_id }); }}>删除</Button></li>)}</ul>
+      <ul className="space-y-2">{data?.documents.map((document) => <li key={document.source_id} className="flex items-center justify-between text-sm"><span>{document.source} · {document.chunk_count} 块</span><Button size="sm" variant="ghost" disabled={!!busy} onClick={async () => { if ((await confirm(`删除文档“${document.source}”？`))) void run('删除文档', { action: 'delete_document', kb_id: selected.id, source_id: document.source_id }); }}>删除</Button></li>)}</ul>
       <div className="space-y-2 border-t border-glass-border pt-4">
         <input aria-label="检索问题" className="glass-input w-full" placeholder="输入问题测试检索" value={query} onChange={(event) => setQuery(event.target.value)} />
         <select aria-label="重排配置" className="glass-input w-full" value={rerank} onChange={(event) => setRerank(event.target.value)}><option value="">不使用重排</option>{data?.model_options.rerank?.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
@@ -116,7 +118,7 @@ export function RagManager({ context }: { context: RagContext }) {
         {editing && editing !== 'new' && scope === 'session' && <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={!!busy} checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} />作为此会话的默认知识库</label>}
         {editing && editing !== 'new' && <p className="text-xs text-text-secondary">模型或分块参数变化需重建。重建成功后切换索引，失败时保留原配置和数据。</p>}
         <div className="flex justify-end gap-2">
-          {editing && editing !== 'new' && <Button variant="subtle" disabled={!!busy} onClick={() => { if (window.confirm('使用这些参数重新向量化全部文档？')) void run('重建', { action: 'rebuild', kb_id: editing.id, config, expected_revision: editing.revision }); }}>重建索引</Button>}
+          {editing && editing !== 'new' && <Button variant="subtle" disabled={!!busy} onClick={async () => { if ((await confirm('使用这些参数重新向量化全部文档？'))) void run('重建', { action: 'rebuild', kb_id: editing.id, config, expected_revision: editing.revision }); }}>重建索引</Button>}
           <Button disabled={!!busy || !name.trim() || !config.embed} onClick={() => run('保存', editing === 'new' ? { action: 'create', name, scope, config } : { action: 'update', kb_id: editing?.id, name, config, expected_revision: editing?.revision, is_default: isDefault })}>保存</Button>
         </div>
       </div>

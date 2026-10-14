@@ -2,7 +2,7 @@
 
 `satrap_coding` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 把 SimpleSession / AsyncSimpleSession 扩展成一个可用的 Coding Agent: 文件读写、shell、子代理, 以及目标 / 计划两种工作模式。安装后能力自动注册进会话, 卸载时全量回收。
 
-> 搜索 (search/fetch_page)、长期记忆 (memory) 与代码沙箱 (code_sandbox) 已移交 `base_take` 插件; 两插件在同一会话内共享私有 sandbox。
+> 搜索 (search/fetch_page) 与代码沙箱 (code_sandbox) 由 `base_take` 提供, 长期记忆由独立 `memory` 插件提供; 两插件在同一会话内共享私有 sandbox。
 
 ## 安装
 
@@ -75,7 +75,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 /approve rule <操作> <风险级 0-1>    添加持久规则 (上限 1)
 ```
 
-`/goal` 设置的目标由注入处理器自动拼接到后续用户消息头部 (带缓存, 内容变化自动失效), 保证模型每轮都围绕目标推进。`/plan on` 与工具审批引擎共享同一状态: 进入计划模式后 write_file / edit_file 和所有 Shell 命令被拒绝。文件只读工具仍可使用; 长期记忆属元信息, 其增删改 (base_take 的记忆工具与 /memory 命令) 不受计划模式拦截, 属有意设计。
+`/goal` 设置的目标由注入处理器自动拼接到后续用户消息头部 (带缓存, 内容变化自动失效), 保证模型每轮都围绕目标推进。`/plan on` 与工具审批引擎共享同一状态: 进入计划模式后 write_file / edit_file 和所有 Shell 命令被拒绝。文件只读工具仍可使用; 长期记忆属元信息, 其增删改 (memory 的记忆工具与 /memory 命令) 不受计划模式拦截, 属有意设计。
 
 ## 工作区与免审批语义
 
@@ -110,7 +110,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 └── goal.json            # 目标与子任务状态
 ```
 
-> 长期记忆由 base_take 插件管理并写入当前平台的 `platform.db`; 沙箱, 索引和缓存全部按会话隔离。旧数据不迁移。
+> 长期记忆由 memory 插件管理并写入当前平台的 `platform.db`; 沙箱, 索引和缓存全部按会话隔离。旧数据不迁移。
 
 ## 卸载与隔离
 
@@ -129,4 +129,4 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | protected_dirs | string | - | 额外保护目录名 (逗号分隔, 忽略大小写); 按工具实例保存, 空配置仅保留内置保护 |
 | allowed_env_vars | string | - | Shell 子进程显式放行的环境变量名 (逗号分隔); 其他密钥类变量默认剥离 |
 
-安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/satrap_coding.json`。配置在安装时解析, 不支持原地改绑数据根; 更改配置须卸载后重装, 防止已有工具、命令和处理器指向不同状态。卸载不搬迁或删除持久文件。
+安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/satrap_coding.json`。配置在安装时解析, 不支持原地改绑数据根; 更改配置须卸载后重装, 防止已有工具、命令和处理器指向不同状态。卸载不搬迁或删除持久文件。

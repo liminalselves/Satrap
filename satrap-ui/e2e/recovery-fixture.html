@@ -7,8 +7,11 @@
   import React from 'react';
   import { createRoot } from 'react-dom/client';
   import { RunRecovery } from '/src/pages/Chat/RunRecovery.tsx';
+  import { BrowserRouter } from 'react-router-dom';
+  import { ConfirmProvider } from '/src/components/common/ConfirmProvider.tsx';
   const root = createRoot(document.getElementById('root'));
-  window.renderRecovery = conversation => root.render(React.createElement(RunRecovery, { conversation, generating: false }));
+  window.renderRecovery = conversation => root.render(React.createElement(BrowserRouter, null,
+    React.createElement(ConfirmProvider, null, React.createElement(RunRecovery, { conversation, generating: false }))));
   window.renderRecovery('a');
 </script>
 </body>

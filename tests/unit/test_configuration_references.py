@@ -1,0 +1,487 @@
+"""业务链路场景与集中边界契约"""
+from __future__ import annotations
+
+from argparse import Namespace
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, cast
+import asyncio
+import json
+import pytest
+from satrap.core.config.asr_references import list_asr_config_references
+from satrap.core.config.model_service import ModelConfigService
+from satrap.core.config.session_overrides import SessionOverrideStore
+from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
+from satrap.core.config.asr_references import AsrReferenceScanError
+from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError, ModelConfigManager
+from satrap.core.storage import StorageLayout
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+import threading
+from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+from satrap.cli import cmd_model
+import satrap.core.config.asr_references as asr_references
+import sqlite3
+from satrap.core.config.group_references import GroupReferenceScanError, list_group_references
+from satrap.core.config.group_store import GroupConfigStore
+from satrap.core.type import LLMConfig
+from satrap.core.config.session_class_service import SessionClassConfigService
+from satrap.core.config.edictum_service import EdictumConfigService
+
+def _checker_factory(
+    tmp_path: Path, platforms: list[object], layout: StorageLayout | None = None,
+) -> Callable[[str], list[dict[str, str]]]:
+    """构造只扫描给定平台与空插件目录的检查器, 隔离机器上的真实插件"""
+
+    def checker(config_name: str) -> list[dict[str, str]]:
+        return list_asr_config_references(
+            config_name,
+            platforms=platforms,
+            layout=layout,
+            plugin_config_dir=tmp_path / "no-plugin-configs",
+            plugins_dir=tmp_path / "no-plugins",
+        )
+
+    return checker
+
+def _service(tmp_path: Path, platforms: list[object]) -> tuple[ModelConfigService, ModelConfigManager]:
+    manager = ModelConfigManager(
+        storage_path=tmp_path / "models.json",
+        asr_in_use_checker=_checker_factory(tmp_path, platforms),
+    )
+    return ModelConfigService(manager), manager
+
+class TestPlatformBinding:
+    def test_bound_delete_rejected_until_unbound(self, tmp_path: Path):
+        platforms: list[object] = [{"id": "bot", "type": "onebot", "settings": {"asr_model": "speech"}}]
+        service, manager = _service(tmp_path, platforms)
+        service.create("asr", "speech", {"model": "whisper-1", "api_key": "k"})
+        with pytest.raises(ConfigInUseError) as exc:
+            service.delete("asr", "speech")
+        assert exc.value.references[0]["kind"] == "platform"
+        assert exc.value.references[0]["platform_id"] == "bot"
+        assert "speech" in str(exc.value)
+        assert manager.has_config("asr", "speech")
+        # 解绑后同一删除正常生效
+        platforms.clear()
+        assert service.delete("asr", "speech") is True
+        assert not manager.has_config("asr", "speech")
+
+    def test_last_item_reset_only_when_unbound(self, tmp_path: Path):
+        platforms: list[object] = [{"id": "bot", "type": "onebot", "settings": {"asr_model": "default"}}]
+        service, manager = _service(tmp_path, platforms)
+        # 仅剩一项时被引用: 拒绝删除而非重置
+        with pytest.raises(ConfigInUseError):
+            service.delete("asr", "default")
+        assert manager.has_config("asr", "default")
+        # 无引用时最后一项删除退化为重置为空白配置
+        platforms.clear()
+        assert service.delete("asr", "default") is True
+        assert manager.has_config("asr", "default")
+        assert manager.get_asr_config("default").api_key in (None, "")
+
+    def test_rename_bound_rejected_free_ok_and_collision(self, tmp_path: Path):
+        platforms: list[object] = [{"id": "bot", "type": "onebot", "settings": {"asr_model": "speech"}}]
+        service, manager = _service(tmp_path, platforms)
+        service.create("asr", "speech", {"model": "whisper-1"})
+        service.create("asr", "other", {"model": "whisper-2"})
+        # 名称冲突先于引用检查
+        with pytest.raises(ValueError, match="已存在"):
+            manager.update_named_config("asr", "speech", {}, new_name="other")
+        # 被引用时禁止重命名, 原配置保持可用
+        with pytest.raises(ConfigInUseError) as exc:
+            manager.update_named_config("asr", "speech", {}, new_name="voice")
+        assert exc.value.references[0]["kind"] == "platform"
+        assert manager.has_config("asr", "speech") and not manager.has_config("asr", "voice")
+        # 解绑后重命名生效
+        platforms.clear()
+        manager.update_named_config("asr", "speech", {}, new_name="voice")
+        assert not manager.has_config("asr", "speech") and manager.has_config("asr", "voice")
+
+class TestReferenceScan:
+    def test_plugin_global_and_session_override_references(self, tmp_path: Path):
+        plugins_dir = tmp_path / "plugins"
+        plugin = plugins_dir / "echoasr"
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(
+            "name: echoasr\nversion: 0.1.0\nconfig_schema:\n  voice:\n    type: asr\n",
+            encoding="utf-8",
+        )
+        config_dir = tmp_path / "plugin_config"
+        config_dir.mkdir()
+        (config_dir / "echoasr.json").write_text(json.dumps({"voice": "speech"}), encoding="utf-8")
+        layout = StorageLayout(tmp_path / "data")
+        database = layout.platform_db("bot")
+        database.parent.mkdir(parents=True, exist_ok=True)
+        SessionOverrideStore(database).replace("sess1", "plugins.echoasr", {"voice": "speech"}, expected_revision=0)
+        platforms: list[object] = [{"id": "bot", "type": "onebot", "settings": {}}]
+        references = list_asr_config_references(
+            "speech", platforms=platforms, layout=layout, plugin_config_dir=config_dir, plugins_dir=plugins_dir,
+        )
+        kinds = {ref["kind"] for ref in references}
+        assert kinds == {"plugin_global", "session_override"}
+        session_ref = next(ref for ref in references if ref["kind"] == "session_override")
+        assert session_ref["session_id"] == "sess1" and session_ref["plugin"] == "echoasr"
+        assert all(ref["summary"] for ref in references)
+        # 未被引用的同名扫描为空
+        assert list_asr_config_references(
+            "other", platforms=platforms, layout=layout, plugin_config_dir=config_dir, plugins_dir=plugins_dir,
+        ) == []
+
+    def test_scan_failure_is_reported_as_scan_error_not_in_use(self, tmp_path: Path):
+        """反例: 扫描不完整必须独立报错, 不能伪称已经找到具体引用"""
+
+        def broken(config_name: str) -> list[dict[str, str]]:
+            raise OSError("db locked")
+
+        manager = ModelConfigManager(storage_path=tmp_path / "models.json", asr_in_use_checker=broken)
+        service = ModelConfigService(manager)
+        service.create("asr", "speech", {"model": "whisper-1"})
+        with pytest.raises(ConfigReferenceScanError) as exc:
+            service.delete("asr", "speech")
+        assert "db locked" in exc.value.reason and exc.value.target == "asr"
+        assert manager.has_config("asr", "speech")
+
+class TestControlRoute:
+    @pytest.mark.asyncio
+    async def test_delete_route_409_then_unbound_200(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        from satrap.core.backend import control_server as control
+        from satrap.core.config.document import save_config_document
+
+        config_path = tmp_path / "config.json"
+        models_path = tmp_path / "models.json"
+        monkeypatch.setattr(control, "CONFIG_PATH", config_path)
+        document: dict[str, object] = {
+            "model_config_path": str(models_path),
+            "data_root": str(tmp_path / "data"),
+            "platforms": [{"id": "bot", "type": "onebot", "settings": {"asr_model": "speech"}}],
+        }
+        save_config_document(config_path, document)
+        ModelConfigService(ModelConfigManager(storage_path=models_path)).create(
+            "asr", "speech", {"model": "whisper-1", "api_key": "k"},
+        )
+
+        def delete_context() -> control._RouteContext:
+            return control._RouteContext(
+                "DELETE", "/config/models/asr/speech", "/config/models/asr/speech", asyncio.StreamReader(), b"",
+            )
+
+        response = await control._route_models(delete_context())
+        assert response is not None
+        status, body = response
+        assert status == 409 and body["code"] == "config_in_use"
+        references = cast(list[dict[str, str]], body["references"])
+        assert any(ref.get("kind") == "platform" for ref in references)
+        # 配置仍在, 未被误删
+        assert ModelConfigManager(storage_path=models_path).has_config("asr", "speech")
+        # 解绑后删除放行
+        document["platforms"] = [{"id": "bot", "type": "onebot", "settings": {}}]
+        save_config_document(config_path, document)
+        response = await control._route_models(delete_context())
+        assert response is not None
+        assert response[0] == 200
+        assert not ModelConfigManager(storage_path=models_path).has_config("asr", "speech")
+
+class TestScanCompleteness:
+    """B5 反例: 来源读不出, 解析失败或结构不符时不得返回"无引用"空结论"""
+
+    @staticmethod
+    def _asr_plugin(plugins_dir: Path, name: str = "echoasr", meta: str | None = None) -> Path:
+        plugin = plugins_dir / name
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(
+            meta if meta is not None else f"name: {name}\nversion: 0.1.0\nconfig_schema:\n  voice:\n    type: asr\n",
+            encoding="utf-8",
+        )
+        return plugin
+
+    @staticmethod
+    def _scan(
+        tmp_path: Path, layout: StorageLayout | None = None, plugins_dir: Path | None = None,
+        config_dir: Path | None = None,
+    ) -> list[dict[str, str]]:
+        return list_asr_config_references(
+            "speech", platforms=[{"id": "bot", "type": "onebot", "settings": {}}],
+            layout=layout, plugin_config_dir=config_dir or tmp_path / "no-plugin-configs",
+            plugins_dir=plugins_dir if plugins_dir is not None else tmp_path / "no-plugins",
+        )
+
+    @pytest.mark.parametrize("scenario, reason, origin_fragment", [
+        ("broken_meta", "plugin_meta", "echoasr"),
+        ("broken_plugin_json", "plugin_config", "echoasr"),
+        ("locked_db", "override_db", None),
+        ("declared_schema_missing_table", "override_schema", None),
+        ("invalid_override_json", "override_json", "sess1"),
+    ])
+    def test_scan_failures_are_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, reason: str, origin_fragment: str | None,
+    ):
+        """反例: 读不出/解析失败/结构不符时必须独立报错, 不得返回"无引用"空结论"""
+        import sqlite3 as sqlite_module
+
+        import satrap.core.config.asr_references as module
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        self._asr_plugin(plugins_dir)
+        layout = StorageLayout(tmp_path / "data")
+        config_dir: Path | None = None
+        if scenario == "broken_meta":
+            (plugins_dir / "echoasr" / "meta.yaml").write_text(
+                "name: echoasr\nconfig_schema: [未闭合\n", encoding="utf-8",
+            )
+        elif scenario == "broken_plugin_json":
+            config_dir = tmp_path / "plugin_config"
+            config_dir.mkdir()
+            (config_dir / "echoasr.json").write_text("{不是 JSON", encoding="utf-8")
+        elif scenario == "locked_db":
+            database = layout.platform_db("bot")
+            database.parent.mkdir(parents=True, exist_ok=True)
+            SessionOverrideStore(database)
+
+            def locked(*args: object, **kwargs: object) -> None:
+                raise sqlite_module.OperationalError("database is locked")
+
+            monkeypatch.setattr(module.sqlite3, "connect", locked)
+        elif scenario == "declared_schema_missing_table":
+            database = layout.platform_db("bot")
+            database.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite_module.connect(str(database))
+            connection.execute("PRAGMA user_version = 1")
+            connection.commit()
+            connection.close()
+        else:
+            database = layout.platform_db("bot")
+            database.parent.mkdir(parents=True, exist_ok=True)
+            SessionOverrideStore(database)
+            connection = sqlite_module.connect(str(database))
+            connection.execute(
+                "INSERT INTO session_config_overrides "
+                "(session_id, namespace, config_json, schema_version, revision, updated_at) "
+                "VALUES ('sess1', 'plugins.echoasr', '{坏json', 1, 1, 0.0)",
+            )
+            connection.commit()
+            connection.close()
+        with pytest.raises(AsrReferenceScanError) as exc:
+            self._scan(tmp_path, layout=layout, plugins_dir=plugins_dir, config_dir=config_dir)
+        assert exc.value.reason == reason
+        if origin_fragment:
+            assert origin_fragment in exc.value.origin
+
+    @pytest.mark.parametrize("with_asr_plugin", [False, True])
+    def test_legacy_database_without_table_is_allowed(self, tmp_path: Path, with_asr_plugin: bool):
+        """旧库 (user_version=0 且无覆盖表) 属于契约允许的空集合, 即使插件已声明 asr 字段"""
+        import sqlite3
+
+        plugins_dir = tmp_path / "plugins"
+        if with_asr_plugin:
+            plugins_dir.mkdir()
+            self._asr_plugin(plugins_dir)
+        layout = StorageLayout(tmp_path / "data")
+        database = layout.platform_db("bot")
+        database.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(str(database))
+        connection.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY)")
+        connection.commit()
+        connection.close()
+        assert self._scan(
+            tmp_path, layout=layout, plugins_dir=plugins_dir if with_asr_plugin else None,
+        ) == []
+
+    def test_schema_marker_written_once_and_never_downgraded(self, tmp_path: Path):
+        import sqlite3
+
+        layout = StorageLayout(tmp_path / "data")
+        database = layout.platform_db("bot")
+        database.parent.mkdir(parents=True, exist_ok=True)
+        SessionOverrideStore(database)
+        connection = sqlite3.connect(str(database))
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION
+        connection.execute(f"PRAGMA user_version = {PLATFORM_SCHEMA_VERSION + 1}")
+        connection.commit()
+        connection.close()
+        # 更高版本不回退, 也不因再次初始化被改写
+        SessionOverrideStore(database)
+        connection = sqlite3.connect(str(database))
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION + 1
+        connection.close()
+
+class TestScanRouteAndCli:
+    @pytest.mark.asyncio
+    async def test_incomplete_scan_returns_503(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import sqlite3
+
+        from satrap.core.backend import control_server as control
+        from satrap.core.config.document import save_config_document
+
+        config_path = tmp_path / "config.json"
+        models_path = tmp_path / "models.json"
+        monkeypatch.setattr(control, "CONFIG_PATH", config_path)
+        document: dict[str, object] = {
+            "model_config_path": str(models_path),
+            "data_root": str(tmp_path / "data"),
+            "platforms": [{"id": "bot", "type": "onebot", "settings": {}}],
+        }
+        save_config_document(config_path, document)
+        # 用一个含 asr 字段的插件目录驱动覆盖扫描, 隔离机器上的真实插件
+        plugins_dir = tmp_path / "plugins"
+        plugin = plugins_dir / "echoasr"
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(
+            "name: echoasr\nversion: 0.1.0\nconfig_schema:\n  voice:\n    type: asr\n", encoding="utf-8",
+        )
+        layout = control._configured_storage_layout()
+
+        def checker(config_name: str) -> list[dict[str, str]]:
+            return list_asr_config_references(
+                config_name, platforms=cast(list[Any], document["platforms"]), layout=layout, plugins_dir=plugins_dir,
+                plugin_config_dir=tmp_path / "no-plugin-configs",
+            )
+
+        monkeypatch.setattr(control, "_asr_in_use_checker", checker)
+        ModelConfigService(ModelConfigManager(storage_path=models_path, asr_in_use_checker=control._asr_in_use_checker)).create(
+            "asr", "speech", {"model": "whisper-1"},
+        )
+        # 平台库声明了覆盖表版本却缺表: 扫描不完整
+        database = layout.platform_db("bot")
+        database.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(str(database))
+        connection.execute("PRAGMA user_version = 1")
+        connection.commit()
+        connection.close()
+
+        context = control._RouteContext(
+            "DELETE", "/config/models/asr/speech", "/config/models/asr/speech", asyncio.StreamReader(), b"",
+        )
+        response = await control._route_models(context)
+        assert response is not None
+        assert response[0] == 503 and response[1]["code"] == "asr_reference_scan_failed"
+        assert ModelConfigManager(storage_path=models_path).has_config("asr", "speech")
+
+    def test_cli_exits_non_zero_on_incomplete_scan(self, capsys: pytest.CaptureFixture[str]):
+        from argparse import Namespace
+
+        from satrap.cli import output
+        from satrap.core.framework.BackGroundManager import ConfigReferenceScanError
+
+        def handler(args: Namespace) -> None:
+            raise ConfigReferenceScanError("asr", "speech", "override_db: 平台 bot 覆盖库读取失败")
+
+        with pytest.raises(SystemExit) as exc:
+            output.dispatch_action({"x": handler}, Namespace(action="x"))
+        assert exc.value.code == 1
+        assert "引用扫描不完整" in capsys.readouterr().out
+
+def test_asr_delete_waits_for_reference_writer_and_observes_committed_reference(tmp_path):
+    attempted, checked = threading.Event(), threading.Event()
+    references = []
+
+    def checker(_):
+        checked.set()
+        return list(references)
+
+    manager = ModelConfigManager(tmp_path / 'models.json', asr_in_use_checker=checker)
+    ModelConfigService(manager).create('asr', 'speech', {'model': 'whisper-1'})
+
+    def delete():
+        attempted.set()
+        return manager.remove_asr_config('speech')
+
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        with REFERENCE_SCAN_LOCK:
+            pending = worker.submit(delete)
+            assert attempted.wait(2)
+            assert not checked.wait(0.1)
+            references.append({'kind': 'plugin_global', 'summary': '刚提交的引用'})
+        with pytest.raises(ConfigInUseError):
+            pending.result(timeout=3)
+    assert manager.has_config('asr', 'speech')
+
+@pytest.mark.parametrize('operation', ['delete', 'rename'])
+def test_cli_asr_changes_scan_session_overrides_in_configured_data_root(tmp_path, monkeypatch, operation):
+    layout = StorageLayout(tmp_path / 'custom-data')
+    database = layout.platform_db('bot')
+    database.parent.mkdir(parents=True, exist_ok=True)
+    SessionOverrideStore(database).replace('session', 'plugins.echoasr', {'voice': 'speech'}, expected_revision=0)
+    plugin = tmp_path / 'plugins' / 'echoasr'
+    plugin.mkdir(parents=True)
+    (plugin / 'meta.yaml').write_text('name: echoasr\nconfig_schema:\n  voice:\n    type: asr\n', encoding='utf-8')
+    config = SimpleNamespace(data_root=layout.root, model_config_path=tmp_path / 'models.json',
+        platforms=[{'id': 'bot', 'type': 'onebot', 'settings': {}}])
+    monkeypatch.setattr(cmd_model, 'load_cli_config', lambda _: config)
+    scan = asr_references.list_asr_config_references
+
+    def isolated_scan(name, **kwargs):
+        return scan(name, **kwargs, plugins_dir=tmp_path / 'plugins', plugin_config_dir=tmp_path / 'empty-global')
+
+    monkeypatch.setattr(asr_references, 'list_asr_config_references', isolated_scan)
+    manager = cmd_model._init_mgr(Namespace())
+    service = ModelConfigService(manager)
+    service.create('asr', 'speech', {'model': 'whisper-1'})
+    with pytest.raises(ConfigInUseError) as error:
+        if operation == 'delete':
+            service.delete('asr', 'speech')
+        else:
+            service.update('asr', 'speech', {'name': 'renamed'})
+    assert any(reference.get('kind') == 'session_override' and reference.get('session_id') == 'session'
+               for reference in error.value.references)
+    assert manager.has_config('asr', 'speech')
+    assert not manager.has_config('asr', 'renamed')
+
+def test_group_binding_and_model_references(tmp_path: Path) -> None:
+    layout = StorageLayout(tmp_path)
+    store = GroupConfigStore(layout.platform_db("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    store.patch_group("100", "123", "session", {
+        "binding": {"mode": "value", "value": {"provider": "edictum", "config_name": "simple"}},
+        "model": {"mode": "value", "value": "chat"},
+    }, expected_revision=0)
+    binding = list_group_references("edictum", "simple", layout=layout, platform_ids=["bot"])
+    model = list_group_references("llm", "chat", layout=layout, platform_ids=["bot"])
+    assert len(binding) == 1 and binding[0]["kind"] == "group_binding"
+    assert len(model) == 1 and model[0]["kind"] == "group_model"
+    assert list_group_references("llm", "other", layout=layout, platform_ids=["bot"]) == []
+
+def test_group_reference_scan_rejects_corrupt_json(tmp_path: Path) -> None:
+    layout = StorageLayout(tmp_path)
+    store = GroupConfigStore(layout.platform_db("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    store.patch_group("100", "123", "session", {
+        "model": {"mode": "value", "value": "chat"},
+    }, expected_revision=0)
+    with sqlite3.connect(layout.platform_db("bot")) as connection:
+        connection.execute("UPDATE group_configs SET config_json='invalid' WHERE group_id='123'")
+    with pytest.raises(GroupReferenceScanError, match="无法解析"):
+        list_group_references("llm", "chat", layout=layout, platform_ids=["bot"])
+
+def test_group_model_reference_blocks_delete_and_rename(tmp_path: Path) -> None:
+    layout = StorageLayout(tmp_path)
+    store = GroupConfigStore(layout.platform_db("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    store.patch_group("100", "123", "session", {
+        "model": {"mode": "value", "value": "chat"},
+    }, expected_revision=0)
+    manager = ModelConfigManager(
+        storage_path=tmp_path / "models.json",
+        llm_in_use_checker=lambda name: list_group_references(
+            "llm", name, layout=layout, platform_ids=["bot"],
+        ),
+    )
+    manager.set_llm_config(LLMConfig(name="chat", model="example", api_key="test"), name="chat")
+    with pytest.raises(ConfigInUseError):
+        manager.remove_llm_config("chat")
+    with pytest.raises(ConfigInUseError):
+        manager.update_named_config("llm", "chat", {}, new_name="new")
+    assert manager.get_llm_config("chat").model == "example"
+
+def test_named_session_services_refuse_bound_delete() -> None:
+    reference = lambda _: [{"summary": "群 123 的会话绑定", "kind": "group_binding"}]
+    cls = SessionClassConfigService(cast(Any, SimpleNamespace(remove_config=lambda _: True)), reference)
+    with pytest.raises(ConfigInUseError):
+        cls.delete("assistant")
+    edictum = EdictumConfigService(
+        cast(Any, SimpleNamespace(delete=lambda _: True)), cast(Any, SimpleNamespace()),
+        reference_checker=reference,
+    )
+    with pytest.raises(ConfigInUseError):
+        edictum.delete("assistant")

@@ -6,19 +6,28 @@ Edictum 命名会话冷配置管理器
 """
 from __future__ import annotations
 
+from satrap.core.utils.file_snapshot import file_fingerprint
+
 import threading
 from pathlib import Path
 from typing import Any, cast
 from copy import deepcopy
 import json
 import os
+import traceback
 
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_spec import parse_plugin_specs
-from satrap.core.utils.paths import get_data_dir
 from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
+from satrap.edictum.settings import normalize_session_settings
+from satrap.core.utils.snapshot_cache import SnapshotCache
 
 from satrap.core.log import logger
+from satrap.core.storage.file_lock import FileLock
+
+from satrap.core.config_paths import get_config_path
+
+_CONFIG_SNAPSHOTS: SnapshotCache[dict[str, dict[str, Any]]] = SnapshotCache()
 
 
 class EdictumConfigManager:
@@ -30,6 +39,7 @@ class EdictumConfigManager:
         storage_path: str | Path | None = None,
         *,
         auto_create: bool = True,
+        plugin_catalog: PluginCatalog | None = None,
     ) -> None:
         """
         初始化 Edictum 冷配置管理器
@@ -38,15 +48,21 @@ class EdictumConfigManager:
         - type_registry: 用于校验 edictum_type 的类型注册表
         - storage_path: 配置文件路径
         - auto_create: 是否自动创建父目录和空配置文件
+        - plugin_catalog: 可选的已加载目录快照, 用于单次请求内一致读取
         """
         self.type_registry = type_registry
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
-        self.plugin_catalog = PluginCatalog()
+        self.plugin_catalog = plugin_catalog or PluginCatalog()
         self._configs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         if auto_create:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.reload()
+        self.reload(cached=True)
+
+    @staticmethod
+    def invalidate_read_snapshots() -> None:
+        """强制刷新只读快照, 不影响保存事务和调用授权"""
+        _CONFIG_SNAPSHOTS.invalidate()
 
     @staticmethod
     def _default_storage_path() -> Path:
@@ -57,7 +73,8 @@ class EdictumConfigManager:
         - Path: 环境变量路径或默认数据目录路径
         """
         env_path = os.getenv("SATRAP_EDICTUM_CONFIG_PATH")
-        return Path(env_path) if env_path else get_data_dir() / "edictum_session_config.json"
+
+        return Path(env_path) if env_path else get_config_path("edictum_session_config.json")
 
     @staticmethod
     def _normalize_name(value: object) -> str:
@@ -77,12 +94,13 @@ class EdictumConfigManager:
             raise ValueError("Edictum 配置名称不能包含路径分隔符")
         return name
 
-    def _normalize_plugins(self, value: object) -> list[dict[str, Any]]:
+    def _normalize_plugins(self, value: object, catalog: PluginCatalog | None = None) -> list[dict[str, Any]]:
         """
         校验插件配置列表并复制为 JSON 安全结构
 
         参数:
         - value: 插件名称或插件配置对象列表
+        - catalog: 本轮读取固定的插件目录, 默认读取最新目录
 
         返回:
         - list[dict[str, Any]]: 标准插件配置对象列表
@@ -91,17 +109,18 @@ class EdictumConfigManager:
             spec.to_config()
             for spec in parse_plugin_specs(
                 value,
-                self.plugin_catalog,
+                catalog or self.plugin_catalog,
                 require_available=False,
             )
         ]
 
-    def _normalize_entry(self, entry: object) -> dict[str, Any]:
+    def _normalize_entry(self, entry: object, catalog: PluginCatalog | None = None) -> dict[str, Any]:
         """
         校验并规范化单个配置条目
 
         参数:
         - entry: 原始配置对象
+        - catalog: 本轮读取固定的插件目录, 默认读取最新目录
 
         返回:
         - dict[str, Any]: 规范化配置条目
@@ -114,6 +133,8 @@ class EdictumConfigManager:
         params = raw.get("params", {})
         if not isinstance(params, dict):
             raise ValueError("params 必须是对象")
+        if type_name in {"simple", "async_simple"}:
+            params = normalize_session_settings(params)
         model_name = str(raw.get("model_name", "")).strip()
         return {
             "provider": EDICTUM_PROVIDER,
@@ -122,7 +143,7 @@ class EdictumConfigManager:
             "description": str(raw.get("description", "")),
             "model_name": model_name,
             "params": dict(cast(dict[str, Any], params)),
-            "plugins": self._normalize_plugins(raw.get("plugins", [])),
+            "plugins": self._normalize_plugins(raw.get("plugins", []), catalog),
         }
 
     def _save_locked(self) -> None:
@@ -133,26 +154,57 @@ class EdictumConfigManager:
             json.dump(self._configs, file, ensure_ascii=False, indent=2)
             file.write("\n")
         temporary_path.replace(self.storage_path)
+        _CONFIG_SNAPSHOTS.invalidate()
 
-    def reload(self) -> None:
-        """从磁盘重新加载冷配置"""
-        with self._lock:
+    def reload(self, *, cached: bool = False) -> None:
+        """
+        从磁盘重新加载并在内存归一化冷配置, 写事务与显式重载始终读原文
+
+        参数:
+        - cached: 仅构造读取服务时复用已核验快照, 默认不使用缓存
+        """
+        with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
             if not self.storage_path.exists():
                 self._configs = {}
                 self._save_locked()
                 return
             try:
-                with self.storage_path.open("r", encoding="utf-8") as file:
-                    payload: object = json.load(file)
-                if not isinstance(payload, dict):
-                    raise ValueError("Edictum 配置文件根节点必须是对象")
-                loaded: dict[str, dict[str, Any]] = {}
-                for raw_name, raw_entry in cast(dict[str, object], payload).items():
-                    name = self._normalize_name(raw_name)
-                    loaded[name] = self._normalize_entry(raw_entry)
-                self._configs = loaded
+                catalog = self.plugin_catalog.snapshot()
+                type_names = tuple(item['name'] for item in self.type_registry.list_types())
+
+                def fingerprint() -> tuple[object, ...]:
+                    """
+                    取得文件来源与本轮类型及目录代次
+
+                    返回:
+                    - 已归一化内容的全部来源指纹
+                    """
+                    return (*file_fingerprint(self.storage_path), type_names, catalog.snapshot_token())
+
+                def load() -> dict[str, dict[str, Any]]:
+                    """
+                    只读取与归一化命名配置, 不在快照加载期间写回来源文件
+
+                    返回:
+                    - 本轮完整命名配置
+                    """
+                    with self.storage_path.open('r', encoding='utf-8') as file:
+                        payload: object = json.load(file)
+                    if not isinstance(payload, dict):
+                        raise ValueError('Edictum 配置文件根节点必须是对象')
+                    loaded: dict[str, dict[str, Any]] = {}
+                    for raw_name, raw_entry in cast(dict[str, object], payload).items():
+                        name = self._normalize_name(raw_name)
+                        loaded[name] = self._normalize_entry(raw_entry, catalog)
+                    return loaded
+
+                if cached:
+                    resource = os.path.normcase(str(self.storage_path.resolve()))
+                    self._configs = deepcopy(_CONFIG_SNAPSHOTS.get(resource, fingerprint, load))
+                else:
+                    self._configs = load()
             except Exception as error:
-                logger.error(f"[EdictumConfigManager] 读取配置失败: {error}")
+                logger.error(f"[EdictumConfigManager] 读取配置失败: {error}\n{traceback.format_exc()}")
                 raise
 
     def list_configs(self) -> dict[str, dict[str, Any]]:
@@ -192,7 +244,8 @@ class EdictumConfigManager:
         """
         key = self._normalize_name(name)
         normalized = self._normalize_entry(entry)
-        with self._lock:
+        with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
+            self.reload()
             if key in self._configs:
                 raise ValueError(f"Edictum 配置名称已存在: {key}")
             self._configs[key] = normalized
@@ -205,6 +258,7 @@ class EdictumConfigManager:
         changes: object,
         *,
         new_name: str | None = None,
+        expected_revision: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """
         原子更新并按需重命名配置
@@ -213,18 +267,24 @@ class EdictumConfigManager:
         - name: 当前配置名称
         - changes: 待合并字段
         - new_name: 可选新名称
+        - expected_revision: 可选的当前完整命名配置版本, 不匹配时拒绝更新
 
         返回:
         - tuple[str, dict[str, Any]]: 最终名称和配置
         """
+        from satrap.core.config.document import ConfigRevisionConflict, config_document_revision
+
         key = self._normalize_name(name)
         target = self._normalize_name(new_name) if new_name is not None else key
         if not isinstance(changes, dict):
             raise ValueError("Edictum 配置更新必须是对象")
-        with self._lock:
+        with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
+            self.reload()
             current = self._configs.get(key)
             if current is None:
                 raise ValueError(f"Edictum 配置不存在: {key}")
+            if expected_revision is not None and config_document_revision(current) != expected_revision:
+                raise ConfigRevisionConflict("Edictum 配置已被修改, 请重新读取后合并")
             if target != key and target in self._configs:
                 raise ValueError(f"Edictum 配置名称已存在: {target}")
             merged = dict(current)
@@ -260,7 +320,8 @@ class EdictumConfigManager:
         - bool: 是否找到并删除配置
         """
         key = self._normalize_name(name)
-        with self._lock:
+        with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
+            self.reload()
             if key not in self._configs:
                 return False
             del self._configs[key]

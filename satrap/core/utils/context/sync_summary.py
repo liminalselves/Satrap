@@ -1,4 +1,11 @@
+"""
+同步上下文摘要与压缩
+
+按模型预算生成分块摘要, 保留近期对话并协调上下文回退
+"""
 from __future__ import annotations
+from satrap.core.type import RequestContextBlock
+from satrap.core.utils.context.request import freeze_request_blocks, attach_request_blocks
 from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING
 import copy
 from satrap.core.type import TokenUsage
@@ -17,8 +24,10 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
+    from satrap.core.APICall.LLMCall import LLM
 from .sync_checkpoints import _SyncCheckpoints
+
+from satrap.core.utils.media import project_messages, visual_enabled
 
 
 class _SyncSummary(_SyncCheckpoints):
@@ -143,6 +152,7 @@ class _SyncSummary(_SyncCheckpoints):
         method: TokenEstimateMethod = "tokenizer",
         strategy: Optional[ContextStrategy] = None,
         keep_recent_turns: Optional[int] = None,
+        request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> PreparedModelContext:
         """
         为一次真实模型请求准备非破坏性上下文
@@ -170,35 +180,41 @@ class _SyncSummary(_SyncCheckpoints):
         if recent_turns < 0:
             raise ValueError("keep_recent_turns 不能小于 0")
         model = _llm_model_name(llm)
-        messages = copy.deepcopy(self._messages)
-        if pending_messages:
-            messages.extend(copy.deepcopy(pending_messages))
-        from satrap.core.utils.media import project_messages, visual_enabled
+        request_blocks = freeze_request_blocks(request_blocks)
+        history = project_messages(copy.deepcopy(self._messages), visual_enabled(llm))
+        pending = project_messages(copy.deepcopy(pending_messages or []), visual_enabled(llm))
+        messages = history + pending
+        source = history if request_blocks else messages
 
-        messages = project_messages(messages, visual_enabled(llm))
+        def request_view(view: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """在压缩后的历史副本后保留本轮消息, 资料只注入一次"""
+            return attach_request_blocks(view + pending, request_blocks, len(view)) if request_blocks else view
+
+        original_request = request_view(source)
         original_turns = len(self._conversation_turns(messages))
         original_estimate = self.estimate_request_tokens(
-            messages, method, tools, img_urls
+            original_request, method, tools, img_urls
         )
         factor = self._calibration_factor(model)
         original_effective = max(0, round(original_estimate * factor))
-        prepared_messages = messages
+        prepared_messages = original_request
 
         if original_effective > self.trigger_tokens:
-            local_floor = max(1, int(self.floor_tokens / factor))
+            fixed_tokens = self.estimate_request_tokens(request_view([]), method, tools, img_urls) if request_blocks else 0
+            local_floor = max(0, int(self.floor_tokens / factor) - fixed_tokens)
             if selected_strategy == "summarize":
                 if llm is None:
                     raise ValueError("总结压缩策略需要传入 llm")
                 self.summarize_and_compress(llm, recent_turns)
-                prepared_messages = self._summary_context(messages, recent_turns)
+                prepared_messages = request_view(self._summary_context(source, recent_turns))
             elif selected_strategy == "sliding":
-                prepared_messages = self._apply_sliding_truncation(
-                    messages, local_floor, method
-                )
+                prepared_messages = request_view(self._apply_sliding_truncation(
+                    source, local_floor, method
+                ))
             elif selected_strategy == "mid_truncate":
-                prepared_messages = self._apply_mid_truncation(
-                    messages, local_floor, method
-                )
+                prepared_messages = request_view(self._apply_mid_truncation(
+                    source, local_floor, method, min_turns=0 if request_blocks else 2
+                ))
             else:
                 raise ValueError(f"未知上下文处理策略: {selected_strategy}")
 
@@ -206,18 +222,18 @@ class _SyncSummary(_SyncCheckpoints):
             prepared_messages, method, tools, img_urls
         )
         prepared_effective = max(0, round(prepared_estimate * factor))
-        compressed = prepared_messages != messages
+        compressed = prepared_messages != original_request
         if (
             prepared_effective > self.history_budget
             and selected_strategy == "summarize"
             and self._runtime_state.summary
             and llm is not None
         ):
-            turns = self._conversation_turns(messages)
+            turns = self._conversation_turns(source)
             recent = turns[-recent_turns:] if recent_turns > 0 else []
-            without_summary = self._system_messages(messages) + self._flatten_turns(
+            without_summary = request_view(self._system_messages(source) + self._flatten_turns(
                 recent
-            )
+            ))
             fixed_estimate = self.estimate_request_tokens(
                 without_summary, method, tools, img_urls
             )
@@ -227,7 +243,7 @@ class _SyncSummary(_SyncCheckpoints):
                     64, int((self.history_budget - fixed_effective) / factor * 0.8)
                 )
                 self._tighten_summary(llm, target_tokens)
-                prepared_messages = self._summary_context(messages, recent_turns)
+                prepared_messages = request_view(self._summary_context(source, recent_turns))
                 prepared_estimate = self.estimate_request_tokens(
                     prepared_messages, method, tools, img_urls
                 )

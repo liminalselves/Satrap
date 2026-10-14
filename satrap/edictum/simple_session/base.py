@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any
 from satrap.core.utils.skills import SkillsManager
 from satrap.edictum.plugin import Plugin
+from satrap.core.utils.context import AsyncContextManager, ContextManager
 from .handlers import _HandlerRegistryMixin
 
 
@@ -50,3 +51,19 @@ class _SessionFeatures(_HandlerRegistryMixin):
         - stream: 是否使用流式调用
         """
         self.stream = bool(stream)
+
+    def compose_system_prompt(self, prompt: str, context: ContextManager | AsyncContextManager) -> str:
+        """
+        更新基础提示词时保留当前工作流已激活的技能指令
+
+        参数:
+        - prompt: 新的基础提示词
+        - context: 正在更新的上下文
+
+        返回:
+        - str: 主工作流合成提示词, 其他上下文直接使用基础提示词
+        """
+        workflow = getattr(self, "_wf", None)
+        if self._skills_manager is not None and workflow is not None and workflow.ctx is context:
+            return self._skills_manager.compose_system_prompt(prompt, workflow)
+        return prompt

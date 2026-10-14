@@ -4,7 +4,7 @@
 与平台后端隔离:
 - 扫描 satrap/expend/plugins (官方) + .satrap/plugins (用户) 拿插件清单,
   但默认不安装 -- 清单来自 meta.yaml 的能力声明 (parse_capability_descriptions)
-- 启用状态独立记录于 .satrap/chat_plugins.json (不碰 session_class_config.json),
+- 启用状态独立记录于 .satrap/config/chat_plugins.json (不碰 session_class_config.json),
   前端勾选后由 ChatService 对活动会话执行 install_plugin / uninstall_plugin
 
 启用状态 json 结构:
@@ -18,6 +18,8 @@
 - capabilities: 能力独立启用状态 (默认 true), 能力生效 = 插件启用 AND 独立启用
 """
 from __future__ import annotations
+
+from satrap.core.storage.persist import atomic_write_json
 from dataclasses import asdict
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 
@@ -25,11 +27,12 @@ import threading
 from pathlib import Path
 from typing import Any, cast
 import json
+from satrap.core.storage.file_lock import FileLock
+from satrap.core.config.document import ConfigRevisionConflict, config_document_revision
 
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
-from satrap.core.utils.paths import get_data_dir
 from satrap.edictum.plugin import (
     PLUGINS_PRESET_DIR,
     USER_PLUGINS_DIR,
@@ -47,15 +50,19 @@ CAPABILITY_LABELS = {
 }
 # 能力类别中文名 (供前端展示)
 
+from satrap.core.config_paths import get_config_path
+from satrap.edictum.plugin_apply import PluginApplySnapshot
+
 
 def _default_state_path() -> Path:
     """
-    插件启用状态 json 默认路径 (.satrap/chat_plugins.json)
+    插件启用状态 json 默认路径 (.satrap/config/chat_plugins.json)
 
     返回:
-    - Path: 插件启用状态 json 默认路径 (.satrap/chat_plugins.json)
+    - Path: 插件启用状态 json 默认路径 (.satrap/config/chat_plugins.json)
     """
-    return get_data_dir() / "chat_plugins.json"
+
+    return get_config_path("chat_plugins.json")
 
 
 class ChatPluginRegistry:
@@ -84,14 +91,22 @@ class ChatPluginRegistry:
 
     # ---------- 状态持久化 ----------
 
-    def _load(self) -> None:
-        """读 json 启用状态 (不存在则空)"""
+    def _load(self, strict: bool = False) -> None:
+        """
+        读取插件状态, 写入前严格读取以避免覆盖损坏文件
+
+        参数:
+        - strict: 为 True 时读取失败抛出异常, 默认保留原有启动兜底行为
+        """
         with self._lock:
+            previous = self._states
             self._states = {}
             if not self.state_path.is_file():
                 return
             try:
                 raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if strict and not isinstance(raw, dict):
+                    raise ValueError("Chat 插件配置必须是对象")
                 if isinstance(raw, dict):
                     for name, st in cast(dict[str, Any], raw).items():
                         if isinstance(st, dict):
@@ -99,8 +114,13 @@ class ChatPluginRegistry:
                             self._states[str(name)] = {
                                 "enabled": bool(st_dict.get("enabled", False)),
                                 "capabilities": self._normalize_caps(st_dict.get("capabilities")),
+                                **({"config_version": st_dict["config_version"]} if "config_version" in st_dict else {}),
+                                **({"migration_state": st_dict["migration_state"]} if "migration_state" in st_dict else {}),
                             }
             except (OSError, ValueError) as e:
+                if strict:
+                    self._states = previous
+                    raise
                 logger.warning(f"[聊天插件] 读取启用状态失败, 已重置: {e}")
 
     @staticmethod
@@ -126,13 +146,7 @@ class ChatPluginRegistry:
 
     def _save(self) -> None:
         """写 json 启用状态 (调用方需已持有锁)"""
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            self.state_path.write_text(
-                json.dumps(self._states, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except OSError as e:
-            logger.error(f"[聊天插件] 写入启用状态失败: {e}")
+        atomic_write_json(self.state_path, self._states, indent=2)
 
     # ---------- 扫描 ----------
 
@@ -150,6 +164,9 @@ class ChatPluginRegistry:
             for entry in self.catalog.scan():
                 name = entry.name
                 state = self._states.get(name, {"enabled": False, "capabilities": {}})
+                if name == "friend_manager" and name in self._states:
+                    from satrap.edictum.friend_migration import migrate_friend_switch_specs
+                    state = migrate_friend_switch_specs([{"name": name, **state}], PluginConfigManager())[0]
                 cap_states = state.get("capabilities", {})
                 capabilities: dict[str, list[dict[str, Any]]] = {}
                 for kind in CAPABILITY_KINDS:
@@ -170,9 +187,41 @@ class ChatPluginRegistry:
                     "applicability": dict(entry.applicability),
                     "availability": asdict(entry.check_environment(PluginEnvironment("chat"))),
                     "enabled": bool(state.get("enabled", False)),
+                    "configured": name in self._states,
+                    "revision": config_document_revision(self._states.get(name)),
                     "capabilities": capabilities,
                 })
         return result
+
+    def refresh(self, *, strict: bool = False) -> None:
+        """
+        重新读取由冷配置管理入口保存的 Chat 插件状态
+
+        参数:
+        - strict: 在线应用时显式失败, 默认保留原启动兜底行为
+        """
+        self._load(strict=strict)
+
+    def configure(self, name: str, state: dict[str, Any] | None, expected_revision: str) -> None:
+        """
+        原子添加、更新或移除一个 Chat 插件配置
+
+        参数:
+        - name: 已通过目录和能力校验的插件名称
+        - state: 聚合开关和子能力状态, None 表示移除
+        - expected_revision: 该插件编辑开始时的配置版本
+        """
+        with self._lock, FileLock(self.state_path.with_name(f".{self.state_path.name}.lock")):
+            self._load(strict=True)
+            if config_document_revision(self._states.get(name)) != expected_revision:
+                raise ConfigRevisionConflict("Chat 插件配置已被修改, 请重新读取后合并")
+            if state is None:
+                self._states.pop(name, None)
+            else:
+                entry = self.catalog.get(name)
+                self._states[name] = {"enabled": state["enabled"], "capabilities": self._normalize_caps(state.get("capabilities")),
+                                      **({"config_version": entry.config_version} if entry is not None and entry.config_version else {})}
+            self._save()
 
     def get_plugin_dir(self, name: str) -> Path | None:
         """
@@ -190,27 +239,32 @@ class ChatPluginRegistry:
     def resolve_specs(
         self,
         config_manager: PluginConfigManager | None = None,
+        *, snapshot: PluginApplySnapshot | None = None,
     ) -> list[PluginSpec]:
         """
         解析 Chat 当前插件状态为统一运行规格
 
         参数:
         - config_manager: 插件全局配置管理器
+        - snapshot: 可选单次应用来源, 默认实时读取
 
         返回:
         - list[PluginSpec]: 插件运行规格
         """
         manager = config_manager or PluginConfigManager()
+        catalog = snapshot.catalog if snapshot is not None else self.catalog
         raw_items: list[dict[str, Any]] = []
         with self._lock:
             states: dict[str, dict[str, Any]] = {
                 name: {
                     "enabled": bool(state.get("enabled", False)),
                     "capabilities": self._normalize_caps(state.get("capabilities")),
+                    **({"config_version": state["config_version"]} if "config_version" in state else {}),
+                    **({"migration_state": state["migration_state"]} if "migration_state" in state else {}),
                 }
                 for name, state in self._states.items()
             }
-        for entry in self.catalog.scan():
+        for entry in catalog.scan():
             state: dict[str, Any] = states.get(
                 entry.name,
                 {"enabled": False, "capabilities": {}},
@@ -219,12 +273,15 @@ class ChatPluginRegistry:
                 "name": entry.name,
                 "enabled": state["enabled"] and entry.check_environment(PluginEnvironment("chat")).allowed,
                 "capabilities": state["capabilities"],
+                "config_version": state.get("config_version", entry.config_version if entry.name not in states else 0),
+                **({"migration_state": state["migration_state"]} if "migration_state" in state else {}),
             })
         return parse_plugin_specs(
             raw_items,
-            self.catalog,
+            catalog,
             require_available=True,
-            config_resolver=lambda entry, _config: manager.load_global(
+            migration_manager=manager,
+            config_resolver=lambda entry, _config: snapshot.global_config(entry.name) if snapshot is not None else manager.load_global(
                 entry.name,
                 entry.config_schema,
             ),
@@ -257,7 +314,8 @@ class ChatPluginRegistry:
             entry = self.catalog.get(name)
             if entry is not None:
                 entry.check_environment(PluginEnvironment("chat")).require()
-        with self._lock:
+        with self._lock, FileLock(self.state_path.with_name(f".{self.state_path.name}.lock")):
+            self._load(strict=True)
             st = self._states.setdefault(name, {"enabled": False, "capabilities": {}})
             st["enabled"] = bool(enabled)
             self._save()
@@ -277,7 +335,8 @@ class ChatPluginRegistry:
         """
         if kind not in CAPABILITY_KINDS:
             return False
-        with self._lock:
+        with self._lock, FileLock(self.state_path.with_name(f".{self.state_path.name}.lock")):
+            self._load(strict=True)
             st = self._states.setdefault(name, {"enabled": False, "capabilities": {}})
             caps = self._normalize_caps(st.get("capabilities"))
             caps[kind][cap] = bool(enabled)
