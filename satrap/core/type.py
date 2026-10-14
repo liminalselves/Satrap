@@ -7,7 +7,7 @@ Satrap 共享类型定义
 from dataclasses import dataclass, field
 from datetime import datetime
 import sqlite3
-from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar, cast, overload
+from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar, cast, overload, NotRequired, TypedDict
 from enum import Enum
 import time
 
@@ -722,6 +722,216 @@ class MutationContext:
     """变更原因说明"""
     change_set_id: str = ""
     """变更批次唯一标识"""
+
+
+class AdministratorRuntimeStatus(TypedDict):
+    """管理员区段运行时状态, 不含名单正文"""
+    ok: bool
+    section_revision: str
+    runtime_id: str
+    pid: int
+    config_path: str
+
+
+class GroupActionRecord(TypedDict):
+    """群管理动作对外记录, 不携带原始请求 flag"""
+    action_id: str
+    self_id: str
+    group_id: str
+    action_type: str
+    params: dict[str, Any]
+    fingerprint: str
+    actor_kind: str
+    policy_revision: int
+    state: str
+    created_at: float
+    expires_at: float | None
+    decision_at: float | None
+    executed_at: float | None
+    result: dict[str, Any] | None
+
+
+class GroupActionPage(TypedDict):
+    """群管理动作分页结果"""
+    items: list[GroupActionRecord]
+    total: int
+    page: int
+    page_size: int
+
+
+class GroupSyncState(TypedDict):
+    """群目录同步任务的持久化状态"""
+    status: str
+    sync_id: str | None
+    complete: bool
+    truncated: bool
+    reason: str | None
+    started_at: float | None
+    completed_at: float | None
+    last_complete_at: float | None
+    connection_generation: int
+
+
+class GroupSyncTicket(TypedDict):
+    """群目录同步任务回执"""
+    sync_id: str
+    status: str
+    reused: bool
+
+
+class GroupAccountRecord(TypedDict):
+    """已采用账号的群接入设置"""
+    self_id: str
+    mode: str
+    approval_defaults: dict[str, Any]
+    revision: int
+    migrated_at: float
+    last_bound_at: float
+    legacy_adopted: bool
+
+
+class GroupAccountSummary(TypedDict):
+    """已确认账号的历史摘要"""
+    self_id: str
+    mode: str
+    revision: int
+    last_bound_at: float
+
+
+class GroupConfigRecord(TypedDict):
+    """单群显式配置与修订"""
+    explicit: dict[str, Any]
+    schema_version: int
+    revision: int
+    route_generation: int
+    updated_at: float | None
+
+
+class GroupDirectoryRecord(TypedDict):
+    """单群目录记录, 仅有配置未确认时 membership 为 config_only"""
+    group_id: str
+    group_name: str | None
+    member_count: int | None
+    max_member_count: int | None
+    membership: str
+    confirmed_at: float | None
+
+
+class ScopedSessionSummary(TypedDict):
+    """归属本群的持久会话实例汇总"""
+    known_scoped_count: int
+    current_route_count: int
+    session_ids: list[str]
+    current_session_ids: list[str]
+    override_counts: dict[str, int]
+
+
+class GroupAccountsResult(TypedDict):
+    """平台已确认账号清单"""
+    items: list[GroupAccountSummary]
+    current_account: str
+    waiting_for_account: bool
+
+
+class GroupMembersPage(TypedDict):
+    """固定群成员分页结果"""
+    items: list[dict[str, Any]]
+    total_loaded: int
+    page: int
+    page_size: int
+    truncated: bool
+    complete: bool
+    account: str
+    group_id: str
+
+
+class GroupActionTypesResult(TypedDict):
+    """群管理动作的参数结构, 风险和有效审批模式"""
+    items: list[dict[str, Any]]
+    account: str
+    group_id: str
+
+
+class GroupBindingOptionsResult(TypedDict):
+    """群绑定的可选命名会话定义, 模型和插件清单"""
+    items: list[dict[str, Any]]
+    account: str
+    models: list[str]
+    plugins: list[dict[str, Any]]
+
+
+class PlatformStoreRecovery(TypedDict):
+    """平台状态存储恢复结果"""
+    ok: bool
+    store: str
+    reason: str
+    degraded: NotRequired[bool]
+    detail: NotRequired[str]
+
+
+class ManualWakeStatusResult(TypedDict):
+    """手动唤醒请求状态查询结果"""
+    status: str
+    request_id: str
+    reason: NotRequired[str]
+    detail: NotRequired[str]
+    adapter_id: NotRequired[str]
+    target: NotRequired[str]
+    operator: NotRequired[str]
+    created_at: NotRequired[float]
+    updated_at: NotRequired[float]
+
+
+class WakeSubmitResult(TypedDict):
+    """平台手动唤醒提交回执"""
+    status: str
+    request_id: NotRequired[str]
+    reason: NotRequired[str]
+    state: NotRequired[str]
+
+
+class RequestDiagnosticsStats(TypedDict):
+    """请求诊断容量统计"""
+    capacity: int
+    records_per_request: int
+    requests_total: int
+    records_total: int
+
+
+class RequestDiagnosticsPage(TypedDict):
+    """请求诊断汇总页, 统计键仅在可用时存在"""
+    records: list[dict[str, object]]
+    available: bool
+    reason: NotRequired[str]
+    capacity: NotRequired[int]
+    records_per_request: NotRequired[int]
+    requests_total: NotRequired[int]
+    records_total: NotRequired[int]
+
+
+class RequestDiagnosticDetail(TypedDict):
+    """单个请求的诊断明细"""
+    request_id: str
+    adapter_id: str
+    records: list[dict[str, object]]
+    stages: list[str]
+    available: bool
+    truncated: bool
+    reason: NotRequired[str]
+
+
+class DiagnosticStatusBody(TypedDict):
+    """诊断明细不可用时的状态体"""
+    status: str
+    reason: str
+    request_id: NotRequired[str]
+
+
+class ReloadConfigResult(TypedDict):
+    """配置热加载结果"""
+    ok: bool
+    platforms: list[dict[str, Any]]
+    edictum_sessions: list[dict[str, Any]]
 
 
 T = TypeVar("T")
