@@ -14,9 +14,11 @@ _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _KNOWN_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 _LEVEL_PATTERN = "|".join(_KNOWN_LEVELS)
 _LOG_HEADER = re.compile(
-    r"^(?:\[\d{4}-\d{2}-\d{2}[ \t]+\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\][ \t]+)?"
+    r"^(?:(?:\[\d{4}-\d{2}-\d{2}[ \t]+\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\][ \t]+)?"
     rf"(?:\[(?P<bracketed>{_LEVEL_PATTERN})\][ \t]*:"
     rf"|(?P<plain>{_LEVEL_PATTERN})[ \t]+in[ \t]+[^:\r\n]+:)"
+    r"|\[\d{4}-\d{2}-\d{2}[ \t]+\d{2}:\d{2}:\d{2}[ \t]+[+-]\d{4}\][ \t]+"
+    rf"\[\d+\][ \t]+\[(?P<server>{_LEVEL_PATTERN})\](?:[ \t]+|$))"
 )
 
 
@@ -34,7 +36,7 @@ def _parse_log_level(content: str, default_level: str) -> str:
     match = _LOG_HEADER.match(content)
     if match is None:
         return default_level
-    return match.group("bracketed") or match.group("plain")
+    return match.group("bracketed") or match.group("plain") or match.group("server")
 
 
 @dataclass(frozen=True, slots=True)

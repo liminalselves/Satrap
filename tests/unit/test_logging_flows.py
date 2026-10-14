@@ -521,6 +521,8 @@ async def test_standard_stream_capture_preserves_output_and_publishes_lines() ->
     "[2026-09-28 21:27:17.222] [{level}]: 配置已刷新",
     "[2026-09-28 21:27:17,222] {level} in __init__: 配置已刷新",
     "[{level}]: 配置已刷新",
+    "[2026-10-14 18:02:50 +0800] [24964] [{level}] Running on http://127.0.0.1:8080 (CTRL + C to quit)",
+    "[2026-10-14 18:02:50 -0400] [24964] [{level}] 正文包含 [ERROR]",
 ])
 async def test_capture_uses_header_level_on_stderr(level: str, template: str) -> None:
     """标准流中的日志头级别应覆盖 stderr 默认级别"""
@@ -546,6 +548,9 @@ async def test_capture_uses_header_level_on_stderr(level: str, template: str) ->
     ("普通输出包含 [INFO]", "ERROR", "ERROR"),
     ("[2026-09-28 21:27:17.222] 正文包含 [INFO]", "ERROR", "ERROR"),
     ("[UNKNOWN]: 正文包含 [INFO]", "ERROR", "ERROR"),
+    ("[2026-10-14 18:02:50 +0800] [24964] [UNKNOWN] 正文包含 [INFO]", "ERROR", "ERROR"),
+    ("[2026-10-14 18:02:50 +0800] [24964] 正文包含 [INFO]", "ERROR", "ERROR"),
+    ("[2026-10-14 18:02:50 +0800] [24964] [INFO]suffix", "ERROR", "ERROR"),
     ("plain stdout", "INFO", "INFO"),
     ("plain stderr", "ERROR", "ERROR"),
     ('  File "[INFO]", line 1, in execute', "ERROR", "ERROR"),
