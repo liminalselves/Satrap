@@ -275,7 +275,7 @@ def test_snapshot_reads_globals_once_and_returns_private_copies(tmp_path, monkey
 
     monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", unexpected_manager)
     for index in range(5):
-        session = SimpleNamespace(session_id=str(index))
+        session: Any = SimpleNamespace(session_id=str(index))
         result = resolve_runtime_specs(session, [PluginSpec(name="probe")], snapshot.catalog, snapshot=snapshot)
         assert result[0].config == {"note": "before"}
     assert calls == ["probe"]
@@ -291,8 +291,8 @@ def test_snapshot_keeps_named_and_fresh_instance_overrides(tmp_path):
     snapshot = PluginApplySnapshot.capture(catalog, manager)
     store = SessionOverrideStore(tmp_path / "instances.db")
     store.replace("one", "plugins.probe", {"note": "local-one"}, expected_revision=0)
-    one = SimpleNamespace(session_id="one", plugin_override_store=store)
-    two = SimpleNamespace(session_id="two", plugin_override_store=store)
+    one: Any = SimpleNamespace(session_id="one", plugin_override_store=store)
+    two: Any = SimpleNamespace(session_id="two", plugin_override_store=store)
     spec = PluginSpec(name="probe", config={"note": "named"})
     first = resolve_runtime_specs(one, [spec], snapshot.catalog, snapshot=snapshot)
     second = resolve_runtime_specs(two, [spec], snapshot.catalog, snapshot=snapshot)

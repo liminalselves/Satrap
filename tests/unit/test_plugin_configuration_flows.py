@@ -607,7 +607,7 @@ def test_revoked_installed_entry_cannot_reuse_its_binding():
             self._wf = SimpleNamespace(tools_manager=SimpleNamespace(tools={"write": entry}, is_tool_enabled=lambda _: True))
         def list_plugins(self):
             return [installed]
-    session = Session()
+    session: Any = Session()
     binding = PluginEntryBinding("example", "tools", "write", spec(), {"writers": "alice"}, weakref.ref(entry), weakref.ref(session))
     with bind_call_origin(origin()):
         assert authorize_plugin_entry(binding).status == "allowed"
@@ -734,7 +734,7 @@ def test_entry_decision_is_re_evaluated_when_revoked_between_steps(monkeypatch: 
         def list_plugins(self) -> list[SimpleNamespace]:
             return [installed]
 
-    session = Session()
+    session: Any = Session()
     evaluations = counted_evaluations(monkeypatch)
     binding = PluginEntryBinding("example", "tools", "query", spec(), {}, weakref.ref(entry), weakref.ref(session))
     with bind_call_origin(origin()):

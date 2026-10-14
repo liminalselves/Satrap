@@ -1109,7 +1109,7 @@ async def test_approval_is_single_durable_request_and_sources_are_rechecked(tmp_
             plugin_config["high_risk_approval"] = False
         configs.update("assistant", {"plugins": [{"name": "group_admin", "config": plugin_config}]})
         revoked = await backend.decide_group_action("bot", "100", "456", action_id, approve=True)
-        assert revoked["state"] == "failed" and revoked["result"]["reason"] == "model_permission_revoked"
+        assert revoked["state"] == "failed" and cast(dict[str, Any], revoked["result"])["reason"] == "model_permission_revoked"
         adapter._bot.set_group_ban.assert_awaited_once()
     finally:
         await provider.release_session_async(session)

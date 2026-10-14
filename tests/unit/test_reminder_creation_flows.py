@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from urllib.parse import urlencode
 import asyncio
@@ -292,10 +293,10 @@ async def test_model_create_is_persisted_once_without_immediate_native_send(tmp_
     adapter, event, _ = _reminder_plugin_setup(tmp_path)
     adapter._bot.get_group_member_info.side_effect = lambda **params: {"group_id": int(SCOPE.chat_id), "user_id": params["user_id"], "nickname": "成员"}
     manager = current_adapter_manager()
-    manager.reminder_host = SimpleNamespace(
+    manager.reminder_host = cast(Any, SimpleNamespace(
         backend=SimpleNamespace(get_platform_runtime=lambda platform: None),
         policy=lambda record: ReminderPolicy("ready", revision="same-policy", config={"reminders_enabled": True}),
-    )
+    ))
     arguments = {"text": " 检查联调结果 ", "after_seconds": 30, "mention_user_ids": ["789", event.call_origin.actor_id]}
     assert validate_reminder_text(arguments["text"]) == arguments["text"]
     validated_mentions = validate_reminder_mentions(arguments["mention_user_ids"])
@@ -330,7 +331,7 @@ async def test_model_create_is_persisted_once_without_immediate_native_send(tmp_
 async def test_source_owner_main_workflow_and_unknown_parameters_are_mechanical(tmp_path):
     adapter, event, _ = _reminder_plugin_setup(tmp_path)
     workflow = object()
-    instance = SimpleNamespace(_wf=workflow)
+    instance: Any = SimpleNamespace(_wf=workflow)
     with bind_call_origin(event.call_origin), bind_tool_workflow(workflow):
         with bind_tool_workflow(object()):
             child = await execute_reminder_tool("group_chat_create_reminder", {"text": "提醒", "after_seconds": 10},
@@ -362,10 +363,10 @@ def test_create_schema_enforces_exclusive_time_and_recovery_is_manual():
 async def test_source_deleted_during_member_lookup_never_creates_reminder(tmp_path):
     adapter, event, _ = _reminder_plugin_setup(tmp_path)
     manager = current_adapter_manager()
-    manager.reminder_host = SimpleNamespace(
+    manager.reminder_host = cast(Any, SimpleNamespace(
         backend=SimpleNamespace(get_platform_runtime=lambda platform: None),
         policy=lambda record: ReminderPolicy("ready", revision="same-policy", config={"reminders_enabled": True}),
-    )
+    ))
 
     def remove_source(**params):
         adapter.message_archive.delete(SCOPE, expected_revision=0, message_ids=[event.call_origin.source_message_id])
@@ -373,7 +374,7 @@ async def test_source_deleted_during_member_lookup_never_creates_reminder(tmp_pa
 
     adapter._bot.get_group_member_info.side_effect = remove_source
     workflow = object()
-    instance = SimpleNamespace(_wf=workflow, session_id="source-session")
+    instance: Any = SimpleNamespace(_wf=workflow, session_id="source-session")
     with bind_call_origin(event.call_origin), bind_tool_workflow(workflow):
         result = await execute_reminder_tool("group_chat_create_reminder", {"text": "提醒", "after_seconds": 30},
                                              session=instance, config={"reminders_enabled": True}, authorize=lambda group: None)
@@ -388,13 +389,13 @@ async def test_invalid_mentions_are_rejected_across_creation_chain_without_netwo
     workflow = object()
     manager = current_adapter_manager()
     assert manager is not None
-    manager.reminder_host = SimpleNamespace(backend=SimpleNamespace(get_platform_runtime=lambda _: None),
-        policy=lambda _: ReminderPolicy('ready', revision='current', config={}))
+    manager.reminder_host = cast(Any, SimpleNamespace(backend=SimpleNamespace(get_platform_runtime=lambda _: None),
+        policy=lambda _: ReminderPolicy('ready', revision='current', config={})))
     adapter._bot.get_group_member_info = AsyncMock()
     with bind_call_origin(event.call_origin), bind_tool_workflow(workflow):
         result = await execute_reminder_tool('group_chat_create_reminder',
             {'text': '提醒', 'after_seconds': 10, 'mention_user_ids': mentions},
-            session=SimpleNamespace(_wf=workflow), config={'reminders_enabled': True}, authorize=lambda _: None)
+            session=cast(Any, SimpleNamespace(_wf=workflow)), config={'reminders_enabled': True}, authorize=lambda _: None)
     assert result['error']['code'] == 'invalid_argument'
     adapter._bot.get_group_member_info.assert_not_awaited()
     assert adapter.message_archive is not None

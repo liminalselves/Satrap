@@ -36,7 +36,7 @@ def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.parametrize("global_flag", [False, True])
 @pytest.mark.parametrize("named_flag", [None, False, True])
 @pytest.mark.parametrize("tool_enabled", [False, True])
-def test_old_effective_state_preserved_and_migration_idempotent(config, field, tool, global_flag, named_flag, tool_enabled):
+def test_old_effective_state_preserved_and_migration_idempotent(config: tuple[Any, Any], field, tool, global_flag, named_flag, tool_enabled):
     manager, catalog = config
     path = manager.global_path("friend_manager")
     path.write_text(json.dumps({field: global_flag}), encoding="utf-8")
@@ -52,7 +52,7 @@ def test_old_effective_state_preserved_and_migration_idempotent(config, field, t
     assert not set(migrated_global) & set(FRIEND_SWITCHES)
     assert migrated_global[GLOBAL_RECEIPT]["legacy_defaults"][tool] is global_flag
 
-def test_absent_old_switches_stay_disabled_and_new_config_can_enable(config):
+def test_absent_old_switches_stay_disabled_and_new_config_can_enable(config: tuple[Any, Any]):
     manager, catalog = config
     old = parse_plugin_specs(["friend_manager"], catalog, migration_manager=manager)[0]
     assert all(old.capabilities["tools"][name] is False for name in FRIEND_SWITCHES.values())
@@ -62,7 +62,7 @@ def test_absent_old_switches_stay_disabled_and_new_config_can_enable(config):
     new = parse_plugin_specs([{"name": "friend_manager", "config_version": 1}], catalog, migration_manager=manager)[0]
     assert all(new.capabilities["tools"][name] for name in FRIEND_SWITCHES.values())
 
-def test_global_save_preserves_legacy_baseline_but_not_live_gate(config):
+def test_global_save_preserves_legacy_baseline_but_not_live_gate(config: tuple[Any, Any]):
     manager, catalog = config
     path = manager.global_path("friend_manager")
     path.write_text(json.dumps({"request_handling_enabled": True}), encoding="utf-8")
@@ -79,13 +79,13 @@ def test_global_save_preserves_legacy_baseline_but_not_live_gate(config):
 @pytest.mark.parametrize("original_tool", [False, True])
 @pytest.mark.parametrize("named_switch", [False, True])
 @pytest.mark.parametrize("instance_switch", [False, True])
-def test_instance_highest_priority_converted_to_tool_override(config, tmp_path, original_tool, named_switch, instance_switch):
+def test_instance_highest_priority_converted_to_tool_override(config: tuple[Any, Any], tmp_path, original_tool, named_switch, instance_switch):
     manager, catalog = config
     spec = parse_plugin_specs([{"name": "friend_manager", "config": {"request_handling_enabled": named_switch},
                                "capabilities": {"tools": {"friend_manager_handle_request": original_tool}}}], catalog, migration_manager=manager)[0]
     store = SessionOverrideStore(tmp_path / "session.db")
     store.replace("s", "plugins.friend_manager", {"request_handling_enabled": instance_switch, "managers": "123"}, expected_revision=0)
-    session = SimpleNamespace(session_id="s", plugin_override_store=store)
+    session: Any = SimpleNamespace(session_id="s", plugin_override_store=store)
     resolved = resolve_runtime_specs(session, [spec], catalog)[0]
     assert resolved.capabilities["tools"]["friend_manager_handle_request"] is (original_tool and instance_switch)
     assert resolved.config["managers"] == "123"
@@ -98,7 +98,7 @@ def test_instance_highest_priority_converted_to_tool_override(config, tmp_path, 
     assert store.read("s", "plugins.friend_manager") == old_record
     assert store.read("s", "plugin_capabilities.friend_manager") == receipt
 
-def test_invalid_global_migration_does_not_overwrite_source(config):
+def test_invalid_global_migration_does_not_overwrite_source(config: tuple[Any, Any]):
     manager, _ = config
     path = manager.global_path("friend_manager")
     path.write_text("{bad-json", encoding="utf-8")
@@ -106,7 +106,7 @@ def test_invalid_global_migration_does_not_overwrite_source(config):
         migrate_friend_globals(manager)
     assert path.read_text(encoding="utf-8") == "{bad-json"
 
-def test_migrated_instance_tool_state_is_editable_and_can_restore_inheritance(config, tmp_path):
+def test_migrated_instance_tool_state_is_editable_and_can_restore_inheritance(config: tuple[Any, Any], tmp_path):
     manager, catalog = config
     entry = catalog.get("friend_manager")
     spec = parse_plugin_specs([{"name": "friend_manager", "config": {"request_handling_enabled": True}}], catalog, migration_manager=manager)[0]
@@ -118,7 +118,7 @@ def test_migrated_instance_tool_state_is_editable_and_can_restore_inheritance(co
     assert tools["inherited_tools"]["friend_manager_handle_request"] is True
     service.save("s", "friend_manager", entry.config_schema, {"managers": "123"}, expected_revision=data["revision"],
                  named=spec.config, tool_overrides={"friend_manager_handle_request": True}, expected_tool_revision=tools["tool_revision"])
-    session = SimpleNamespace(session_id="s", plugin_override_store=service.overrides.store)
+    session: Any = SimpleNamespace(session_id="s", plugin_override_store=service.overrides.store)
     assert resolve_runtime_specs(session, [spec], catalog)[0].capabilities["tools"]["friend_manager_handle_request"]
     current = service.get("s", "friend_manager", entry.config_schema, spec.config)
     latest = service.tool_settings("s", spec, entry)
@@ -127,7 +127,7 @@ def test_migrated_instance_tool_state_is_editable_and_can_restore_inheritance(co
     assert service.tool_settings("s", spec, entry)["tool_overrides"] == {}
     assert resolve_runtime_specs(session, [spec], catalog)[0].capabilities["tools"]["friend_manager_handle_request"]
 
-def test_config_and_tool_revision_conflict_roll_back_together(config, tmp_path):
+def test_config_and_tool_revision_conflict_roll_back_together(config: tuple[Any, Any], tmp_path):
     manager, catalog = config
     service = PluginSettingsService(tmp_path / "settings.db", manager)
     entry = catalog.get("friend_manager")
@@ -138,7 +138,7 @@ def test_config_and_tool_revision_conflict_roll_back_together(config, tmp_path):
     assert service.overrides.store.read("s", "plugins.friend_manager")["revision"] == 0
     assert service.overrides.store.read("s", "plugin_capabilities.friend_manager")["overrides"] == {"friend_manager_delete_friend": False}
 
-def test_tool_settings_returns_values_and_revision_from_same_read(config, tmp_path, monkeypatch):
+def test_tool_settings_returns_values_and_revision_from_same_read(config: tuple[Any, Any], tmp_path, monkeypatch):
     """迁移后若有并发写入, 返回的工具值与修订号必须属于同一记录"""
     manager, catalog = config
     spec = parse_plugin_specs([{"name": "friend_manager", "config_version": 1}], catalog, migration_manager=manager)[0]

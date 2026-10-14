@@ -604,7 +604,7 @@ async def test_ordinary_caller_can_request_own_deletion_but_needs_approval(kind)
         result = await delete.execute()
         assert result["ok"] and result["data"]["state"] == "pending"
         adapter._bot.delete_friend.assert_not_awaited()
-    approved = await adapter.friend_host.decide("10000", result["data"]["action_id"], True)
+    approved = await cast(FriendService, adapter.friend_host).decide("10000", result["data"]["action_id"], True)
     assert approved["state"] == "succeeded"
     adapter._bot.delete_friend.assert_awaited_once_with(user_id=321)
 
@@ -618,7 +618,7 @@ async def test_own_deletion_cannot_bypass_protection_or_revoked_switch():
     with bind_call_origin(_origin(chat_type="FriendMessage", actor="321")):
         result = await delete.execute()
         delete.disable()
-    approved = await adapter.friend_host.decide("10000", result["data"]["action_id"], True)
+    approved = await cast(FriendService, adapter.friend_host).decide("10000", result["data"]["action_id"], True)
     assert approved["state"] == "failed"
     delete.enable()
     delete.config.update(protected_friend_ids="321")
@@ -736,7 +736,7 @@ class GenericFriends:
         self.handle_calls.append((request_id, approve, remark))
 
 def setup(tmp_path):
-    adapter = GenericFriends()
+    adapter: Any = GenericFriends()
     active = [adapter]
     permission = {"enabled": True, "version": "initial"}
     def check(source, target):
@@ -828,7 +828,7 @@ async def test_pending_model_action_rechecks_every_boundary(tmp_path, revocation
 @pytest.mark.asyncio
 async def test_manual_protection_rejection_and_pending_rejection(tmp_path):
     host, adapter, source, _, _ = setup(tmp_path)
-    for uid in ["manager", adapter.account]:
+    for uid in ["manager", cast(str, adapter.account)]:
         with pytest.raises(FriendError) as caught:
             await host.submit(adapter.account, uid, "delete_friend", {"user_id": uid}, actor="panel")
         assert caught.value.code == "protected_friend"

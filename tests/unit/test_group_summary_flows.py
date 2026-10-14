@@ -9,6 +9,7 @@ from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, P
 from satrap.core.group_chat.summaries import SummaryLimits, SummaryStore, _cursor
 from satrap.core.group_chat.types import GroupChatError
 from types import SimpleNamespace
+from typing import Any, cast
 import json
 from satrap.core.call_context import bind_call_origin, bind_tool_workflow
 from satrap.core.group_chat.reply import bind_reply_turn
@@ -166,7 +167,7 @@ async def test_main_summary_write_is_independent_of_reply_tool_and_subagents_can
     adapter, event, service = _group_chat_summary_service_setup(tmp_path)
     workflow = object()
     with bind_call_origin(event.call_origin), bind_reply_turn(event) as turn, bind_tool_workflow(workflow):
-        turn.workflow, turn.workflow_manager = workflow, SimpleNamespace(is_tool_enabled=lambda _: True)
+        turn.workflow, turn.workflow_manager = workflow, cast(Any, SimpleNamespace(is_tool_enabled=lambda _: True))
         end = datetime.now(timezone.utc)
         args = {"start_time": "2020-01-01T00:00:00", "end_time": end.isoformat()}
         snapshot = await service.execute("group_chat_prepare_summary", args)
@@ -206,7 +207,7 @@ async def test_summary_host_returns_stable_source_error_and_invalid_argument(tmp
     _, event, service = _group_chat_summary_service_setup(tmp_path)
     workflow = object()
     with bind_call_origin(event.call_origin), bind_reply_turn(event) as turn, bind_tool_workflow(workflow):
-        turn.workflow, turn.workflow_manager = workflow, SimpleNamespace(is_tool_enabled=lambda _: True)
+        turn.workflow, turn.workflow_manager = workflow, cast(Any, SimpleNamespace(is_tool_enabled=lambda _: True))
         result = await service.execute("group_chat_read_summary_sources", {"snapshot_id": "unknown", "cursor": "bad"})
         assert result["error"]["code"] == "invalid_argument"
         missing = await service.execute("group_chat_prepare_summary", {"start_time": "2026-10-04T09:00:00"})

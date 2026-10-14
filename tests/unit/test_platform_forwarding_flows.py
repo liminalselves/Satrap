@@ -584,7 +584,7 @@ async def test_sync_and_async_tools_have_same_definitions_and_send_original_refe
 
 @pytest.mark.usefixtures('cleanup')
 def test_migration_only_requires_missing_forward_plugin_for_explicit_legacy_tools():
-    catalog = SimpleNamespace(get=lambda _: None)
+    catalog: Any = SimpleNamespace(get=lambda _: None)
     ordinary = [{"name": "group_admin", "capabilities": {"tools": {"group_admin_ban": True}}}]
     assert migrate_forward_tool_specs(ordinary, catalog) == ordinary
     legacy = [{"name": "group_admin", "capabilities": {"tools": {"group_admin_get_forward": False}}}]

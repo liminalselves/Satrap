@@ -15,6 +15,7 @@ import asyncio
 import copy
 import threading
 from types import SimpleNamespace
+from typing import Any
 import pytest
 from satrap.core.config.conversation_data import ConversationDataConflict
 from satrap.core.config.conversation_runtime import manage_platform_data
@@ -293,7 +294,7 @@ async def test_live_async_context_is_updated_and_busy_round_is_rejected(saved):
     context = AsyncContextManager("conversation_main", db_path=str(database))
     await context.initialize()
     entry = SessionEntry(session=SimpleNamespace(_all_contexts=lambda: {"main": context}), session_type="probe", created_at=1, last_used=1)
-    manager = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: {"conversation": entry}), _entry_creation_lock=threading.RLock())
+    manager: Any = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: {"conversation": entry}), _entry_creation_lock=threading.RLock())
     snapshot = await manage_platform_data(str(database), manager, "conversation_main", "context", {})
     assert snapshot["source"] == "memory"
     await manage_platform_data(str(database), manager, "conversation_main", "context", {"action": "edit", "index": 5, "content": "活动实例修改", "expected_revision": snapshot["revision"]})
@@ -312,7 +313,7 @@ async def test_cancelled_edit_finishes_disk_and_memory_before_releasing_instance
     context = AsyncContextManager("conversation_main", db_path=str(database))
     await context.initialize()
     entry = SessionEntry(session=SimpleNamespace(_all_contexts=lambda: {"main": context}), session_type="probe", created_at=1, last_used=1)
-    manager = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: {"conversation": entry}), _entry_creation_lock=threading.RLock())
+    manager: Any = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: {"conversation": entry}), _entry_creation_lock=threading.RLock())
     entered = threading.Event()
     proceed = threading.Event()
     original = ConversationDataService._write_context

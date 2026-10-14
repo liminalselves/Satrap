@@ -55,7 +55,7 @@ async def test_prompt_manual_wake_keeps_management_actor_separate_and_is_idempot
     payload = {"adapter_id": "bot", "group_id": "20", "user_id": "30", "prompt": "手动处理", "request_id": "one"}
     assert (await backend.wake_platform(payload, operator="management"))["status"] == "accepted"
     assert (await backend.wake_platform(payload, operator="management"))["status"] == "already_pending"
-    assert (await backend.wake_platform({**payload, "prompt": "另一个请求"}, operator="management"))["reason"] == "request_id_conflict"
+    assert (await backend.wake_platform({**payload, "prompt": "另一个请求"}, operator="management")).get("reason") == "request_id_conflict"
     assert adapter._event_queue.qsize() == 1
     event = adapter._event_queue.get_nowait()
     assert not event.is_wake
@@ -65,7 +65,7 @@ async def test_prompt_manual_wake_keeps_management_actor_separate_and_is_idempot
     await _manual_wake_scheduler(backend).execute(event)
     manager.handle_call_async.assert_awaited_once()
     assert manager.handle_call_async.call_args.args[0].message == "手动处理"
-    assert (await backend.wake_platform(payload, operator="management"))["state"] == "processed"
+    assert (await backend.wake_platform(payload, operator="management")).get("state") == "processed"
 
 @pytest.mark.asyncio
 async def test_manual_pending_window_and_stop_guard():
@@ -121,14 +121,14 @@ async def test_manual_rejects_forged_actor_disabled_platform_and_full_queue():
     payload = {"adapter_id": "bot", "group_id": "20", "user_id": "30", "prompt": "hello", "request_id": "one"}
     assert (await backend.wake_platform({**payload, "operator": "admin"}, operator="management"))["status"] == "rejected"
     adapter.config.enable = False
-    assert (await backend.wake_platform(payload, operator="management"))["reason"] == "adapter_unavailable"
+    assert (await backend.wake_platform(payload, operator="management")).get("reason") == "adapter_unavailable"
     adapter.config.enable = True
     adapter.config.settings["group_whitelist"] = ["99"]
-    assert (await backend.wake_platform(payload, operator="management"))["reason"] == "source_unavailable"
+    assert (await backend.wake_platform(payload, operator="management")).get("reason") == "source_unavailable"
     adapter.config.settings["group_whitelist"] = []
     adapter._event_queue = asyncio.Queue(maxsize=1)
     assert (await backend.wake_platform(payload, operator="management"))["status"] == "accepted"
-    assert (await backend.wake_platform({**payload, "request_id": "overflow"}, operator="management"))["reason"] == "queue_full"
+    assert (await backend.wake_platform({**payload, "request_id": "overflow"}, operator="management")).get("reason") == "queue_full"
 
 @pytest.mark.asyncio
 async def test_manual_message_lookup_rejects_cross_group_and_concurrent_duplicates():
@@ -191,7 +191,7 @@ def test_stale_pending_requests_release_capacity(monkeypatch: pytest.MonkeyPatch
     rejected = requests.check("new", "fp")
     if rejected is None:
         raise AssertionError("容量满时应拒绝")
-    assert rejected["reason"] == "request_capacity"
+    assert rejected.get("reason") == "request_capacity"
     clock[0] += module.PENDING_TTL + 301
     assert requests.check("new", "fp") is None
     assert not requests.records
@@ -695,9 +695,9 @@ class TestAcceptTransaction:
         backend._scheduler = fresh_scheduler
         assert adapter._event_queue.qsize() == 1
         dup = await backend.wake_platform(_payload("one"), operator="management")
-        assert dup["status"] == "already_pending" and dup["state"] == "unknown"
+        assert dup["status"] == "already_pending" and dup.get("state") == "unknown"
         conflict = await backend.wake_platform({**_payload("one"), "prompt": "另一个请求"}, operator="management")
-        assert conflict["status"] == "rejected" and conflict["reason"] == "request_id_conflict"
+        assert conflict["status"] == "rejected" and conflict.get("reason") == "request_id_conflict"
         assert adapter._event_queue.qsize() == 1
 
     @pytest.mark.asyncio
@@ -709,12 +709,12 @@ class TestAcceptTransaction:
 
         monkeypatch.setattr(adapter, "commit_event", fail_commit)
         result = await backend.wake_platform(_payload("enq"), operator="management")
-        assert result["status"] == "rejected" and result["reason"] == "queue_full"
+        assert result["status"] == "rejected" and result.get("reason") == "queue_full"
         record = store.lookup_request("enq", "bot")
         assert record is not None and record["status"] == "failed" and record["detail"] == "queue_full"
         # 同指纹重试返回原状态, 不遗留假 accepted
         retry = await backend.wake_platform(_payload("enq"), operator="management")
-        assert retry["status"] == "already_pending" and retry["state"] == "failed"
+        assert retry["status"] == "already_pending" and retry.get("state") == "failed"
         assert all(row["status"] not in {"accepted", "executing"} for row in json.loads(store._path.read_text(encoding="utf-8"))["requests"].values())
 
     @pytest.mark.asyncio
@@ -726,10 +726,10 @@ class TestAcceptTransaction:
 
         monkeypatch.setattr(store, "_save_current_locked", broken_save)
         result = await backend.wake_platform(_payload("io"), operator="management")
-        assert result["status"] == "rejected" and result["reason"] == "store_unavailable"
+        assert result["status"] == "rejected" and result.get("reason") == "store_unavailable"
         # 占位已回滚: 同 request_id 再走一遍仍按落盘失败拒绝, 而非 already_pending
         again = await backend.wake_platform(_payload("io"), operator="management")
-        assert again["status"] == "rejected" and again["reason"] == "store_unavailable"
+        assert again["status"] == "rejected" and again.get("reason") == "store_unavailable"
         assert adapter._event_queue.qsize() == 0
 
     @pytest.mark.asyncio
@@ -831,9 +831,9 @@ class TestPipelineAndSendAttempts:
         backend, adapter, _, store = _manual_wake_store_runtime(tmp_path)
         assert store.degraded is True
         result = await backend.wake_platform(_payload("deg"), operator="management")
-        assert result["status"] == "rejected" and result["reason"] == "store_unavailable"
+        assert result["status"] == "rejected" and result.get("reason") == "store_unavailable"
         status = await backend.manual_wake_status("deg", "bot")
-        assert status["reason"] == "store_degraded"
+        assert status.get("reason") == "store_degraded"
         # 发送功能照常, 仅跳过尝试记录
         adapter.set_send_attempt_recorder(store)
 

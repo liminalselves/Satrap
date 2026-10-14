@@ -266,7 +266,9 @@ def test_fork_failure_does_not_publish_partial_records(environment, monkeypatch)
         fork_session_settings(layout, "chat", "one", "two")
     assert RagService(layout, models, "chat", "two").list() == []
 
-def test_plugin_save_validates_effective_budgets_and_session_references(environment, tmp_path):
+def test_plugin_save_validates_effective_budgets_and_session_references(
+    environment: tuple[StorageLayout, ModelConfigManager, dict[str, bool]], tmp_path,
+):
     layout, models, _ = environment
     meta = yaml.safe_load(Path("satrap/expend/plugins/rag/meta.yaml").read_text(encoding="utf-8"))
     assert isinstance(meta, dict)

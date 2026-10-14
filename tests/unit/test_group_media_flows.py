@@ -17,7 +17,7 @@ from support.group_reply import setup, owner, SCOPE
 from satrap.core.storage import StorageLayout as _group_chat_media_service_StorageLayout
 from satrap.core.utils import paths
 from urllib.parse import urlencode
-from typing import cast
+from typing import Any, cast
 import json
 import time
 from satrap.core.backend import control_server
@@ -223,7 +223,7 @@ async def test_trusted_sdk_rejects_wrong_workflow_and_only_authorizes_same_turn(
 
     adapter, event, service = setup(tmp_path)
     with owner(event) as turn:
-        turn.workflow_manager = SimpleNamespace(is_tool_enabled=lambda name: True, effectiveness_guard=None)
+        turn.workflow_manager = cast(Any, SimpleNamespace(is_tool_enabled=lambda name: True, effectiveness_guard=None))
         result = await register_group_chat_asset(png(), "image/png", "trusted_producer")
         assert result["ok"]
         with bind_tool_workflow(object()):

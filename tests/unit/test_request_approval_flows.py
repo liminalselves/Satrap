@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 from unittest.mock import AsyncMock
 from dataclasses import replace
 import asyncio
@@ -344,7 +345,7 @@ async def test_group_request_deadline_and_revoked_request_manager_are_rechecked(
     assert submitted["data"]["state"] == "pending" and submitted["data"]["expires_at"] <= request["expires_at"]
     config["request_managers"] = ""
     result = await backend.decide_group_action("ob", "10000", "456", "request-pending-1", approve=True)
-    assert result["state"] == "failed" and result["result"]["reason"] == "model_permission_revoked"
+    assert result["state"] == "failed" and cast(dict[str, Any], result["result"])["reason"] == "model_permission_revoked"
     adapter._bot.set_group_add_request.assert_not_awaited()
 
 @pytest.mark.usefixtures('restore_manager')
@@ -551,11 +552,11 @@ def _scheduler(
     instance.set_send_attempt_recorder(scheduler.manual_wake_store)
     return scheduler, manager, instance
 
-def _rows(detail: dict[str, object]) -> list[dict[str, Any]]:
+def _rows(detail: Mapping[str, object]) -> list[dict[str, Any]]:
     """诊断明细中的阶段记录"""
     return cast(list[dict[str, Any]], detail["records"])
 
-def _stages(detail: dict[str, object]) -> dict[str, dict[str, Any]]:
+def _stages(detail: Mapping[str, object]) -> dict[str, dict[str, Any]]:
     """阶段名到阶段记录的映射"""
     return {item["stage"]: item for item in _rows(detail)}
 
@@ -873,7 +874,7 @@ class TestDiagnosticRoutes:
         ))
 
     @staticmethod
-    def _request_ids(body: dict[str, Any]) -> set[str]:
+    def _request_ids(body: Mapping[str, Any]) -> set[str]:
         """摘要或记录响应里的 request_id 集合"""
         return {str(item["request_id"]) for item in cast(list[dict[str, Any]], body["records"])}
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 import pytest
 from typing import Any
 from satrap.core.framework.Base import AsyncSession, Session
@@ -977,7 +978,7 @@ def _make_server(db_path: str) -> BackendHTTPServer:
 
 async def _route(
     server: BackendHTTPServer, method: str, path: str, body: bytes = b""
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, Mapping[str, Any]]:
     return await server._route(method, path, body)
 
 @pytest.mark.asyncio

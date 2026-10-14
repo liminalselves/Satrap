@@ -1291,10 +1291,10 @@ def test_render_and_resolver_from_manager():
         def get_asr_config(self, name: str) -> ASRConfig:
             return asr_config()
 
-    resolver = asr_resolver_from_manager(_Manager())
+    resolver = asr_resolver_from_manager(cast(Any, _Manager()))
     assert resolver is not None and resolver("speech") is not None and resolver("other") is None
     assert asr_resolver_from_manager(None) is None
-    assert asr_resolver_from_manager(object()) is None
+    assert asr_resolver_from_manager(cast(Any, object())) is None
 
 @pytest.mark.parametrize("settings", [{"asr_model": 1}, {"asr_model": "x" * 129}, {"media_trusted_hosts": "host"}, {"media_trusted_hosts": [""]}, {"attachment_extract": "no"}, {"voice_transcribe": "auto"}, {"voice_transcribe": 1}])
 def test_attachment_policy_validation(settings: dict[str, object]):

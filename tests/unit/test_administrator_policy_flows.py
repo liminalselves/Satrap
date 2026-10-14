@@ -14,7 +14,7 @@ from typing import Any, cast
 from satrap.core.call_context import bind_call_origin
 from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
 from satrap.core.plugin_authorization import evaluate_plugin_permissions
 from satrap.expend.plugins.group_chat.tools import get_tools as chat_tools
 from support.administration import _setup_adapter, _origin, _async_tools
@@ -476,7 +476,7 @@ async def test_friend_admin_empty_lists_preserve_pending_and_recheck_revocation(
         backend.administrator_service.apply([])
         with bind_call_origin(private):
             assert query.is_available_for_call() and not (await query.execute())["ok"]
-        action = pending["data"]["action_id"]
+        action = cast(str, pending["data"]["action_id"])
         record = await adapter.friend_host.decide("10000", action, True)
         assert record["state"] == "failed"
         adapter._bot.delete_friend.assert_not_awaited()
@@ -529,13 +529,13 @@ async def test_pending_friend_deletion_rechecks_instance_tool_switch(tmp_path):
         assert pending["ok"] and pending["data"]["state"] == "pending"
         settings = PluginSettingsService(backend.platform_db_path("ob"))
         spec = parse_plugin_specs(configs.get_config("assistant")["plugins"], provider.plugin_catalog)[0]
-        entry = provider.plugin_catalog.get("friend_manager")
+        entry = cast(PluginCatalogEntry, provider.plugin_catalog.get("friend_manager"))
         metadata = settings.tool_settings(session.session_id, spec, entry)
         record = settings.get(session.session_id, spec.name, entry.config_schema, spec.config)
         settings.save(session.session_id, spec.name, entry.config_schema, record["overrides"],
                       expected_revision=record["revision"], named=spec.config,
                       tool_overrides={"friend_manager_delete_friend": False}, expected_tool_revision=metadata["tool_revision"])
-        approved = await adapter.friend_host.decide("10000", pending["data"]["action_id"], True)
+        approved = await adapter.friend_host.decide("10000", cast(str, pending["data"]["action_id"]), True)
         assert approved["state"] == "failed", approved
         adapter._bot.delete_friend.assert_not_awaited()
     finally:

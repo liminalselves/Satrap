@@ -376,7 +376,7 @@ async def test_panel_can_process_archived_friend_request_with_current_revision(t
     await incoming(adapter)
     _request_archive_clock[0] = 1700
     item = (await adapter.friend_requests("10000", 20, None, view="archived"))["items"][0]
-    result = await adapter.friend_host.submit("10000", "archive-panel", "handle_request", {"request_id": item["request_id"], "expected_revision": item["revision"], "approve": approve}, actor="panel")
+    result = await cast(FriendService, adapter.friend_host).submit("10000", "archive-panel", "handle_request", {"request_id": item["request_id"], "expected_revision": item["revision"], "approve": approve}, actor="panel")
     assert result["state"] == "succeeded"
     adapter._bot.set_friend_add_request.assert_awaited_once_with(flag="private-flag", approve=approve, remark="")
 
@@ -393,7 +393,7 @@ async def test_model_archived_request_waits_for_approval_then_executes_once(tmp_
         result = await handle.execute(request_id=item["request_id"], expected_revision=item["revision"], approve=True)
         assert result["ok"] and result["data"]["state"] == "pending"
         adapter._bot.set_friend_add_request.assert_not_awaited()
-        approved = await adapter.friend_host.decide("10000", result["data"]["action_id"], True)
+        approved = await cast(FriendService, adapter.friend_host).decide("10000", result["data"]["action_id"], True)
         assert approved["state"] == "succeeded"
     adapter._bot.set_friend_add_request.assert_awaited_once()
 

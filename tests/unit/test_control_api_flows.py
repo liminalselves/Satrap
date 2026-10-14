@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 import pytest
 from typing import Any
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
@@ -27,7 +28,7 @@ def _patch_manager(monkeypatch: pytest.MonkeyPatch, name: str, manager: Any) -> 
 
 async def _http_api_dispatch_route(
     server: BackendHTTPServer, method: str, path: str, body: bytes = b""
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, Mapping[str, Any]]:
     return await server._route(method, path, body)
 
 @pytest.mark.asyncio
@@ -402,7 +403,7 @@ def _user_http_api_make_server(db_path: str) -> BackendHTTPServer:
 
 async def _user_http_api_route(
     server: BackendHTTPServer, method: str, path: str, body: bytes = b""
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, Mapping[str, Any]]:
     return await server._route(method, path, body)
 
 @pytest.mark.asyncio

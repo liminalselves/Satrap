@@ -627,7 +627,7 @@ def test_expiration_and_policy_change_persist_after_conflict(tmp_path: Path) -> 
     policy = store.get("10000", "456", "action-policy")
     assert policy is not None
     assert policy["state"] == "expired"
-    assert policy["result"]["reason"] == "policy_changed"
+    assert cast(dict[str, Any], policy["result"])["reason"] == "policy_changed"
 
 def test_executing_recovers_unknown_without_retry(tmp_path: Path) -> None:
     database = tmp_path / "platform.db"
@@ -638,7 +638,7 @@ def test_executing_recovers_unknown_without_retry(tmp_path: Path) -> None:
     record = recovered.get("10000", "456", "action-0002")
     assert record is not None
     assert record["state"] == "unknown"
-    assert record["result"]["reason"] == "interrupted_restart"
+    assert cast(dict[str, Any], record["result"])["reason"] == "interrupted_restart"
     with pytest.raises(GroupConfigConflict):
         recovered.settle("10000", "456", "action-0002", "succeeded", "platform_confirmed")
 
@@ -655,7 +655,7 @@ def test_pending_model_action_expires_when_source_is_lost_on_restart(tmp_path: P
     recovered = GroupActionStore(database, recover=True)
     expired = recovered.get("100", "456", "model-restart-1")
     assert expired is not None and expired["state"] == "expired"
-    assert expired["result"]["reason"] == "model_source_lost_on_restart"
+    assert cast(dict[str, Any], expired["result"])["reason"] == "model_source_lost_on_restart"
 
 def test_v2_action_database_migrates_without_losing_records(tmp_path: Path) -> None:
     database = tmp_path / "platform.db"
@@ -718,7 +718,7 @@ async def test_pending_model_action_rechecks_current_permission(tmp_path: Path, 
             tool.disable()
         result = await backend.decide_group_action("bot", "100", "456", "model-pending-1", approve=True)
         assert result["state"] == "failed"
-        assert result["result"]["reason"] == "model_permission_revoked"
+        assert cast(dict[str, Any], result["result"])["reason"] == "model_permission_revoked"
         adapter._bot.set_group_kick.assert_not_awaited()
     finally:
         set_current_adapter_manager(None)
@@ -776,7 +776,7 @@ async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_p
             {"name": "group_admin", "mode": "disabled"},
         ]}}, expected_revision=0)
         result = await backend.decide_group_action("bot", "100", "789", "source-group-action", approve=True)
-        assert result["state"] == "failed" and result["result"]["reason"] == "model_permission_revoked"
+        assert result["state"] == "failed" and cast(dict[str, Any], result["result"])["reason"] == "model_permission_revoked"
         adapter._bot.set_group_kick.assert_not_awaited()
         directory.patch_group("100", "456", "session", {"plugins": {"mode": "value", "value": [
             {"name": "group_admin", "mode": "enabled"},
@@ -806,7 +806,7 @@ async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_p
         ]}}, expected_revision=2)
         release.set()
         race_result = await decision
-        assert race_result["state"] == "failed" and race_result["result"]["reason"] == "model_permission_revoked"
+        assert race_result["state"] == "failed" and cast(dict[str, Any], race_result["result"])["reason"] == "model_permission_revoked"
         adapter._bot.set_group_kick.assert_not_awaited()
         adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
             "bot", "100", gid, "invalid-source-action", action, params, actor_kind="model",
@@ -923,7 +923,7 @@ async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path
             "bot", "100", "999", "race-invite-second", approve=True,
         )
         assert second_result["state"] == "failed"
-        assert second_result["result"]["reason"] == "AdminActionRejected"
+        assert cast(dict[str, Any], second_result["result"])["reason"] == "AdminActionRejected"
         release.set()
         first_result = await first_decision
         assert first_result["state"] == "succeeded"
@@ -946,7 +946,7 @@ async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path
         }}]})
         assert getattr(tool, "config")["request_managers"] == "123"
         revoked = await backend.decide_group_action("bot", "100", "999", "revoked-invite-action", approve=True)
-        assert revoked["state"] == "failed" and revoked["result"]["reason"] == "model_permission_revoked"
+        assert revoked["state"] == "failed" and cast(dict[str, Any], revoked["result"])["reason"] == "model_permission_revoked"
         assert adapter._bot.set_group_add_request.await_count == 3
     finally:
         await provider.release_session_async(session)
@@ -966,7 +966,7 @@ def test_group_request_flag_never_enters_persistent_parameters(tmp_path: Path) -
     recovered = GroupActionStore(database, recover=True)
     record = recovered.get("10000", "456", "action-0003")
     assert record is not None and record["state"] == "expired"
-    assert record["result"]["reason"] == "request_flag_lost_on_restart"
+    assert cast(dict[str, Any], record["result"])["reason"] == "request_flag_lost_on_restart"
 
 @pytest.mark.asyncio
 async def test_approved_card_rejection_persists_safe_diagnostics_without_replay(

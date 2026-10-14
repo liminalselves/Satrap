@@ -119,7 +119,7 @@ async def test_memory_plugin_works_without_group_chat_or_base_take(tmp_path, asy
 async def test_group_write_switch_and_main_workflow_are_checked(tmp_path):
     adapter, event, _ = setup(tmp_path)
     workflow = object()
-    instance = SimpleNamespace(_wf=workflow)
+    instance: Any = SimpleNamespace(_wf=workflow)
     service = MemoryService(MemoryStore(db_path=adapter.message_archive.database, scope="session:test"), session=instance)
     values = {"kind": "member_preference", "key": "name", "title": "称呼", "content": "小明", "source_message_ids": [event.call_origin.source_message_id]}
     with bind_call_origin(event.call_origin), bind_tool_workflow(workflow):
