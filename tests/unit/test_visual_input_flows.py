@@ -381,3 +381,51 @@ def test_pdf_text_mode_does_not_render_pages(pdf_path, monkeypatch):
     assert isinstance(result, str)
     assert "本次读取 3-3 页" in result
     assert "下一页" not in result
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_local_image_document_flow_preserves_visual_content_and_scope(tmp_path, monkeypatch, asynchronous):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    image_path = workspace / "plot.png"
+    Image.new("RGBA", (30, 20), (255, 0, 64, 128)).save(image_path)
+    external = tmp_path / "private.png"
+    Image.new("RGB", (4, 4)).save(external)
+    upload = uploads / "unique_upload.png"
+    Image.new("RGB", (12, 8)).save(upload)
+    model = SimpleNamespace(supports_visual_input=True)
+    tool = (AsyncReadDocumentTool if asynchronous else ReadDocumentTool)(workspace)
+    monkeypatch.setattr(tool, "_session", SimpleNamespace(llm=model, coding_upload_root=str(uploads)), raising=False)
+
+    async def read(path, mode="auto"):
+        result = tool.execute(str(path), mode=mode)
+        return await result if asynchronous else result
+
+    result = await read(image_path)
+    frozen = freeze_tool_result(result, model)
+    assert frozen["satrap_media_result"] == 1
+    assert "30 x 20" in frozen["text"]
+    messages = []
+    call = {"id": "local-image", "type": "function", "function": {"name": "read_document", "arguments": "{}"}}
+    add_tools_call_flow(messages, "", [call], [frozen])
+    prepared = prepare_call_messages(messages, None, None, supports_visual_input=True)
+    assert [message["role"] for message in prepared] == ["assistant", "tool", "user"]
+    assert prepared[-1]["content"][-1]["image_url"]["url"] == frozen["media"][0]["image_url"]["url"]
+    raw = base64.b64decode(frozen["media"][0]["image_url"]["url"].split(",")[1])
+    with Image.open(io.BytesIO(raw)) as picture:
+        assert picture.size == (30, 20)
+        assert picture.getpixel((0, 0)) == (255, 0, 64, 128)
+    assert isinstance(await read("upload.png", "visual"), dict)
+    assert "越出当前会话可见范围" in await read(external)
+    assert "auto 或 visual" in await read(image_path, "text")
+    assert "图片读取失败" in await read(workspace / "missing.png")
+    broken = workspace / "broken.jpg"
+    broken.write_bytes(b"not an image")
+    assert "图片读取失败" in await read(broken)
+    gif = workspace / "animation.gif"
+    Image.new("RGB", (8, 8), "red").save(gif, save_all=True, append_images=[Image.new("RGB", (8, 8), "blue")])
+    assert "仅查看第一帧" in (await read(gif))["text"]
+    model.supports_visual_input = False
+    assert "启用模型" in await read(image_path)

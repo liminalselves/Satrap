@@ -2,7 +2,7 @@ name: base_take
 version: 0.1.0
 author: Satrap Team
 repo: https://github.com/satrap/base_take
-description: "基础能力插件: 联网搜索 / 网页抓取 / 代码沙箱 / 文档读取"
+description: "基础能力插件: 联网搜索 / 网页抓取 / 代码沙箱 / 文档与图片读取"
 
 # 配置项声明 (键 -> 类型/默认值/描述), 供校验/存储/前端渲染表单
 config_schema:
@@ -31,7 +31,7 @@ tools:
   search: 联网搜索
   fetch_page: 抓取网页内容
   code_sandbox: 免审批的一次性 Python 与文件操作, 白名单库, 拦截联网/外部程序, 产物不自动发送
-  read_document: 读取文档文本, 按模型能力分页查看 PDF 图像 (xlsx/docx/pdf/txt/md)
+  read_document: 读取文档文本, 读取本地图片 (png/jpg/webp/gif 等, 动图仅第一帧), 按模型能力分页查看 PDF 图像 (xlsx/docx/pdf/txt/md)
 
 compatibility:
   satrap: ">=0.1,<0.2"

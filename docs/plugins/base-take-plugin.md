@@ -1,6 +1,6 @@
 # base_take 插件: 基础能力集
 
-`base_take` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 提供通用基础能力: 网页搜索、网页抓取、代码沙箱、文档解析。与 `satrap_coding` 插件互补, 可独立或组合使用。
+`base_take` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 提供通用基础能力: 网页搜索、网页抓取、代码沙箱、文档与图片读取。与 `satrap_coding` 插件互补, 可独立或组合使用。
 
 ## 安装
 
@@ -25,7 +25,7 @@ plugin.commands      # 无记忆命令
 | --- | --- | --- |
 | 搜索 | search / fetch_page | 网页搜索与抓取 (复用 expend.tools.search) |
 | 沙箱 | code_sandbox | 在隔离目录中执行 Python 代码 |
-| 文档 | read_document | 解析 xlsx / docx / pdf / 纯文本为纯文本 |
+| 文档 | read_document | 读取本地图片, 提取文档文本及分页查看 PDF 图像 |
 
 ## 插件配置
 
@@ -61,3 +61,9 @@ base_take 与 satrap_coding 在同一会话内共享该会话的私有 sandbox, 
 - 纯文本 — 直接读取 (utf-8)
 
 文件路径限制在 workspace_root 白名单内 (项目会话为项目工作区, 调用时按会话解析); 若工作区根下未找到, 只回退搜索当前会话的私有 `uploads/`。输出按 `max_length` 截断 (默认 131072 字符)。
+
+### 本地图片读取
+
+`read_document(path="images/plot.png")` 可读取工作区或当前会话上传目录中的 PNG, JPEG, WebP, GIF, BMP 和 TIFF。无需通过 Shell 或文档文本解析器间接查看。
+
+当前模型须启用图像与视频输入, `mode` 使用 `auto` 或 `visual`; `text` 不提供 OCR。工具返回实际图像内容, 与 PDF 页面共用工具媒体传递和持久化通道。图片自动校正 EXIF 方向, 长边最多 2048 像素; 文件上限 32 MiB, 解码上限 4000 万像素。动图和多页图片本次仅查看第一帧, 返回文字会明确说明。

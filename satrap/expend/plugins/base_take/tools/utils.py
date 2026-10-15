@@ -5,7 +5,7 @@ base_take 插件工具集: search / fetch_page / code_sandbox / read_document
 - get_tools(session, config) 工厂: 按会话形态返回同步/异步工具, 配置经合成后注入
 - search/fetch_page 复用 expend.tools.search, timeout 从 config
 - code_sandbox 复用 expend.tools.sandbox_tools, sandbox_root 优先使用宿主会话私有目录, config 为独立调用兜底
-- read_document 提取文档文本, 按模型能力分页渲染 PDF 页面
+- read_document 读取本地图片, 提取文档文本, 按模型能力分页渲染 PDF 页面
 """
 
 from __future__ import annotations
@@ -64,7 +64,10 @@ def _resolve_doc_path(
                 continue
             fname = fpath.name.lower()
             if fname == target_name or fname.endswith(f"_{target_name}"):
-                return fpath.resolve()
+                resolved = fpath.resolve()
+                if not resolved.is_relative_to(workspace) and not resolved.is_relative_to(uploads):
+                    raise ValueError(f"上传文件路径越出当前会话可见范围: {path}")
+                return resolved
     return abs_path   # 未找到时由调用方报告文件不存在, 不扩展搜索范围
 
 
