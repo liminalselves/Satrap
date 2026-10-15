@@ -5,6 +5,7 @@
 """
 
 from __future__ import annotations
+from pathlib import Path
 from typing import Any
 import os
 import re
@@ -13,6 +14,7 @@ from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from .approval import _parse_integer_argument
 from .paths import (
     _tool_root,
+    _full_access,
     _resolve_path,
     _resolve_grep_file,
     _FileProtectionMixin,
@@ -26,7 +28,7 @@ class _ReadFileToolCore(_FileProtectionMixin, _ToolBase):
     recovery_policy = "retry"
 
     tool_name = "read_file"
-    description = "读取工作区内文件内容, offset/limit 支持分页读取大文件"
+    description = "读取文件并支持 offset/limit 分页; 普通模式限工作区, full-access 可使用显式外部路径"
     params_dict = {
         "path": ("string", "文件路径 (绝对或相对工作区)"),
         "offset": ("number", "起始行号, 默认 0"),
@@ -50,7 +52,7 @@ class _ReadFileToolCore(_FileProtectionMixin, _ToolBase):
         - str: 执行
         """
         try:
-            abs_path = _resolve_path(path, _tool_root(self))
+            abs_path = _resolve_path(path, _tool_root(self), full_access=_full_access(self))
         except ValueError as e:
             return f"错误: {e}"
         reason = self._protection_reason(abs_path, _tool_root(self))
@@ -71,13 +73,13 @@ class _ReadFileToolCore(_FileProtectionMixin, _ToolBase):
         return _read_file_page(abs_path, start, page_size)
 
 
-class _ListDirToolCore(_ToolBase):
+class _ListDirToolCore(_FileProtectionMixin, _ToolBase):
     """列出工作区内目录内容"""
 
     recovery_policy = "retry"
 
     tool_name = "list_dir"
-    description = "列出工作区内目录下的文件与子目录"
+    description = "列出目录内容; 默认工作区, full-access 允许显式外部路径"
     params_dict = {
         "path": ("string", "目录路径, 默认工作区根"),
     }
@@ -94,9 +96,12 @@ class _ListDirToolCore(_ToolBase):
         """
         try:
             root = _tool_root(self)
-            base = _resolve_path(path, root) if path else root
+            base = _resolve_path(path, root, full_access=_full_access(self)) if path else root
         except ValueError as e:
             return f"错误: {e}"
+        reason = self._protection_reason(base, root)
+        if reason is not None:
+            return f"拒绝读取: {reason}"
         if not base.is_dir():
             return f"错误: 目录不存在: {base}"
         entries = sorted(base.iterdir())
@@ -117,7 +122,7 @@ class _GlobFilesToolCore(_FileProtectionMixin, _ToolBase):
     tool_name = "glob_files"
     description = "按 glob 模式递归搜索文件, 如 **/*.py"
     params_dict = {
-        "pattern": ("string", "glob 模式 (相对工作区)"),
+        "pattern": ("string", "glob 模式, 默认相对工作区; full-access 允许绝对模式"),
     }
 
     def _execute(self, pattern: str) -> str:
@@ -131,11 +136,18 @@ class _GlobFilesToolCore(_FileProtectionMixin, _ToolBase):
         - str: 执行
         """
         root = _tool_root(self)
+        base, search = root, pattern
+        if Path(pattern).is_absolute():
+            if not _full_access(self):
+                return "错误: 绝对 glob 路径需要 full-access"
+            parts = Path(pattern).parts
+            index = next((i for i, part in enumerate(parts) if any(c in part for c in "*?[")), len(parts) - 1)
+            base, search = Path(*parts[:index]), str(Path(*parts[index:]))
         matches = [
-            str(p.relative_to(root)).replace(os.sep, "/")
-            for p in root.glob(pattern)
+            str(p.relative_to(root) if p.is_relative_to(root) else p).replace(os.sep, "/")
+            for p in base.glob(search)
             if p.is_file()
-            and p.resolve().is_relative_to(root)
+            and (_full_access(self) or p.resolve().is_relative_to(root))
             and self._protection_reason(p, root) is None
         ]
         matches.sort()
@@ -173,7 +185,7 @@ class _GrepFilesToolCore(_FileProtectionMixin, _ToolBase):
         """
         try:
             root = _tool_root(self)
-            base = _resolve_path(path, root) if path else root
+            base = _resolve_path(path, root, full_access=_full_access(self)) if path else root
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -182,7 +194,7 @@ class _GrepFilesToolCore(_FileProtectionMixin, _ToolBase):
             return f"错误: 正则无效: {e}"
         hits: list[str] = []
         for p in base.rglob(glob or "*"):
-            resolved = _resolve_grep_file(p, root)
+            resolved = _resolve_grep_file(p, root, full_access=_full_access(self))
             if resolved is None or self._protection_reason(resolved, root) is not None:
                 continue
             try:
@@ -191,7 +203,7 @@ class _GrepFilesToolCore(_FileProtectionMixin, _ToolBase):
                 continue
             for lineno, line in enumerate(text.splitlines(), start=1):
                 if regex.search(line):
-                    hits.append(f"{p.relative_to(root)}:{lineno}: {line[:200]}")
+                    hits.append(f"{p.relative_to(root) if p.is_relative_to(root) else p}:{lineno}: {line[:200]}")
                     if len(hits) >= 100:
                         break
             if len(hits) >= 100:

@@ -22,6 +22,7 @@ from satrap.core.type import CommandAction
 from satrap.core.log import logger
 from .utils import (
     SyncUserInputProvider,
+    SyncCodingApprovalProvider,
     HandlerResult,
     HandlerAbortError,
     HandlerConfig,
@@ -120,8 +121,10 @@ class SimpleSession(Session, _SessionFeatures):
         self._skills_manager: SkillsManager | None = None
         self._mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
         """插件 MCP 连接: 连接名 -> (客户端, 同步适配器列表) (同步版经后台事件循环桥接)"""
+        self.coding_approval_provider: SyncCodingApprovalProvider | None = None
+        """单次编程审批专用回调, 不接受普通用户提问的文本回答"""
         self.user_input_provider: SyncUserInputProvider | None = None
-        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 或 Web 前端均可注入)"""
+        """用户输入通道: 仅供 ask_user 获取缺失信息使用 (CLI 或 Web 前端均可注入)"""
         self._run_lock = threading.RLock()
         """同一同步会话的 run 串行锁"""
         self.stream = stream

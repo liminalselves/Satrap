@@ -1,5 +1,7 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
+import json
+from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
 
 from pathlib import Path
 import pytest
@@ -385,7 +387,7 @@ async def test_shell_harness_read_control(shell_env, asynchronous):
     output = await reader.execute("control.txt") if isinstance(reader, coding.AsyncReadFileTool) else reader.execute("control.txt")
     assert "audit-control" in output
     engine.set_plan_mode(False)
-    session.user_input_provider = lambda *args: "y"
+    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     for shell in ("powershell", "cmd"):
         output = await execute_shell(shell_env, asynchronous, "echo 审计中文-control", shell=shell)
         assert "审计中文-control" in output
@@ -423,16 +425,14 @@ async def test_shell_must_not_read_protected_token(shell_env, asynchronous):
 @pytest.mark.parametrize("answer", [None, "n", "all", "y"])
 async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asynchronous, answer):
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
-    engine.add_persistent_rule("shell", RiskLevel.HIGH)
-    engine.approve("shell", RiskLevel.HIGH)
     calls = []
     approvals = []
 
-    def provider(question):
-        approvals.append(question)
-        return answer
+    def provider(request):
+        approvals.append(request)
+        return ApprovalResult.for_request(request, "allow" if answer == "y" else "deny", "人工决定", "user")
 
-    session = SimpleNamespace(coding_workspace_root=tmp_path, user_input_provider=provider if answer else None)
+    session = SimpleNamespace(coding_workspace_root=tmp_path, coding_approval_provider=provider if answer else None)
     monkeypatch.setattr(coding, "_run_shell", lambda *args, **kwargs: calls.append(args) or "executed")
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
     tool._bind(cast(Any, session))
@@ -441,7 +441,8 @@ async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asyn
         assert (result == "executed") == (answer == "y")
     assert len(calls) == (2 if answer == "y" else 0)
     assert len(approvals) == (2 if answer else 0)
-    assert all("all 本会话" not in prompt and str(tmp_path) in prompt for prompt in approvals)
+    assert len({request.request_id for request in approvals}) == len(approvals)
+    assert all(json.loads(request.action_json)["cwd"] == str(tmp_path) for request in approvals)
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("change", ["plan", "workspace"])
@@ -449,14 +450,14 @@ async def test_shell_rechecks_scope_after_approval(tmp_path, monkeypatch, asynch
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
     session = SimpleNamespace(coding_workspace_root=tmp_path)
 
-    def provider(question):
+    def provider(request):
         if change == "plan":
             engine.set_plan_mode(True)
         else:
             session.coding_workspace_root = tmp_path.parent
-        return "y"
+        return ApprovalResult.for_request(request, "allow", "用户批准", "user")
 
-    session.user_input_provider = provider
+    session.coding_approval_provider = provider
     monkeypatch.setattr(coding, "_run_shell", lambda *args, **kwargs: pytest.fail("已失效授权不能执行"))
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
     tool._bind(cast(Any, session))
@@ -484,7 +485,7 @@ async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatc
         def __init__(self):
             self._wf = SimpleNamespace(llm=None, tools_manager=None)
             self.coding_workspace_root = tmp_path
-            self.user_input_provider = lambda *args: "y"
+            self.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
 
     def state(session, *, config=None):
         return {"engine": PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl"), "todos": {}}
@@ -619,3 +620,37 @@ def test_allowlist_respects_platform_case_rules(monkeypatch):
     monkeypatch.setattr(proc_env.os, "name", "posix")
     assert "SERVICE_API_KEY" not in sanitized_child_env(allow=["service_api_key"])
     assert sanitized_child_env(allow=["SERVICE_API_KEY"])["SERVICE_API_KEY"] == "test"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_native_write_rechecks_live_platform_route(tmp_path, monkeypatch, asynchronous):
+    """平台路由在人工等待中切换时, 获准的宿主写入仍取消"""
+    from satrap.core.call_context import CallOrigin, bind_call_origin
+    from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
+    from satrap.edictum import AsyncSimpleSession, SimpleSession
+    from satrap.expend.plugins.satrap_coding.tools.paths import _execution_guard
+    origin = CallOrigin("qq", "bot", "GroupMessage", "room", "actor", "message", "turn",
+                        conversation_kind="group", agent_route_generation=1, group_route_generation=2)
+    route = [1]
+    adapter = SimpleNamespace(config=SimpleNamespace(enable=True), client_self_id="bot",
+                              agent_route_store=SimpleNamespace(current_revision=lambda *args: route[0]),
+                              group_route=lambda group: ({}, 2))
+    manager = SimpleNamespace(get_adapter=lambda identity: adapter)
+    previous = current_adapter_manager()
+    set_current_adapter_manager(cast(Any, manager))
+    engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
+    session = SimpleNamespace(coding_workspace_root=tmp_path)
+    def approve(request):
+        route[0] = 2
+        return ApprovalResult.for_request(request, "allow", "用户批准", "user")
+    session.coding_approval_provider = approve
+    tool = coding.AsyncWriteFileTool(engine) if asynchronous else coding.WriteFileTool(engine)
+    tool._bind(cast(Any, session))
+    try:
+        with bind_call_origin(origin):
+            result = tool.execute("result.txt", "must-not-write")
+            result = await result if asynchronous else result
+        assert "来源 Agent 路由已经变化" in result
+        assert not (tmp_path / "result.txt").exists()
+    finally:
+        set_current_adapter_manager(previous)

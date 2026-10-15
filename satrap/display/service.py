@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast, Iterable
 import copy
 import traceback
+import os
 import json
 import time
 import uuid
@@ -48,6 +49,7 @@ from satrap.edictum.plugin_settings import (
 from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states_async
 from satrap.edictum.plugin_apply import PluginApplySnapshot, plugin_source_version
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
+from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.edictum.plugin_spec import plugin_specs_fingerprint
 from satrap.core.utils.paths import get_data_dir, get_project_root
@@ -115,6 +117,7 @@ class _PendingUserInput:
     question: str
     options: tuple[str, ...]
     future: asyncio.Future[str]
+    approval: dict[str, object] | None = None
 
 
 @dataclass
@@ -297,7 +300,7 @@ class ChatService:
         - platform_id: Chat 存储平台实例 ID
         - preload_ttl_seconds: 未发送预加载会话的内存保留时间
         - ask_user_timeout_seconds: ask_user 等待前端回答的超时时间
-        - workspace_roots: 项目目录允许浏览和绑定的根目录
+        - workspace_roots: 项目目录允许浏览和绑定的根目录, 缺省或空列表使用本机磁盘, 兼容旧默认值 ["."]
         - denied_workspace_roots: 额外禁止绑定和浏览的目录根
         """
         self._model_cfg = model_config
@@ -310,7 +313,12 @@ class ChatService:
         self._display_db_path = display_db_path or platform_db
         self._preload_ttl_seconds = max(float(preload_ttl_seconds), 1.0)
         self._ask_user_timeout_seconds = max(float(ask_user_timeout_seconds), 1.0)
-        configured_roots = list(workspace_roots or [get_project_root()])
+        configured_roots = list(workspace_roots or [])
+        if configured_roots == ["."]:
+            configured_roots = []   # 旧版自动生成的默认值改为本机磁盘视图
+        if not configured_roots:
+            configured_roots = ([Path(f"{drive}:/") for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                 if Path(f"{drive}:/").is_dir()] if os.name == "nt" else [Path("/")])
         resolved_roots: list[Path] = []
         for raw_root in configured_roots:
             root = Path(raw_root).expanduser().resolve()
@@ -383,7 +391,7 @@ class ChatService:
             "seq": self._event_sequences.get(conversation_id, 0), "state": state,
             "active_turn_id": active_turn, "turns": turns,
             "pending_user_inputs": [
-                {"request_id": item.request_id, "question": item.question, "options": list(item.options)}
+                {"request_id": item.request_id, "question": item.question, "options": list(item.options), "approval": item.approval}
                 for item in pending_inputs if not item.future.done()
             ],
         }
@@ -408,11 +416,87 @@ class ChatService:
             self._orphan_queues.setdefault(conversation_id, set()).add(q)
         return q
 
+    async def get_coding_approval(self, conversation_id: str) -> dict[str, object]:
+        """
+        获取当前 Chat 实际使用的编程审批状态, 不从前端缓存推断模式
+
+        参数:
+        - conversation_id: 已存在的 Chat 会话 ID
+
+        返回:
+        - 安装可用性, 当前模式, 权限版本和计划模式; 会话不存在时抛出 ValueError
+        """
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+            from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+            plugin = next((plugin for plugin in conv.session.list_plugins() if plugin.name == "satrap_coding"), None)
+            if plugin is None:
+                return {"ok": True, "available": False, "mode": "user", "revision": 0, "plan_mode": False}
+            engine = cast(PermissionEngine, get_plugin_state(conv.session)["engine"])
+            return {"ok": True, "available": bool(plugin.enabled), "mode": engine.mode,
+                    "revision": engine.revision, "plan_mode": engine.plan_mode}
+
+    @_exclusive_conversation_operation
+    async def set_coding_approval(self, conversation_id: str, mode: object, expected_revision: object) -> dict[str, Any]:
+        """
+        通过已认证的 Chat 管理入口修改共享审批引擎, 不运行模型或写入对话历史
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+        - mode: user, auto 或 full-access
+        - expected_revision: 前端最近读取的权限版本, 防止覆盖命令或其它页面的新决定
+
+        返回:
+        - 保存后的实际状态; 未启用插件, 参数错误或版本冲突时抛出 ValueError
+        """
+        from satrap.expend.plugins.satrap_coding.core.approval import APPROVAL_MODES
+        from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+        from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+        if not isinstance(mode, str) or mode not in APPROVAL_MODES or type(expected_revision) is not int:
+            raise ValueError("审批模式或权限版本无效")
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            plugin = next((plugin for plugin in conv.session.list_plugins() if plugin.name == "satrap_coding"), None)
+            if plugin is None or not plugin.enabled:
+                raise ValueError("请先启用 satrap_coding 插件")
+            engine = cast(PermissionEngine, get_plugin_state(conv.session)["engine"])
+            if engine.revision != expected_revision:
+                raise ValueError("审批状态已变化, 请刷新后重试")
+            engine.set_mode(mode)
+            return {"ok": True, "available": True, "mode": engine.mode,
+                    "revision": engine.revision, "plan_mode": engine.plan_mode}
+
+    async def _request_coding_approval(self, conv: _Conversation, request: ApprovalRequest) -> ApprovalResult:
+        """
+        展示精确动作并把明确点击结果绑定到原始审批请求
+
+        参数:
+        - conv: 宿主 Chat 会话
+        - request: 插件冻结的单次审批请求
+
+        返回:
+        - 仅批准本次或拒绝的结构化决定; 超时和取消沿用待回答请求的清理路径
+        """
+        approval = {"tool": request.tool, "operation": request.operation, "description": request.description,
+                    "action": json.loads(request.action_json)}
+        # 人工界面只展示被冻结的实际动作, 完整对话证据仅用于模型审查
+        answer = await self._request_user_input(conv, "是否批准本次编程操作?", ["批准本次", "拒绝"], approval=approval)
+        allowed = answer == "批准本次"
+        return ApprovalResult.for_request(request, "allow" if allowed else "deny",
+                                          "用户批准本次操作" if allowed else "用户未批准本次操作", "user")
+
     async def _request_user_input(
         self,
         conv: _Conversation,
         question: str,
         options: list[str] | None = None,
+        *,
+        approval: dict[str, object] | None = None,
     ) -> str:
         """
         向 Chat 前端发出问题并等待回答
@@ -421,6 +505,7 @@ class ChatService:
         - conv: 会话运行时
         - question: 问题内容
         - options: 推荐回答选项
+        - approval: 可信宿主生成的单次操作资料, 默认 None 表示普通问答
 
         返回:
         - str: 用户回答
@@ -435,6 +520,7 @@ class ChatService:
             question=question,
             options=normalized_options,
             future=future,
+            approval=approval,
         )
         conv.pending_user_inputs[request_id] = pending
         self._broadcast(conv, {
@@ -442,6 +528,7 @@ class ChatService:
             "request_id": request_id,
             "question": question,
             "options": list(normalized_options),
+            "approval": approval,
         })
         logger.info(f"[聊天] 会话 {conv.conversation_id} 等待用户回答: {request_id}")
         try:
@@ -489,6 +576,9 @@ class ChatService:
             return {"ok": False, "error": "询问不存在或已结束"}
         if not answer.strip():
             return {"ok": False, "error": "回答不能为空"}
+        if pending.approval is not None and answer not in pending.options:
+            logger.warning(f"[聊天] 会话 {conversation_id} 审批回答无效: {request_id}")
+            return {"ok": False, "error": "审批只能选择批准本次或拒绝"}
         pending.future.set_result(answer)
         self._broadcast(conv, {
             "type": MSG_ASK_USER_END,
@@ -849,6 +939,20 @@ class ChatService:
             return await self._request_user_input(conv, question, options)
 
         session.user_input_provider = user_input_provider
+
+        async def coding_approval_provider(request: ApprovalRequest) -> ApprovalResult:
+            """
+            将会话审批交给当前 Chat 的绑定回填通道
+
+            参数:
+            - request: 本轮精确动作
+
+            返回:
+            - 只对原请求有效的人工决定
+            """
+            return await self._request_coding_approval(conv, request)
+
+        session.coding_approval_provider = coding_approval_provider
 
         def on_tool_start(event: dict[str, Any]) -> None:
             """
@@ -1391,6 +1495,20 @@ class ChatService:
             return await self._request_user_input(conv, question, options)
 
         session.user_input_provider = user_input_provider
+
+        async def coding_approval_provider(request: ApprovalRequest) -> ApprovalResult:
+            """
+            将会话审批交给当前 Chat 的绑定回填通道
+
+            参数:
+            - request: 本轮精确动作
+
+            返回:
+            - 只对原请求有效的人工决定
+            """
+            return await self._request_coding_approval(conv, request)
+
+        session.coding_approval_provider = coding_approval_provider
 
         def on_tool_start(event: dict[str, Any]) -> None:
             recorder.on_tool_start(event)
@@ -2172,8 +2290,9 @@ class ChatService:
         dirs: list[dict[str, str]] = []
         try:
             children = sorted(p.iterdir(), key=lambda c: c.name.lower())
-        except OSError:
-            children = []
+        except OSError as error:
+            logger.warning(f"[项目目录] 浏览失败, 路径={p}, 原因={error}")
+            return {"ok": False, "error": f"目录无法读取: {error}"}
         for child in children:
             if len(dirs) >= 500:
                 break

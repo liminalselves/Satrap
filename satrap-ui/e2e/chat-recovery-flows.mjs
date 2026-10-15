@@ -24,11 +24,46 @@ async function chat_reconnect(runtime) {
     browser = await runtime.browser;
     const context = await browser.newContext();
     const fixture = createBenchmarkFixture(2);
+    const approval = { ok: true, available: true, mode: 'user', revision: 0, plan_mode: false };
+    const approvalWrites = [];
+    const projectWrites = [];
+    const approvalAnswers = [];
     await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
       backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
     } }));
     await context.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, (route) => {
       const pathname = new URL(route.request().url()).pathname;
+      const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+        'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS' };
+      if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+      if (pathname === '/api/chat/ask-user/answer') {
+        approvalAnswers.push(route.request().postDataJSON());
+        return route.fulfill({ json: { ok: true }, headers });
+      }
+      if (pathname === '/api/chat/coding-approval') {
+        if (route.request().method() === 'PUT') {
+          const payload = route.request().postDataJSON();
+          assert.equal(payload.expected_revision, approval.revision);
+          approvalWrites.push(payload.mode);
+          approval.mode = payload.mode;
+          approval.revision++;
+        }
+        return route.fulfill({ json: approval, headers });
+      }
+      if (pathname === '/api/fs/browse') {
+        const location = new URL(route.request().url()).searchParams.get('path') || '';
+        const result = location === '' ? { path: '', parent: null, dirs: [
+          { name: 'C:/', path: 'C:/' }, { name: 'D:/', path: 'D:/' },
+        ] } : location === 'D:/' ? { path: location, parent: '', dirs: [
+          { name: 'other-project', path: 'D:/other-project' },
+        ] } : { path: location, parent: 'D:/', dirs: [] };
+        return route.fulfill({ json: { ok: true, ...result }, headers });
+      }
+      if (pathname === '/api/projects' && route.request().method() === 'POST') {
+        const payload = route.request().postDataJSON();
+        projectWrites.push(payload);
+        return route.fulfill({ json: { ok: true, project: { project_id: 'outside', ...payload } }, headers });
+      }
       const responses = {
         '/api/chat/health': { ok: true, conversations: 1, preloaded: 0 },
         '/api/chat/conversations': { conversations: fixture.conversations },
@@ -95,14 +130,73 @@ async function chat_reconnect(runtime) {
     assert.equal(await visible('恢复中的回答片段片段'), false);
     send(sockets[1], { type: 'ask_user_end', conversation_id: 'benchmark-active', request_id: 'ask-1', status: 'answered', seq: 31, stream_id: 'test-epoch' });
     await waitFor(async () => !(await visible('重连后继续确认')));
+    const operation = { tool: 'shell', operation: 'shell', description: '运行目录查询',
+      action: { command: 'Get-ChildItem D:/project/images', cwd: 'D:/project', interpreter: 'powershell.exe', argv: ['powershell.exe', '-Command', 'Get-ChildItem D:/project/images'] } };
+    send(sockets[1], { type: 'ask_user', conversation_id: 'benchmark-active', request_id: 'approval-live',
+      question: '是否批准本次编程操作?', options: ['批准本次', '拒绝'], approval: operation, seq: 32, stream_id: 'test-epoch' });
+    const panel = page.locator('[data-coding-approval]');
+    await panel.waitFor();
+    assert.equal(await panel.locator('textarea').count(), 0);
+    assert.equal(await panel.locator('details').first().evaluate((element) => element.open), false);
+    assert.equal(await panel.getByText('Get-ChildItem D:/project/images', { exact: true }).isVisible(), false);
+    await panel.getByText('查看待执行命令', { exact: true }).click();
+    assert.equal(await panel.getByText('Get-ChildItem D:/project/images', { exact: true }).isVisible(), true);
+    assert.equal(await panel.getByText('Shell: powershell.exe', { exact: true }).isVisible(), true);
+    await panel.getByRole('button', { name: '批准本次', exact: true }).click();
+    await waitFor(() => approvalAnswers.length === 1);
+    assert.equal(approvalAnswers[0].request_id, 'approval-live');
+    assert.equal(approvalAnswers[0].answer, '批准本次');
+    send(sockets[1], { type: 'ask_user_end', conversation_id: 'benchmark-active', request_id: 'approval-live',
+      status: 'answered', seq: 33, stream_id: 'test-epoch' });
+    await panel.waitFor({ state: 'detached' });
+
     send(sockets[1], { type: 'resync_required' });
     await waitFor(() => sockets.length === 3);
-    send(sockets[2], snapshot(40, '任务已完成', [], 'idle'));
+    send(sockets[2], snapshot(40, '恢复审批请求', [{
+      request_id: 'approval-recovered', question: '是否批准本次编程操作?', options: ['批准本次', '拒绝'], approval: operation,
+    }]));
+    await panel.waitFor();
+    assert.equal(await panel.locator('textarea').count(), 0);
+    assert.equal(await panel.locator('details').first().evaluate((element) => element.open), false);
+    await panel.getByRole('button', { name: '拒绝', exact: true }).click();
+    await waitFor(() => approvalAnswers.length === 2);
+    assert.equal(approvalAnswers[1].request_id, 'approval-recovered');
+    assert.equal(approvalAnswers[1].answer, '拒绝');
+    send(sockets[2], snapshot(42, '任务已完成', [], 'idle'));
     await waitFor(() => visible('任务已完成'));
     assert.equal(await page.locator('.chat-message-item').count(), 2);
     assert.equal(await page.getByTitle('发送', { exact: true }).count(), 1);
     assert.deepEqual(errors, []);
-    console.log('PASS: 快照恢复, 增量去重, 溢出重连, 询问恢复/结束, 完成状态恢复');
+    await page.getByTitle('对话设置', { exact: true }).click();
+    const settings = page.getByRole('dialog', { name: '对话设置', exact: true });
+    const approvalGroup = settings.getByRole('group', { name: '编程审批模式' });
+    for (const [previous, label] of [
+      ['请求批准 (user)', '帮我审批 (auto)'],
+      ['帮我审批 (auto)', '完全访问 (full-access)'],
+      ['完全访问 (full-access)', '请求批准 (user)'],
+    ]) {
+      await approvalGroup.getByRole('button', { name: previous, exact: true }).click();
+      await page.getByRole('button', { name: label, exact: true }).click();
+      await approvalGroup.getByRole('button', { name: label, exact: true }).waitFor();
+    }
+    assert.deepEqual(approvalWrites, ['auto', 'full-access', 'user']);
+    if (process.env.SATRAP_UI_SCREENSHOT_DIR) {
+      await page.screenshot({ path: path.join(process.env.SATRAP_UI_SCREENSHOT_DIR, 'chat-approval-settings.png') });
+    }
+    await page.keyboard.press('Escape');
+    await page.getByTitle('新建项目 (绑定工作区文件夹)', { exact: true }).click();
+    await page.getByTitle('浏览服务器目录', { exact: true }).click();
+    const picker = page.getByRole('dialog', { name: '选择工作区目录', exact: true });
+    await picker.getByRole('button', { name: 'D:/', exact: true }).click();
+    await picker.getByRole('button', { name: 'other-project', exact: true }).click();
+    await picker.getByRole('button', { name: '选择此目录', exact: true }).click();
+    const project = page.getByRole('dialog', { name: '新建项目', exact: true });
+    assert.equal(await project.getByPlaceholder('项目名称').inputValue(), 'other-project');
+    await project.getByRole('button', { name: '创建', exact: true }).click();
+    await waitFor(() => projectWrites.length === 1);
+    assert.deepEqual(projectWrites, [{ name: 'other-project', root_path: 'D:/other-project' }]);
+    assert.deepEqual(errors, []);
+    console.log('PASS: 聊天恢复, 实际审批模式切换, 跨磁盘选择工作区');
   } finally {
     await runtime.closeContexts();
     await runtime.releaseServer(server);

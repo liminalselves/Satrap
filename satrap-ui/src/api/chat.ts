@@ -7,6 +7,16 @@ import type { RagResult } from './rag';
 
 // ==================== 类型 ====================
 
+export type CodingApprovalMode = 'user' | 'auto' | 'full-access';
+
+export interface CodingApprovalState {
+  ok: boolean;
+  available: boolean;
+  mode: CodingApprovalMode;
+  revision: number;
+  plan_mode: boolean;
+}
+
 // 工具调用明细 (对齐 display_tool_calls)
 export interface ToolCall {
   seq: number;
@@ -245,9 +255,16 @@ export interface MemoryRecord {
   updated_at: string;
 }
 
+export interface CodingApprovalPresentation {
+  tool: string;
+  operation: string;
+  description: string;
+  action: Record<string, unknown>;
+}
+
 // WS 推送事件
 export type ChatEvent = (
-  | { type: 'snapshot'; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[] }[] }
+  | { type: 'snapshot'; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[]; approval?: CodingApprovalPresentation | null }[] }
   | { type: 'resync_required' }
   | { type: 'subscribed'; conversation_id: string }
   | { type: 'turn_start'; user_input: string; turn_id: number; turn_index: number; variant_index: number; retry?: boolean }
@@ -255,7 +272,7 @@ export type ChatEvent = (
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_start'; name: string; arguments: unknown; call_id: string }
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
-  | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[] }
+  | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[]; approval?: CodingApprovalPresentation | null }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
   | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }
@@ -298,6 +315,10 @@ function historyQueryString(query: ChatHistoryQuery = {}): string {
 }
 
 export const chatApi = {
+  getCodingApproval: (conversationId: string, signal?: AbortSignal) =>
+    request<CodingApprovalState>('GET', '/api/chat/coding-approval?' + new URLSearchParams({ conversation: conversationId }), undefined, signal),
+  setCodingApproval: (conversationId: string, mode: CodingApprovalMode, revision: number) =>
+    request<CodingApprovalState>('PUT', '/api/chat/coding-approval?' + new URLSearchParams({ conversation: conversationId }), { mode, expected_revision: revision }),
   refreshHistoryStorage: () => request<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('POST', '/api/chat/history/storage'),
   ragList: (sessionId: string, kbId: string) => request<RagResult>('GET', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId, kb_id: kbId })}`),
   ragAction: (sessionId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>('POST', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId })}`, payload),

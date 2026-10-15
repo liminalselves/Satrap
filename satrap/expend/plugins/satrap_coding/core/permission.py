@@ -1,413 +1,198 @@
 """
-satrap_coding 权限引擎: 风险分级 x 审批策略 x 规则记忆 + 持久化 + plan mode
+编程工具的三档审批策略与版本状态
 
-策略三档 (set_mode):
-- user:      默认, 高风险操作逐条询问用户 (工具层走用户输入通道)
-- auto-agent: 模型仅可拒绝或转人工, 不构成写类操作的授权主体
-- full:      普通操作直接放行; 本机 Shell 仍需逐次批准
-
-规则优先级: L3 黑名单 > plan mode 限制 > Shell 单次批准 > 持久规则 > 会话内记忆化规则 > 策略
-
-plan mode (/plan): 工作区写操作和任意 Shell 全部拒绝, 文件只读放行
+user 由宿主人工批准, auto 由独立审查上下文决定, full-access 跳过审批
+计划模式和硬拒绝优先, 旧模式与宽泛规则只备份迁移, 不静默扩大权限
 """
 from __future__ import annotations
 
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, cast
 from enum import IntEnum
 import json
+import time
 
+from satrap.expend.plugins.satrap_coding.core.approval import APPROVAL_MODES, ApprovalMode, ApprovalRequest, ApprovalResult
 from satrap.core.utils.paths import get_data_dir
 
 from satrap.core.log import logger
 
 
 class RiskLevel(IntEnum):
-    """操作风险分级: 越大越危险"""
+    """操作风险提示, FORBIDDEN 表示固定硬拒绝"""
 
     READ = 0
-    """只读, 直接放行"""
     WRITE = 1
-    """常规写操作, 默认询问"""
     HIGH = 2
-    """高危操作 (删除/环境修改), 必须人工或审批 agent"""
     FORBIDDEN = 3
-    """永远拒绝 (黑名单)"""
 
 
 class PermissionDecision(IntEnum):
-    """审批决策结果"""
+    """固定策略决定, ASK 继续交给人工或模型审查"""
 
     ALLOW = 0
     DENY = 1
     ASK = 2
-    """需要询问用户 (工具层走用户输入通道)"""
 
 
-_WRITE_OPERATIONS = frozenset({
-    "file_write",
-    "file_delete",
-    "shell",
-})
-# plan mode 下被压制的写类操作 (集合)
-# 注: 记忆写操作有意不在此列 -- 记忆是元信息, 与工作区写操作隔离,
-# 计划模式下仍允许增删改 (由 memory 插件管理, 见 docs/plugins/satrap-coding-plugin.md)
-
+_FILE_LOCK = threading.RLock()
 DEFAULT_RULES_FILE = get_data_dir() / "coding" / "permissions.json"
 DEFAULT_LOG_FILE = get_data_dir() / "coding" / "approval_log.jsonl"
 
-_FILE_LOCK = threading.Lock()
-# 规则文件全局锁: 串行化所有引擎实例的读-改-写, 防多会话交错写丢失更新
-
 
 class PermissionEngine:
-    """操作审批引擎 (线程安全)"""
+    """会话内共享审批状态, 不缓存操作类别级的执行授权"""
 
-    def __init__(
-        self,
-        mode: str = "user",
-        rules_file: str | Path | None = None,
-        log_file: str | Path | None = None,
-    ) -> None:
+    def __init__(self, mode: str = "user", rules_file: str | Path | None = None,
+                 log_file: str | Path | None = None) -> None:
         """
+        加载三档审批状态并保守迁移旧规则
+
         参数:
-        - mode: 审批策略, user / auto-agent / full
-        - rules_file: 持久规则文件 (JSON), 默认 .satrap/coding/permissions.json
-        - log_file: 审批日志文件 (JSONL), 默认 .satrap/coding/approval_log.jsonl
+        - mode: 新引擎默认模式, 只接受 user, auto, full-access
+        - rules_file: 持久状态文件, 默认使用插件默认目录
+        - log_file: 不含动作正文的审计日志文件
         """
-        self.mode = mode
+        if mode not in APPROVAL_MODES:
+            raise ValueError("审批模式必须为 user, auto 或 full-access")
+        self.mode: ApprovalMode = APPROVAL_MODES[APPROVAL_MODES.index(mode)]
         self.plan_mode = False
-        self._lock = threading.RLock()
-        self._session_rules: dict[str, RiskLevel] = {}
-        """会话内记忆化规则: 操作 -> 已批准的最高风险级 (用户批准一次, 会话内同类放行)"""
+        self.revision = 0
+        self.approval_model = ""
+        self.migration_notice = ""
         self.rules_file = Path(rules_file or DEFAULT_RULES_FILE)
         self.log_file = Path(log_file or DEFAULT_LOG_FILE)
-        self._persistent_rules: dict[str, RiskLevel] = self._load_rules()
+        self._lock = threading.RLock()
+        self._load()
 
-    # ---------- 规则加载/持久化 ----------
+    def _load(self) -> None:
+        """读取持久模式, 旧格式备份后回到 user, 不恢复操作类别级规则"""
+        with _FILE_LOCK:
+            try:
+                original = self.rules_file.read_bytes()
+                data = json.loads(original)
+                if not isinstance(data, dict):
+                    raise ValueError("审批配置必须是对象")
+                if data.get("version") != 2:
+                    backup = self.rules_file.with_suffix(".legacy-v1.json")
+                    if not backup.exists():
+                        backup.write_bytes(original)
+                    self.mode = "user"
+                    self.migration_notice = "旧审批模式和宽泛规则已备份, 请明确选择 user/auto/full-access"
+                    self._save()
+                    logger.warning("[satrap_coding] 旧审批状态已保守迁移为 user")
+                elif data.get("mode") in APPROVAL_MODES:
+                    self.mode = APPROVAL_MODES[APPROVAL_MODES.index(data["mode"])]
+                else:
+                    raise ValueError("持久审批模式无效")
+            except FileNotFoundError:
+                logger.debug("[satrap_coding] 尚无审批状态文件, 使用默认模式")
+            except (OSError, ValueError, TypeError) as error:
+                self.mode = "user"
+                logger.warning(f"[satrap_coding] 审批配置读取失败, 使用 user: {error}")
 
-    def _load_rules(self) -> dict[str, RiskLevel]:
-        """
-        加载持久规则文件 (同时恢复持久化审批策略)
-
-        返回:
-        - dict[str, RiskLevel]: 加载持久规则文件 (同时恢复持久化审批策略)
-        """
-        try:
-            raw = json.loads(self.rules_file.read_text(encoding="utf-8"))
-            data = cast(dict[str, Any], raw)
-            mode = data.get("mode")
-            if isinstance(mode, str) and mode in ("user", "auto-agent", "full"):
-                self.mode = mode
-            rules = data.get("rules", {})
-            return {
-                str(k): RiskLevel(int(v))
-                for k, v in rules.items()
-                if isinstance(k, str) and isinstance(v, (int, float))
-            }
-        except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
-            return {}
-
-    def _refresh_from_disk(self) -> None:
-        """写前以磁盘为基线重建规则 (需持有 _FILE_LOCK), 防多会话丢失更新"""
-        self._persistent_rules = self._load_rules()
-
-    def _save_rules(self) -> None:
-        """原子写持久规则"""
+    def _save(self) -> None:
+        """原子保存版本化模式, 不保存动作级批准或旧规则"""
         self.rules_file.parent.mkdir(parents=True, exist_ok=True)
-        payload: dict[str, Any] = {
-            "rules": {k: int(v) for k, v in self._persistent_rules.items()},
-            "mode": self.mode,
-        }
-        tmp = self.rules_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.rules_file)
-
-    def _append_log(
-        self,
-        operation: str,
-        risk: RiskLevel,
-        description: str,
-        decision: PermissionDecision,
-        mode: str,
-        model_verdict: str | None = None,
-    ) -> None:
-        """
-        追加审批日志 (审计)
-
-        参数:
-        - operation: 操作信息
-        - risk: 风险级别
-        - description: 说明文本
-        - decision: 决策
-        - mode: 模式
-        - model_verdict: auto-agent 返回的原始判断, 未调用模型时为 None
-        """
-        try:
-            self.log_file.parent.mkdir(parents=True, exist_ok=True)
-            entry: dict[str, Any] = {
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "operation": operation,
-                "risk": int(risk),
-                "description": description,
-                "decision": decision.name,
-                "mode": mode,
-            }
-            if model_verdict is not None:
-                entry["model_verdict"] = model_verdict[:100]
-            with open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except OSError as e:
-            logger.warning(f"[satrap_coding] 审批日志写入失败: {e}")
-
-    # ---------- 规则管理 ----------
-
-    def add_persistent_rule(self, operation: str, level: RiskLevel | int) -> None:
-        """
-        添加持久规则 (跨会话生效): 指定操作在不超过该风险级时直接放行
-
-        参数:
-        - operation: 操作信息
-        - level: 级别
-        """
-        with _FILE_LOCK:
-            self._refresh_from_disk()
-            with self._lock:
-                self._persistent_rules[operation] = RiskLevel(level)
-                self._save_rules()
-
-    def remove_persistent_rule(self, operation: str) -> bool:
-        """
-        移除持久规则
-
-        参数:
-        - operation: 操作信息
-
-        返回:
-        - bool: 移除持久规则
-        """
-        with _FILE_LOCK:
-            self._refresh_from_disk()
-            with self._lock:
-                removed = self._persistent_rules.pop(operation, None) is not None
-                if removed:
-                    self._save_rules()
-                return removed
-
-    def list_persistent_rules(self) -> dict[str, int]:
-        """
-        列出持久规则
-
-        返回:
-        - dict[str, int]: 列出持久规则
-        """
-        return {k: int(v) for k, v in self._persistent_rules.items()}
-
-    def clear_session_rules(self) -> None:
-        """清空会话内记忆化规则"""
-        with self._lock:
-            self._session_rules.clear()
-
-    def approve(self, operation: str, risk: RiskLevel, remember: bool = True) -> None:
-        """
-        记录一次批准: 记入会话规则 (同类同风险级后续放行)
-
-        参数:
-        - operation: 操作信息
-        - risk: 风险级别
-        - remember: remember 输入值
-        """
-        with self._lock:
-            if remember:
-                existing = self._session_rules.get(operation, RiskLevel.READ)
-                self._session_rules[operation] = max(existing, risk)
-
-    def deny(self, operation: str, risk: RiskLevel, description: str = "") -> None:
-        """
-        记录一次拒绝 (仅日志)
-
-        参数:
-        - operation: 操作信息
-        - risk: 风险级别
-        - description: 说明文本
-        """
-        self._append_log(operation, risk, description, PermissionDecision.DENY, self.mode)
-
-    # ---------- 策略切换 ----------
+        temporary = self.rules_file.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"version": 2, "mode": self.mode}, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(self.rules_file)
 
     def set_mode(self, mode: str, persist: bool = True) -> None:
         """
-        切换审批策略: user / auto-agent / full
+        显式切换审批模式并使正在等待的旧请求失效
 
         参数:
-        - mode: 模式
-        - persist: 持久化
-
-        persist=True 时随规则文件持久化 (跨会话); /approve all 的会话级放行传 False
+        - mode: user, auto 或 full-access, 不接受旧名称
+        - persist: 默认 True 持久保存, False 仅修改当前实例
         """
-        if mode not in ("user", "auto-agent", "full"):
-            raise ValueError(f"未知审批策略: {mode}, 可选 user / auto-agent / full")
-        with _FILE_LOCK:
-            if persist:
-                self._refresh_from_disk()
-            with self._lock:
-                self.mode = mode
+        if mode not in APPROVAL_MODES:
+            raise ValueError("审批模式必须为 user, auto 或 full-access")
+        with _FILE_LOCK, self._lock:
+            previous = self.mode
+            self.mode = APPROVAL_MODES[APPROVAL_MODES.index(mode)]
+            try:
                 if persist:
-                    self._save_rules()
+                    self._save()
+            except OSError:
+                self.mode = previous
+                raise
+            self.revision += 1
 
     def set_plan_mode(self, enabled: bool) -> None:
         """
-        切换计划模式: 写类操作全部拒绝 (独立标志, 不污染规则状态)
+        修改计划模式并撤销正在等待的旧请求
 
         参数:
-        - enabled: 是否启用
+        - enabled: True 禁止文件修改与任意 Shell
         """
-        self.plan_mode = bool(enabled)
+        with self._lock:
+            self.plan_mode = bool(enabled)
+            self.revision += 1
 
     def is_plan_mode_block(self, operation: str, risk: RiskLevel | int) -> bool:
         """
-        判断操作是否因计划模式的工作区写入限制而被拒绝
+        判断计划模式是否禁止当前动作
 
         参数:
-        - operation: 操作类型
-        - risk: 操作风险级别
+        - operation: file_write, file_delete 或 shell 等操作类别
+        - risk: 已分类风险级别
 
         返回:
-        - 计划模式应阻止该操作时返回 True
+        - 写类操作或任意 Shell 在计划模式下返回 True
         """
-        return self.plan_mode and operation in _WRITE_OPERATIONS and (
-            operation == "shell" or RiskLevel(risk) > RiskLevel.READ
-        )
+        return self.plan_mode and operation in {"file_write", "file_delete", "shell"} and (
+            operation == "shell" or int(risk) > 0)
 
-    # ---------- 评估 ----------
-
-    def evaluate(
-        self,
-        operation: str,
-        risk: RiskLevel | int,
-        description: str = "",
-        *,
-        judge: Callable[[str, RiskLevel, str], str] | None = None,
-    ) -> PermissionDecision:
+    def evaluate(self, operation: str, risk: RiskLevel | int, description: str = "") -> PermissionDecision:
         """
-        同步评估操作是否放行
+        执行同步异步共用的固定规则, 不在状态锁内调用模型
 
         参数:
-        - operation: 操作信息
-        - risk: 风险级别
-        - description: 说明文本
-        - judge: 判断函数
-
-        返回 ASK 时由工具层走用户输入通道; auto-agent 模式调用 judge 判断
-        (judge 签名: (operation, risk, description) -> "allow" / "deny" / "ask")
+        - operation: 当前动作类别
+        - risk: 风险级别, FORBIDDEN 始终拒绝
+        - description: 兼容调用方的动作摘要, 不作为授权证据
 
         返回:
-        - PermissionDecision: 同步评估操作是否放行
+        - 硬拒绝和计划模式返回 DENY, full-access 或普通读取返回 ALLOW, 其它返回 ASK
         """
-        risk = RiskLevel(risk)
-        model_verdict: str | None = None
         with self._lock:
-            decision = self._evaluate_core(operation, risk)
-            if decision == PermissionDecision.ASK and self.mode == "auto-agent" and judge is not None:
-                model_verdict = judge(operation, risk, description)
-                decision = self._verdict_to_decision(model_verdict)
-            self._append_log(
-                operation,
-                risk,
-                description,
-                decision,
-                self.mode,
-                model_verdict,
-            )
-            return decision
+            if int(risk) >= RiskLevel.FORBIDDEN or self.is_plan_mode_block(operation, risk):
+                return PermissionDecision.DENY
+            if self.mode == "full-access" or operation != "shell" and int(risk) <= RiskLevel.READ:
+                return PermissionDecision.ALLOW
+            return PermissionDecision.ASK
 
-    async def evaluate_async(
-        self,
-        operation: str,
-        risk: RiskLevel | int,
-        description: str = "",
-        *,
-        judge: Callable[[str, RiskLevel, str], Any] | None = None,
-    ) -> PermissionDecision:
+    def valid(self, request: ApprovalRequest) -> bool:
         """
-        异步评估 (auto-agent 模式支持异步 judge, 返回 awaitable)
+        复核审批期间的权限与有效期
 
         参数:
-        - operation: 操作信息
-        - risk: 风险级别
-        - description: 说明文本
-        - judge: 判断函数
-
-        judge 调用在锁外执行, 避免持锁 await LLM 调用阻塞其它线程
+        - request: 等待后即将执行的请求
 
         返回:
-        - PermissionDecision:  awaitable)
+        - 模式, 版本和计划状态仍匹配且未过期时返回 True
         """
-        risk = RiskLevel(risk)
-        model_verdict: str | None = None
-        with self._lock:
-            decision = self._evaluate_core(operation, risk)
-        if decision == PermissionDecision.ASK and self.mode == "auto-agent":
-            if judge is None:
-                decision = PermissionDecision.ASK
-            else:
-                verdict = judge(operation, risk, description)
-                if hasattr(verdict, "__await__"):
-                    verdict = await verdict
-                model_verdict = str(verdict)
-                decision = self._verdict_to_decision(model_verdict)
-        self._append_log(
-            operation,
-            risk,
-            description,
-            decision,
-            self.mode,
-            model_verdict,
-        )
-        return decision
+        return (request.mode == self.mode and request.revision == self.revision
+                and time.time() < request.expires_at and not self.is_plan_mode_block(request.operation, request.risk))
 
-    def _evaluate_core(self, operation: str, risk: RiskLevel) -> PermissionDecision:
+    def record(self, request: ApprovalRequest, result: ApprovalResult) -> None:
         """
-        规则层评估 (不含策略与 judge)
+        记录单次决定, 不记录文件正文和完整对话
 
         参数:
-        - operation: 操作信息
-        - risk: 风险级别
-
-        返回:
-        - PermissionDecision: 规则层评估 (不含策略与 judge)
+        - request: 实际操作请求
+        - result: 宿主或审查模型的决定
         """
-        if risk >= RiskLevel.FORBIDDEN:
-            return PermissionDecision.DENY
-        if self.is_plan_mode_block(operation, risk):
-            return PermissionDecision.DENY
-        if operation == "shell":
-            return PermissionDecision.ASK   # 解释器命令不能由分类结果或通用历史规则获得本机权限
-        allowed_level = self._persistent_rules.get(operation)
-        if allowed_level is None:
-            allowed_level = self._session_rules.get(operation)
-        if allowed_level is not None and risk <= allowed_level:
-            return PermissionDecision.ALLOW
-        if risk <= RiskLevel.READ:
-            return PermissionDecision.ALLOW
-        if self.mode == "full":
-            return PermissionDecision.ALLOW
-        return PermissionDecision.ASK
-
-    @staticmethod
-    def _verdict_to_decision(verdict: str) -> PermissionDecision:
-        """
-        将审批模型判断收窄为拒绝或人工确认
-
-        参数:
-        - verdict: verdict 输入值
-
-        返回:
-        - PermissionDecision: deny 返回拒绝, 其他内容均返回人工确认
-        """
-        text = verdict.strip().lower()
-        if text.startswith("deny"):
-            return PermissionDecision.DENY
-        return PermissionDecision.ASK
+        try:
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            entry = {"ts": datetime.now().isoformat(), "request_id": request.request_id,
+                     "session_id": request.session_id, "turn_id": request.turn_id, "actor_id": request.actor_id,
+                     "operation": request.operation, "risk": request.risk, "revision": request.revision, "tool": request.tool,
+                     "mode": request.mode, "action_digest": request.digest, "decision": result.decision,
+                     "reviewer": result.reviewer, "reason": result.reason[:1000]}
+            with self._lock, self.log_file.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError as error:
+            logger.warning(f"[satrap_coding] 审批日志写入失败: {error}")

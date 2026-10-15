@@ -7,25 +7,22 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine, RiskLevel
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
-from .contracts import require_bound_session, prepare_replacements
-from .file_io import write_file, edit_file, replace_file
-from .paths import (
-    _tool_root,
-    _resolve_path,
-    _FileProtectionMixin,
-    _approve_file_write_async,
-)
+from .contracts import require_bound_session
+from .approval import _approve_async
+from .file_io import prepare_change
+from .paths import _tool_root, _resolve_path, _FileProtectionMixin, _execution_guard, _full_access, _in_sandbox
+
+from satrap.core.log import logger
 
 class AsyncWriteFileTool(_FileProtectionMixin, AsyncTool):
     """写入/追加工作区内文件 (异步, 写操作走审批)"""
 
     tool_name = "write_file"
-    description = "写入或追加内容到工作区内文件 (需用户批准)"
+    description = "写入或追加文件; 沙箱内免审批, 其余遵守 user/auto/full-access 模式"
     params_dict = {
         "path": ("string", "文件路径 (绝对或相对工作区)"),
         "content": ("string", "要写入的内容"),
@@ -55,31 +52,26 @@ class AsyncWriteFileTool(_FileProtectionMixin, AsyncTool):
         返回:
         - 成功说明, 输入或读写错误, 或审批拒绝说明; 未绑定会话时抛出 RuntimeError
         """
-        # Step.1 检查会话绑定并校验路径和修改输入
+        # Step.1 冻结实际修改内容和执行边界
         session = require_bound_session(self._session, self.tool_name)
         try:
             root = _tool_root(self)
-            abs_path = _resolve_path(path, root)
-        except ValueError as e:
-            return f"错误: {e}"
-        reason = self._protection_reason(abs_path, root)
-        if reason is not None:
-            return f"拒绝写入: {reason}"
-        # Step.2 请求文件修改审批
-        allowed, message = await _approve_file_write_async(
-            session,
-            self.engine,
-            abs_path,
-            "写入文件",
-            self.sandbox_root,
-        )
-        if not allowed:
-            return message
-        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
-            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
-
-        # Step.3 执行已批准的文件修改
-        return await asyncio.to_thread(write_file, abs_path, content, append)
+            abs_path = _resolve_path(path, root, full_access=_full_access(self))
+            check = _execution_guard(self, self.engine, abs_path)
+            check()
+            change = await asyncio.to_thread(prepare_change, abs_path, self.tool_name, content=content, append=append)
+        except (OSError, ValueError) as error:
+            logger.warning(f"[satrap_coding] 文件准备失败: {error}")
+            return f"错误: {error}"
+        # Step.2 沙箱内免审批, 其余提交精确动作
+        if not _in_sandbox(abs_path, session, self.sandbox_root):
+            allowed, message = await _approve_async(
+                session, self.engine, "file_write", RiskLevel.WRITE, f"{self.tool_name} {abs_path}",
+                action=change.action(), tool_name=self.tool_name)
+            if not allowed:
+                return message
+        # Step.3 在实际写入线程内重新检查并提交
+        return await asyncio.to_thread(change.commit, check)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """
@@ -129,41 +121,26 @@ class AsyncEditFileTool(_FileProtectionMixin, AsyncTool):
         返回:
         - 成功说明, 输入或读写错误, 或审批拒绝说明; 未绑定会话时抛出 RuntimeError
         """
-        # Step.1 检查会话绑定并校验路径和修改输入
+        # Step.1 冻结实际修改内容和执行边界
         session = require_bound_session(self._session, self.tool_name)
         try:
             root = _tool_root(self)
-            abs_path = _resolve_path(path, root)
-        except ValueError as e:
-            return f"错误: {e}"
-        reason = self._protection_reason(abs_path, root)
-        if reason is not None:
-            return f"拒绝修改: {reason}"
-        if not abs_path.is_file():
-            return f"错误: 文件不存在: {abs_path}"
-        try:
-            content = await asyncio.to_thread(abs_path.read_text, encoding="utf-8")
-        except OSError as e:
-            return f"错误: 读取失败: {e}"
-        if old not in content:
-            return f"错误: 未找到匹配文本: {old[:80]}"
-        # Step.2 请求文件修改审批
-        allowed, message = await _approve_file_write_async(
-            session,
-            self.engine,
-            abs_path,
-            "编辑文件",
-            self.sandbox_root,
-        )
-        if not allowed:
-            return message
-        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
-            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
-
-        # Step.3 执行已批准的文件修改
-        return await asyncio.to_thread(
-            edit_file, abs_path, content, old, new, replace_all
-        )
+            abs_path = _resolve_path(path, root, full_access=_full_access(self))
+            check = _execution_guard(self, self.engine, abs_path)
+            check()
+            change = await asyncio.to_thread(prepare_change, abs_path, self.tool_name, old=old, new=new, replace_all=replace_all)
+        except (OSError, ValueError) as error:
+            logger.warning(f"[satrap_coding] 文件准备失败: {error}")
+            return f"错误: {error}"
+        # Step.2 沙箱内免审批, 其余提交精确动作
+        if not _in_sandbox(abs_path, session, self.sandbox_root):
+            allowed, message = await _approve_async(
+                session, self.engine, "file_write", RiskLevel.WRITE, f"{self.tool_name} {abs_path}",
+                action=change.action(), tool_name=self.tool_name)
+            if not allowed:
+                return message
+        # Step.3 在实际写入线程内重新检查并提交
+        return await asyncio.to_thread(change.commit, check)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """
@@ -202,7 +179,7 @@ class AsyncSearchReplaceTool(_FileProtectionMixin, AsyncTool):
         self.engine = engine
         self._session: AsyncSimpleSession | None = None
 
-    async def execute(self, path: str, replacements: list[dict[str, Any]]) -> str:
+    async def execute(self, path: str, replacements: list[dict[str, object]]) -> str:
         """
         异步执行文件修改, 全部校验通过后请求审批
 
@@ -213,40 +190,26 @@ class AsyncSearchReplaceTool(_FileProtectionMixin, AsyncTool):
         返回:
         - 成功说明, 输入或读写错误, 或审批拒绝说明; 未绑定会话时抛出 RuntimeError
         """
-        # Step.1 检查会话绑定并校验路径和修改输入
+        # Step.1 冻结实际修改内容和执行边界
         session = require_bound_session(self._session, self.tool_name)
         try:
             root = _tool_root(self)
-            abs_path = _resolve_path(path, root)
-        except ValueError as e:
-            return f"错误: {e}"
-        reason = self._protection_reason(abs_path, root)
-        if reason is not None:
-            return f"拒绝修改: {reason}"
-        if not abs_path.is_file():
-            return f"错误: 文件不存在: {abs_path}"
-        try:
-            content = await asyncio.to_thread(abs_path.read_text, encoding="utf-8")
-        except OSError as e:
-            return f"错误: 读取失败: {e}"
-        pairs = prepare_replacements(content, replacements)
-        if isinstance(pairs, str):
-            return pairs
-        # Step.2 请求文件修改审批
-        allowed, message = await _approve_file_write_async(
-            session,
-            self.engine,
-            abs_path,
-            "批量替换",
-            self.sandbox_root,
-        )
-        if not allowed:
-            return message
-        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
-            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
-
-        # Step.3 执行已批准的文件修改
-        return await asyncio.to_thread(replace_file, abs_path, content, pairs)
+            abs_path = _resolve_path(path, root, full_access=_full_access(self))
+            check = _execution_guard(self, self.engine, abs_path)
+            check()
+            change = await asyncio.to_thread(prepare_change, abs_path, self.tool_name, replacements=replacements)
+        except (OSError, ValueError) as error:
+            logger.warning(f"[satrap_coding] 文件准备失败: {error}")
+            return f"错误: {error}"
+        # Step.2 沙箱内免审批, 其余提交精确动作
+        if not _in_sandbox(abs_path, session, self.sandbox_root):
+            allowed, message = await _approve_async(
+                session, self.engine, "file_write", RiskLevel.WRITE, f"{self.tool_name} {abs_path}",
+                action=change.action(), tool_name=self.tool_name)
+            if not allowed:
+                return message
+        # Step.3 在实际写入线程内重新检查并提交
+        return await asyncio.to_thread(change.commit, check)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """

@@ -35,7 +35,18 @@ def _resolve_shell_executable(shell: str) -> str:
 def _prepare_shell(
     command: str, shell: str, root: Path, workdir: Path
 ) -> tuple[list[str], RiskLevel, str]:
-    """固定执行参数和审批说明; 所有解释器输入均需逐次授权"""
+    """
+    固定命令参数与审查材料, 由工具按三档模式决定是否审批
+
+    参数:
+    - command: 用户要求执行的完整命令
+    - shell: powershell 或 cmd
+    - root: 当前工具工作区
+    - workdir: 已解析的实际工作目录
+
+    返回:
+    - 固定 argv, 风险提示和完整说明; 无效参数或命中硬黑名单时抛出 ValueError
+    """
     if shell not in ("powershell", "cmd"):
         raise ValueError("shell 必须为 powershell 或 cmd")
     if not isinstance(command, str) or not command.strip():

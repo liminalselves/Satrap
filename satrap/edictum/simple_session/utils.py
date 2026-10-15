@@ -15,11 +15,17 @@ from satrap.core.type import RequestContextBlock
 from dataclasses import dataclass, field
 import inspect
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TYPE_CHECKING
 import sys
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.core.log import logger
 
+
+if TYPE_CHECKING:
+    from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
+
+SyncCodingApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult"]
+AsyncCodingApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult | Awaitable[ApprovalResult]"]
 
 SyncUserInputProvider = Callable[..., str]
 

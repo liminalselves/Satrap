@@ -220,6 +220,23 @@ class ChatHTTPServer(MiniHTTPServer):
                 logger.error(f"[对话数据] Chat/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
                 return 500, {"error": "对话数据操作失败, 请查看 Chat 日志"}
 
+        if clean == "/api/chat/coding-approval" and method in {"GET", "PUT"}:
+            conversation_id = self._query_param(path, "conversation")
+            try:
+                if not conversation_id:
+                    raise ValueError("缺少 conversation")
+                if method == "GET":
+                    result = await svc.get_coding_approval(conversation_id)
+                else:
+                    payload = json.loads(body or b"{}")
+                    if not isinstance(payload, dict) or set(payload) != {"mode", "expected_revision"}:
+                        raise ValueError("审批设置参数无效")
+                    result = await svc.set_coding_approval(conversation_id, payload["mode"], payload["expected_revision"])
+                return (200 if result.get("ok") else 409), result
+            except (OSError, TypeError, ValueError) as error:
+                logger.warning(f"[编程审批] 设置读取或更新失败, 会话={conversation_id}, 原因={error}")
+                return 400, {"error": str(error)}
+
         if method == "GET" and clean == "/api/chat/models":
             return 200, {"models": svc.list_models()}
 

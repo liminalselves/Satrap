@@ -970,3 +970,22 @@ def test_execute_tool_call_handles_malformed_call_info_without_raising():
     assert tool_message["id"] == "call_bad_args"
     assert tool_result["error_type"] == "invalid_arguments"
 
+
+
+@pytest.mark.asyncio
+async def test_coding_host_administrator_passes_operator_precheck(monkeypatch):
+    """本插件系统管理员无需重复填写旧 command_operators 名单"""
+    from types import SimpleNamespace
+    from satrap.core import platform
+    adapter = RecorderAdapter(settings={"command_operators": []})
+    manager = _FakeSessionManager()
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    reviewed = []
+    def resolve(origin, plugin):
+        reviewed.append((origin.actor_id, plugin))
+        return SimpleNamespace(allowed=origin.actor_id == "user-1" and plugin == "satrap_coding")
+    monkeypatch.setattr(platform, "current_adapter_manager", lambda: SimpleNamespace(administrator_service=SimpleNamespace(resolve=resolve)))
+    await scheduler.execute(_protected_event(adapter, "/approve mode auto"))
+    assert [call.message for call in manager.calls] == ["/approve mode auto"]
+    assert reviewed == [("user-1", "satrap_coding")]
+    assert _feedback_texts(adapter) == []

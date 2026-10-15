@@ -12,6 +12,7 @@ from dataclasses import replace
 import asyncio
 from time import monotonic, time
 import inspect
+import traceback
 from typing import (
     Any,
     Awaitable,
@@ -673,6 +674,7 @@ class PipelineScheduler:
                         self.wake_timers.cancel_route(event)
                 images: list[str] = []
                 videos: list[str] = []
+                projected: ProjectedInput | None = None
                 if command_text is not None:
                     # Step.4 命令候选: 冻结正文即唯一输入, 跳过引用/转发/附件/媒体与投影, 不产生无用下载
                     message = command_text
@@ -720,7 +722,7 @@ class PipelineScheduler:
                     group_session_overrides=event.group_session_overrides if not event.is_private_chat() else None,
                     group_config_revision=event.group_config_revision if not event.is_private_chat() else None,
                     group_route_generation=event.group_route_generation if not event.is_private_chat() else None,
-                    request_blocks=projected.request_blocks if command_text is None else (),
+                    request_blocks=projected.request_blocks if projected is not None else (),
                 )
                 # Step.6 执行会话并限制等待时间
                 if manual_ticket is not None:
@@ -938,7 +940,7 @@ class PipelineScheduler:
         - command_text: 平台入口冻结的命令正文
 
         返回:
-        - bool: 非受保护命令或非平台来源为 True; 名单缺失/为空/不匹配一律为 False
+        - 非受保护命令或非平台来源为 True; 平台来源需本插件宿主管理权限或旧操作员名单
         """
         if not is_operator_only_command(command_name_from_text(command_text)):
             return True
@@ -946,6 +948,17 @@ class PipelineScheduler:
         # 管理面与库内直调已过管理面认证, 不继承为平台操作员
         if origin.actor_kind != "platform_user":
             return True
+        from satrap.core.platform import current_adapter_manager
+        manager = current_adapter_manager()
+        administrators = getattr(manager, "administrator_service", None)
+        if administrators is not None:
+            try:
+                if administrators.resolve(origin, "satrap_coding").allowed:
+                    return True
+            except Exception:
+                logger.error(f"[平台命令] 宿主管理权限核验失败: {traceback.format_exc()}")
+                return False
+        # 新宿主管理权限可通过前置门, 插件入口仍需执行实际管理权限检查
         operators = event.policy_settings.get("command_operators")
         if not origin.actor_id or not isinstance(operators, list):
             return False

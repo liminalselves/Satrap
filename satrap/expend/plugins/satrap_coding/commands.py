@@ -12,11 +12,16 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
+from satrap.expend.plugins.satrap_coding.core.approval import APPROVAL_MODES
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+from satrap.core.plugin_authorization import PluginEntryBinding, authorize_management_permissions, require_plugin_entry_permission
+from satrap.core.call_context import current_call_origin, current_tool_workflow
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 
-_APPROVE_MODES = ("user", "auto-agent", "full")
+from satrap.core.log import logger
+
+_APPROVE_MODES = APPROVAL_MODES
 
 
 def _parse_args(args: list[str], default: str = "") -> str:
@@ -112,14 +117,14 @@ def _cmd_plan_impl(state: dict[str, Any], args: list[str]) -> str:
 
 def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
     """
-    审批命令: 切换策略 / 查看与添加持久规则
+    审批命令: 切换三档策略或查看状态
 
     参数:
     - state: 状态
     - args: 额外位置参数
 
     返回:
-    - str: 审批命令: 切换策略 / 查看与添加持久规则
+    - str: 审批命令: 切换三档策略或查看状态
     """
     engine = state["engine"]
     assert isinstance(engine, PermissionEngine)
@@ -129,23 +134,42 @@ def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
             return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}>; 当前: {engine.mode}"
         engine.set_mode(args[1])
         return f"审批策略已切换: {args[1]}"
-    if sub in ("rules", "规则"):
-        rules = engine.list_persistent_rules()
-        if not rules:
-            return "暂无持久规则"
-        return "\n".join(f"- {op}: 风险级 <= {level} 直接放行" for op, level in rules.items())
-    if sub in ("rule", "添加规则"):
-        if len(args) < 3:
-            return "用法: /approve rule <操作> <风险级 0-1> (如: /approve rule file_write 1); 最高 1, 高危操作不开放持久放行"
-        try:
-            level = int(args[2])
-            if level not in (0, 1):
-                return "风险级仅允许 0-1 (高危操作不开放持久规则, 如需放行请用 /approve mode full)"
-            engine.add_persistent_rule(args[1], level)
-        except ValueError:
-            return "风险级必须是 0-1 的整数"
-        return f"持久规则已添加: {args[1]} -> 风险级 <= {args[2]}"
-    return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}> | rules | rule <操作> <风险级>; 当前策略: {engine.mode}"
+    if sub in ("rules", "规则", "rule", "添加规则"):
+        return "操作类别级放行规则已移除, 请使用 /approve mode user|auto|full-access"
+    if sub == "status":
+        return f"当前审批模式: {engine.mode}; 计划模式: {engine.plan_mode}" + (f"\n{engine.migration_notice}" if engine.migration_notice else "")
+    return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}> | status; 当前策略: {engine.mode}"
+
+
+def _approval_command(session: SessionType, state: dict[str, Any], args: list[str]) -> str:
+    """
+    只允许可信原生命令修改宿主执行权限
+
+    参数:
+    - session: 命令所属会话
+    - state: 共享插件状态
+    - args: 用户直接输入的命令参数
+
+    返回:
+    - 命令结果或明确权限拒绝, 模型工作流不能提高权限
+    """
+    try:
+        registry = getattr(session, "command_handler", None) or getattr(session, "cmd_handler", None)
+        binding = getattr(registry, "_permission_bindings", {}).get("approve")
+        if not isinstance(binding, PluginEntryBinding) or current_tool_workflow() is not None:
+            raise PermissionError("修改审批模式必须使用可信的用户原生命令入口")
+        require_plugin_entry_permission(binding, refresh=True)
+        origin = current_call_origin()
+        if origin is None and session.plugin_environment.session_type == "platform":
+            raise PermissionError("平台审批命令缺少有效的调用者身份")
+        if origin is not None:
+            result = authorize_management_permissions(binding, ("approval_manage",))
+            if result.status != "allowed":
+                raise PermissionError("只有获得本插件宿主管理权限的用户可以管理审批模式")
+        return _cmd_approve_impl(state, args)
+    except (OSError, ValueError) as error:
+        logger.warning(f"[satrap_coding] 审批命令失败: {error}")
+        return f"权限或配置错误: {error}"
 
 
 def build_commands(
@@ -189,15 +213,15 @@ def build_commands(
 
     def cmd_approve(*args: str) -> str:
         """
-        切换审批策略/管理持久规则
+        切换审批模式或查看状态
 
         参数:
         - args: 额外位置参数
 
         返回:
-        - str: 切换审批策略/管理持久规则
+        - str: 切换审批模式或查看状态
         """
-        return _cmd_approve_impl(state, list(args))
+        return _approval_command(session, state, list(args))
 
     async def cmd_goal_async(*args: str) -> str:
         return _cmd_goal_impl(state, session, list(args))
@@ -206,8 +230,20 @@ def build_commands(
         return _cmd_plan_impl(state, list(args))
 
     async def cmd_approve_async(*args: str) -> str:
-        return _cmd_approve_impl(state, list(args))
+        """
+        异步原生命令切换审批模式或查看状态
 
+        参数:
+        - args: 用户直接输入的命令参数
+
+        返回:
+        - 当前状态, 切换回执或权限拒绝
+        """
+        return _approval_command(session, state, list(args))
+
+    setattr(cmd_approve, "requires_native_scope", True)
+    setattr(cmd_approve_async, "requires_native_scope", True)
+    # 本地用户可用的命令也需绑定原生作用域, 平台来源再追加管理权限
     sync_map: dict[str, Callable[..., Any]] = {
         "goal": cmd_goal,
         "plan": cmd_plan,

@@ -1,5 +1,6 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
+from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
 
 import inspect
 from pathlib import Path
@@ -57,11 +58,11 @@ async def test_factory_configuration_isolated_without_host_paths(
 
     monkeypatch.setattr(coding, "_run_shell", run_shell)
     module = async_interaction if asynchronous else sync_interaction
-    monkeypatch.setattr(module, "_prepare_shell", lambda command, shell, root, cwd: ([], 0, "test"))
+    monkeypatch.setattr(module, "_prepare_shell", lambda command, shell, root, cwd: (["test-shell"], 0, "test"))
     try:
         maps = []
         for session, config in zip(sessions, configs):
-            session.user_input_provider = lambda *args: "y"
+            session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
             maps.append({tool.tool_name: tool for tool in coding.get_tools(session, config)})
         first_config = configs[0]
         assert first_config is not None
@@ -87,9 +88,9 @@ async def test_factory_configuration_isolated_without_host_paths(
             (root / "private").mkdir(parents=True, exist_ok=True)
             (root / "source.txt").write_text(root.name, encoding="utf-8")
             assert root.name in await _execute(maps[index]["read_file"], "source.txt")
-            sessions[index].user_input_provider = None
+            sessions[index].coding_approval_provider = None
             assert "已写入" in await _execute(maps[index]["write_file"], "private/result.txt", root.name)
-            assert "需要用户批准" in await _execute(maps[index]["write_file"], "outside.txt", "blocked")
+            assert "approval_required" in await _execute(maps[index]["write_file"], "outside.txt", "blocked")
             assert not (root / "outside.txt").exists()
             assert (root / "private/result.txt").read_text(encoding="utf-8") == root.name
         assert Path(get_plugin_state(sessions[0])["_data_root"]) == (tmp_path / "state-a").resolve()
@@ -146,7 +147,7 @@ async def test_real_install_state_roots_commands_plan_and_reinstall(
         context = HandlerContext(HandlerConfig("message", None, "off", 1, "test"), "message")
         injected = callback("message", context)
         assert isinstance(injected, str) and "shared-goal" in injected
-        assert "已切换" in await command("/approve mode full")
+        assert "已切换" in await command("/approve mode full-access")
         assert (tmp_path / "state/permissions.json").is_file()
         assert "计划模式" in await command("/plan on")
         assert "计划模式" in await _execute(tool, "private/new.txt", "blocked")
@@ -276,14 +277,14 @@ async def test_file_approval_rechecks_execution_context(
     tools = {tool.tool_name: tool for tool in coding.get_tools(session, {"workspace_root": str(root)})}
     engine = get_plugin_state(session)["engine"]
 
-    def approve(*args: Any) -> str:
+    def approve(request: ApprovalRequest) -> ApprovalResult:
         if change == "workspace":
             setattr(session, "coding_workspace_root", str(tmp_path / "other"))
         else:
             engine.set_plan_mode(True)
-        return "y"
+        return ApprovalResult.for_request(request, "allow", "用户批准", "user")
 
-    session.user_input_provider = approve
+    session.coding_approval_provider = approve
     try:
         assert "执行已取消" in await _execute(tools[tool_name], *args)
         assert target.read_text(encoding="utf-8") == "original"
@@ -580,7 +581,7 @@ def test_uninstall_resets_plugin_state(_satrap_coding_plugin_session: SimpleSess
     # 重装后计划模式已重置: 写文件进入正常审批流而不再是计划模式拒绝
     target = tools_mod.WORKSPACE_ROOT / "y.txt"
     out = write_tool.execute(str(target), "hi")
-    assert "需要用户批准" in out
+    assert "approval_required" in out
     assert "拒绝: 计划模式" not in out
 
 def test_approve_command(_satrap_coding_plugin_session: SimpleSession):
@@ -590,16 +591,16 @@ def test_approve_command(_satrap_coding_plugin_session: SimpleSession):
 
     out = write_tool.execute(str(target), "hi")
     # user 模式无输入通道: 拒绝
-    assert "需要用户批准" in out
+    assert "approval_required" in out
 
-    result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/approve mode full")
+    result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/approve mode full-access")
     assert "已切换: full" in str(result)
     assert "已写入" in write_tool.execute(str(target), "hi")
 
     result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/approve rule file_write 1")
-    assert "持久规则已添加" in str(result)
+    assert "已移除" in str(result)
     result, _ = _satrap_coding_plugin_session.cmd_handler.process_message("/approve rules")
-    assert "file_write" in str(result)
+    assert "已移除" in str(result)
 
 def test_parse_capability_descriptions_unit():
     """parse_capability_descriptions: 字典解析 / 非 dict 跳过 / 未识别键忽略"""
@@ -836,3 +837,53 @@ def test_read_document_tool(_base_take_plugin_session: SimpleSession, tmp_path: 
     # 越界拒绝
     result = tool.execute(path="../outside.txt")
     assert "越出工作区" in result or "错误" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_approval_mode_requires_native_host_administrator(tmp_path, monkeypatch, asynchronous):
+    """原生模式命令区分宿主管理员, 群管理员和模型执行者"""
+    from satrap.edictum import simple_session as ss_mod
+    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.core.call_context import CallOrigin, bind_call_origin, bind_tool_workflow
+    from satrap.core.config.administrator_groups import AdministratorService
+    from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
+    monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
+    session = (AsyncSimpleSession if asynchronous else SimpleSession)(
+        "native-approval", MagicMock(spec=AsyncLLM if asynchronous else LLM), db_path=str(tmp_path / "chat.db"))
+    value = session.install_plugin(str(_coding_configuration_PLUGIN_DIR), config={"workspace_root": str(tmp_path), "data_root": str(tmp_path / "state")})
+    if inspect.isawaitable(value):
+        await value
+    admins = AdministratorService(lambda: [{"id": "qq", "type": "onebot", "instance_id": "instance"}], [
+        {"id": "hosts", "name": "宿主管理员", "enabled": True,
+         "members": [{"platform_id": "qq", "platform_instance_id": "instance", "user_id": "host-admin"}],
+         "plugin_scope": {"mode": "selected", "included": ["satrap_coding"], "excluded": []}}])
+    previous = current_adapter_manager()
+    set_current_adapter_manager(cast(Any, SimpleNamespace(administrator_service=admins)))
+    manager = session.command_handler if asynchronous else session.cmd_handler
+    async def command(text):
+        result = manager.process_message(text)
+        value = await result if inspect.isawaitable(result) else result
+        return str(value[0])
+    engine = get_plugin_state(session)["engine"]
+    try:
+        for actor, role, allowed in [("member", "", False), ("group-owner", "owner", False), ("host-admin", "", True)]:
+            origin = CallOrigin("qq", "bot", "GroupMessage", "group", actor, "msg", "turn", group_role=role)
+            with bind_call_origin(origin):
+                result = await command("/approve mode full-access")
+            assert ("已切换" in result) == allowed
+            assert engine.mode == ("full-access" if allowed else "user")
+        engine.set_mode("user")
+        with bind_tool_workflow(object()):
+            assert "已切换" not in await command("/approve mode full-access")
+        assert engine.mode == "user"
+        assert "已切换" in await command("/approve mode auto")
+        assert engine.mode == "auto"
+        direct = manager.commands["approve"]("mode", "full-access")
+        direct = await direct if inspect.isawaitable(direct) else direct
+        assert "已切换" not in str(direct) and engine.mode == "auto"
+    finally:
+        set_current_adapter_manager(previous)
+        value = session.uninstall_plugin("satrap_coding")
+        if inspect.isawaitable(value):
+            await value

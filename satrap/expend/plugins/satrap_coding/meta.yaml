@@ -1,11 +1,21 @@
 name: satrap_coding
-version: 0.2.0
+permission_schema_version: 1
+management_permissions:
+  approval_manage:
+    description: 管理后端机器执行的审批模式
+    system_admin: true
+    requirements: [仅用户原生命令可以切换, QQ 群管理员身份不授予宿主执行权限]
+version: 0.3.0
 author: Satrap Team
 repo: https://github.com/satrap/satrap_coding
 description: "简易 Coding Agent 插件: 文件工具 / shell / 沙箱 / 子代理 / 目标与计划模式"
 
 # 配置项声明 (键 -> 类型/默认值/描述), 供校验/存储/前端渲染表单
 config_schema:
+  approval_model:
+    type: string
+    default: ""
+    description: "auto 模式专用审批模型配置名, 留空使用当前会话模型, 审查请求不携带工具"
   workspace_root:
     type: path
     default: ""
@@ -38,7 +48,7 @@ config_schema:
 # 注: search/fetch_page 由 base_take 提供, memory 由独立记忆插件提供
 tools:
   ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图; 需要宿主通过 session.user_input_provider 特殊适配提问展示和回答回填
-  shell: 在本机执行 shell 命令 (PowerShell/cmd), 每次执行需明确批准, 计划模式禁用
+  shell: 在本机执行 shell 命令 (PowerShell/cmd), user 人工审批, auto 模型审批, full-access 直接执行, 计划模式禁用
   subagent: 在独立上下文中运行子代理处理任务, 用于并行调研/独立子任务
   read_file: 读取工作区内文件内容, 支持分页
   write_file: 写入或追加内容到工作区内文件 (需批准)
@@ -56,7 +66,7 @@ handlers:
 commands:
   goal: 设置/查看/完成持续目标
   plan: 进入/退出计划模式 (写操作全部禁用)
-  approve: 切换审批策略/管理持久规则
+  approve: 切换 user/auto/full-access 审批模式或查看状态
 mcp: {}
 
 compatibility:

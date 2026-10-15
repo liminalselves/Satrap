@@ -1,5 +1,7 @@
 # Issue #19: Shell 执行隔离与审批分离方案
 
+> 状态说明: 本文中的 satrap_coding 三平台 OS 隔离方案仍暂停, 不作为当前实现验收标准; 原 user/auto-agent/full 审批描述已由 [三档审批实现说明](../plugins/satrap-coding-plugin.md#三档审批) 取代. code_sandbox 的现有 worker 限制保持独立
+
 状态: 待审设计, 尚未实施
 
 补充状态: 本大方案暂停推进. code_sandbox 的后续范围以 [最小变更方案](code-sandbox-minimal-plan.md) 为准, 不再按本文的共享会话执行权限/审批方案实施; satrap_coding 尚未实施. code_sandbox 已按最小方案实施, Windows/Linux 回归通过, macOS 未验收, 具体记录见最小方案第 12.1 节

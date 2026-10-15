@@ -8,6 +8,25 @@ import { REJECTION_STAGE_FILTER, RequestDiagnosticsPanel, attachmentLabel, reaso
 
 describe("pages/Chat/AskUserPanel", () => {
   describe('AskUserPanel', () => {
+    it('审批只展示本次动作的折叠卡片并提供明确决定按钮', () => {
+      const html = renderToStaticMarkup(
+        <AskUserPanel request={{ requestId: 'approval-1', question: '是否批准本次编程操作?', options: ['批准本次', '拒绝'],
+          approval: { tool: 'shell', operation: 'shell', description: '执行本地命令',
+            action: { command: 'Get-ChildItem', cwd: 'D:/project', interpreter: 'powershell.exe' } } }}
+          answer="" queueLength={1} submitting={false} onAnswerChange={vi.fn()} onSubmit={vi.fn()} />,
+      );
+      expect(html).toContain('等待批准执行 · shell');
+      expect(html).toContain('Get-ChildItem');
+      expect(html).toContain('D:/project');
+      expect(html).toContain('<details');
+      expect(html).not.toMatch(/<details[^>]*\bopen/);
+      expect(html).not.toContain('<textarea');
+      expect(html).not.toContain('跳过');
+      expect(html).not.toContain('输入自定义回答');
+      expect(html).toContain('批准本次');
+      expect(html).toContain('拒绝');
+    });
+
     it('渲染结构化选项和当前选中状态', () => {
       const html = renderToStaticMarkup(
         <AskUserPanel

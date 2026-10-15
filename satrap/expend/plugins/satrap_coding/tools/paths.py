@@ -6,16 +6,19 @@
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Any
+from typing import Callable, cast
+import time
 
-from satrap.expend.plugins.satrap_coding.core.permission import (
-    PermissionEngine,
-    RiskLevel,
-)
-from satrap.core.type import safe_getattr
+from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
+from satrap.core.call_context import current_call_origin, current_tool_workflow, CallOrigin
+from satrap.core.platform import current_adapter_manager
+from satrap.core.type import safe_getattr
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-from .approval import _approve_async, _approve_sync
+from .approval import _turn_identity
+
+from satrap.core.log import logger
 
 
 def _workspace_root(session: SimpleSession | AsyncSimpleSession | None, configured_root: Path | None = None) -> Path:
@@ -54,16 +57,17 @@ def _tool_root(tool: _ToolBase) -> Path:
     return root
 
 
-def _resolve_path(path: str, root: Path | None = None) -> Path:
+def _resolve_path(path: str, root: Path | None = None, *, full_access: bool = False) -> Path:
     """
-    解析路径并校验在工作区内 (相对路径以工作区为基准), 越界抛 ValueError
+    解析相对或绝对路径, 普通模式校验工作区边界, full-access 允许显式越界
 
     参数:
     - path: 路径
     - root: 根目录
+    - full_access: True 允许显式路径越出工作区, 默认 False
 
     返回:
-    - Path: 解析路径并校验在工作区内 (相对路径以工作区为基准), 越界抛 ValueError
+    - 已解析的绝对路径, 普通模式越界抛出 ValueError
     """
     from . import WORKSPACE_ROOT
 
@@ -71,25 +75,26 @@ def _resolve_path(path: str, root: Path | None = None) -> Path:
     raw = Path(path)
     candidate = raw if raw.is_absolute() else root / raw
     resolved = candidate.resolve()
-    if resolved != root and not resolved.is_relative_to(root):
+    if not full_access and resolved != root and not resolved.is_relative_to(root):
         raise ValueError(f"路径越出工作区: {resolved}")
     return resolved
 
 
-def _resolve_grep_file(path: Path, root: Path) -> Path | None:
+def _resolve_grep_file(path: Path, root: Path, *, full_access: bool = False) -> Path | None:
     """
     解析 grep 候选文件并拒绝工作区外的符号链接目标
 
     参数:
     - path: 遍历得到的候选路径
     - root: 已解析的工作区根目录
+    - full_access: True 允许工作区外候选文件
 
     返回:
     - Path | None: 安全的真实文件路径, 越界或不可访问时返回 None
     """
     try:
         resolved = path.resolve()
-        if not resolved.is_relative_to(root) or not resolved.is_file():
+        if (not full_access and not resolved.is_relative_to(root)) or not resolved.is_file():
             return None
         return resolved
     except OSError:
@@ -205,58 +210,114 @@ def _in_sandbox(
     return path == root or path.is_relative_to(root)
 
 
-def _approve_file_write(
-    session: SimpleSession,
-    engine: PermissionEngine,
-    path: Path,
-    action: str,
-    sandbox_root: Path | None = None,
-) -> tuple[bool, str]:
+def _full_access(tool: _ToolBase) -> bool:
     """
-    同步文件写审批: 计划模式先拒绝, 其余仅沙箱内免审批
+    读取工具所属会话当前模式, 直接构造的只读工具默认受工作区限制
 
     参数:
-    - session: 会话
-    - engine: 执行引擎
-    - path: 路径
-    - action: 操作类型
-    - sandbox_root: 工具实例的沙箱配置
+    - tool: 当前文件或 Shell 工具
 
     返回:
-    - tuple[bool, str]: 文件写审批: 目标在沙箱内免审批 (沙箱=免审批区), 其余按策略审批
+    - 共享引擎明确为 full-access 时返回 True
     """
-    if not engine.plan_mode and _in_sandbox(path, session, sandbox_root):
-        return True, ""
-    return _approve_sync(
-        session, engine, "file_write", RiskLevel.WRITE, f"{action} {path}"
-    )
+    engine = getattr(tool, "engine", None)
+    return isinstance(engine, PermissionEngine) and engine.mode == "full-access"
 
 
-async def _approve_file_write_async(
-    session: AsyncSimpleSession,
-    engine: PermissionEngine,
-    path: Path,
-    action: str,
-    sandbox_root: Path | None = None,
-) -> tuple[bool, str]:
+def _source_check(origin: CallOrigin | None) -> Callable[[], None]:
     """
-    异步文件写审批: 沙箱内免审批, 其余按策略审批
+    冻结平台实例并在本机副作用前核验账号与路由代次
 
     参数:
-    - session: 会话
-    - engine: 执行引擎
-    - path: 路径
-    - action: 操作类型
-    - sandbox_root: 工具实例的沙箱配置
+    - origin: 宿主真实来源, 本地 Chat 为 None
 
     返回:
-    - tuple[bool, str]: 异步文件写审批: 沙箱内免审批, 其余按策略审批
+    - 可从执行线程调用的同步核验函数, 来源失效时抛出 PermissionError
     """
-    if not engine.plan_mode and _in_sandbox(path, session, sandbox_root):
-        return True, ""
-    return await _approve_async(
-        session, engine, "file_write", RiskLevel.WRITE, f"{action} {path}"
-    )
+    manager = current_adapter_manager()
+    adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
+
+    def check() -> None:
+        """使用宿主现有路由存储校验, 不接受模型指定来源"""
+        if origin is None:
+            return
+        if (manager is None or current_adapter_manager() is not manager or adapter is None
+                or manager.get_adapter(origin.adapter_id) is not adapter
+                or not adapter.config.enable or adapter.client_self_id != origin.self_id):
+            raise PermissionError("来源平台或机器人账号已经失效")
+        if origin.conversation_kind:
+            store = adapter.agent_route_store
+            if store is not None:
+                revision = store.current_revision(origin.self_id, origin.conversation_kind, origin.chat_id)
+            else:
+                state = adapter._agent_route_memory.get((origin.self_id, origin.conversation_kind, origin.chat_id))
+                revision = state[1] if state else 0
+            if revision != origin.agent_route_generation:
+                raise PermissionError("来源 Agent 路由已经变化")
+            if origin.conversation_kind == "group":
+                route = getattr(adapter, "group_route", None)
+                if callable(route):
+                    current = route(origin.chat_id)
+                    if not isinstance(current, tuple) or len(current) != 2 or current[1] != origin.group_route_generation:
+                        raise PermissionError("来源群会话路由已经变化")
+    return check
+
+
+def _execution_guard(tool: _ToolBase, engine: PermissionEngine, path: Path) -> Callable[[], None]:
+    """
+    冻结执行边界, 为等待审批和线程调度后的副作用提供复核
+
+    参数:
+    - tool: 当前真实工具实例
+    - engine: 会话共享权限状态
+    - path: 已解析的目标文件或工作目录
+
+    返回:
+    - 可重复调用的检查函数, 边界改变或入口失效时抛出 PermissionError
+    """
+    session = cast(SimpleSession | AsyncSimpleSession, getattr(tool, "_session", None))
+    root = _tool_root(tool)
+    sandbox = _session_sandbox_root(session, getattr(tool, "sandbox_root", None))
+    deadline = time.monotonic() + 600
+    tool_name = tool.get_tool_name()
+    revision, mode = engine.revision, engine.mode
+    review_model = engine.approval_model
+    turn_identity = _turn_identity(session)
+    session_id = getattr(session, "session_id", "")
+    origin = current_call_origin()
+    workflow = current_tool_workflow()
+    source_check = _source_check(origin)
+    binding = getattr(tool, "_plugin_entry_binding", None)
+    protected = getattr(tool, "protected_dirs", frozenset())
+    allowed_env = getattr(tool, "allowed_env", frozenset())
+
+    def check() -> None:
+        """副作用前核验原始权限, 路径和真实插件入口"""
+        if engine.plan_mode:
+            logger.warning("[satrap_coding] 计划模式已拒绝文件修改和 Shell")
+            raise PermissionError("计划模式已拒绝文件修改和 Shell")
+        if (time.monotonic() >= deadline or getattr(tool, "engine", None) is not engine
+                or tool.get_tool_name() != tool_name or not tool.is_available_for_call()
+                or engine.revision != revision or engine.mode != mode or engine.approval_model != review_model
+                or getattr(tool, "_session", None) is not session or _turn_identity(session) != turn_identity
+                or getattr(session, "session_id", "") != session_id
+                or _tool_root(tool) != root or path.resolve() != path
+                or _session_sandbox_root(session, getattr(tool, "sandbox_root", None)) != sandbox
+                or current_call_origin() is not origin or current_tool_workflow() is not workflow or not tool.is_enabled()
+                or getattr(tool, "protected_dirs", frozenset()) != protected
+                or getattr(tool, "allowed_env", frozenset()) != allowed_env
+                or getattr(tool, "_plugin_entry_binding", None) is not binding):
+            logger.warning("[satrap_coding] 执行取消: 审批期间来源, 权限, 工具或路径发生变化")
+            raise PermissionError("执行已取消: 审批期间来源, 权限, 工具或路径发生变化")
+        source_check()
+        if binding is not None:
+            require_plugin_entry_permission(cast(PluginEntryBinding, binding), refresh=True)
+        if tool.get_tool_name() != "shell":
+            reason = _protection_reason(path, root, protected, sandbox_root=sandbox)
+            if reason is not None:
+                logger.warning(f"[satrap_coding] 执行取消: {reason}")
+                raise PermissionError(f"拒绝访问: {reason}")
+    return check
 
 
 def _read_file_page(path: Path, start: int, page_size: int) -> str:

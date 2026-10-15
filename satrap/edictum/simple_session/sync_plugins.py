@@ -153,7 +153,7 @@ def install_plugin(
             self.cmd_handler.register_command(
                 cname, chandler, intro=_command_intro(chandler),
                 permission_binding=PluginEntryBinding(name, "commands", cname, permissions, plugin_config, weakref.ref(chandler), weakref.ref(self))
-                if cname in permissions.commands else None,
+                if cname in permissions.commands or getattr(chandler, "requires_native_scope", False) is True else None,
             )
             command_states[cname] = True
 

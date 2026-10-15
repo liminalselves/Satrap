@@ -463,3 +463,77 @@ def test_coding_tools_per_session_workspace(tmp_path: Path, monkeypatch: Any):
     # 互不干扰: A 看不到 B 的文件 (B 的文件不在 A 的工作区内)
     # 无项目会话行为与全局一致 (相对路径基于全局工作区)
     assert "错误" in _read_tool(sess_g).execute(path="a.txt")
+
+
+@pytest.mark.parametrize("roots", [None, [], ["."]])
+def test_default_workspace_browser_reaches_other_projects(tmp_path, monkeypatch, roots):
+    """默认及旧版自动配置可绑定 Satrap 外目录, 仍隐藏受保护数据目录"""
+    repository = tmp_path / "Satrap"
+    external = tmp_path / "other-project"
+    repository.mkdir()
+    external.mkdir()
+    monkeypatch.setattr(service_mod, "get_project_root", lambda: repository)
+    svc = ChatService(cast(ModelConfigManager, _FakeModelConfig()),
+        ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
+        chat_db_path=str(tmp_path / "chat.db"), display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"), workspace_roots=roots,
+        denied_workspace_roots=[tmp_path / "private"])
+    roots_view = svc.browse_directories()
+    assert roots_view["ok"] and roots_view["dirs"]
+    assert svc.browse_directories(str(external))["ok"]
+    created = svc.create_project("外部项目", str(external))
+    assert created["ok"]
+    parent = svc.browse_directories(str(external))["parent"]
+    assert parent and svc.browse_directories(str(parent))["ok"]
+    protected = tmp_path / "private"
+    protected.mkdir()
+    assert not svc.browse_directories(str(protected))["ok"]
+    visible = svc.browse_directories(str(tmp_path))["dirs"]
+    assert str(protected) not in [item["path"] for item in visible]
+
+
+@pytest.mark.asyncio
+async def test_chat_approval_settings_share_command_state_and_persistence(tmp_path, monkeypatch):
+    """Chat 设置直接读写原命令引擎, HTTP 拒绝旧版本及未启用插件, 切换不触发模型"""
+    import json
+    from satrap.display.server import ChatHTTPServer
+    from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+    svc = _make_service(tmp_path, monkeypatch)
+    cid = await svc.create_conversation()
+    conv = svc.get_conversation(cid)
+    assert conv is not None
+    server = ChatHTTPServer.__new__(ChatHTTPServer)
+    server.service = svc
+    server.application_status = lambda method, path: None
+    endpoint = "/api/chat/coding-approval?conversation=" + cid
+    try:
+        status, absent = await server._route("GET", endpoint, b"")
+        assert status == 200 and absent["available"] is False
+        await conv.session.install_plugin(str(Path(__file__).resolve().parents[2] / "satrap/expend/plugins/satrap_coding"))
+        status, current = await server._route("GET", endpoint, b"")
+        assert status == 200 and current["mode"] == "user" and current["available"]
+        async def save(mode, revision):
+            return await server._route("PUT", endpoint, json.dumps({"mode": mode, "expected_revision": revision}).encode("utf-8"))
+        status, saved = await save("auto", current["revision"])
+        assert status == 200 and saved["mode"] == "auto"
+        engine = get_plugin_state(conv.session)["engine"]
+        assert isinstance(engine, PermissionEngine) and engine.mode == "auto"
+        answer, _ = await conv.session.command_handler.process_message("/approve mode full-access")
+        assert "已切换" in answer
+        assert (await svc.get_coding_approval(cid))["mode"] == "full-access"
+        status, stale = await save("user", saved["revision"])
+        assert status == 400 and "已变化" in stale["error"]
+        assert engine.mode == "full-access"
+        status, invalid = await save("full", engine.revision)
+        assert status == 400
+        reloaded = PermissionEngine(rules_file=engine.rules_file, log_file=engine.log_file)
+        assert reloaded.mode == "full-access"
+        history = conv.session.ctx.get_context()
+        assert not any(row.get("role") == "user" for row in history)
+        await conv.session.disable_plugin("satrap_coding")
+        assert (await svc.get_coding_approval(cid))["available"] is False
+        status, disabled = await save("user", engine.revision)
+        assert status == 400 and "启用" in disabled["error"]
+    finally:
+        await svc.close()

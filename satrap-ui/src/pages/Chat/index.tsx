@@ -1,3 +1,4 @@
+import { CodingApprovalSettings } from './CodingApprovalSettings';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -500,7 +501,7 @@ export function Chat() {
           setPendingUserInputs((previous) => ({
             ...previous,
             [conversationId]: event.pending_user_inputs.map((item) => ({
-              requestId: item.request_id, question: item.question, options: item.options,
+              requestId: item.request_id, question: item.question, options: item.options, approval: item.approval,
             })),
           }));
           break;
@@ -595,6 +596,7 @@ export function Chat() {
                   requestId: event.request_id,
                   question: event.question,
                   options: event.options ?? [],
+                  approval: event.approval,
                 },
               ],
             };
@@ -1833,6 +1835,7 @@ export function Chat() {
 
       {/* 聊天设置弹窗 */}
       <ChatSettingsModal
+        conversationId={activeId && activeId !== '__draft__' ? activeId : ''}
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         settings={settings}
@@ -2056,32 +2059,38 @@ function DirectoryPicker({
   onSelect: (path: string) => void;
 }) {
   const [current, setCurrent] = useState('');
+  const [location, setLocation] = useState('');
+  const generation = useRef(0);
   const [parent, setParent] = useState<string | null>(null);
   const [dirs, setDirs] = useState<DirEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const load = useCallback(async (path: string) => {
+    const version = ++generation.current;
     setLoading(true);
     setError('');
     try {
       const resp = await chatApi.browseDirs(path);
+      if (version !== generation.current) return;
       setCurrent(resp.path);
+      setLocation(resp.path);
       setParent(resp.parent);
       setDirs(resp.dirs);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (version === generation.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (version === generation.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (open) void load(initialPath.trim());
+    return () => { generation.current++; };
   }, [open, initialPath, load]);
 
   // 根视图 (盘符页) 无具体路径可选
-  const canSelect = current !== '';
+  const canSelect = current !== '' && !loading && !error && location.trim() === current;
 
   return (
     <Modal open={open} onClose={onClose} title="选择工作区目录" size="md">
@@ -2096,9 +2105,15 @@ function DirectoryPicker({
           >
             <ArrowUp className="h-4 w-4" />
           </Button>
-          <div className="flex-1 min-w-0 text-sm text-text-secondary truncate" title={current}>
-            {current || '选择磁盘'}
-          </div>
+          <input
+            aria-label="目录路径"
+            className="glass-input flex-1 min-w-0 text-sm"
+            value={location}
+            onChange={(event) => setLocation(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void load(location.trim()); } }}
+            placeholder="选择磁盘或输入服务器目录路径"
+          />
+          <Button variant="ghost" size="sm" disabled={loading} onClick={() => void load(location.trim())}>前往</Button>
         </div>
         {error && <p className="text-sm text-error">{error}</p>}
         <div className="max-h-72 overflow-y-auto custom-scrollbar space-y-1">
@@ -2200,6 +2215,7 @@ const CHAT_SETTINGS_CATEGORIES: { key: ChatSettingsCategory; label: string; icon
 
 // 聊天设置弹窗: 左侧分类导航 + 右侧分类内容
 function ChatSettingsModal({
+  conversationId,
   open,
   onClose,
   settings,
@@ -2218,6 +2234,7 @@ function ChatSettingsModal({
   onEditModel,
   onDeleteModel,
 }: {
+  conversationId: string;
   open: boolean;
   onClose: () => void;
   settings: ChatSettings;
@@ -2265,6 +2282,7 @@ function ChatSettingsModal({
           <div className="space-y-5">
             {category === 'chat' && (
               <>
+                <CodingApprovalSettings conversationId={conversationId} />
                 {/* 模型 */}
                 <div>
                   <label className="block text-sm font-medium text-text-primary mb-2">模型</label>

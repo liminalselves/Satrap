@@ -100,7 +100,7 @@ Copy-Item config.example.yaml config.yaml
 | `api.port` | `19870` | 后端 HTTP API 监听端口 |
 | `session_classes` | `{}` | 启动时静态注册的 Session 类 |
 | `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录; 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入 |
-| `workspace_roots` | `["."]` | Chat 项目允许浏览和绑定的工作区根目录 |
+| `workspace_roots` | `[]` | Chat 项目可浏览和绑定的目录根; 空列表默认使用本机磁盘 (Linux/macOS 为 `/`), 旧自动配置 `["."]` 同样使用此默认值; 显式填写其它路径时限制在这些目录内 |
 | `media_allowed_roots` | `null` | 本地媒体允许目录, 仅接受字符串列表或 null; 规则见下文 |
 | `platforms` | `[]` | 平台适配器实例配置 |
 
