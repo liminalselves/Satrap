@@ -8,27 +8,31 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
 import traceback
+from pathlib import Path
+import asyncio
+from typing import TYPE_CHECKING, Any, cast
 import copy
 import json
 
-from satrap.core.group_chat.service import group_chat_service
+from satrap.core.config.model_tool_authorization import bind_tool_session, model_tool_authorization
 from satrap.core.group_chat.reminder_service import execute_reminder_tool, REMINDER_ARGUMENTS
+from satrap.core.config.group_action_origin import bind_model_action_authorization
+from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
+from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, plugin_tool_live, permission_id_list
+from satrap.core.group_chat.service import group_chat_service
 from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.group_chat.types import GroupChatLimits
+from satrap.core.group_chat.types import GroupChatError
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+from satrap.core.group_chat.sdk import read_sandbox_image, register_group_chat_asset
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.call_context import current_call_origin, is_group_origin, is_private_origin
-from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from satrap.core.platform import current_adapter_manager
+from satrap.core.type import safe_getattr_str
 
 from satrap.core.log import logger
-from satrap.core.config.model_tool_authorization import bind_tool_session, model_tool_authorization
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, plugin_tool_live, permission_id_list
-from satrap.core.config.group_action_origin import bind_model_action_authorization
-from satrap.core.group_chat.types import GroupChatError
 
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession
@@ -56,7 +60,7 @@ _CURSOR = _string("继续查看上一页之后的结果时, 填写上次返回�
 _CURSOR["maxLength"] = 4096
 _COMPONENTS = {
     "type": "array", "minItems": 1, "maxItems": 64,
-    "description": "按顺序填写: text 写文字, quote 引用消息, mention @ 成员, image 发送查询得到的图片, sticker 发送表情目录中的表情; 最多引用一条消息",
+    "description": "按顺序填写: text 写文字, quote 引用消息, mention @ 成员, image 发送取图或沙箱登记工具返回的图片, sticker 发送表情目录中的表情; 最多引用一条消息",
     "items": {"oneOf": [
         {"type": "object", "properties": {"type": {"const": "text"}, "text": {"type": "string", "description": "要发到群里的回复文字", "minLength": 1, "maxLength": 100000}}, "required": ["type", "text"], "additionalProperties": False},
         {"type": "object", "properties": {"type": {"const": "quote"}, "message_id": {**_MESSAGE_ID, "description": "要引用的原消息 ID, 例如正在回应的那条发言"}}, "required": ["type", "message_id"], "additionalProperties": False},
@@ -74,6 +78,7 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
     "group_chat_set_group_nickname": ("只修改机器人自己在当前群的群昵称, 不能修改其他成员或账号全局昵称; 空字符串清空群昵称. pending 表示待审批, succeeded 才是已执行, 失败或结果未知时不要重复执行", {"nickname": {"type": "string", "maxLength": 60, "description": "机器人自己的新群昵称, 空字符串表示清空"}}, ["nickname"]),
     "group_chat_reply": ("给当前群回复一条消息, 可组合文字, 引用, 多个 @, 图片和表情; 回复在本轮成功结束后发送. 返回 prepared 表示待发送, 此后不要再次调用本工具或重复提交正文", {"components": _COMPONENTS}, ["components"]),
     "group_chat_get_message_assets": ("取出当前群某条消息中的图片, 返回可发送的 asset_id; 图片已经失效, 撤回或无法下载时会注明原因. 只按需读取这条消息, 不读取其它群", {"message_id": _MESSAGE_ID}, ["message_id"]),
+    "group_chat_import_sandbox_image": ("登记当前会话沙箱中已生成的图片, 返回本轮可供 group_chat_reply 使用的 asset.asset_id; 不直接发送. path 填相对路径, 例如 heart.png, 不接受 URL, 绝对路径或其它会话文件", {"path": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "当前会话沙箱内已生成图片的相对路径, 例如 heart.png 或 charts/plot.png; 支持 PNG/JPEG/WebP/GIF"}}, ["path"]),
     "group_chat_list_stickers": ("查看当前群已启用的表情, 返回名称, 标签和 sticker_id; 选择符合语境的表情后放进回复组件. 未在该群启用的表情不会出现在结果中", {"keyword": _string("想找的表情名称或标签, 不填则查看可用目录"), "limit": _LIMIT, "cursor": _CURSOR}, []),
     "group_chat_find_members": ("根据账号昵称或本群昵称查找当前群的成员, 返回成员 ID, 账号昵称和本群昵称. 找到多个同名成员时, 先确认目标再操作", {"query": _string("要查找的账号昵称或本群昵称, 可以填写其中一部分"), "limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, ["query"]),
     "group_chat_get_member": ("查看当前群某位成员的 ID, 昵称, 群昵称和角色; 需要确认成员 ID 对应谁时使用. 角色只表示平台资料, 不代表对方有权让机器人执行管理操作", {"user_id": _MEMBER_ID}, ["user_id"]),
@@ -241,6 +246,8 @@ class _GroupChatMixin(_ToolBase):
         - 宿主成功结果或明确配置失败结果
         """
         try:
+            if self.tool_name == "group_chat_import_sandbox_image":
+                return await self._import_sandbox_image(kwargs)
             if self.tool_name in REMINDER_ARGUMENTS:
                 return await execute_reminder_tool(str(self.tool_name), kwargs, session=self.session, config=self.config, authorize=self._authorize)
 
@@ -300,6 +307,47 @@ class _GroupChatMixin(_ToolBase):
         except Exception:
             logger.error(f"[group_chat] 工具执行异常, 工具={self.tool_name}: {traceback.format_exc()}")
             return _failure("invalid_configuration", "群聊插件配置或运行状态无效")
+
+    async def _import_sandbox_image(self, arguments: Mapping[str, object]) -> dict[str, object]:
+        """
+        校验主会话的沙箱图片并登记当前群与轮次的发送权限
+
+        参数:
+        - arguments: 仅允许 path 字符串, 根目录由当前主会话的宿主属性提供
+
+        返回:
+        - 已登记的 asset 或 SDK 失败结果; 来源, 路径与权限异常由工具边界记录并返回
+        """
+        # Step.1 固定主工作流与宿主路径, 不使用模型提供的根目录或全局默认值
+        if set(arguments) != {"path"} or not isinstance(arguments["path"], str):
+            raise GroupChatError("invalid_argument", "仅接受当前会话沙箱内的相对图片路径 path")
+        turn = current_reply_turn()
+        origin = current_call_origin()
+        if turn is None or origin is None or turn.workflow is not getattr(self.session, "_wf", None):
+            raise GroupChatError("wrong_executor", "仅允许当前主会话登记沙箱图片")
+        turn.require_main_tool("group_chat_import_sandbox_image")
+        root = safe_getattr_str(self.session, "coding_sandbox_root")
+        if not root or not Path(root).is_absolute():
+            raise GroupChatError("unavailable", "当前会话尚未绑定私有沙箱目录")
+
+        def authorize() -> None:
+            """等待前后复核当前工具权限, 媒体开关和宿主沙箱绑定"""
+            self._authorize(origin.chat_id)
+            if self.config.get("media_reply_enabled", True) is not True:
+                raise GroupChatError("unsupported", "当前 Agent 未启用图片与表情回复")
+            if safe_getattr_str(self.session, "coding_sandbox_root") != root:
+                raise GroupChatError("stale_call", "图片读取期间会话沙箱已经变化")
+            turn.require_main_tool("group_chat_import_sandbox_image")
+
+        # Step.2 在工作线程有界读取, 读取后的字节不再依赖可修改的原文件
+        authorize()
+        payload = await asyncio.to_thread(read_sandbox_image, Path(root), arguments["path"])
+        authorize()
+
+        # Step.3 复用可信 SDK 的格式校验, 缓存与当前轮次资产授权
+        result = await register_group_chat_asset(payload, None, "group_chat_import_sandbox_image")
+        authorize()
+        return result
 
 
 def _failure(code: str, message: str) -> dict[str, Any]:
@@ -378,8 +426,10 @@ def _available(tool: _GroupChatMixin) -> bool:
             if tool.config.get("media_reply_enabled", True) is True:
                 kinds.update({"image", "sticker"})
             return any(capabilities.get(kind, {}).get("state") == "supported" for kind in kinds)
-    if name in {"group_chat_get_message_assets", "group_chat_list_stickers"}:
+    if name in {"group_chat_get_message_assets", "group_chat_import_sandbox_image", "group_chat_list_stickers"}:
         if tool.config.get("media_reply_enabled", True) is not True:
+            return False
+        if name == "group_chat_import_sandbox_image" and not safe_getattr_str(tool.session, "coding_sandbox_root"):
             return False
         return capabilities.get("image", {}).get("state") == "supported" or name == "group_chat_list_stickers" and capabilities.get("sticker", {}).get("state") == "supported"
     return True

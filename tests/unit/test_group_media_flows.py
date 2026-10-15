@@ -234,6 +234,149 @@ async def test_trusted_sdk_rejects_wrong_workflow_and_only_authorizes_same_turn(
         wrong_turn = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": result["asset"]["asset_id"]}]})
     assert wrong_turn["error"]["code"] == "asset_unavailable" and not _LEASES
 
+
+@pytest.mark.usefixtures('_group_chat_media_service_managed_media_layout')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_real_agent_draws_imports_and_replies_with_sandbox_image(tmp_path: Path, asynchronous: bool):
+    """真实沙箱绘图经同轮资产登记发群图, 同步与异步会话均只提交一次"""
+    from support.group_models import Script, session, Invoker
+    from support.group_reply import send_mock
+    from satrap.core.pipeline.scheduler import PipelineScheduler
+    from satrap.core.type import LLMCallResponse
+
+    adapter, event, _ = setup(tmp_path)
+    root = tmp_path / "current-session" / "sandbox"
+    source = """import numpy as np
+import matplotlib.pyplot as plt
+t = np.linspace(0, 2*np.pi, 200)
+x = 16*np.sin(t)**3
+y = 13*np.cos(t)-5*np.cos(2*t)-2*np.cos(3*t)-np.cos(4*t)
+fig, ax = plt.subplots()
+ax.fill(x, y, color='pink')
+ax.plot(x, y, color='darkred')
+ax.set_title('af2333 <3')
+ax.axis('equal')
+fig.savefig('heart.png')
+plt.close(fig)
+"""
+
+    def importing(messages, kwargs):
+        result = json.loads(messages[-1]["content"])
+        assert result["returncode"] == 0 and (root / "heart.png").is_file(), result
+        assert "group_chat_import_sandbox_image" in {item["function"]["name"] for item in kwargs["tools"]}
+        return LLMCallResponse("tools_call", "", tool_calls=[{"id": "import", "name": "group_chat_import_sandbox_image",
+                                                            "arguments": {"path": "heart.png"}}])
+
+    def replying(messages, kwargs):
+        result = json.loads(messages[-1]["content"])
+        assert result["ok"] and result["asset"]["origin"] == "tool", result
+        asset = result["asset"]
+        assert asset["mime_type"] == "image/png" and "path" not in asset
+        (root / "heart.png").unlink()
+        return LLMCallResponse("tools_call", "", tool_calls=[{"id": "reply", "name": "group_chat_reply", "arguments": {
+            "components": [{"type": "text", "text": "画好了"}, {"type": "image", "asset_id": asset["asset_id"]}]}}])
+
+    script = Script([LLMCallResponse("tools_call", "", tool_calls=[{"id": "draw", "name": "code_sandbox",
+                                                                  "arguments": {"operation": "run", "code": source}}]),
+                     importing, replying, LLMCallResponse("message", "不重复发送")])
+    instance = await session(tmp_path, script, asynchronous, False)
+    instance.coding_sandbox_root = str(root)
+    plugin = Path(__file__).resolve().parents[2] / "satrap/expend/plugins/base_take"
+    if asynchronous:
+        await instance.install_plugin(str(plugin))
+    else:
+        instance.install_plugin(str(plugin))
+    await PipelineScheduler(Invoker(instance, asynchronous)).execute(event)
+    send_mock(adapter).assert_awaited_once()
+    chain = send_mock(adapter).call_args.args[1]
+    assert isinstance(chain.components[1], _group_chat_media_service_Image)
+    assert Path(chain.components[1].path).is_file() and not (root / "heart.png").exists()
+    assert len(script.requests) == 4 and not _LEASES
+
+
+@pytest.mark.usefixtures('_group_chat_media_service_managed_media_layout')
+@pytest.mark.asyncio
+async def test_sandbox_image_import_scope_paths_and_live_permissions(tmp_path: Path, monkeypatch):
+    """真实工具拒绝越界和跨工作流文件, 重新登记后仍受同群同轮资产权限约束"""
+    from support.group_models import Script, session
+    from satrap.core.call_context import bind_tool_workflow
+    from satrap.core.group_chat.sdk import read_sandbox_image
+
+    adapter, event, service = setup(tmp_path)
+    instance = await session(tmp_path, Script([]), True, False)
+    root = tmp_path / "current" / "sandbox"
+    foreign = tmp_path / "other" / "sandbox"
+    root.mkdir(parents=True)
+    foreign.mkdir(parents=True)
+    (root / "image.png").write_bytes(png())
+    (root / "invalid.png").write_text("not an image", encoding="utf-8")
+    (foreign / "private.png").write_bytes(png())
+    (root / "empty.png").touch()
+    with (root / "oversized.png").open("wb") as stream:
+        stream.truncate(10 * 1024 * 1024 + 1)
+    instance.coding_sandbox_root = str(root)
+    tool = instance.tools_manager.tools["group_chat_import_sandbox_image"]
+    with owner(event) as turn, bind_tool_workflow(instance._wf):
+        turn.workflow, turn.workflow_manager = instance._wf, instance.tools_manager
+        assert tool.is_available_for_call()
+        cases = [
+            ({"path": "../other/sandbox/private.png"}, "invalid_argument"),
+            ({"path": str(foreign / "private.png")}, "invalid_argument"),
+            ({"path": "C:/Windows/private.png"}, "invalid_argument"),
+            ({"path": "https://example.com/image.png"}, "invalid_argument"),
+            ({"path": "image.png:stream"}, "invalid_argument"),
+            ({"path": "image.png", "root": str(foreign)}, "invalid_argument"),
+            ({"path": 12}, "invalid_argument"),
+            ({"path": "missing.png"}, "asset_unavailable"),
+            ({"path": "invalid.png"}, "invalid_media"),
+            ({"path": "empty.png"}, "invalid_media"),
+            ({"path": "oversized.png"}, "invalid_media"),
+            ({"path": "."}, "invalid_media"),
+        ]
+        try:
+            (root / "linked").symlink_to(foreign, target_is_directory=True)
+        except OSError:
+            pass
+        else:
+            cases.append(({"path": "linked/private.png"}, "invalid_argument"))
+        for arguments, expected in cases:
+            result = await tool.execute(**arguments)
+            assert result["error"]["code"] == expected, (arguments, result)
+
+        with bind_tool_workflow(object()):
+            assert (await tool.execute(path="image.png"))["error"]["code"] == "wrong_executor"
+        result = await tool.execute(path="image.png")
+        assert result["ok"], result
+        asset_id = result["asset"]["asset_id"]
+        with pytest.raises(GroupChatError):
+            AssetStore(adapter.message_archive).acquire(MessageScope("ob", "10000", "group", "other"), asset_id, turn.operation_owner)
+
+        tool.config["media_reply_enabled"] = False
+        assert not tool.is_available_for_call()
+        assert (await tool.execute(path="image.png"))["error"]["code"] == "unsupported"
+        tool.config["media_reply_enabled"] = True
+
+        def change_root(root_path, path):
+            payload = read_sandbox_image(root_path, path)
+            instance.coding_sandbox_root = str(foreign)
+            return payload
+
+        monkeypatch.setitem(tool._import_sandbox_image.__func__.__globals__, "read_sandbox_image", change_root)
+        assert (await tool.execute(path="image.png"))["error"]["code"] == "stale_call"
+        instance.coding_sandbox_root = str(root)
+
+    with owner(event) as turn, bind_tool_workflow(instance._wf):
+        turn.workflow, turn.workflow_manager = instance._wf, instance.tools_manager
+        denied = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": asset_id}]})
+        assert denied["error"]["code"] == "asset_unavailable"
+        monkeypatch.setitem(tool._import_sandbox_image.__func__.__globals__, "read_sandbox_image", read_sandbox_image)
+        renewed = await tool.execute(path="image.png")
+        assert renewed["ok"] and renewed["asset"]["asset_id"] != asset_id
+        prepared = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": renewed["asset"]["asset_id"]}]})
+        assert prepared["ok"] and prepared["status"] == "prepared"
+    assert not _LEASES
+
 @pytest.mark.usefixtures('_group_chat_media_service_managed_media_layout')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])

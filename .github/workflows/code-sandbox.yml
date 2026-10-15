@@ -5,10 +5,13 @@ on:
   pull_request:
     paths:
       - 'satrap/core/utils/sandbox/**'
+      - 'satrap/core/group_chat/**'
       - 'satrap/expend/tools/sandbox_tools/**'
       - 'satrap/expend/plugins/base_take/**'
+      - 'satrap/expend/plugins/group_chat/**'
       - 'tests/unit/test_coding_security_flows.py'
       - 'tests/unit/test_coding_configuration_flows.py'
+      - 'tests/unit/test_group_media_flows.py'
       - 'setup.py'
       - 'requirements.txt'
       - '.github/workflows/code-sandbox.yml'
@@ -48,5 +51,5 @@ jobs:
           [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pytest tests/unit/test_coding_security_flows.py -q -k 'sandbox or internal_file or traversal or outside_path or delete_sandbox or code_execution_timeout'
+          python -m pytest tests/unit/test_coding_security_flows.py tests/unit/test_group_media_flows.py -q -k 'sandbox or internal_file or traversal or outside_path or delete_sandbox or code_execution_timeout or trusted_sdk'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

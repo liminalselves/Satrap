@@ -42,6 +42,7 @@ def sandbox_description(modules: tuple[str, ...]) -> str:
         "支持 run/run_file/save/read/delete/delete_dir/list. "
         "网络和外部程序调用被拦截, 不保留 Python 变量. "
         "文件只保存到沙箱, 不自动展示图片或发送附件. "
+        "群聊需要发送已生成图片时, 可调用已启用的 group_chat_import_sandbox_image 登记相对图片路径, 再用返回的 asset_id 回复. "
         "允许导入: " + (", ".join(modules) if modules else "(无)") + ". "
         "仅已登记子模块可用, 不支持沙箱内自定义模块和交互输入"
     )

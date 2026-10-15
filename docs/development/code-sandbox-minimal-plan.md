@@ -104,7 +104,7 @@ worker_path 与依赖目录来自可信安装位置. -B 显式禁止字节码写
 | `delete_dir` | 校验路径, 递归删除指定子目录, 根目录禁止删除 | operation, path, status |
 | `list` | 在允许目录下递归列出文件, 不跟随越界链接 | operation, path, files |
 
-产物限制: read 继续只返回 UTF-8 文本, 不增加二进制/base64 读取模式. PNG/SVG/PDF/DOCX/PPTX/XLSX 可保存到 sandbox, 路径可由脚本输出或 list 查询, 不代表已经在 Chat 展示或发送到群聊. 自动送达留给后续复用宿主资产/发送能力, 不纳入本次执行器迁移
+产物限制: read 继续只返回 UTF-8 文本, 不增加二进制/base64 读取模式. PNG/SVG/PDF/DOCX/PPTX/XLSX 可保存到 sandbox, 路径可由脚本输出或 list 查询, 不代表已经在 Chat 展示或发送到群聊. 群聊现可显式调用 group_chat_import_sandbox_image 登记当前会话的 PNG/JPEG/WebP/GIF, 再使用 asset.asset_id 准备群回复; 此入口属于群聊插件, 不改变沙箱 7 种操作, 不自动发送或开放通用附件
 
 save 只保存内容, 不审批内容, 不检查将来是否执行. 因此保存含禁止 import 的脚本可成功, 但之后的 run_file 必须拒绝该脚本
 
