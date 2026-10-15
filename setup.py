@@ -39,6 +39,7 @@ install_requires = [
     "pyyaml>=6.0.0",
     "packaging>=23.0",
     "mcp>=2.0.0,<3",
+    "RestrictedPython==8.5",
 ]
 
 extras_require = {
@@ -52,6 +53,19 @@ extras_require = {
         "openpyxl>=3.1.0",
         "python-docx>=1.1.0",
         "pdfplumber>=0.11.0",
+    ],
+    "sandbox": [
+        "numpy==2.1.3",
+        "pandas==2.2.3",
+        "matplotlib==3.10.0",
+        "python-docx==1.2.0",
+        "python-pptx==1.0.2",
+        "openpyxl==3.1.5",
+        "pdfplumber==0.11.10",
+        "pypdf==6.20.1",
+        "reportlab==5.0.1",
+        "XlsxWriter==3.2.9",
+        "defusedxml==0.7.1",
     ],
 }
 extras_require["all"] = sorted({dep for deps in extras_require.values() for dep in deps})

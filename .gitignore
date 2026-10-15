@@ -211,6 +211,7 @@ __marimo__/
 
 # sandbox
 sandbox/
+!/satrap/core/utils/sandbox/
 
 # plans
 plans/

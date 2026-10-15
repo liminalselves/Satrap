@@ -71,29 +71,288 @@ def test_code_execution_timeout(tmp_path: Path) -> None:
     assert "超时" in result["stderr"]
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-async def test_code_execution_requires_explicit_authorization(sandbox: CodeSandbox, asynchronous: bool) -> None:
-    """同步与异步代码执行均默认拒绝, 仅明确授权后运行"""
-    if asynchronous:
-        blocked_result = await AsyncCodeSandboxTool(sandbox).execute("run", code="print('blocked')")
-    else:
-        blocked_result = CodeSandboxTool(sandbox).execute("run", code="print('blocked')")
-    assert "需要用户明确批准" in blocked_result["error"]
+async def test_sandbox_worker_lifecycle_without_approval(sandbox: CodeSandbox, asynchronous: bool) -> None:
+    """七操作共用真实新进程, 无授权通道也能执行, 文件保留但变量不保留"""
+    tool = AsyncCodeSandboxTool(sandbox) if asynchronous else CodeSandboxTool(sandbox)
 
-    prompts: list[str] = []
-    if asynchronous:
-        async def authorize(description: str) -> bool:
-            """批准所有执行说明"""
-            prompts.append(description)
-            return True
+    async def execute(operation, **kwargs):
+        return await tool.execute(operation, **kwargs) if asynchronous else tool.execute(operation, **kwargs)
 
-        allowed: CodeSandboxTool | AsyncCodeSandboxTool = AsyncCodeSandboxTool(sandbox, authorize)
-        result = await allowed.execute("run", code="print('allowed')")
+    source = "import math\nanswer=math.sqrt(81)\nprint('你好', answer)"
+    calls = [
+        await execute("save", code=source, path="nested/main.py"),
+        await execute("read", path="nested/main.py"),
+        await execute("run_file", path="nested/main.py"),
+        await execute("run", code="print('fresh')"),
+        await execute("list"),
+        await execute("delete", path="nested/main.py"),
+        await execute("delete_dir", path="nested"),
+    ]
+    assert all(r["returncode"] == 0 for r in calls), calls
+    pids = [r["worker_pid"] for r in calls]
+    assert len(set(pids)) == len(pids) and os.getpid() not in pids
+    assert calls[1]["content"] == source
+    assert calls[2]["stdout"] == "你好 9.0\n"
+    assert calls[4]["files"] == [str(Path("nested") / "main.py")]
+    missing = await execute("run", code="print(answer)")
+    assert missing["error_code"] == "execution_failed" and "NameError" in missing["error"]
+    assert not Path(sandbox.sandbox_path, "nested").exists()
+
+
+def test_sandbox_analysis_and_document_artifacts(sandbox: CodeSandbox) -> None:
+    """真实库完成数组/表格/绘图/Word/PPTX/XLSX/PDF 业务闭环"""
+    source = """
+import time
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from docx import Document
+from docx.shared import Pt
+from pptx import Presentation
+from pptx.util import Inches
+import openpyxl
+from reportlab.pdfgen import canvas
+from pypdf import PdfReader, PdfWriter
+import pdfplumber
+
+start = time.perf_counter()
+a = np.arange(6).reshape(2,3)
+a[0,0] = 2
+np.save("array.npy", a)
+print(np.load("array.npy").sum())
+df = pd.DataFrame({"kind":["a","a","b"], "n":[1,2,3]})
+df.loc[0,"n"] = 2
+df.to_csv("data.csv", index=False)
+df.to_json("data.json")
+df.groupby("kind").sum().to_excel("data.xlsx")
+print(pd.read_excel("data.xlsx")["n"].sum())
+fig, ax = plt.subplots()
+ax.plot([1,2,3], [3,2,4], label="Example")
+ax.set_title("图表")
+ax.legend()
+fig.savefig("chart.png")
+fig.savefig("chart.svg")
+fig.savefig("chart.pdf")
+plt.close(fig)
+doc=Document()
+doc.add_paragraph("Hello document").runs[0].font.size=Pt(12)
+doc.add_table(rows=1,cols=2).cell(0,0).text="表格"
+doc.add_picture("chart.png")
+doc.save("report.docx")
+print(len(Document("report.docx").paragraphs))
+prs=Presentation()
+slide=prs.slides.add_slide(prs.slide_layouts[6])
+slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1)).text="Hello slide"
+slide.shapes.add_picture("chart.png", Inches(1), Inches(2), width=Inches(3))
+prs.save("report.pptx")
+print(len(Presentation("report.pptx").slides))
+c=canvas.Canvas("report.pdf")
+c.drawString(50,700,"Hello PDF")
+c.save()
+r=PdfReader("report.pdf")
+w=PdfWriter()
+w.add_page(r.pages[0])
+w.write("copy.pdf")
+with pdfplumber.open("copy.pdf") as pdf:
+    print(pdf.pages[0].extract_text())
+print(time.perf_counter() >= start)
+"""
+    result = sandbox.run(source)
+    assert result["returncode"] == 0, result
+    assert "Hello PDF" in result["stdout"] and "True" in result["stdout"]
+    files = set(sandbox.list_files())
+    assert {"chart.png","chart.svg","chart.pdf","array.npy","data.csv","data.json","data.xlsx","report.docx","report.pptx","report.pdf","copy.pdf"} <= files
+    assert Path(sandbox.sandbox_path, "chart.png").read_bytes().startswith(b"\x89PNG")
+    assert sandbox.read_file("chart.png").get("error")  # 二进制产物不伪装为文本附件
+    assert result["elapsed_seconds"] < sandbox.execution_timeout
+
+
+def test_sandbox_import_api_and_path_policy_flows(sandbox: CodeSandbox, tmp_path: Path) -> None:
+    """导入, 普通别名和已登记库次级文件入口共用结构化拒绝"""
+    rejected = sandbox.run("print('must not run')\nif False:\n import socket")
+    assert rejected["error_code"] == "module_not_allowed" and rejected["stdout"] == ""
+    sandbox.save_to_file("import subprocess", "forbidden.py")
+    assert sandbox.run_file("forbidden.py")["error_code"] == "module_not_allowed"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private-sentinel", encoding="utf-8")
+    cases = [
+        (f"open({str(outside)!r}).read()", "path_outside_sandbox"),
+        (f"import pandas as pd\npd.read_csv({str(outside)!r})", "path_outside_sandbox"),
+        ("import pandas as pd\npd.read_csv('http://localhost/secret')", "path_outside_sandbox"),
+        ("import pandas as pd\nf=pd.DataFrame({'a':[1]}).query\nf('a==1')", "api_not_allowed"),
+        ("import numpy as np\nnp.save('unsafe.npy',np.array([1]),allow_pickle=True)", "argument_not_allowed"),
+        ("import numpy as np\nnp.ctypeslib", "api_not_allowed"),
+        ("import matplotlib.pyplot as plt\nplt.rcParams['text.usetex']=True", "argument_not_allowed"),
+        ("import matplotlib.pyplot as plt\nplt.plot([1,2])\nplt.savefig('bad.png',backend='pgf')", "argument_not_allowed"),
+        ("from reportlab.platypus import DocExec", "api_not_allowed"),
+        ("import time\ntime.clock_settime", "api_not_allowed"),
+    ]
+    for source, expected in cases:
+        result = sandbox.run(source)
+        assert result.get("error_code") == expected, (source, result)
+    caught = sandbox.run("import numpy as np\ntry:\n np.ctypeslib\nexcept Exception:\n pass\nprint('continued')")
+    assert caught["error_code"] == "api_not_allowed" and caught["stdout"] == "continued\n"
+    assert outside.read_text(encoding="utf-8") == "private-sentinel"
+
+    text = sandbox.run("print('中'*40000)")
+    assert text["stdout_truncated"] and len(text["stdout"]) == 20_000
+    unsupported = sandbox.run("input('never wait')")
+    assert unsupported["returncode"] != 0 and unsupported["error_code"] != "timeout"
+    secret_script = sandbox.run("import numpy as np\nnp.savez('object.npz', data=np.array([{'x':1}], dtype='object'))")
+    assert secret_script["error_code"] == "argument_not_allowed"
+    if os.name == "nt":
+        assert sandbox.execute("save", "bad", "NUL")["error_code"] == "path_outside_sandbox"
+
+
+async def test_sandbox_cancellation_and_configuration(tmp_path: Path, monkeypatch) -> None:
+    """取消等待会回收真实 worker, 空/错误配置不能扩大能力"""
+    import asyncio
+    from satrap.core.utils.sandbox import runner
+    processes = []
+    original = runner.subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(runner.subprocess, "Popen", spawn)
+    box = CodeSandbox(str(tmp_path/"cancel"), sys.executable)
+    task = asyncio.create_task(box.execute_async("run", "import time\nopen('started.txt','w').close()\ntime.sleep(30)"))
+    for _ in range(300):
+        if Path(box.sandbox_path, "started.txt").exists():
+            break
+        await asyncio.sleep(0.01)
     else:
-        allowed = CodeSandboxTool(sandbox, lambda description: prompts.append(description) or True)
-        result = allowed.execute("run", code="print('allowed')")
-    assert result["returncode"] == 0
-    assert str(result["stdout"]).strip() == "allowed"
-    assert "print('allowed')" in prompts[0]
+        pytest.fail("worker 未进入待取消业务")
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert processes and all(p.poll() is not None for p in processes)
+    empty = CodeSandbox(str(tmp_path/"empty"), sys.executable, allowed_modules="")
+    assert empty.run("print(2+3)")["returncode"] == 0
+    assert empty.run("import math")["error_code"] == "module_not_allowed"
+    invalid = CodeSandbox(str(tmp_path/"invalid"), sys.executable, allowed_modules="socket")
+    assert invalid.execute("save", "never", "marker")["error_code"] == "configuration_error"
+    secret = CodeSandbox(str(tmp_path/"secret"), sys.executable, allowed_env=["OPENAI_API_KEY"])
+    assert secret.run("print('no')")["error_code"] == "configuration_error"
+    limited = CodeSandbox(str(tmp_path/"limited"), sys.executable, allowed_modules="math,time")
+    assert "math, time" in CodeSandboxTool(limited).description
+
+    import venv
+    environment = tmp_path / "without-dependencies"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    missing = CodeSandbox(str(tmp_path/"missing"), str(interpreter))
+    for operation in ("run", "save", "read", "list", "delete", "delete_dir", "run_file"):
+        result = missing.execute(operation, "print('blocked')", "marker.txt")
+        assert result["error_code"] == "sandbox_unavailable", result
+    assert not Path(missing.sandbox_path, "marker.txt").exists()
+
+
+def test_sandbox_protocol_limits_and_links(tmp_path: Path, monkeypatch) -> None:
+    """真实子进程的损坏输出/超限结果报错, 文件链接不扩大业务范围"""
+    from satrap.core.utils.sandbox import runner
+
+    root=tmp_path/"sandbox"
+    root.mkdir()
+    sandbox=CodeSandbox(str(root),sys.executable)
+    outside=tmp_path/"external"
+    outside.mkdir()
+    (outside/"private.txt").write_text("private",encoding="utf-8")
+    try:
+        (root/"linked").symlink_to(outside,target_is_directory=True)
+    except OSError:
+        pass
+    else:
+        assert sandbox.execute("read",path="linked/private.txt")["error_code"]=="path_outside_sandbox"
+        assert sandbox.execute("save","bad","linked/private.txt")["error_code"]=="path_outside_sandbox"
+        assert sandbox.execute("list")["error_code"]=="path_outside_sandbox"
+        assert (outside/"private.txt").read_text(encoding="utf-8")=="private"
+
+    fake=tmp_path/"worker.py"
+    monkeypatch.setattr(runner,"__file__",str(tmp_path/"runner.py"))
+    fake.write_text("print('{}')",encoding="utf-8")
+    assert sandbox.run("print('no')")["error_code"]=="worker_failed"
+    fake.write_text("print('x'*(8*1024*1024+1))",encoding="utf-8")
+    assert sandbox.run("print('no')")["error_code"]=="output_limit_exceeded"
+
+
+def test_sandbox_real_network_and_process_guards(tmp_path: Path) -> None:
+    """可信子进程直接探测补丁, 不用模型导入拒绝代替真实禁网验证"""
+    import json
+    import socket
+    import subprocess
+
+    tcp = socket.socket()
+    udp = socket.socket(type=socket.SOCK_DGRAM)
+    tcp.bind(("127.0.0.1", 0))
+    tcp.listen()
+    tcp.settimeout(0.15)
+    udp.bind(("127.0.0.1", 0))
+    udp.settimeout(0.15)
+    port, udp_port = tcp.getsockname()[1], udp.getsockname()[1]
+    with socket.create_connection(("127.0.0.1", port)):
+        accepted, _ = tcp.accept()
+        accepted.close()
+    udp.sendto(b"baseline", udp.getsockname())
+    assert udp.recvfrom(1024)[0] == b"baseline"
+
+    guard_dir = Path(__file__).parents[2] / "satrap/core/utils/sandbox"
+    source = f"""
+import sys,json,os
+sys.path.insert(0,{str(guard_dir)!r})
+from models import Violations, PolicyViolation
+from guards import install
+v=Violations()
+installed=install(v)
+import socket,ssl,subprocess,urllib.request,multiprocessing
+assert issubclass(ssl.SSLSocket,socket.socket)
+actions=[
+    ("tcp",lambda:socket.create_connection(("127.0.0.1",{port}))),
+    ("udp",lambda:socket.socket(type=socket.SOCK_DGRAM).sendto(b"blocked",("127.0.0.1",{udp_port}))),
+    ("dns",lambda:socket.getaddrinfo("localhost",80)),
+    ("http",lambda:urllib.request.urlopen("http://127.0.0.1:{port}/",timeout=1)),
+    ("popen",lambda:subprocess.Popen(["satrap-does-not-exist"])),
+    ("system",lambda:os.system("satrap-does-not-exist")),
+    ("multiprocessing",lambda:multiprocessing.get_context("spawn").Process(target=print,args=("unexpected",)).start()),
+]
+if os.name=="nt":
+    import _winapi
+    actions.extend([
+        ("startfile",lambda:os.startfile("satrap-does-not-exist.file")),
+        ("CreateProcess",lambda:_winapi.CreateProcess(None,"satrap-does-not-exist",None,None,False,0,None,None,subprocess.STARTUPINFO())),
+    ])
+blocked=[]
+for name,call in actions:
+    try:
+        call()
+    except PolicyViolation as error:
+        blocked.append([name,error.code])
+installed.verify()
+print(json.dumps(blocked))
+"""
+    try:
+        r=subprocess.run([sys.executable,"-I","-S","-B","-X","utf8","-c",source],capture_output=True,timeout=15,text=True,encoding="utf-8")
+        assert r.returncode==0, r.stderr
+        blocked=dict(json.loads(r.stdout))
+        assert set(blocked) >= {"tcp","udp","dns","http","popen","system","multiprocessing"}
+        assert all(blocked[name]=="network_disabled" for name in ("tcp","udp","dns","http"))
+        if os.name=="nt":
+            assert blocked["startfile"]==blocked["CreateProcess"]=="process_not_allowed"
+        with pytest.raises(socket.timeout):
+            tcp.accept()
+        with pytest.raises(socket.timeout):
+            udp.recvfrom(1024)
+        with socket.create_connection(("127.0.0.1",port)):
+            accepted,_=tcp.accept()
+            accepted.close()
+        udp.sendto(b"host-still-online",udp.getsockname())
+        assert udp.recvfrom(1024)[0]==b"host-still-online"
+    finally:
+        tcp.close()
+        udp.close()
+
 
 @pytest.fixture
 def shell_env(tmp_path, monkeypatch):

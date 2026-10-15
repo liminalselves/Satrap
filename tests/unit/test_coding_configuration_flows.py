@@ -705,6 +705,26 @@ def test_config_schema_on_plugin(_base_take_plugin_session: SimpleSession):
     assert "memory_scope" not in plugin.config_schema
     assert "memory_mode" not in plugin.config_schema
 
+
+def test_base_take_sandbox_whitelist_and_description(_base_take_plugin_session: SimpleSession, tmp_path: Path) -> None:
+    """工厂冻结生效白名单, 描述一致且不触发用户输入通道"""
+    from satrap.expend.plugins.base_take.tools import get_tools
+    from satrap.expend.tools.sandbox_tools import CodeSandboxTool
+
+    def never_approve(*args: object) -> str:
+        pytest.fail("code_sandbox 不应调用用户审批通道")
+
+    _base_take_plugin_session.user_input_provider = never_approve
+    config = {"sandbox_root": str(tmp_path / "configured"), "sandbox_allowed_modules": "math"}
+    first = next(tool for tool in get_tools(_base_take_plugin_session, config) if isinstance(tool, CodeSandboxTool))
+    config["sandbox_allowed_modules"] = ""
+    second = next(tool for tool in get_tools(_base_take_plugin_session, config) if isinstance(tool, CodeSandboxTool))
+    assert first.sandbox.modules == ("math",)
+    assert second.sandbox.modules == ()
+    assert "允许导入: math." in first.description and "允许导入: (无)" in second.description
+    assert first.execute("run", "import math\nprint(math.sqrt(9))")["stdout"] == "3.0\n"
+    assert second.execute("run", "import math")["error_code"] == "module_not_allowed"
+
 def test_extract_text_txt(tmp_path: Path):
     """纯文本直接读取"""
     f = tmp_path / "a.txt"
