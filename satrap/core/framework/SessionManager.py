@@ -5,6 +5,7 @@
 同时负责会话元数据持久化, 恢复和默认模型配置注入
 """
 from __future__ import annotations
+from satrap.core.plugin_interop.environment import EnvironmentSnapshot, bind_environment
 
 import dataclasses
 from dataclasses import dataclass, field
@@ -2742,13 +2743,14 @@ class SessionManager:
             StorageScope(platform_id=self.platform_id, session_id=session_id)
         )
         setattr(session, "storage_platform_id", self.platform_id)
-        setattr(session, "coding_session_root", str(root))
-        setattr(session, "coding_workspace_root", str(root / "sandbox"))
-        setattr(session, "coding_sandbox_root", str(root / "sandbox"))
-        setattr(session, "coding_upload_root", str(root / "uploads"))
-        setattr(session, "coding_artifacts_root", str(root / "artifacts"))
-        setattr(session, "coding_indexes_root", str(root / "indexes"))
-        setattr(session, "coding_cache_root", str(root / "cache"))
+        bind_environment(session, EnvironmentSnapshot(
+            workspace_root=root / "sandbox",
+            sandbox_root=root / "sandbox",
+            upload_root=root / "uploads",
+            session_root=root,
+            artifacts_root=root / "artifacts",
+            scope=f"{self.platform_id}:{session_id}",
+        ))
         setattr(session, "memory_db", str(self.storage_layout.platform_db(self.platform_id)))
         setattr(session, "memory_scope", f"session:{session_id}")
 

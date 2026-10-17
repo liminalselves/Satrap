@@ -10,9 +10,9 @@ base_take 插件工具集: search / fetch_page / code_sandbox / read_document
 
 from __future__ import annotations
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 from satrap.core.utils.paths import get_project_root
-from satrap.core.type import safe_getattr, safe_getattr_callable
+from satrap.core.plugin_interop.environment import EnvironmentSnapshot
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 if TYPE_CHECKING:
@@ -71,31 +71,31 @@ def _resolve_doc_path(
     return abs_path   # 未找到时由调用方报告文件不存在, 不扩展搜索范围
 
 
-def _doc_workspace_root(tool: _DocumentCore) -> Path:
+def _doc_workspace_root(tool: _DocumentCore, snapshot: EnvironmentSnapshot | None = None) -> Path:
     """
-    文档工具的工作区根 (调用时解析): 会话鸭子属性优先 (项目会话), 否则安装期基线
+    文档工具优先使用冻结宿主工作区, 未绑定时使用安装期基线
 
     参数:
     - tool: 工具
+    - snapshot: 当前操作的冻结快照, 默认重新查询宿主环境
 
     返回:
     - Path: 文档工具的工作区根 (调用时解析): 会话鸭子属性优先 (项目会话), 否则安装期基线
     """
-    override = safe_getattr(getattr(tool, "_session", None), "coding_workspace_root")
-    if override:
-        return Path(str(override)).resolve()
-    return cast(Path, tool._base_root)
+    environment = snapshot if snapshot is not None else tool._environment()
+    return environment.workspace_root or tool._base_root
 
 
-def _doc_upload_root(tool: _DocumentCore) -> Path | None:
+def _doc_upload_root(tool: _DocumentCore, snapshot: EnvironmentSnapshot | None = None) -> Path | None:
     """
     获取当前会话独占 uploads 目录
 
     参数:
     - tool: 文档工具
+    - snapshot: 当前操作的冻结快照, 默认重新查询宿主环境
 
     返回:
     - Path | None: 未注入会话存储时返回 None
     """
-    override = safe_getattr(getattr(tool, "_session", None), "coding_upload_root")
-    return Path(str(override)).resolve() if override else None
+    environment = snapshot if snapshot is not None else tool._environment()
+    return environment.upload_root

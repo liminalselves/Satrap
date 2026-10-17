@@ -46,6 +46,9 @@ def enable_command(self: SimpleSession, name: str) -> bool:
     返回:
     - bool: 启用命令
     """
+    plugin = self._capability_plugin("commands", name)
+    if plugin is not None:
+        return plugin.enable_command(name)
     return self.cmd_handler.enable_command(name)
 
 
@@ -59,6 +62,9 @@ def disable_command(self: SimpleSession, name: str) -> bool:
     返回:
     - bool: 停用命令 (停用后消息不再按命令处理)
     """
+    plugin = self._capability_plugin("commands", name)
+    if plugin is not None:
+        return plugin.disable_command(name)
     return self.cmd_handler.disable_command(name)
 
 
@@ -129,6 +135,9 @@ def enable_tool(self: SimpleSession, name: str) -> bool:
     返回:
     - bool: 启用工具
     """
+    plugin = self._capability_plugin("tools", name)
+    if plugin is not None:
+        return plugin.enable_tool(name)
     return self._wf.tools_manager.enable_tool(name)
 
 
@@ -142,6 +151,9 @@ def disable_tool(self: SimpleSession, name: str) -> bool:
     返回:
     - bool: 停用工具
     """
+    plugin = self._capability_plugin("tools", name)
+    if plugin is not None:
+        return plugin.disable_tool(name)
     return self._wf.tools_manager.disable_tool(name)
 
 
@@ -215,6 +227,10 @@ def enable_skill(self: SimpleSession, skill_name: str) -> bool:
     返回:
     - bool: 重新激活技能
     """
+
+    plugin = self._capability_plugin("skills", skill_name)
+    if plugin is not None:
+        return plugin.enable_skill(skill_name)
     return self.add_skill(skill_name)
 
 
@@ -228,6 +244,10 @@ def disable_skill(self: SimpleSession, skill_name: str) -> bool:
     返回:
     - bool: 停用技能 (从工作流卸载, 保留注册)
     """
+
+    plugin = self._capability_plugin("skills", skill_name)
+    if plugin is not None:
+        return plugin.disable_skill(skill_name)
     if self._skills_manager is None:
         return False
     return self._skills_manager.deactivate(skill_name, self._wf)
@@ -249,7 +269,8 @@ def _tool_effective(self: SimpleSession, tool_name: str) -> bool:
         return True
     with self._registry_lock:
         plugin = self._plugins.get(owner)
-    return plugin is not None and plugin.enabled
+    runtime = self._plugin_interop_runtime
+    return plugin is not None and plugin.enabled and (runtime is None or runtime.model_tool_available(owner, tool_name))
 
 
 def set_llm(self: SimpleSession, llm: LLM):

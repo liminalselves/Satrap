@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Callable
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -79,7 +79,7 @@ class CodeSandbox:
         return Request(cast(Operation, operation), self.sandbox_path, self.modules, code, path, encoding)
 
     def execute(self, operation: str, code: str | None = None, path: str | None = None,
-                *, encoding: str = "utf-8") -> SandboxResult:
+                *, encoding: str = "utf-8", verify: Callable[[], None] | None = None) -> SandboxResult:
         """
         同步分派一次沙箱操作并等待真实 worker 退出
 
@@ -88,15 +88,17 @@ class CodeSandbox:
         - code: run/save 的源码或文本, 其他操作可为 None
         - path: 目标文件或目录, 相对路径基于沙箱根, 可为 None
         - encoding: read 使用的文本编码, 默认 utf-8
+        - verify: 可选宿主有效性复核, 在线程调度和进程等待期间调用
 
         返回:
         - 操作结果或结构化失败; 已记录的配置错误直接返回, 不启动 worker
         """
         if self._configuration_error:
             return failure_result("configuration_error", self._configuration_error)
-        return run(self._request(operation, code, path, encoding), self.python_executable, self.execution_timeout, self.allowed_env)
+        return run(self._request(operation, code, path, encoding), self.python_executable, self.execution_timeout, self.allowed_env, verify=verify)
 
-    async def execute_async(self, operation: str, code: str | None = None, path: str | None = None) -> SandboxResult:
+    async def execute_async(self, operation: str, code: str | None = None, path: str | None = None,
+                            *, verify: Callable[[], None] | None = None) -> SandboxResult:
         """
         异步分派一次沙箱操作并在取消时等待 worker 回收
 
@@ -104,13 +106,14 @@ class CodeSandbox:
         - operation: 七种操作之一, 未知操作抛出 ValueError
         - code: run/save 的源码或文本, 其他操作可为 None
         - path: 目标文件或目录, 相对路径基于沙箱根, 可为 None
+        - verify: 可选宿主复核, 创建 worker 前及等待时调用
 
         返回:
         - 操作结果或结构化失败; 已记录的配置错误直接返回, 取消继续向调用方传播
         """
         if self._configuration_error:
             return failure_result("configuration_error", self._configuration_error)
-        return await run_async(self._request(operation, code, path), self.python_executable, self.execution_timeout, self.allowed_env)
+        return await run_async(self._request(operation, code, path), self.python_executable, self.execution_timeout, self.allowed_env, verify=verify)
 
     def _checked(self, operation: str, code: str | None = None, path: str | None = None) -> SandboxResult:
         """

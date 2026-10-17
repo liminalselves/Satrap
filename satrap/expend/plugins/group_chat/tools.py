@@ -9,8 +9,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 import traceback
-from pathlib import Path
-import asyncio
 from typing import TYPE_CHECKING, Any, cast
 import copy
 import json
@@ -26,11 +24,13 @@ from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.group_chat.types import GroupChatLimits
 from satrap.core.group_chat.types import GroupChatError
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.core.group_chat.sdk import read_sandbox_image, register_group_chat_asset
+from satrap.core.group_chat.sdk import register_group_chat_asset
+from satrap.core.plugin_interop import PluginHost, PluginInteractionError
+from satrap.core.plugin_interop.artifacts import ArtifactReadError
+from satrap.core.plugin_interop.environment import environment_snapshot
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.call_context import current_call_origin, is_group_origin, is_private_origin
 from satrap.core.platform import current_adapter_manager
-from satrap.core.type import safe_getattr_str
 
 from satrap.core.log import logger
 
@@ -144,6 +144,7 @@ class _GroupChatMixin(_ToolBase):
     session: SessionType
     deferred_platform_reply = False
     _plugin_entry_binding: PluginEntryBinding
+    _plugin_host: PluginHost | None = None
     _static_limits: GroupChatLimits | None = None
 
     def _base_limits(self) -> GroupChatLimits:
@@ -313,7 +314,7 @@ class _GroupChatMixin(_ToolBase):
         校验主会话的沙箱图片并登记当前群与轮次的发送权限
 
         参数:
-        - arguments: 仅允许 path 字符串, 根目录由当前主会话的宿主属性提供
+        - arguments: 仅允许 path 字符串, 根目录由当前主会话的宿主环境提供
 
         返回:
         - 已登记的 asset 或 SDK 失败结果; 来源, 路径与权限异常由工具边界记录并返回
@@ -326,8 +327,11 @@ class _GroupChatMixin(_ToolBase):
         if turn is None or origin is None or turn.workflow is not getattr(self.session, "_wf", None):
             raise GroupChatError("wrong_executor", "仅允许当前主会话登记沙箱图片")
         turn.require_main_tool("group_chat_import_sandbox_image")
-        root = safe_getattr_str(self.session, "coding_sandbox_root")
-        if not root or not Path(root).is_absolute():
+        plugin_host = self._plugin_host
+        if plugin_host is None:
+            raise GroupChatError("unavailable", "当前工具未绑定插件宿主")
+        snapshot = plugin_host.environment_snapshot()
+        if snapshot.sandbox_root is None or not snapshot.sandbox_root.is_absolute():
             raise GroupChatError("unavailable", "当前会话尚未绑定私有沙箱目录")
 
         def authorize() -> None:
@@ -335,13 +339,19 @@ class _GroupChatMixin(_ToolBase):
             self._authorize(origin.chat_id)
             if self.config.get("media_reply_enabled", True) is not True:
                 raise GroupChatError("unsupported", "当前 Agent 未启用图片与表情回复")
-            if safe_getattr_str(self.session, "coding_sandbox_root") != root:
+            if plugin_host.environment_snapshot() != snapshot:
                 raise GroupChatError("stale_call", "图片读取期间会话沙箱已经变化")
             turn.require_main_tool("group_chat_import_sandbox_image")
 
         # Step.2 在工作线程有界读取, 读取后的字节不再依赖可修改的原文件
         authorize()
-        payload = await asyncio.to_thread(read_sandbox_image, Path(root), arguments["path"])
+        try:
+            artifact = await plugin_host.artifacts.read_sandbox_image_async(arguments["path"])
+            payload = artifact.read()
+        except ArtifactReadError as exc:
+            raise GroupChatError(exc.code, str(exc)) from exc
+        except PluginInteractionError as exc:
+            raise GroupChatError("stale_call", "图片读取来源或宿主环境已经失效") from exc
         authorize()
 
         # Step.3 复用可信 SDK 的格式校验, 缓存与当前轮次资产授权
@@ -429,7 +439,7 @@ def _available(tool: _GroupChatMixin) -> bool:
     if name in {"group_chat_get_message_assets", "group_chat_import_sandbox_image", "group_chat_list_stickers"}:
         if tool.config.get("media_reply_enabled", True) is not True:
             return False
-        if name == "group_chat_import_sandbox_image" and not safe_getattr_str(tool.session, "coding_sandbox_root"):
+        if name == "group_chat_import_sandbox_image" and environment_snapshot(tool.session).sandbox_root is None:
             return False
         return capabilities.get("image", {}).get("state") == "supported" or name == "group_chat_list_stickers" and capabilities.get("sticker", {}).get("state") == "supported"
     return True
@@ -500,7 +510,8 @@ class AsyncGroupChatTool(_GroupChatMixin, AsyncTool):
         return await self._run(kwargs)
 
 
-def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: object = None) -> list[Tool] | list[AsyncTool]:
+def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: object = None,
+              *, plugin_host: PluginHost | None = None) -> list[Tool] | list[AsyncTool]:
     """
     为同步或异步会话构造同一组群聊工具
 
@@ -508,6 +519,7 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
     - session: 当前主会话
     - config: 已解析的插件配置
     - resources: 插件资源对象, 首批不使用外部资源
+    - plugin_host: 安装器注入的受控宿主接口, 图片导入时必须存在
 
     返回:
     - 与会话执行方式一致的群聊工具实例
@@ -517,6 +529,7 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
     for name, (description, _, _) in DEFINITIONS.items():
         tool = kind(name, description, {})
         tool.config = dict(config)
+        tool._plugin_host = plugin_host
         tool.session = cast("SessionType", session)
         bind_tool_session(tool, session)
         tool.deferred_platform_reply = name == "group_chat_reply"

@@ -6,6 +6,7 @@
 """
 
 from __future__ import annotations
+from contextlib import nullcontext
 from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import freeze_request_blocks
 import asyncio
@@ -261,6 +262,8 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         async with self._run_lock:
             thinking = self.default_thinking if thinking is None else thinking
             wf = self._require_wf()
+            if self._plugin_interop_runtime is not None:
+                await self._plugin_interop_runtime.synchronize_skills_async()
             with self._registry_lock:
                 self._active_runs += 1
                 handlers = self._enabled_handlers()
@@ -393,7 +396,9 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         t0 = time.perf_counter()
         timeout = HANDLER_TIMEOUT if handler.timeout is None else handler.timeout
         try:
-            return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
+            scope = self._plugin_interop.execution(handler.owner_plugin, "handlers", handler.name) if handler.owner_plugin else nullcontext()
+            with scope:
+                return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
         except HandlerAbortError:
             raise
         except Exception as e:  # 含 asyncio.TimeoutError
@@ -556,13 +561,6 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         """停用插件 (压制名下全部能力, 不改独立状态; 工具/处理器由执行路径合成压制)"""
         return await async_plugins.disable_plugin(self, name)
 
-    async def _activate_plugin_skill(self, name: str) -> bool:
-        """插件技能独立启用钩子 (异步版)"""
-        return await async_plugins._activate_plugin_skill(self, name)
-
-    async def _deactivate_plugin_skill(self, name: str) -> bool:
-        """插件技能独立停用钩子 (异步版)"""
-        return await async_plugins._deactivate_plugin_skill(self, name)
 
     # ---------- 模型与流式 ----------
 

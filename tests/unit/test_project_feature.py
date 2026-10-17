@@ -9,6 +9,9 @@
 """
 from __future__ import annotations
 
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
+
 from collections.abc import AsyncIterator
 import asyncio
 from pathlib import Path
@@ -213,17 +216,17 @@ def test_service_create_conversation_with_project(tmp_path: Path, monkeypatch: A
     conv = svc.get_conversation(cid)
     assert conv is not None and conv.project_id == pid
     session = conv.session
-    assert getattr(session, "coding_workspace_root") == str(ws.resolve())
+    assert str(environment_snapshot(session).workspace_root) == str(ws.resolve())
     expected_sandbox = svc._storage.session_sandbox("chat", cid)
-    assert getattr(session, "coding_sandbox_root") == str(expected_sandbox)
+    assert str(environment_snapshot(session).sandbox_root) == str(expected_sandbox)
     assert not expected_sandbox.is_relative_to(ws.resolve())
 
     plain_conv = svc.get_conversation(plain)
     # 无项目会话直接使用自己的私有沙箱作为工作区
     assert plain_conv is not None
     plain_sandbox = svc._storage.session_sandbox("chat", plain)
-    assert getattr(plain_conv.session, "coding_workspace_root") == str(plain_sandbox)
-    assert getattr(plain_conv.session, "coding_sandbox_root") == str(plain_sandbox)
+    assert str(environment_snapshot(plain_conv.session).workspace_root) == str(plain_sandbox)
+    assert str(environment_snapshot(plain_conv.session).sandbox_root) == str(plain_sandbox)
 
     meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
     # meta 持久化项目归属
@@ -256,17 +259,17 @@ def test_service_set_conversation_project_rebind(tmp_path: Path, monkeypatch: An
     # 绑定 A
     conv = svc.get_conversation(cid)
     assert conv is not None and conv.project_id == pid_a
-    assert getattr(conv.session, "coding_workspace_root") == str(ws_a.resolve())
+    assert str(environment_snapshot(conv.session).workspace_root) == str(ws_a.resolve())
 
     assert svc.set_conversation_project(cid, pid_b)["ok"] is True
     # 换绑 B
-    assert getattr(conv.session, "coding_workspace_root") == str(ws_b.resolve())
+    assert str(environment_snapshot(conv.session).workspace_root) == str(ws_b.resolve())
 
     assert svc.set_conversation_project(cid, None)["ok"] is True
     # 移出项目后使用会话私有沙箱作为工作区
     assert conv.project_id is None
     private_sandbox = svc._storage.session_sandbox("chat", cid)
-    assert getattr(conv.session, "coding_workspace_root") == str(private_sandbox)
+    assert str(environment_snapshot(conv.session).workspace_root) == str(private_sandbox)
 
     meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
     # 持久化同步
@@ -286,12 +289,12 @@ def test_service_delete_project_unbinds_active(tmp_path: Path, monkeypatch: Any)
     cid = asyncio.run(svc.create_conversation(model="default", project_id=pid))
 
     conv = svc.get_conversation(cid)
-    assert conv is not None and hasattr(conv.session, "coding_workspace_root")
+    assert conv is not None and environment_snapshot(conv.session).workspace_root is not None
 
     assert svc.delete_project(pid)["ok"] is True
     assert conv.project_id is None
     private_sandbox = svc._storage.session_sandbox("chat", cid)
-    assert getattr(conv.session, "coding_workspace_root") == str(private_sandbox)
+    assert str(environment_snapshot(conv.session).workspace_root) == str(private_sandbox)
     # 会话数据保留
     assert get_conversation_meta(cid, db_path=str(svc._display_db_path)) is not None
 
@@ -309,7 +312,7 @@ def test_service_resume_conversation_rebinds_project(tmp_path: Path, monkeypatch
 
     resumed = asyncio.run(svc._resume_conversation(cid))
     assert resumed is not None and resumed.project_id == pid
-    assert getattr(resumed.session, "coding_workspace_root") == str(ws.resolve())
+    assert str(environment_snapshot(resumed.session).workspace_root) == str(ws.resolve())
 
 
 def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
@@ -442,7 +445,7 @@ def test_coding_tools_per_session_workspace(tmp_path: Path, monkeypatch: Any):
     def _session(sid: str, ws: Path | None) -> SimpleSession:
         s = SimpleSession(sid, cast(LLM, _StubLLM()), db_path=str(tmp_path / f"{sid}.db"), enable_checkpoint=False)
         if ws is not None:
-            setattr(s, "coding_workspace_root", str(ws))
+            bind_environment(s, replace(environment_snapshot(s), workspace_root=Path(str(ws))))
             # 鸭子属性: 与 ChatService._apply_project 同款注入方式
         return s
 

@@ -36,4 +36,7 @@ class ReadDocumentTool(_DocumentCore, Tool):
         返回:
         - 文本或可持久化的媒体结果, 读取失败时返回错误文本
         """
-        return self._read_document(path, max_length, mode, start_page, page_count)
+        environment = self._environment()
+        result = self._read_document(path, max_length, mode, start_page, page_count, environment=environment)
+        self._verify_environment(environment)
+        return result

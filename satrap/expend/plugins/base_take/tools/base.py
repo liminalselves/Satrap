@@ -5,6 +5,9 @@ base_take 文档和本地图片读取核心
 """
 from __future__ import annotations
 from pathlib import Path
+from satrap.edictum import PluginHost, AsyncSimpleSession, SimpleSession
+from satrap.core.plugin_interop.environment import EnvironmentSnapshot, environment_snapshot
+from satrap.core.plugin_interop.contracts import PluginInteractionError
 from typing import Any
 import traceback
 import base64
@@ -22,6 +25,29 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".ti
 
 class _DocumentCore(_ToolBase):
     recovery_policy = "retry"
+    _session: SimpleSession | AsyncSimpleSession | None = None
+    _plugin_host: PluginHost | None = None
+
+    def _environment(self) -> EnvironmentSnapshot:
+        """
+        获取当前操作的宿主环境
+
+        返回:
+        - 已核验安装代次的快照, 独立工具读取统一会话绑定
+        """
+        return self._plugin_host.environment_snapshot() if self._plugin_host is not None else environment_snapshot(self._session)
+
+    def _verify_environment(self, expected: EnvironmentSnapshot) -> None:
+        """
+        在文件读取前后拒绝项目或目录改绑
+
+        参数:
+        - expected: 本次操作开始时冻结的环境
+        """
+        if self._environment() != expected:
+            logger.warning("[base_take] 宿主环境已改变, 拒绝返回旧操作的文件内容")
+            raise PluginInteractionError("capability_stale", "文件读取期间宿主环境已经变化")
+
 
     def __init__(self, workspace_root: Path) -> None:
         """
@@ -32,9 +58,9 @@ class _DocumentCore(_ToolBase):
         """
         super().__init__()
         self._base_root = workspace_root
-        """安装期基线工作区根 (cfg/全局); 项目会话经会话鸭子属性在调用时覆盖"""
+        """独立构造时的基线目录; 宿主插件操作使用当前环境快照覆盖"""
 
-    def _read_document(self, path: str, max_length: int = 131072, mode: str = "auto", start_page: int = 1, page_count: int = 5) -> str | dict[str, Any]:
+    def _read_document(self, path: str, max_length: int = 131072, mode: str = "auto", start_page: int = 1, page_count: int = 5, *, environment: EnvironmentSnapshot | None = None) -> str | dict[str, Any]:
         """
         按会话模型能力读取文档文本, 本地图片和 PDF 页面
 
@@ -44,13 +70,16 @@ class _DocumentCore(_ToolBase):
         - mode: auto 随模型能力选择, text 只读文字, visual 返回图片或页面图像
         - start_page: PDF 起始页码, 默认 1
         - page_count: PDF 本次读取页数, 默认 5, 最多 5
+        - environment: 执行入口冻结的环境, 默认在当前同步操作开始时读取
 
         返回:
         - 文本或工具媒体结果, 路径和读取错误返回错误文本
         """
+        environment = environment if environment is not None else self._environment()
+        self._verify_environment(environment)
         try:
             abs_path = _resolve_doc_path(
-                path, _doc_workspace_root(self), _doc_upload_root(self)
+                path, _doc_workspace_root(self, environment), _doc_upload_root(self, environment)
             )
         except ValueError as e:
             return f"错误: {e}"

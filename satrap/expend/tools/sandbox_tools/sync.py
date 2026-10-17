@@ -10,10 +10,11 @@ from satrap.core.utils.sandbox.models import SandboxResult
 from satrap.core.utils.TCBuilder import Tool
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.log import logger
-from .utils import prepare_operation, sandbox_description
+from .utils import prepare_operation, sandbox_description, SandboxEnvironmentMixin
+from satrap.core.plugin_interop import PluginInteractionError
 
 
-class CodeSandboxTool(Tool):
+class CodeSandboxTool(SandboxEnvironmentMixin, Tool):
     """代码沙箱工具, 封装对 CodeSandbox 的各种操作"""
 
     def __init__(
@@ -61,7 +62,10 @@ class CodeSandboxTool(Tool):
             code, error = prepare_operation(operation, code, path)
             if error is not None:
                 return error
-            return self.sandbox.execute(operation, code, path)
+            sandbox, verify = self._operation_sandbox()
+            return sandbox.execute(operation, code, path, verify=verify)
+        except PluginInteractionError:
+            raise
         except Exception as e:
             logger.error(f"[CodeSandboxTool] 操作 {operation} 失败: {e}")
             return {"error": str(e)}

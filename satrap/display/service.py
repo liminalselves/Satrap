@@ -13,6 +13,7 @@
 - DisplayRecorder 内部 RLock + 独立连接, 多会话并发安全
 """
 from __future__ import annotations
+from satrap.core.plugin_interop.environment import EnvironmentSnapshot, bind_environment
 import mimetypes, base64
 
 from satrap.edictum.plugin_compatibility import PluginEnvironment
@@ -1164,26 +1165,7 @@ class ChatService:
                 logger.error(
                     f"[聊天] 会话插件同步失败 {item['plugin']}: {item.get('error', item['status'])}"
                 )
-        self._coordinate_sandbox(session)
         return states
-
-    def _coordinate_sandbox(self, session: AsyncSimpleSession) -> None:
-        """
-        沙箱协调: coding 启用时停用 base_take 的 code_sandbox (避免模型困惑)
-
-        参数:
-        - session: 会话
-
-        两插件共享当前会话的私有 sandbox, coding 的 shell 能力更强,
-        因此 coding 在场时 base_take 的 code_sandbox 工具禁用
-        """
-        coding_on = self._plugins.is_enabled("satrap_coding")
-        base_on = self._plugins.is_enabled("base_take")
-        if coding_on and base_on:
-            if session.tools_manager.disable_tool("code_sandbox"):
-                logger.info("[聊天] coding 插件在场, 已停用 base_take 的 code_sandbox")
-        elif base_on and self._plugins.capability_enabled("base_take", "tools", "code_sandbox"):
-            session.tools_manager.enable_tool("code_sandbox")
 
     def get_conversation(self, conversation_id: str) -> _Conversation | None:
         """
@@ -2088,7 +2070,7 @@ class ChatService:
 
     def _apply_project(self, session: AsyncSimpleSession, project: dict[str, Any] | None) -> None:
         """
-        把项目工作区绑定到会话 (鸭子属性, satrap_coding/base_take 工具按会话解析)
+        通过统一宿主环境绑定项目工作区, 插件在实际操作时读取冻结快照
 
         参数:
         - session: 会话
@@ -2117,14 +2099,15 @@ class ChatService:
                 workspace_root = session_root / "sandbox"
         else:
             workspace_root = session_root / "sandbox"
-        # 鸭子属性注入, 插件在安装和调用时解析当前会话作用域
-        setattr(session, "coding_workspace_root", str(workspace_root))
-        setattr(session, "coding_session_root", str(session_root))
-        setattr(session, "coding_sandbox_root", str(session_root / "sandbox"))
-        setattr(session, "coding_upload_root", str(session_root / "uploads"))
-        setattr(session, "coding_artifacts_root", str(session_root / "artifacts"))
-        setattr(session, "coding_indexes_root", str(session_root / "indexes"))
-        setattr(session, "coding_cache_root", str(session_root / "cache"))
+        bind_environment(session, EnvironmentSnapshot(
+            workspace_root=workspace_root,
+            sandbox_root=session_root / "sandbox",
+            upload_root=session_root / "uploads",
+            session_root=session_root,
+            artifacts_root=session_root / "artifacts",
+            scope=f"{self._platform_id}:{session.session_id}",
+            project=project_id,
+        ))   # 项目改绑统一递增环境版本, 不改变会话私有目录
         setattr(session, "memory_db", str(self._storage.platform_db(self._platform_id)))
         setattr(session, "memory_scope", f"session:{session.session_id}")
 
@@ -2515,7 +2498,6 @@ class ChatService:
                         )
                     finally:
                         conv.session.plugin_model_manager = original_models
-                    self._coordinate_sandbox(conv.session)
                 result['timings_ms'] = {**result.get('timings_ms', {}), **timings.to_payload(),
                                         'lock_wait_ms': round(lock_wait_ms, 3), 'config_read_ms': round(config_read_ms, 3)}
                 logger.debug(f"[聊天] 插件协调完成, 会话={conv.conversation_id}, timings_ms={result['timings_ms']}")
@@ -2760,7 +2742,6 @@ class ChatService:
             reload_models()
         desired = resolve_runtime_specs(conv.session, self._plugins.resolve_specs(PluginConfigManager()), self._plugins.catalog)
         result = await reconcile_plugin_states_async(conv.plugin_states, desired, conv.session.install_plugin, conv.session.uninstall_plugin)
-        self._coordinate_sandbox(conv.session)
         return result
 
     async def save_plugin_config(self, name: str, config: dict[str, Any]) -> dict[str, Any]:

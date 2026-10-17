@@ -1,5 +1,8 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
+
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
 from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
 
 import inspect
@@ -181,15 +184,15 @@ async def test_factory_order_and_host_path_priority(
     if isinstance(session, AsyncSimpleSession):
         await session.initialize()
     if host_paths:
-        setattr(session, "coding_workspace_root", str(tmp_path / "host-workspace"))
-        setattr(session, "coding_sandbox_root", str(tmp_path / "host-sandbox"))
-        setattr(session, "coding_cache_root", str(tmp_path / "host-cache"))
+        bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(str(tmp_path / "host-workspace"))))
+        bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(str(tmp_path / "host-sandbox"))))
+        bind_environment(session, replace(environment_snapshot(session), session_root=tmp_path / "host-session"))
     config = {"workspace_root": str(tmp_path / "configured-workspace"), "sandbox_root": str(tmp_path / "configured-sandbox"), "data_root": str(tmp_path / "configured-data")}
     builders = {"tools": coding.get_tools, "commands": build_commands, "handlers": build_handlers}
     try:
         results = {name: builders[name](session, config) for name in order}
         state = get_plugin_state(session)
-        expected_data = tmp_path / ("host-cache/satrap_coding" if host_paths else "configured-data")
+        expected_data = tmp_path / ("host-session/cache/satrap_coding" if host_paths else "configured-data")
         expected_workspace = tmp_path / ("host-workspace" if host_paths else "configured-workspace")
         assert Path(state["_data_root"]) == expected_data.resolve()
         tool = next(tool for tool in results["tools"] if tool.tool_name == "shell")
@@ -197,7 +200,7 @@ async def test_factory_order_and_host_path_priority(
         assert tool.engine is state["engine"]
         if host_paths:
             expected_workspace.mkdir()
-            setattr(session, "coding_sandbox_root", str(expected_workspace))
+            bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(str(expected_workspace))))
             write_tool = next(tool for tool in results["tools"] if tool.tool_name == "write_file")
             assert "已写入" in await _execute(write_tool, "host.txt", "host")
             assert (expected_workspace / "host.txt").read_text(encoding="utf-8") == "host"
@@ -279,7 +282,7 @@ async def test_file_approval_rechecks_execution_context(
 
     def approve(request: ApprovalRequest) -> ApprovalResult:
         if change == "workspace":
-            setattr(session, "coding_workspace_root", str(tmp_path / "other"))
+            bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(str(tmp_path / "other"))))
         else:
             engine.set_plan_mode(True)
         return ApprovalResult.for_request(request, "allow", "用户批准", "user")
@@ -333,8 +336,8 @@ async def test_host_sandbox_inside_system_data_remains_usable_and_scoped(
     sandbox = system_root / "data/platforms/p/sessions/current/sandbox"
     sandbox.mkdir(parents=True)
     monkeypatch.setattr(coding, "_SYSTEM_PROTECTED_ROOT", system_root.resolve())
-    setattr(session, "coding_workspace_root", str(sandbox))
-    setattr(session, "coding_sandbox_root", str(sandbox))
+    bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(str(sandbox))))
+    bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(str(sandbox))))
     tools = {tool.tool_name: tool for tool in coding.get_tools(session)}
     try:
         assert "已写入" in await _execute(tools["write_file"], "normal.txt", "original")
@@ -347,11 +350,11 @@ async def test_host_sandbox_inside_system_data_remains_usable_and_scoped(
             assert "拒绝" in await _execute(tools["write_file"], protected, "blocked")
         other = system_root / "data/platforms/p/sessions/other/sandbox/private.txt"
         assert "越出工作区" in await _execute(tools["write_file"], str(other), "blocked")
-        setattr(session, "coding_workspace_root", str(system_root))
+        bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(str(system_root))))
         assert "拒绝" in await _execute(tools["write_file"], "credentials.txt", "blocked")
         assert not (system_root / "credentials.txt").exists()
-        setattr(session, "coding_workspace_root", str(sandbox))
-        delattr(session, "coding_sandbox_root")
+        bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(str(sandbox))))
+        bind_environment(session, replace(environment_snapshot(session), sandbox_root=None))
         assert "拒绝" in await _execute(tools["read_file"], "normal.txt")
     finally:
         reset_plugin_state(session)
@@ -388,7 +391,7 @@ async def test_effective_sandbox_protection_matches_file_approval(
         if isinstance(session, AsyncSimpleSession):
             await session.initialize()
     if source == "host":
-        setattr(session, "coding_sandbox_root", str(sandbox))
+        bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(str(sandbox))))
     config = {"workspace_root": str(workspace), "protected_dirs": "private"}
     if source != "default":
         config["sandbox_root"] = str(configured)
@@ -415,7 +418,7 @@ async def test_effective_sandbox_protection_matches_file_approval(
         get_plugin_state(session)["engine"].set_plan_mode(True)
         assert "计划模式" in await _execute(tools["write_file"], relative, "blocked")
         assert target.read_text(encoding="utf-8") == "updated"
-        setattr(session, "coding_workspace_root", str(project))
+        bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(str(project))))
         for sibling in (system / "credentials.txt", system / "data/sessions/other/sandbox/secret.txt", configured / "unused.txt" if source == "host" else system / "unused/secret.txt"):
             sibling.parent.mkdir(parents=True, exist_ok=True)
             sibling.write_text("outside-marker", encoding="utf-8")
@@ -429,7 +432,7 @@ async def test_effective_sandbox_protection_matches_file_approval(
             blocked_sandbox.mkdir(parents=True)
             secret = blocked_sandbox / "secret.txt"
             secret.write_text("protected-ancestor", encoding="utf-8")
-            setattr(session, "coding_sandbox_root", str(blocked_sandbox))
+            bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(str(blocked_sandbox))))
             assert "拒绝" in await _execute(tools["read_file"], str(secret.relative_to(project)))
     finally:
         reset_plugin_state(session)

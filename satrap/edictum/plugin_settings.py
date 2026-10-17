@@ -3,6 +3,7 @@ from __future__ import annotations
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 from dataclasses import replace
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +26,9 @@ class PluginInstallConfig(dict[str, Any]):
     """安装参数携带首次技能状态, 不混入插件业务配置字段"""
 
     def __init__(self, values: dict[str, Any], *, initial_skills: dict[str, bool] | None = None,
-                 model_snapshot: ModelConfigReader | None = None) -> None:
+                 model_snapshot: ModelConfigReader | None = None,
+                 initial_capabilities: dict[str, dict[str, bool]] | None = None,
+                 metadata_snapshot: dict[str, Any] | None = None) -> None:
         """
         构建兼容字典的安装参数
 
@@ -33,10 +36,14 @@ class PluginInstallConfig(dict[str, Any]):
         - values: 插件业务配置
         - initial_skills: 首次安装的技能独立开关, 默认 None 使用启用状态
         - model_snapshot: 可选旧资源来源, 仅用于生命周期回滚且不作为业务参数传给插件
+        - initial_capabilities: 首次发布前的六类能力开关, 默认沿用原能力初始状态
+        - metadata_snapshot: 回滚使用的旧元数据, 默认读取当前 meta.yaml
         """
         super().__init__(values)
         self.initial_skills = dict(initial_skills or {})
         self.model_snapshot = model_snapshot
+        self.initial_capabilities = {kind: dict(states) for kind, states in (initial_capabilities or {}).items()}
+        self.metadata_snapshot = deepcopy(metadata_snapshot) if metadata_snapshot is not None else None
 
 
 class EffectivePluginConfig(PluginInstallConfig):

@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
+from .paths import _tool_environment
 from .file_core import (
     _ReadFileToolCore,
     _ListDirToolCore,
@@ -31,7 +33,8 @@ class AsyncReadFileTool(_ReadFileToolCore, AsyncTool):
         返回:
         - 操作结果或输入错误说明, 文件操作还可能返回访问失败说明
         """
-        return await asyncio.to_thread(self._execute, path, offset, limit)
+        environment = _tool_environment(self)
+        return await asyncio.to_thread(self._read_in_environment, partial(self._execute, path, offset, limit), environment)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """
@@ -54,7 +57,8 @@ class AsyncListDirTool(_ListDirToolCore, AsyncTool):
         返回:
         - 操作结果或输入错误说明, 文件操作还可能返回访问失败说明
         """
-        return await asyncio.to_thread(self._execute, path)
+        environment = _tool_environment(self)
+        return await asyncio.to_thread(self._read_in_environment, partial(self._execute, path), environment)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """
@@ -77,7 +81,8 @@ class AsyncGlobFilesTool(_GlobFilesToolCore, AsyncTool):
         返回:
         - 操作结果或输入错误说明, 文件操作还可能返回访问失败说明
         """
-        return await asyncio.to_thread(self._execute, pattern)
+        environment = _tool_environment(self)
+        return await asyncio.to_thread(self._read_in_environment, partial(self._execute, pattern), environment)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """
@@ -102,7 +107,8 @@ class AsyncGrepFilesTool(_GrepFilesToolCore, AsyncTool):
         返回:
         - 操作结果或输入错误说明, 文件操作还可能返回访问失败说明
         """
-        return await asyncio.to_thread(self._execute, pattern, path, glob)
+        environment = _tool_environment(self)
+        return await asyncio.to_thread(self._read_in_environment, partial(self._execute, pattern, path, glob), environment)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """

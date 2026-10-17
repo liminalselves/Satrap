@@ -131,6 +131,13 @@ def _tool_execution_error(
     logger.error(
         f"[执行{mode}] 工具 {tool_name} 执行出错: {type(error).__name__}: {error}, 参数: {args_summary}"
     )
+    from satrap.core.plugin_interop.contracts import PluginInteractionError
+
+    if isinstance(error, PluginInteractionError):
+        result = tool_error(tool_name, "插件能力调用失败", error.code)
+        result["dependency"] = {"plugin": error.plugin, "capability": error.capability,
+                                "reason": error.reason_code, "replaced_by": list(error.replaced_by)}
+        return result
     return tool_error(
         tool_name,
         f"工具执行失败: {type(error).__name__}",

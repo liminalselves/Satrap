@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from satrap.core.utils.file_snapshot import file_fingerprint
+from satrap.core.plugin_interop.contracts import parse_interop
 from dataclasses import dataclass, field, replace
 from copy import deepcopy
 from pathlib import Path
@@ -43,6 +44,7 @@ class PluginCatalogEntry:
     applicability: dict[str, Any] = field(default_factory=dict[str, Any])
     permissions: PluginPermissions = field(default_factory=lambda: EMPTY_PERMISSIONS)
     config_version: int = 0
+    interop: dict[str, object] = field(default_factory=dict)
 
     def check_environment(self, environment: PluginEnvironment):
         """根据指定环境计算适用性"""
@@ -53,6 +55,7 @@ class PluginCatalogEntry:
         return {
             **self.permissions.to_payload(),
             "name": self.name,
+            "interop": deepcopy(self.interop),
             "config_version": self.config_version,
             "version": self.version,
             "compatibility": dict(self.compatibility),
@@ -212,6 +215,10 @@ class PluginCatalog:
             raise ValueError(f"插件目录缺少合法 name: {plugin_dir}")
         compatibility, applicability = parse_compatibility(meta)
         descriptions = parse_capability_descriptions(meta)
+        interop = parse_interop(meta)
+        for kind, names in interop.exports.items():
+            for capability_name in names:
+                descriptions.setdefault(kind, {}).setdefault(capability_name, "")
         config_schema = parse_config_schema(meta)
         permissions = parse_plugin_permissions(meta, config_schema)
         config_version = meta.get("config_version", 0)
@@ -228,6 +235,7 @@ class PluginCatalog:
             description=str(meta.get("description") or ""),
             config_schema=config_schema,
             permissions=permissions,
+            interop=interop.to_payload(),
             capabilities={
                 kind: dict(descriptions.get(kind, {}))
                 for kind in CAPABILITY_KINDS

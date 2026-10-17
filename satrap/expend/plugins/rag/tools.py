@@ -12,7 +12,8 @@ from satrap.core.utils.documents import extract_document
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.rag import RagService
-from satrap.edictum import AsyncSimpleSession
+from satrap.edictum import AsyncSimpleSession, PluginHost, PluginInteractionError
+from satrap.core.plugin_interop.environment import EnvironmentSnapshot, environment_snapshot
 from satrap.core.plugin_authorization import bind_plugin_factory_tools
 from satrap.core.log import logger
 
@@ -31,16 +32,34 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str]]] = {
 }
 
 
-def read_session_document(session: Session | AsyncSession, path: str) -> tuple[str, str]:
-    """校验解析后的路径位于明确允许的工作区或会话文件目录"""
-    roots = [Path(str(value)).resolve() for key in ("coding_workspace_root", "coding_upload_root", "coding_sandbox_root", "coding_artifacts_root") if (value := getattr(session, key, None))]
+def read_session_document(session: Session | AsyncSession, path: str,
+                          snapshot: EnvironmentSnapshot | None = None) -> tuple[str, str]:
+    """
+    在固定宿主环境内读取工作区或会话文档
+
+    参数:
+    - session: 当前会话
+    - path: 文档路径, 相对路径基于首个可用目录
+    - snapshot: 调度前冻结的环境, 默认在当前调用时取得
+
+    返回:
+    - 提取文本及文件名; 越界或环境改变时拒绝读取
+    """
+    snapshot = snapshot or environment_snapshot(session)
+    if environment_snapshot(session) != snapshot:
+        raise PluginInteractionError("capability_stale", "文档读取环境已经改变")
+    roots = [root for root in (snapshot.workspace_root, snapshot.upload_root,
+                              snapshot.sandbox_root, snapshot.artifacts_root) if root is not None]
     if not roots:
         raise ValueError("会话没有配置可读取的文件目录")
     file_path = Path(path)
     file_path = (file_path if file_path.is_absolute() else roots[0] / file_path).resolve()
     if not any(file_path.is_relative_to(root) for root in roots):
         raise ValueError("文档不在允许的工作区或会话文件目录中")
-    return extract_document(file_path, max_length=1000000), file_path.name
+    text = extract_document(file_path, max_length=1000000)
+    if environment_snapshot(session) != snapshot:
+        raise PluginInteractionError("capability_stale", "文档读取环境已经改变")
+    return text, file_path.name
 
 
 class _RagToolMixin:
@@ -50,14 +69,36 @@ class _RagToolMixin:
     service: RagService
     session: Session | AsyncSession
     config: dict[str, Any]
+    _plugin_host: PluginHost | None = None
+
+    def _environment(self) -> EnvironmentSnapshot:
+        """
+        取得当前安装代次可用的宿主环境
+
+        返回:
+        - 冻结环境, 独立构造工具时沿用会话统一绑定
+        """
+        return (self._plugin_host.environment_snapshot() if self._plugin_host is not None
+                else environment_snapshot(self.session))
 
     def _complete_definition(self, definition: dict[str, Any]) -> dict[str, Any]:
         if self.tool_name is None:
             return definition
         return strict_tool_definition(definition, _DEFINITIONS[self.tool_name][2])
 
-    def _execute(self, **kwargs: Any) -> dict[str, Any]:
+    def _execute(self, *, environment: EnvironmentSnapshot | None = None, **kwargs: Any) -> dict[str, Any]:
+        """
+        按原知识库权限执行操作, 路径导入复核调度前后的宿主环境
+
+        参数:
+        - environment: 可选调度前快照, 同步入口默认在本次调用冻结
+        - kwargs: 既有 RAG 工具协议的业务参数
+
+        返回:
+        - 检索, 列表或导入结果; 领域错误使用原工具失败格式, 环境失效交给宿主包装
+        """
         try:
+            environment = environment or self._environment()
             allowed = self.service.allowed_ids(self.config)
             kb_id = kwargs.get("kb_id", "")
             if kb_id and kb_id not in allowed:
@@ -71,10 +112,14 @@ class _RagToolMixin:
                 raise ValueError("text 和 path 必须且只能提供一个")
             source = kwargs.get("source", "")
             if path:
-                text, filename = read_session_document(self.session, path)
+                text, filename = read_session_document(self.session, path, environment)
                 source = source or filename
             target = self.service.write_target(self.config, kb_id)
+            if self._environment() != environment:
+                raise PluginInteractionError("capability_stale", "文档导入环境已经改变")
             return self.service.ingest(target, text, source)
+        except PluginInteractionError:
+            raise
         except PermissionError as error:
             logger.warning(f"[RAG] 工具权限拒绝 tool={self.tool_name}: {error}")
             return tool_error(str(self.tool_name), str(error), "permission_denied")
@@ -99,11 +144,11 @@ class AsyncRagTool(_RagToolMixin, AsyncTool):
         return self._complete_definition(super().get_tool_defined())
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
-        return await RAG_WORKERS.run(self._execute, **kwargs)
+        return await RAG_WORKERS.run(self._execute, environment=self._environment(), **kwargs)
 
 
 def get_tools(session: Session | AsyncSession, config: dict[str, Any] | None = None,
-              resources: PluginResources | None = None) -> list[RagTool | AsyncRagTool]:
+              resources: PluginResources | None = None, *, plugin_host: PluginHost | None = None) -> list[RagTool | AsyncRagTool]:
     """
     依赖由会话入口注入, 不从插件参数读取任意数据库路径
 
@@ -111,6 +156,7 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any] | None = N
     - session: 会话
     - config: 插件配置
     - resources: 插件资源对象, 本插件从会话读取存储与模型服务
+    - plugin_host: 可选的受控宿主环境入口
 
     返回:
     - 与会话执行方式一致的知识库工具
@@ -128,6 +174,7 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any] | None = N
         tool = base(name, description, params)
         tool.recovery_policy = "retry" if name in {"rag_search", "rag_list"} else "manual"
         tool.service, tool.session, tool.config = service, session, config
+        tool._plugin_host = plugin_host
         result.append(tool)
     bind_plugin_factory_tools(result, __file__)
     return result

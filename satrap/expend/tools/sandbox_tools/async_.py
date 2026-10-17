@@ -10,10 +10,11 @@ from satrap.core.utils.sandbox.models import SandboxResult
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.log import logger
-from .utils import prepare_operation, sandbox_description
+from .utils import prepare_operation, sandbox_description, SandboxEnvironmentMixin
+from satrap.core.plugin_interop import PluginInteractionError
 
 
-class AsyncCodeSandboxTool(AsyncTool):
+class AsyncCodeSandboxTool(SandboxEnvironmentMixin, AsyncTool):
     """异步代码沙箱工具, 封装对 CodeSandbox 的各种异步操作"""
 
     def __init__(
@@ -61,7 +62,10 @@ class AsyncCodeSandboxTool(AsyncTool):
             code, error = prepare_operation(operation, code, path)
             if error is not None:
                 return error
-            return await self.sandbox.execute_async(operation, code, path)
+            sandbox, verify = self._operation_sandbox()
+            return await sandbox.execute_async(operation, code, path, verify=verify)
+        except PluginInteractionError:
+            raise
         except Exception as e:
             logger.error(f"[AsyncCodeSandboxTool] 操作 {operation} 失败: {e}")
             return {"error": str(e)}

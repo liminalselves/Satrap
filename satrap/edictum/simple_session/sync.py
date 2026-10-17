@@ -6,6 +6,7 @@
 """
 
 from __future__ import annotations
+from contextlib import nullcontext
 from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import freeze_request_blocks
 import threading
@@ -247,6 +248,8 @@ class SimpleSession(Session, _SessionFeatures):
         返回:
         - str | CommandAction: 命令结果或最终模型输出
         """
+        if self._plugin_interop_runtime is not None:
+            self._plugin_interop_runtime.synchronize_skills()
         self._wf.reset_context_stats()
         command_result, is_command = self.cmd_process(user_input)
         if is_command:
@@ -379,7 +382,9 @@ class SimpleSession(Session, _SessionFeatures):
         """
         t0 = time.perf_counter()
         try:
-            return fn(*args)
+            scope = self._plugin_interop.execution(handler.owner_plugin, "handlers", handler.name) if handler.owner_plugin else nullcontext()
+            with scope:
+                return fn(*args)
         except HandlerAbortError:
             raise
         except Exception as e:
@@ -513,13 +518,6 @@ class SimpleSession(Session, _SessionFeatures):
         """停用插件 (压制名下全部能力, 不改独立状态; 工具/处理器由执行路径合成压制)"""
         return sync_plugins.disable_plugin(self, name)
 
-    def _activate_plugin_skill(self, name: str) -> bool:
-        """插件技能独立启用钩子 (同步版)"""
-        return sync_plugins._activate_plugin_skill(self, name)
-
-    def _deactivate_plugin_skill(self, name: str) -> bool:
-        """插件技能独立停用钩子 (同步版)"""
-        return sync_plugins._deactivate_plugin_skill(self, name)
 
     # ---------- 模型与流式 ----------
 

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from satrap.edictum.plugin_permissions import PluginPermissions
     from satrap.core.config.administrator_groups import AdministratorService
     from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+    from satrap.core.plugin_interop.service import Service, AsyncService
     from satrap.edictum import AsyncSimpleSession, SimpleSession
 
     SessionType = SimpleSession | AsyncSimpleSession
@@ -104,7 +105,7 @@ def evaluate_plugin_permissions(
     参数:
     - plugin_name: 已固定实际插件名称
     - spec: 同一插件的不可变声明
-    - kind: tools 或 commands
+    - kind: tools, services 或 commands
     - name: 当前入口名称
     - config: 宿主解析的实际安装配置
     - origin: 宿主可信来源
@@ -115,7 +116,8 @@ def evaluate_plugin_permissions(
     - 授权结果及相关指纹; 普通入口返回 not_applicable
     """
     identity = (plugin_name, kind, name)
-    if kind not in ("tools", "commands") or spec.version and name not in (spec.declared_tools if kind == "tools" else spec.declared_commands):
+    declared = spec.declared_tools if kind == "tools" else spec.declared_services if kind == "services" else spec.declared_commands
+    if kind not in ("tools", "services", "commands") or spec.version and name not in declared:
         return AuthorizationDecision("denied", *identity, reason_code="unknown_entry")
     required = spec.required(kind, name, subcommand)
     if not required:
@@ -269,6 +271,26 @@ def bind_plugin_tool(tool: _ToolBase, plugin_name: str, permissions: PluginPermi
                                weakref.ref(tool), weakref.ref(session) if session is not None else None))
 
 
+def bind_plugin_service(
+    service: Service | AsyncService, plugin_name: str, permissions: PluginPermissions,
+    config: Mapping[str, Any], session: SessionType,
+) -> None:
+    """
+    为插件专用服务绑定原有管理权限规则
+
+    参数:
+    - service: 实际创建的服务实例
+    - plugin_name: 固定所属插件
+    - permissions: 已解析的同一权限声明
+    - config: 实际插件配置
+    - session: 正式安装的宿主会话
+    """
+    setattr(service, "_plugin_entry_binding", PluginEntryBinding(
+        plugin_name, "services", service.service_name, permissions, config,
+        weakref.ref(service), weakref.ref(session),
+    ))
+
+
 _FACTORY_DECLARATIONS: dict[str, tuple[tuple[int, int], str, PluginPermissions]] = {}
 """工厂声明按路径缓存, meta.yaml 以修改时间与大小标识内容"""
 
@@ -387,10 +409,10 @@ def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None, 
     identity = (binding.plugin_name, binding.kind, binding.name)
     try:
         from satrap.core.platform import current_adapter_manager
-        if binding.kind not in ("tools", "commands"):
+        if binding.kind not in ("tools", "services", "commands"):
             return AuthorizationDecision("denied", *identity, reason_code="unknown_entry")
         entry = binding.entry_ref()
-        if entry is None or binding.kind == "tools" and not cast(BoundPluginTool, entry).is_enabled():
+        if entry is None or binding.kind in ("tools", "services") and not cast(BoundPluginTool, entry).is_enabled():
             return AuthorizationDecision("denied", *identity, reason_code="entry_disabled")
         if binding.session_ref is not None:
             session = binding.session_ref()
@@ -400,6 +422,11 @@ def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None, 
                 reason = plugin_tool_live(session, binding.plugin_name, binding.name, cast(BoundPluginTool, entry))
                 if reason is not None:
                     return AuthorizationDecision("denied", *identity, reason_code=reason)
+            elif binding.kind == "services":
+                plugin = next((item for item in session.list_plugins() if item.name == binding.plugin_name), None)
+                if (plugin is None or not plugin.enabled or not plugin.services.get(binding.name, False)
+                        or plugin._services.get(binding.name) is not entry):
+                    return AuthorizationDecision("denied", *identity, reason_code="stale_authorization")
             else:
                 plugin = next((item for item in session.list_plugins() if item.name == binding.plugin_name), None)
                 if plugin is None or not plugin.enabled or not plugin.commands.get(binding.name, False):
@@ -419,6 +446,8 @@ def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None, 
             required = tuple(dict.fromkeys((*spec.required(binding.kind, binding.name, subcommand), *additional_permissions)))
             if binding.kind == "tools":
                 spec = replace(spec, tools={**spec.tools, binding.name: required})
+            elif binding.kind == "services":
+                spec = replace(spec, services={**spec.services, binding.name: required})
             else:
                 spec = replace(spec, commands={**spec.commands, binding.name: CommandPermissions(required, {})})
         return evaluate_plugin_permissions(binding.plugin_name, spec, binding.kind, binding.name,

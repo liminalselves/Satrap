@@ -6,7 +6,56 @@
 """
 
 import re
+from collections.abc import Callable
+from pathlib import Path
+from satrap.core.plugin_interop import PluginHost, PluginInteractionError
+from satrap.core.plugin_interop.environment import environment_snapshot
+from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.utils.sandbox.models import SandboxResult
+
+
+class SandboxEnvironmentMixin:
+    """为每次 worker 操作固定当前宿主目录, 不复用过期安装环境"""
+
+    sandbox: CodeSandbox
+    _plugin_host: PluginHost | None = None
+    _session: object | None = None
+
+    def _bind(self, session: object) -> None:
+        """
+        保存会话以读取统一环境绑定
+
+        参数:
+        - session: 当前宿主会话
+        """
+        self._session = session
+
+    def _operation_sandbox(self) -> tuple[CodeSandbox, Callable[[], None]]:
+        """
+        冻结本次目录和执行检查, 保留既定解释器与白名单
+
+        返回:
+        - 本次 worker 配置及调度前后可重复调用的检查函数
+        """
+        plugin_host = self._plugin_host
+        snapshot = (plugin_host.environment_snapshot() if plugin_host is not None
+                    else environment_snapshot(self._session))
+        sandbox = self.sandbox
+        if snapshot.sandbox_root is not None and snapshot.sandbox_root != Path(sandbox.sandbox_path):
+            sandbox = CodeSandbox(str(snapshot.sandbox_root), sandbox.python_executable,
+                                  sandbox.execution_timeout, sandbox.allowed_env, ",".join(sandbox.modules))
+
+        def verify() -> None:
+            """在进程创建和等待期间检查安装代次与环境版本"""
+            current = (plugin_host.environment_snapshot() if plugin_host is not None
+                       else environment_snapshot(self._session))
+            if current != snapshot:
+                raise PluginInteractionError("capability_stale", "沙箱操作期间宿主环境已改变")
+            if plugin_host is not None:
+                plugin_host._runtime().require_execution(plugin_host)
+
+        verify()
+        return sandbox, verify
 
 
 def extract_code(response: str) -> str:

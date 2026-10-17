@@ -17,6 +17,7 @@ from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 from satrap.core.utils.paths import get_project_root
 from satrap.core.storage import storage_key
 from satrap.core.type import safe_getattr
+from satrap.core.plugin_interop.environment import environment_snapshot
 
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession
@@ -71,7 +72,8 @@ def get_plugin_state(
     返回:
     - dict[str, Any]: 当前会话的共享状态; 显式请求不同数据根时抛出 ValueError
     """
-    session_cache = safe_getattr(session, "coding_cache_root")
+    session_root = environment_snapshot(session).session_root
+    session_cache = session_root / "cache" if session_root is not None else None
     session_context = safe_getattr(session, "session_ctx")
     context_database = safe_getattr(session_context, "db_path")
     if session_cache:

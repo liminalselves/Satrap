@@ -1,8 +1,10 @@
 """会话恢复管理, 不重新执行输入和输出处理器"""
 from __future__ import annotations
+from satrap.core.plugin_interop.environment import environment_snapshot
 
 from typing import Any, cast
 from pathlib import Path
+import inspect
 import hashlib
 
 from satrap.core.framework.Base.execution.engine import run_async, run_sync
@@ -22,19 +24,32 @@ def plugin_fingerprint(path: Path, config: dict[str, Any], models: Any = None, s
 
 
 def prepare_session_recovery(session: Any) -> None:
-    """将已加载插件和能力状态纳入恢复指纹"""
+    """
+    将实际插件, 服务签名和稳定宿主目录纳入恢复指纹
+
+    参数:
+    - session: 既有会话入口, 工作流未初始化时不生成恢复资料
+    """
     wf = session._wf
     if wf is None:
         return
     plugins: list[dict[str, Any]] = [{"name": p.name, "version": p.version, "enabled": p.enabled,
                 "tools": p.tools, "skills": p.skills, "mcp": p.mcp,
-                "handlers": p.handlers, "commands": p.commands,
+                "handlers": p.handlers, "commands": p.commands, "services": p.services,
+                "interop": p.interop.to_payload(),
+                "service_signatures": {name: str(inspect.signature(service.execute)) for name, service in p._services.items()},
                 "implementation": getattr(p, "recovery_fingerprint", "")}
                for p in sorted(cast(list[Any], session.list_plugins()), key=lambda p: p.name)]
     scope = {key: getattr(session, key, None) for key in (
-        "coding_workspace_root", "coding_session_root", "coding_sandbox_root",
-        "coding_upload_root", "memory_db", "memory_scope",
+        "memory_db", "memory_scope",
     )}
+    environment = environment_snapshot(session)
+    scope["environment"] = {
+        "scope": environment.scope, "project": environment.project,
+        "workspace_root": str(environment.workspace_root), "sandbox_root": str(environment.sandbox_root),
+        "upload_root": str(environment.upload_root), "session_root": str(environment.session_root),
+        "artifacts_root": str(environment.artifacts_root),
+    }
     wf.recovery_plugin_fingerprint = fingerprint({"plugins": plugins, "scope": scope})
     wf.recovery_origin = getattr(session, "recovery_origin", {})
 

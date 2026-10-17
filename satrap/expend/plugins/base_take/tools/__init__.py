@@ -25,8 +25,9 @@ from satrap.expend.tools import (
     FetchPageTool,
     SearchTool,
 )
-from satrap.core.type import safe_getattr, safe_getattr_callable
-from satrap.edictum import AsyncSimpleSession, SimpleSession
+from satrap.core.type import safe_getattr_callable
+from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
+from satrap.core.plugin_interop.environment import environment_snapshot
 from satrap.edictum.plugin_resources import PluginResources
 from .utils import (
     SessionType,
@@ -44,7 +45,7 @@ from .async_ import (
 
 
 def get_tools(session: SessionType, config: dict[str, Any] | None = None,
-              resources: PluginResources | None = None) -> list[Any]:
+              resources: PluginResources | None = None, *, plugin_host: PluginHost | None = None) -> list[Any]:
     """
     按会话类型构建并绑定基础插件的同步或异步工具
 
@@ -52,6 +53,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
     - session: 当前会话, 宿主注入的工作区与沙箱根优先于插件配置
     - config: 默认 None, 提供搜索超时, 路径和沙箱公开模块等配置
     - resources: 默认 None, 保留插件工厂协议参数, 本工厂不直接读取
+    - plugin_host: 可选宿主访问入口, 独立工厂调用时从统一会话绑定读取
 
     返回:
     - 与会话同步或异步形态一致的工具列表, 沙箱描述使用同一生效白名单
@@ -59,8 +61,8 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
     # Step.1 合并插件配置与宿主绑定的业务目录
     cfg = config or {}
     timeout = int(cfg.get("search_timeout") or 10)
-    ws_override = safe_getattr(session, "coding_workspace_root")
-    sb_override = safe_getattr(session, "coding_sandbox_root")
+    environment = plugin_host.environment_snapshot() if plugin_host is not None else environment_snapshot(session)
+    ws_override, sb_override = environment.workspace_root, environment.sandbox_root
     # 项目会话的宿主绑定路径优先, 仅独立调用者使用插件配置或默认目录
     sandbox_root = Path(
         str(sb_override or cfg.get("sandbox_root") or DEFAULT_SANDBOX_ROOT)
@@ -91,6 +93,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
         ]
     # Step.4 绑定会话, 供文档工具在调用时解析当前可见目录
     for tool in tools:
+        setattr(tool, "_plugin_host", plugin_host)
         bind = safe_getattr_callable(tool, "_bind")
         if bind is not None:
             bind(session)

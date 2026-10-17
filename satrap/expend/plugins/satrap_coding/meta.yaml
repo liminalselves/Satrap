@@ -10,6 +10,12 @@ author: Satrap Team
 repo: https://github.com/satrap/satrap_coding
 description: "简易 Coding Agent 插件: 文件工具 / shell / 沙箱 / 子代理 / 目标与计划模式"
 
+interop:
+  replaces:
+    base_take:
+      tools:
+        code_sandbox: shell   # Shell 可用时压制基础沙箱工具, 保留用户原有开关
+
 # 配置项声明 (键 -> 类型/默认值/描述), 供校验/存储/前端渲染表单
 config_schema:
   approval_model:
@@ -23,11 +29,11 @@ config_schema:
   data_root:
     type: path
     default: ""
-    description: "权限/目标/日志目录 (宿主 coding_cache_root 优先; 留空按会话数据库目录推导, 无数据库时按 session_id 隔离)"
+    description: "权限/目标/日志目录 (宿主会话缓存目录优先; 留空按会话数据库目录推导, 无数据库时按 session_id 隔离)"
   sandbox_root:
     type: path
     default: ""
-    description: "文件免审批目录 (宿主 coding_sandbox_root 优先; 留空用项目根/.satrap/sandbox, 与 base_take 默认目录一致; 计划模式仍拒绝写入)"
+    description: "文件免审批目录 (宿主环境中的沙箱根优先; 留空用项目根/.satrap/sandbox, 与 base_take 默认目录一致; 计划模式仍拒绝写入)"
   shell_timeout:
     type: number
     default: 120

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
@@ -42,6 +42,8 @@ class PluginPermissions:
     commands: Mapping[str, CommandPermissions]
     declared_tools: frozenset[str] = frozenset()
     declared_commands: frozenset[str] = frozenset()
+    services: Mapping[str, tuple[str, ...]] = field(default_factory=lambda: MappingProxyType({}))
+    declared_services: frozenset[str] = frozenset()
 
     @property
     def supports_administrators(self) -> bool:
@@ -53,15 +55,16 @@ class PluginPermissions:
         读取当前入口的权限并集
 
         参数:
-        - kind: tools 或 commands
+        - kind: tools, services 或 commands
         - name: 宿主绑定的入口名
         - subcommand: 原生命令解析后的子命令, 不按前缀匹配
 
         返回:
         - 必须全部满足的权限 ID, 普通入口返回空元组
         """
-        if kind == "tools":
-            return self.tools.get(name, ())
+        if kind in ("tools", "services"):
+            entries = self.tools if kind == "tools" else self.services
+            return entries.get(name, ())
         rule = self.commands.get(name)
         return tuple(dict.fromkeys((*rule.default, *rule.subcommands.get(subcommand or "", ())))) if rule else ()
 
@@ -79,6 +82,7 @@ class PluginPermissions:
                     **({"caller_list": rule.caller_list, "empty_policy": rule.empty_policy} if rule.caller_list else {})}
                     for name, rule in self.rules.items()},
                 "tool_permissions": {name: list(values) for name, values in self.tools.items()},
+                "service_permissions": {name: list(values) for name, values in self.services.items()},
                 "command_permissions": {name: {**({"default": list(rule.default)} if rule.default else {}),
                     "subcommands": {key: list(values) for key, values in rule.subcommands.items()}} for name, rule in self.commands.items()},
                 "supports_administrators": self.supports_administrators}
@@ -98,7 +102,7 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
     返回:
     - 不可变规则; 声明不合法时抛出 ValueError 供加载边界记录
     """
-    keys = {"permission_schema_version", "management_permissions", "tool_permissions", "command_permissions"}
+    keys = {"permission_schema_version", "management_permissions", "tool_permissions", "service_permissions", "command_permissions"}
     if not keys.intersection(meta):
         return EMPTY_PERMISSIONS
     if type(meta.get("permission_schema_version")) is not int or meta["permission_schema_version"] != 1:
@@ -164,6 +168,15 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
         if not isinstance(name, str) or not isinstance(declared_tools, dict) or name not in declared_tools:
             raise ValueError("管理工具映射引用未声明工具")
         tools[name] = permission_ids(value)
+    services: dict[str, tuple[str, ...]] = {}
+    raw_services = meta.get("service_permissions", {})
+    declared_services = meta.get("services", {})
+    if not isinstance(raw_services, dict) or not isinstance(declared_services, dict):
+        raise ValueError("service_permissions 和服务描述声明必须是对象")
+    for name, value in raw_services.items():
+        if not isinstance(name, str) or name not in declared_services:
+            raise ValueError("管理服务映射引用未声明服务")
+        services[name] = permission_ids(value)
     commands: dict[str, CommandPermissions] = {}
     raw_commands = meta.get("command_permissions", {})
     if not isinstance(raw_commands, dict):
@@ -184,10 +197,14 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
             raise ValueError("管理命令需要至少一项权限映射")
         commands[name] = CommandPermissions(default, MappingProxyType({key: permission_ids(item) for key, item in children.items()}))
     return PluginPermissions(1, MappingProxyType(rules), MappingProxyType(tools), MappingProxyType(commands),
-                             frozenset(declared_tools), frozenset(declared_commands))
+                             frozenset(declared_tools), frozenset(declared_commands),
+                             MappingProxyType(services), frozenset(declared_services))
 
 
-def validate_permission_install(spec: PluginPermissions, tools: Mapping[str, Any], commands: Mapping[str, Any]) -> None:
+def validate_permission_install(
+    spec: PluginPermissions, tools: Mapping[str, Any], commands: Mapping[str, Any],
+    services: Mapping[str, object] | None = None,
+) -> None:
     """
     安装时核验权限绑定到实际注册入口
 
@@ -195,8 +212,9 @@ def validate_permission_install(spec: PluginPermissions, tools: Mapping[str, Any
     - spec: 目录解析的权限规则
     - tools: 实际创建的工具
     - commands: 实际创建的命令处理函数
+    - services: 实际创建的插件专用服务, 默认空映射
     """
-    if set(spec.tools) - set(tools) or set(spec.commands) - set(commands):
+    if set(spec.tools) - set(tools) or set(spec.commands) - set(commands) or set(spec.services) - set(services or {}):
         raise ValueError("插件管理权限映射未匹配实际注册入口")
     for name, rule in spec.commands.items():
         children = getattr(commands[name], "subcommands", ())

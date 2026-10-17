@@ -1,5 +1,8 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
+
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
 import json
 from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
 
@@ -366,7 +369,8 @@ def shell_env(tmp_path, monkeypatch):
     monkeypatch.setattr(coding, "_SYSTEM_PROTECTED_ROOT", root / ".satrap")
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "approval.jsonl")
     engine.set_plan_mode(True)
-    session = SimpleNamespace(coding_workspace_root=root, user_input_provider=lambda *args: "deny")
+    session = SimpleNamespace(user_input_provider=lambda *args: "deny")
+    bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(root)))
     return root, engine, session
 
 async def execute_shell(shell_env, asynchronous, command, shell="powershell"):
@@ -432,7 +436,9 @@ async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asyn
         approvals.append(request)
         return ApprovalResult.for_request(request, "allow" if answer == "y" else "deny", "人工决定", "user")
 
-    session = SimpleNamespace(coding_workspace_root=tmp_path, coding_approval_provider=provider if answer else None)
+    session = SimpleNamespace(coding_approval_provider=provider if answer else None)
+
+    bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(tmp_path)))
     monkeypatch.setattr(coding, "_run_shell", lambda *args, **kwargs: calls.append(args) or "executed")
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
     tool._bind(cast(Any, session))
@@ -448,13 +454,14 @@ async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asyn
 @pytest.mark.parametrize("change", ["plan", "workspace"])
 async def test_shell_rechecks_scope_after_approval(tmp_path, monkeypatch, asynchronous, change):
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
-    session = SimpleNamespace(coding_workspace_root=tmp_path)
+    session = SimpleNamespace()
+    bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(tmp_path)))
 
     def provider(request):
         if change == "plan":
             engine.set_plan_mode(True)
         else:
-            session.coding_workspace_root = tmp_path.parent
+            bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(tmp_path.parent)))
         return ApprovalResult.for_request(request, "allow", "用户批准", "user")
 
     session.coding_approval_provider = provider
@@ -484,7 +491,7 @@ async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatc
     class FakeSession(base):
         def __init__(self):
             self._wf = SimpleNamespace(llm=None, tools_manager=None)
-            self.coding_workspace_root = tmp_path
+            bind_environment(self, replace(environment_snapshot(self), workspace_root=Path(tmp_path)))
             self.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
 
     def state(session, *, config=None):
@@ -518,8 +525,8 @@ async def test_factory_protected_directories_isolated(tmp_path, monkeypatch, asy
     class FakeSession(base):
         def __init__(self):
             self._wf = SimpleNamespace(llm=None, tools_manager=None)
-            self.coding_workspace_root = tmp_path
-            self.coding_sandbox_root = tmp_path
+            bind_environment(self, replace(environment_snapshot(self), workspace_root=Path(tmp_path)))
+            bind_environment(self, replace(environment_snapshot(self), sandbox_root=Path(tmp_path)))
 
     def state(session, *, config=None):
         return {"engine": PermissionEngine(rules_file=tmp_path / "rules.json",
@@ -639,7 +646,8 @@ async def test_native_write_rechecks_live_platform_route(tmp_path, monkeypatch, 
     previous = current_adapter_manager()
     set_current_adapter_manager(cast(Any, manager))
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
-    session = SimpleNamespace(coding_workspace_root=tmp_path)
+    session = SimpleNamespace()
+    bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(tmp_path)))
     def approve(request):
         route[0] = 2
         return ApprovalResult.for_request(request, "allow", "用户批准", "user")

@@ -1,5 +1,8 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
+
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
 from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
 
 from pathlib import Path
@@ -903,9 +906,9 @@ async def test_invalid_later_replacement_never_approves_or_writes(
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
     sync, async_tool = sync_write.SearchReplaceTool(engine), async_write.AsyncSearchReplaceTool(engine)
     sync._bind(SimpleSession.__new__(SimpleSession))
-    sync._session.coding_workspace_root = tmp_path
+    bind_environment(sync._session, replace(environment_snapshot(sync._session), workspace_root=Path(tmp_path)))
     async_tool._bind(AsyncSimpleSession.__new__(AsyncSimpleSession))
-    async_tool._session.coding_workspace_root = tmp_path
+    bind_environment(async_tool._session, replace(environment_snapshot(async_tool._session), workspace_root=Path(tmp_path)))
     for module in (sync_write, async_write):
         monkeypatch.setattr(module, "_tool_root", lambda tool: tmp_path)
     sync_approve, async_approve = Mock(), AsyncMock()
@@ -929,9 +932,9 @@ async def test_replacements_preserve_order_and_approval(
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
     sync, async_tool = sync_write.SearchReplaceTool(engine), async_write.AsyncSearchReplaceTool(engine)
     sync._bind(SimpleSession.__new__(SimpleSession))
-    sync._session.coding_workspace_root = tmp_path
+    bind_environment(sync._session, replace(environment_snapshot(sync._session), workspace_root=Path(tmp_path)))
     async_tool._bind(AsyncSimpleSession.__new__(AsyncSimpleSession))
-    async_tool._session.coding_workspace_root = tmp_path
+    bind_environment(async_tool._session, replace(environment_snapshot(async_tool._session), workspace_root=Path(tmp_path)))
     for module in (sync_write, async_write):
         monkeypatch.setattr(module, "_tool_root", lambda tool: tmp_path)
     monkeypatch.setattr(sync_write, "_approve_sync", Mock(return_value=(allowed, "拒绝")))
@@ -1033,7 +1036,7 @@ async def test_three_modes_exact_actions_and_separate_user_questions(tmp_path, w
     child = SimpleNamespace(ctx=SimpleNamespace(get_context=lambda: [
         {"role": "user", "content": "子任务不能冒充用户授权"},
         {"role": "assistant", "content": "准备修改", "reasoning_content": "hidden-secret"}]))
-    session.coding_sandbox_root = workspace / "private"
+    bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(workspace / "private")))
     for mode in ("user", "auto", "full-access"):
         engine.set_mode(mode, persist=False)
         session.coding_approval_provider = human
@@ -1139,7 +1142,7 @@ async def test_approval_cannot_authorize_changed_actions(tmp_path, workspace, as
         elif drift == "disabled":
             tool.disable()
         elif drift == "sandbox":
-            session.coding_sandbox_root = workspace / "other"
+            bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(workspace / "other")))
         elif drift == "replay":
             from dataclasses import replace
             return ApprovalResult.for_request(replace(request, request_id="other"), "allow", "重放", "user")

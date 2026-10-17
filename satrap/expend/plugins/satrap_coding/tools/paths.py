@@ -1,7 +1,7 @@
 """
 编程工具的工作区路径解析与访问保护
 
-宿主路径属性优先于工具实例配置, 在读写前检查保护目录和沙箱边界
+宿主环境快照优先于工具实例配置, 在读写前检查保护目录和沙箱边界
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
 from satrap.core.call_context import current_call_origin, current_tool_workflow, CallOrigin
 from satrap.core.platform import current_adapter_manager
-from satrap.core.type import safe_getattr
-from satrap.edictum import AsyncSimpleSession, SimpleSession
+from satrap.core.plugin_interop.environment import EnvironmentSnapshot, environment_snapshot
+from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost, PluginInteractionError
 from .approval import _turn_identity
 
 from satrap.core.log import logger
@@ -23,10 +23,10 @@ from satrap.core.log import logger
 
 def _workspace_root(session: SimpleSession | AsyncSimpleSession | None, configured_root: Path | None = None) -> Path:
     """
-    解析工作区, 宿主属性优先于工具配置和固定默认值
+    解析工作区, 宿主环境优先于工具配置和固定默认值
 
     参数:
-    - session: 当前会话, 宿主可以在项目改绑时更新路径属性
+    - session: 当前会话, 宿主在项目改绑时更新统一环境
     - configured_root: 工具实例保存的插件配置
 
     返回:
@@ -35,7 +35,7 @@ def _workspace_root(session: SimpleSession | AsyncSimpleSession | None, configur
     from . import WORKSPACE_ROOT
 
     return Path(
-        safe_getattr(session, "coding_workspace_root") or configured_root or WORKSPACE_ROOT
+        environment_snapshot(session).workspace_root or configured_root or WORKSPACE_ROOT
     ).resolve()
 
 
@@ -49,12 +49,29 @@ def _tool_root(tool: _ToolBase) -> Path:
     返回:
     - Path: 当前调用使用的绝对工作区根, 无会话或实例路径时使用固定默认值
     """
-    session = getattr(tool, "_session", None)
-    root = _workspace_root(session, getattr(tool, "workspace_root", None))
-    sandbox = getattr(session, "coding_sandbox_root", None)
+    from . import WORKSPACE_ROOT
+
+    snapshot = _tool_environment(tool)
+    root = Path(snapshot.workspace_root or getattr(tool, "workspace_root", None) or WORKSPACE_ROOT).resolve()
+    sandbox = snapshot.sandbox_root
     if sandbox and root == Path(sandbox).resolve():
         root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _tool_environment(tool: _ToolBase) -> EnvironmentSnapshot:
+    """
+    从插件宿主取得本次可用的冻结环境
+
+    参数:
+    - tool: 当前工具实例, 独立构造时允许没有插件宿主
+
+    返回:
+    - 当前环境快照, 过期插件宿主直接拒绝访问
+    """
+    plugin_host = getattr(tool, "_plugin_host", None)
+    return (plugin_host.environment_snapshot() if isinstance(plugin_host, PluginHost)
+            else environment_snapshot(getattr(tool, "_session", None)))
 
 
 def _resolve_path(path: str, root: Path | None = None, *, full_access: bool = False) -> Path:
@@ -106,6 +123,26 @@ class _FileProtectionMixin:
 
     protected_dirs: frozenset[str] = frozenset()
     sandbox_root: Path | None = None
+
+    def _read_in_environment(self, read: Callable[[], str], environment: EnvironmentSnapshot | None = None) -> str:
+        """
+        在冻结的宿主环境内读取, 改绑后不返回旧请求的文件内容
+
+        参数:
+        - read: 已固定业务参数的同步读取函数
+        - environment: 调度前快照, 默认在当前同步入口冻结
+
+        返回:
+        - 读取结果; 执行前后环境不一致时抛出 capability_stale
+        """
+        tool = cast(_ToolBase, self)
+        environment = environment or _tool_environment(tool)
+        if _tool_environment(tool) != environment:
+            raise PluginInteractionError("capability_stale", "文件读取环境已经改变")
+        result = read()
+        if _tool_environment(tool) != environment:
+            raise PluginInteractionError("capability_stale", "文件读取期间宿主环境已经改变")
+        return result
 
     def _protection_reason(self, path: Path, root: Path) -> str | None:
         """
@@ -174,19 +211,19 @@ def _session_sandbox_root(
     session: SimpleSession | AsyncSimpleSession | None, configured_root: Path | None = None
 ) -> Path:
     """
-    获取会话沙箱根 (会话属性优先, 否则默认)
+    获取会话沙箱根 (宿主环境优先, 否则使用工具配置和默认值)
 
     参数:
     - session: 当前会话, 未绑定时为 None
     - configured_root: 工具实例的沙箱配置
 
     返回:
-    - Path: 宿主属性, 工具配置, 固定默认值按顺序选取的沙箱根
+    - Path: 宿主环境, 工具配置, 固定默认值按顺序选取的沙箱根
     """
     from . import DEFAULT_SANDBOX_ROOT
 
     return Path(
-        safe_getattr(session, "coding_sandbox_root") or configured_root or DEFAULT_SANDBOX_ROOT
+        environment_snapshot(session).sandbox_root or configured_root or DEFAULT_SANDBOX_ROOT
     ).resolve()
 
 
@@ -276,6 +313,7 @@ def _execution_guard(tool: _ToolBase, engine: PermissionEngine, path: Path) -> C
     - 可重复调用的检查函数, 边界改变或入口失效时抛出 PermissionError
     """
     session = cast(SimpleSession | AsyncSimpleSession, getattr(tool, "_session", None))
+    environment = _tool_environment(tool)
     root = _tool_root(tool)
     sandbox = _session_sandbox_root(session, getattr(tool, "sandbox_root", None))
     deadline = time.monotonic() + 600
@@ -301,6 +339,7 @@ def _execution_guard(tool: _ToolBase, engine: PermissionEngine, path: Path) -> C
                 or engine.revision != revision or engine.mode != mode or engine.approval_model != review_model
                 or getattr(tool, "_session", None) is not session or _turn_identity(session) != turn_identity
                 or getattr(session, "session_id", "") != session_id
+                or _tool_environment(tool) != environment
                 or _tool_root(tool) != root or path.resolve() != path
                 or _session_sandbox_root(session, getattr(tool, "sandbox_root", None)) != sandbox
                 or current_call_origin() is not origin or current_tool_workflow() is not workflow or not tool.is_enabled()

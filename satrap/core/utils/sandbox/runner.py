@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Iterable, Callable
 from dataclasses import asdict
 import json
 import os
@@ -44,7 +44,7 @@ def validate_environment(allowed: Iterable[str]) -> None:
 
 
 def run(request: Request, executable: str, timeout: float, allowed_env: Iterable[str],
-        cancelled: threading.Event | None = None) -> SandboxResult:
+        cancelled: threading.Event | None = None, *, verify: Callable[[], None] | None = None) -> SandboxResult:
     """
     同步启动 worker 并在返回前终止和等待实际进程
 
@@ -54,6 +54,7 @@ def run(request: Request, executable: str, timeout: float, allowed_env: Iterable
     - timeout: 包含启动和请求发送的总秒数预算
     - allowed_env: 待验证的兼容环境变量名集合
     - cancelled: 异步调用传入的取消事件, 默认 None 表示仅使用超时
+    - verify: 可选宿主边界复核, 失效时抛出原异常并回收进程
 
     返回:
     - 通过协议校验的结果或配置, 超时, 取消, 输出和启动失败结果
@@ -75,6 +76,8 @@ def run(request: Request, executable: str, timeout: float, allowed_env: Iterable
                         "MPLBACKEND": "Agg", "XDG_CACHE_HOME": private})
             # Step.3 使用既定解释器和可信入口, 不经过 Shell 或工作区启动模块
             creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            if verify is not None:
+                verify()
             process = subprocess.Popen([executable, "-I", "-S", "-B", "-X", "utf8", str(worker)],
                                        stdin=subprocess.PIPE, stdout=output, stderr=diagnostics, env=env,
                                        close_fds=True, creationflags=creationflags)
@@ -100,6 +103,8 @@ def run(request: Request, executable: str, timeout: float, allowed_env: Iterable
                 sender = threading.Thread(target=send, name="sandbox-request", daemon=True)
                 sender.start()
                 while process.poll() is None:
+                    if verify is not None:
+                        verify()
                     if cancelled is not None and cancelled.is_set():
                         return failure_result("cancelled", "沙箱执行已取消", returncode=-5)
                     if time.monotonic() - started >= timeout:
@@ -117,6 +122,8 @@ def run(request: Request, executable: str, timeout: float, allowed_env: Iterable
                 if process.stdin is not None and not process.stdin.closed:
                     process.stdin.close()
             # Step.6 严格解析完整结果, 不从混杂输出中截取成功片段
+            if verify is not None:
+                verify()
             output.seek(0)
             raw = output.read(MAX_MESSAGE_BYTES + 1)
             if len(raw) > MAX_MESSAGE_BYTES:
@@ -166,7 +173,8 @@ def _parse_result(value: object) -> SandboxResult:
     return cast(SandboxResult, result)
 
 
-async def run_async(request: Request, executable: str, timeout: float, allowed_env: Iterable[str]) -> SandboxResult:
+async def run_async(request: Request, executable: str, timeout: float, allowed_env: Iterable[str],
+                    *, verify: Callable[[], None] | None = None) -> SandboxResult:
     """
     异步等待同步执行器, 取消时通知并等待真实进程回收
 
@@ -175,12 +183,13 @@ async def run_async(request: Request, executable: str, timeout: float, allowed_e
     - executable: 可信 Python 解释器的绝对路径
     - timeout: 包含启动和请求发送的总秒数预算
     - allowed_env: 待验证的兼容环境变量名集合
+    - verify: 可选宿主边界复核, 在线程内启动前和等待时调用
 
     返回:
     - 通过协议校验的结果或结构化失败; 回收完成后重新抛出 CancelledError
     """
     cancelled = threading.Event()
-    task = asyncio.create_task(asyncio.to_thread(run, request, executable, timeout, allowed_env, cancelled))
+    task = asyncio.create_task(asyncio.to_thread(run, request, executable, timeout, allowed_env, cancelled, verify=verify))
     # shield 保留后台执行器的生命周期, 协程取消后仍能等待其回收真实进程
     try:
         return await asyncio.shield(task)

@@ -21,10 +21,7 @@ from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
 from satrap.edictum.plugin_settings import resolve_runtime_specs
 from satrap.core.utils.performance import PhaseTimings
 from satrap.edictum.plugin_runtime import (
-    PluginInstallationError,
     PluginRuntimeState,
-    install_plugin_spec,
-    install_plugin_spec_async,
     preview_plugin_reconciliation,
     reconcile_plugin_states_async,
     reconcile_plugin_states,
@@ -354,7 +351,7 @@ class EdictumProvider:
                 installer = state.type_definition.plugin_installer
                 uninstaller = state.type_definition.plugin_uninstaller
                 result = reconcile_plugin_states(state.plugins, specs, lambda path, values: installer(session, path, values),
-                                                 (lambda name: uninstaller(session, name)) if uninstaller else None)
+                                                 (lambda name: uninstaller(session, name)) if uninstaller else None, session=session)
             self._refresh_runtime_fingerprint(state)
             if not result.get("ok", False):
                 raise RuntimeError("候选会话插件准备失败, 请检查插件运行状态")
@@ -370,28 +367,25 @@ class EdictumProvider:
             uninstaller = state.type_definition.plugin_uninstaller
             result = reconcile_plugin_states(
                 state.plugins, specs, lambda path, values: installer(session, path, values),
-                (lambda name: uninstaller(session, name)) if uninstaller else None,
+                (lambda name: uninstaller(session, name)) if uninstaller else None, session=session,
             )
             self._refresh_runtime_fingerprint(state)
             if not result.get("ok", False):
                 raise RuntimeError("会话插件配置更新失败, 请检查插件运行状态")
             return
-        for plugin_state in state.plugins:
-            if plugin_state.desired_spec is not None:
-                plugin_state.desired_spec = resolve_runtime_specs(session, [plugin_state.desired_spec], self.plugin_catalog)[0]
-            if plugin_state.status != "pending":
-                continue
-            self._install_plugin_sync(session, state.type_definition, plugin_state)
+        specs = [resolve_runtime_specs(session, [item.desired_spec], self.plugin_catalog)[0]
+                 for item in state.plugins if item.desired_spec is not None]
+        installer = state.type_definition.plugin_installer
+        uninstaller = state.type_definition.plugin_uninstaller
+        result = reconcile_plugin_states(
+            state.plugins, specs, lambda path, values: installer(session, path, values),
+            (lambda name: uninstaller(session, name)) if uninstaller else None,
+            session=session,
+        )
         self._refresh_runtime_fingerprint(state)
-        failures = [
-            item
-            for item in state.plugins
-            if item.status == "error"
-            and item.desired_spec is not None
-            and item.desired_spec.enabled
-        ]
-        if failures:
-            raise RuntimeError(f"Edictum 插件准备失败: {', '.join(item.name for item in failures)}")
+        if not result.get("ok", False):
+            failures = [item.name for item in state.plugins if item.error and item.desired_spec is not None and item.desired_spec.enabled]
+            raise RuntimeError(f"Edictum 插件准备失败: {', '.join(failures)}")
 
     async def prepare_session_async(self, session: Session | AsyncSession, *, apply_snapshot: EdictumPluginApplySnapshot | None = None) -> None:
         """
@@ -420,22 +414,19 @@ class EdictumProvider:
             if not result.get("ok", False):
                 raise RuntimeError("会话插件配置更新失败, 请检查插件运行状态")
             return
-        for plugin_state in state.plugins:
-            if plugin_state.desired_spec is not None:
-                plugin_state.desired_spec = resolve_runtime_specs(session, [plugin_state.desired_spec], self.plugin_catalog)[0]
-            if plugin_state.status != "pending":
-                continue
-            await self._install_plugin_async(session, state.type_definition, plugin_state)
+        specs = [resolve_runtime_specs(session, [item.desired_spec], self.plugin_catalog)[0]
+                 for item in state.plugins if item.desired_spec is not None]
+        installer = state.type_definition.plugin_installer
+        uninstaller = state.type_definition.plugin_uninstaller
+        result = await reconcile_plugin_states_async(
+            state.plugins, specs, lambda path, values: installer(session, path, values),
+            (lambda name: uninstaller(session, name)) if uninstaller else None,
+            session=session,
+        )
         self._refresh_runtime_fingerprint(state)
-        failures = [
-            item
-            for item in state.plugins
-            if item.status == "error"
-            and item.desired_spec is not None
-            and item.desired_spec.enabled
-        ]
-        if failures:
-            raise RuntimeError(f"Edictum 插件准备失败: {', '.join(item.name for item in failures)}")
+        if not result.get("ok", False):
+            failures = [item.name for item in state.plugins if item.error and item.desired_spec is not None and item.desired_spec.enabled]
+            raise RuntimeError(f"Edictum 插件准备失败: {', '.join(failures)}")
 
     def release_session(self, session: Session | AsyncSession) -> None:
         """
@@ -653,101 +644,6 @@ class EdictumProvider:
         with self._runtime_lock:
             return self._runtime_states.pop(id(session), None)
 
-    @staticmethod
-    def _install_plugin_sync(
-        session: Session | AsyncSession,
-        definition: EdictumTypeDefinition,
-        plugin_state: PluginRuntimeState,
-    ) -> None:
-        """
-        同步安装单个插件并记录结果
-
-        参数:
-        - session: Edictum 会话实例
-        - definition: Edictum 类型定义
-        - plugin_state: 插件运行时状态
-        """
-        installer = definition.plugin_installer
-        if installer is None:
-            plugin_state.status = "error"
-            plugin_state.error = "Edictum 类型未提供插件安装适配器"
-            return
-        try:
-            target = plugin_state.desired_spec or plugin_state.applied_spec
-            if target is None:
-                raise ValueError("插件目标规格不存在")
-            plugin, _changes = install_plugin_spec(
-                lambda path, config: installer(session, path, config),
-                target,
-            )
-            plugin_state.handle = plugin
-            plugin_state.applied_spec = plugin_state.desired_spec
-            plugin_state.mark("applied", status="loaded")
-        except Exception as error:
-            if isinstance(error, PluginInstallationError):
-                uninstaller = definition.plugin_uninstaller
-                if uninstaller is not None:
-                    try:
-                        cleanup = uninstaller(session, plugin_state.name)
-                        if inspect.isawaitable(cleanup):
-                            close = getattr(cleanup, "close", None)
-                            if callable(close):
-                                close()
-                            logger.warning(
-                                f"[EdictumProvider] 同步准备无法等待失败插件清理: {plugin_state.name}"
-                            )
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            f"[EdictumProvider] 失败插件清理失败: {plugin_state.name}, {cleanup_error}"
-                        )
-            plugin_state.mark("error", status="error", error=str(error))
-            logger.error(f"[EdictumProvider] 插件安装失败: {plugin_state.name}, {error}")
-
-    @staticmethod
-    async def _install_plugin_async(
-        session: Session | AsyncSession,
-        definition: EdictumTypeDefinition,
-        plugin_state: PluginRuntimeState,
-    ) -> None:
-        """
-        异步安装单个插件并记录结果
-
-        参数:
-        - session: Edictum 会话实例
-        - definition: Edictum 类型定义
-        - plugin_state: 插件运行时状态
-        """
-        installer = definition.plugin_installer
-        if installer is None:
-            plugin_state.status = "error"
-            plugin_state.error = "Edictum 类型未提供插件安装适配器"
-            return
-        try:
-            target = plugin_state.desired_spec or plugin_state.applied_spec
-            if target is None:
-                raise ValueError("插件目标规格不存在")
-            plugin, _changes = await install_plugin_spec_async(
-                lambda path, config: installer(session, path, config),
-                target,
-            )
-            plugin_state.handle = plugin
-            plugin_state.applied_spec = plugin_state.desired_spec
-            plugin_state.mark("applied", status="loaded")
-        except Exception as error:
-            if isinstance(error, PluginInstallationError):
-                uninstaller = definition.plugin_uninstaller
-                if uninstaller is not None:
-                    try:
-                        cleanup = uninstaller(session, plugin_state.name)
-                        if inspect.isawaitable(cleanup):
-                            await cleanup
-                    except Exception as cleanup_error:
-                        logger.warning(
-                            f"[EdictumProvider] 失败插件清理失败: {plugin_state.name}, {cleanup_error}"
-                        )
-            plugin_state.mark("error", status="error", error=str(error))
-            logger.error(f"[EdictumProvider] 插件安装失败: {plugin_state.name}, {error}")
-
     async def reconcile_session_plugins_async(
         self,
         session: Session | AsyncSession,
@@ -841,6 +737,7 @@ class EdictumProvider:
                 if uninstaller is None
                 else lambda name: uninstaller(session, name)
             ),
+            session=session,
         )
         state.revision += 1
         self._refresh_runtime_fingerprint(state)
@@ -950,7 +847,7 @@ class EdictumProvider:
             "revision": state.revision,
             "applied_fingerprint": state.applied_fingerprint,
             "desired_fingerprint": plugin_specs_fingerprint(desired_specs),
-            "plugins": preview_plugin_reconciliation(state.plugins, desired_specs),
+            "plugins": preview_plugin_reconciliation(state.plugins, desired_specs, session=session),
         }
 
     @staticmethod

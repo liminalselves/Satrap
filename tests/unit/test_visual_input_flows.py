@@ -1,6 +1,9 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
 
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
+
 from pathlib import Path
 from typing import Any, cast
 import base64
@@ -397,7 +400,9 @@ async def test_local_image_document_flow_preserves_visual_content_and_scope(tmp_
     Image.new("RGB", (12, 8)).save(upload)
     model = SimpleNamespace(supports_visual_input=True)
     tool = (AsyncReadDocumentTool if asynchronous else ReadDocumentTool)(workspace)
-    monkeypatch.setattr(tool, "_session", SimpleNamespace(llm=model, coding_upload_root=str(uploads)), raising=False)
+    document_session = SimpleNamespace(llm=model)
+    bind_environment(document_session, replace(environment_snapshot(document_session), upload_root=uploads))
+    monkeypatch.setattr(tool, "_session", document_session, raising=False)
 
     async def read(path, mode="auto"):
         result = tool.execute(str(path), mode=mode)

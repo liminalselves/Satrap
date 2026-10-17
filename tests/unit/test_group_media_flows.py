@@ -1,6 +1,9 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
 
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
+
 from pathlib import Path
 import asyncio
 import pytest
@@ -281,7 +284,7 @@ plt.close(fig)
                                                                   "arguments": {"operation": "run", "code": source}}]),
                      importing, replying, LLMCallResponse("message", "不重复发送")])
     instance = await session(tmp_path, script, asynchronous, False)
-    instance.coding_sandbox_root = str(root)
+    bind_environment(instance, replace(environment_snapshot(instance), sandbox_root=Path(str(root))))
     plugin = Path(__file__).resolve().parents[2] / "satrap/expend/plugins/base_take"
     if asynchronous:
         await instance.install_plugin(str(plugin))
@@ -301,7 +304,8 @@ async def test_sandbox_image_import_scope_paths_and_live_permissions(tmp_path: P
     """真实工具拒绝越界和跨工作流文件, 重新登记后仍受同群同轮资产权限约束"""
     from support.group_models import Script, session
     from satrap.core.call_context import bind_tool_workflow
-    from satrap.core.group_chat.sdk import read_sandbox_image
+    from satrap.core.plugin_interop.artifacts import read_sandbox_image
+    import satrap.core.plugin_interop.artifacts as artifacts_module
 
     adapter, event, service = setup(tmp_path)
     instance = await session(tmp_path, Script([]), True, False)
@@ -315,7 +319,7 @@ async def test_sandbox_image_import_scope_paths_and_live_permissions(tmp_path: P
     (root / "empty.png").touch()
     with (root / "oversized.png").open("wb") as stream:
         stream.truncate(10 * 1024 * 1024 + 1)
-    instance.coding_sandbox_root = str(root)
+    bind_environment(instance, replace(environment_snapshot(instance), sandbox_root=Path(str(root))))
     tool = instance.tools_manager.tools["group_chat_import_sandbox_image"]
     with owner(event) as turn, bind_tool_workflow(instance._wf):
         turn.workflow, turn.workflow_manager = instance._wf, instance.tools_manager
@@ -341,12 +345,12 @@ async def test_sandbox_image_import_scope_paths_and_live_permissions(tmp_path: P
         else:
             cases.append(({"path": "linked/private.png"}, "invalid_argument"))
         for arguments, expected in cases:
-            result = await tool.execute(**arguments)
+            result = await instance.tools_manager.execute_tool("group_chat_import_sandbox_image", arguments)
             assert result["error"]["code"] == expected, (arguments, result)
 
         with bind_tool_workflow(object()):
-            assert (await tool.execute(path="image.png"))["error"]["code"] == "wrong_executor"
-        result = await tool.execute(path="image.png")
+            assert (await instance.tools_manager.execute_tool("group_chat_import_sandbox_image", {"path": "image.png"}))["error"]["code"] == "wrong_executor"
+        result = await instance.tools_manager.execute_tool("group_chat_import_sandbox_image", {"path": "image.png"})
         assert result["ok"], result
         asset_id = result["asset"]["asset_id"]
         with pytest.raises(GroupChatError):
@@ -359,19 +363,19 @@ async def test_sandbox_image_import_scope_paths_and_live_permissions(tmp_path: P
 
         def change_root(root_path, path):
             payload = read_sandbox_image(root_path, path)
-            instance.coding_sandbox_root = str(foreign)
+            bind_environment(instance, replace(environment_snapshot(instance), sandbox_root=Path(str(foreign))))
             return payload
 
-        monkeypatch.setitem(tool._import_sandbox_image.__func__.__globals__, "read_sandbox_image", change_root)
-        assert (await tool.execute(path="image.png"))["error"]["code"] == "stale_call"
-        instance.coding_sandbox_root = str(root)
+        monkeypatch.setattr(artifacts_module, "read_sandbox_image", change_root)
+        assert (await instance.tools_manager.execute_tool("group_chat_import_sandbox_image", {"path": "image.png"}))["error"]["code"] == "stale_call"
+        bind_environment(instance, replace(environment_snapshot(instance), sandbox_root=Path(str(root))))
 
     with owner(event) as turn, bind_tool_workflow(instance._wf):
         turn.workflow, turn.workflow_manager = instance._wf, instance.tools_manager
         denied = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": asset_id}]})
         assert denied["error"]["code"] == "asset_unavailable"
-        monkeypatch.setitem(tool._import_sandbox_image.__func__.__globals__, "read_sandbox_image", read_sandbox_image)
-        renewed = await tool.execute(path="image.png")
+        monkeypatch.setattr(artifacts_module, "read_sandbox_image", read_sandbox_image)
+        renewed = await instance.tools_manager.execute_tool("group_chat_import_sandbox_image", {"path": "image.png"})
         assert renewed["ok"] and renewed["asset"]["asset_id"] != asset_id
         prepared = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": renewed["asset"]["asset_id"]}]})
         assert prepared["ok"] and prepared["status"] == "prepared"

@@ -1,11 +1,12 @@
 """
-edictum 目录插件: 工具 + skill + MCP + 命令 + 处理脚本的组合包
+edictum 目录插件: 工具 + 服务 + skill + MCP + 命令 + 处理脚本的组合包
 
 插件目录结构:
     插件名/
     |-- meta.yaml     # name(必填) / version / author / repo / description
-    |                 # 及可选能力组成描述: tools/skills/handlers/commands/mcp (名字 -> 描述)
+    |                 # 及可选能力组成描述: tools/services/skills/handlers/commands/mcp (名字 -> 描述)
     |-- tools.py      # 可选: Tool 子类 (同步版) / AsyncTool 子类 (异步版), 或 get_tools 工厂
+    |-- services.py   # 可选: Service / AsyncService 子类, 或显式注入 plugin_host 的 get_services 工厂
     |-- skills.py     # 可选: 导出 skills: list[Skill]; 或 skills/ 子目录 (skill.md 文件夹式)
     |-- mcp.py        # 可选: 导出 clients: dict[str, MCPClient] 或 build_clients() (同步/异步均支持)
     |-- commands.py   # 可选: 导出 commands (同步) / async_commands (异步) 字典, 或 cmd_* / cmd_*_async 约定
@@ -13,7 +14,7 @@ edictum 目录插件: 工具 + skill + MCP + 命令 + 处理脚本的组合包
     +-- ...           # 插件私有模块
 
 meta.yaml 能力声明:
-- 五类能力 (tools/skills/handlers/commands/mcp) 可声明 名字 -> 描述 字典, 供前端/文档展示
+- 六类能力 (tools/services/skills/handlers/commands/mcp) 可声明 名字 -> 描述 字典, 供前端/文档展示
 - 声明仅作描述补充, 自动扫描 (collect_*) 仍是注册的真相源; 声明了但扫描不到仅警告, 不改变安装行为
 
 插件目录扫描:
@@ -26,7 +27,7 @@ tools.py 工厂约定 (解决会话依赖注入):
 - 无 get_tools 时收集模块内定义的 base 子类 (无参构造)
 
 双层状态模型:
-- 插件.enabled (聚合开关) x 能力独立状态 (tools/skills/mcp/handlers/commands 字典值)
+- 插件.enabled (聚合开关) x 能力独立状态 (tools/services/skills/mcp/handlers/commands 字典值)
 - 能力生效 = 插件启用 AND 独立启用
 - disable_plugin 只压制生效 (批量关闭 manager), 不改独立状态
 - enable_plugin 按独立状态恢复; 独立启停请走插件命名空间接口 (plugin.disable_tool 等)
@@ -37,10 +38,12 @@ import importlib.util
 from dataclasses import dataclass, field
 import threading
 import inspect
+import asyncio
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Protocol,
     TypeVar,
@@ -50,6 +53,9 @@ from types import ModuleType
 import yaml
 import sys
 
+from satrap.core.plugin_interop.contracts import CAPABILITY_KINDS, CapabilityKind, InteropSpec
+from satrap.core.plugin_interop.capabilities import PluginHost
+from satrap.core.plugin_interop.service import AsyncService, Service
 from satrap.core.utils.skills import Skill
 from satrap.core.type import (
     safe_getattr_callable,
@@ -189,13 +195,11 @@ def load_plugin_meta(plugin_dir: Path) -> dict[str, Any]:
     return {str(k): v for k, v in cast(dict[str, Any], raw).items()}
 
 
-CAPABILITY_KINDS = ("tools", "skills", "handlers", "commands", "mcp")
-# 可声明描述的能力类别 (与 Plugin 的 5 类能力字典对齐)
 
 
 def parse_capability_descriptions(meta: dict[str, Any]) -> dict[str, dict[str, str]]:
     """
-    从 meta.yaml 解析五类能力描述 (名字 -> 描述)
+    从 meta.yaml 解析六类能力描述 (名字 -> 描述)
 
     参数:
     - meta: 元数据
@@ -204,7 +208,7 @@ def parse_capability_descriptions(meta: dict[str, Any]) -> dict[str, dict[str, s
     非字典的类别键跳过并警告, 其余未识别键忽略
 
     返回:
-    - dict[str, dict[str, str]]: 从 meta.yaml 解析五类能力描述 (名字 -> 描述)
+    - dict[str, dict[str, str]]: 从 meta.yaml 解析六类能力描述 (名字 -> 描述)
     """
     descriptions: dict[str, dict[str, str]] = {}
     for kind in CAPABILITY_KINDS:
@@ -320,8 +324,24 @@ def collect_cleanup(
     return None
 
 
-def _invoke_factory(factory: Callable[..., Any], session: Any, config: dict[str, Any] | None, resources: Any) -> Any:
-    """先绑定签名再执行, 工厂内部 TypeError 必须透传且不重复调用"""
+def _invoke_factory(
+    factory: Callable[..., Any], session: Any, config: dict[str, Any] | None, resources: Any,
+    *, plugin_host: PluginHost | None = None, no_args_first: bool = False,
+) -> Any:
+    """
+    先绑定旧签名及显式宿主参数, 工厂内部 TypeError 不触发重试
+
+    参数:
+    - factory: 实际插件工厂, 不同能力返回类型在收集边界核验
+    - session: 当前会话, None 时保持独立工厂的旧无参调用方式
+    - config: 已解析配置, 默认空映射
+    - resources: 已构造模型资源
+    - plugin_host: 仅传给显式声明同名仅关键字参数的工厂
+    - no_args_first: MCP 旧无参工厂优先, 默认 False
+
+    返回:
+    - 工厂原返回值; 签名不兼容或实现失败时抛出异常
+    """
     signature = inspect.signature(factory)
     attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = [
         ((session, config or {}), {"resources": resources}),
@@ -330,7 +350,13 @@ def _invoke_factory(factory: Callable[..., Any], session: Any, config: dict[str,
         ((session,), {}),
         ((), {}),
     ] if session is not None else [((), {})]
+    if no_args_first:
+        attempts.insert(0, ((), {}))
+    host_parameter = signature.parameters.get("plugin_host")
+    inject_host = host_parameter is not None and host_parameter.kind is inspect.Parameter.KEYWORD_ONLY
     for args, kwargs in attempts:
+        if inject_host:
+            kwargs = {**kwargs, "plugin_host": plugin_host}
         try:
             signature.bind(*args, **kwargs)
         except TypeError:
@@ -346,6 +372,7 @@ def collect_tools(
     session: SessionType | None = None,
     config: dict[str, Any] | None = None,
     resources: Any = None,
+    *, plugin_host: PluginHost | None = None,
 ) -> list[T]:
     """
     收集 tools.py 中的工具实例
@@ -356,6 +383,8 @@ def collect_tools(
     - base: 基础
     - session: 会话
     - config: 配置信息
+    - resources: 模型资源, 默认 None
+    - plugin_host: 显式仅关键字注入的宿主接口, 默认 None
 
     优先 get_tools 工厂 (解决会话/配置依赖注入), 统一签名为 get_tools(session, config, resources);
     旧签名按适应性降级: get_tools(session, config) -> get_tools(session) -> get_tools();
@@ -369,7 +398,7 @@ def collect_tools(
         return []
     factory = safe_getattr_callable(mod, "get_tools")
     if factory is not None:
-        result = _invoke_factory(factory, session, config, resources)
+        result = _invoke_factory(factory, session, config, resources, plugin_host=plugin_host)
         if result is None:
             return []
         items_list = cast(list[Any], result) if isinstance(result, (list, tuple)) else [result]
@@ -388,6 +417,7 @@ def collect_commands(
     session: SessionType | None = None,
     config: dict[str, Any] | None = None,
     resources: Any = None,
+    *, plugin_host: PluginHost | None = None,
 ) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
     """
     收集 commands.py 的命令映射, 返回 (同步命令, 异步命令)
@@ -397,6 +427,8 @@ def collect_commands(
     - module_name: module名称
     - session: 会话
     - config: 会话级插件配置
+    - resources: 模型资源, 默认 None
+    - plugin_host: 显式仅关键字注入的宿主接口, 默认 None
 
     优先 build_commands(session, config) 工厂, 并兼容 build_commands(session);
     工厂返回 (同步映射, 异步映射) 二元组或同步映射, 解决会话和配置依赖注入;
@@ -411,7 +443,7 @@ def collect_commands(
         return {}, {}
     builder = safe_getattr_callable(mod, "build_commands")
     if builder is not None and session is not None:
-        built = _invoke_factory(builder, session, config, resources)
+        built = _invoke_factory(builder, session, config, resources, plugin_host=plugin_host)
         if isinstance(built, tuple):
             pair = cast(tuple[Any, ...], built)
             if len(pair) == 2:
@@ -578,13 +610,21 @@ def collect_skills(plugin_dir: Path, module_name: str) -> list[Skill]:
     return found
 
 
-def collect_mcp_clients(plugin_dir: Path, module_name: str) -> dict[str, Any]:
+def collect_mcp_clients(
+    plugin_dir: Path, module_name: str, session: SessionType | None = None,
+    config: dict[str, Any] | None = None, resources: Any = None,
+    *, plugin_host: PluginHost | None = None,
+) -> dict[str, Any]:
     """
     收集 mcp.py 的客户端映射: 导出 clients: dict 或 build_clients() 工厂
 
     参数:
     - plugin_dir: 插件目录
     - module_name: module名称
+    - session: 当前会话, 默认 None 保持旧无参工厂调用
+    - config: 有效配置, 默认 None
+    - resources: 模型资源, 默认 None
+    - plugin_host: 显式仅关键字注入的宿主接口, 默认 None
 
     返回:
     - dict[str, Any]: 收集 mcp.py 的客户端映射: 导出 clients: dict 或 build_clients() 工厂
@@ -597,7 +637,7 @@ def collect_mcp_clients(plugin_dir: Path, module_name: str) -> dict[str, Any]:
         return {str(k): v for k, v in clients.items()}
     builder = safe_getattr_callable(mod, "build_clients")
     if builder is not None:
-        built = builder()
+        built = _invoke_factory(builder, session, config, resources, plugin_host=plugin_host, no_args_first=True)
         if isinstance(built, dict):
             return {str(k): v for k, v in cast(dict[str, Any], built).items()}
     return {}
@@ -610,6 +650,7 @@ def collect_handlers(
     handler_class: type[SessionHandler] | None = None,
     config: dict[str, Any] | None = None,
     resources: Any = None,
+    *, plugin_host: PluginHost | None = None,
 ) -> list[SessionHandler]:
     """
     收集 handlers.py: 优先 build_handlers(session) 工厂 (会话依赖注入);
@@ -620,6 +661,9 @@ def collect_handlers(
     - module_name: module名称
     - session: 会话
     - handler_class: 处理器类, 由会话模块注入以规避循环依赖
+    - config: 有效配置, 默认 None
+    - resources: 模型资源, 默认 None
+    - plugin_host: 显式仅关键字注入的宿主接口, 默认 None
 
     返回:
     - list[SessionHandler]: 收集 handlers.py: 优先 build_handlers(session) 工厂 (会话依赖注入)
@@ -629,7 +673,7 @@ def collect_handlers(
         return []
     builder = safe_getattr_callable(mod, "build_handlers")
     if builder is not None and session is not None:
-        built = _invoke_factory(builder, session, config, resources)
+        built = _invoke_factory(builder, session, config, resources, plugin_host=plugin_host)
         if isinstance(built, (list, tuple)):
             return list(cast("list[SessionHandler]", built))
     declared = safe_getattr_list(mod, "handlers")
@@ -648,12 +692,66 @@ def collect_handlers(
     return [handler_class(name=f"{module_name}.handlers", **funcs)]
 
 
+def collect_services(
+    plugin_dir: Path, module_name: str, base: type[Service] | type[AsyncService],
+    session: SessionType | None = None, config: dict[str, Any] | None = None,
+    resources: Any = None, *, plugin_host: PluginHost | None = None,
+) -> dict[str, Service | AsyncService]:
+    """
+    按当前会话形态收集插件专用服务, 不创建模型工具
+
+    参数:
+    - plugin_dir: 插件目录
+    - module_name: 插件实际名称
+    - base: 当前会话接受的同步或异步服务基类
+    - session: 当前会话, 独立收集时默认 None
+    - config: 插件有效配置, 默认 None
+    - resources: 模型资源, 默认 None
+    - plugin_host: 工厂显式接收的宿主接口, 默认 None
+
+    返回:
+    - 服务名到实例的内部映射; 名称重复或实现无效时抛出异常
+    """
+    module = _load_module(plugin_dir / "services.py", f"{module_name}.services")
+    if module is None:
+        return {}
+    factory = safe_getattr_callable(module, "get_services")
+    if factory is not None:
+        value: object = _invoke_factory(factory, session, config, resources, plugin_host=plugin_host)
+        if not isinstance(value, list):
+            raise ValueError("get_services 必须返回服务实例列表")
+        items: list[object] = list(value)
+    else:
+        items = []
+        seen: set[type] = set()
+        for value in vars(module).values():
+            if (isinstance(value, type) and issubclass(value, base) and value is not base
+                    and value.__module__ == module.__name__ and value not in seen
+                    and not inspect.isabstract(value)):
+                inspect.signature(value).bind()
+                items.append(value())
+                seen.add(value)
+    result: dict[str, Service | AsyncService] = {}
+    for item in items:
+        if not isinstance(item, base):
+            raise ValueError("服务实现与当前会话的同步/异步形态不匹配")
+        name = item.service_name
+        if not isinstance(name, str) or not name.strip() or name != name.strip() or not item.description:
+            raise ValueError("服务需要非空 service_name 和 description")
+        if name in result:
+            raise ValueError(f"插件重复注册服务: {module_name}.{name}")
+        if inspect.iscoroutinefunction(item.execute) != (base is AsyncService):
+            raise ValueError(f"服务 execute 的同步/异步形态不匹配: {name}")
+        result[name] = item
+    return result
+
+
 @dataclass
 class Plugin:
     """
     已安装的目录插件: 元信息 + 能力清单 + 双层启停状态
 
-    - tools/skills/mcp/handlers: 能力名 -> 独立启用状态 (True=独立启用)
+    - tools/services/skills/mcp/handlers/commands: 能力名 -> 独立启用状态 (True=独立启用)
     - enabled: 插件聚合开关; 能力生效 = enabled AND 独立状态
     """
 
@@ -669,8 +767,12 @@ class Plugin:
     mcp: dict[str, bool] = field(default_factory=dict[str, bool])
     handlers: dict[str, bool] = field(default_factory=dict[str, bool])
     commands: dict[str, bool] = field(default_factory=dict[str, bool])
+    services: dict[str, bool] = field(default_factory=dict[str, bool])
+    interop: InteropSpec = field(default_factory=InteropSpec, repr=False)
+    _services: dict[str, Service | AsyncService] = field(default_factory=dict, repr=False, compare=False)
+    _metadata: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
     capability_descriptions: dict[str, dict[str, str]] = field(default_factory=dict[str, dict[str, str]])
-    """五类能力描述 (meta.yaml 声明): kind(tools/skills/handlers/commands/mcp) -> {能力名: 描述}"""
+    """六类能力描述 (meta.yaml 声明): kind(tools/services/skills/handlers/commands/mcp) -> {能力名: 描述}"""
     config_schema: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
     resources: Any = field(default=None, repr=False)
     recovery_fingerprint: str = ""
@@ -681,6 +783,22 @@ class Plugin:
     _mcp_clients: dict[str, tuple[Any, list[Any]]] = field(
         default_factory=dict[str, tuple[Any, list[Any]]], repr=False, compare=False,
     )
+
+    def _check_capability_change(self, kind: CapabilityKind, name: str, enabled: bool) -> None:
+        """
+        提交独立开关前核验关系, 失败时保持原运行状态
+
+        参数:
+        - kind: 实际能力类别
+        - name: 实际能力名
+        - enabled: 目标独立状态
+        """
+        if self._session is not None:
+            runtime = self._session._plugin_interop_runtime
+            if runtime is not None:
+                runtime.check_change(self.name, kind=kind, name=name, enabled=enabled)
+                if not enabled and getattr(self, kind).get(name, False):
+                    runtime.revoke_references(self.name)
 
     # ---------- 命名空间独立启停 (推荐用法) ----------
 
@@ -700,6 +818,7 @@ class Plugin:
             return False
         if name not in self.tools:
             return False
+        self._check_capability_change("tools", name, True)
         self.tools[name] = True
         if self.enabled:
             wf.tools_manager.enable_tool(name)
@@ -721,6 +840,7 @@ class Plugin:
             return False
         if name not in self.tools:
             return False
+        self._check_capability_change("tools", name, False)
         self.tools[name] = False
         if self.enabled:
             wf.tools_manager.disable_tool(name)
@@ -744,10 +864,7 @@ class Plugin:
             return False
         if name not in self.skills:
             return False
-        self.skills[name] = True
-        if self.enabled:
-            return session._activate_plugin_skill(name)
-        return True
+        return self._set_skill_enabled(name, True)
 
     def disable_skill(self, name: str) -> Any:
         """
@@ -765,10 +882,53 @@ class Plugin:
             return False
         if name not in self.skills:
             return False
-        self.skills[name] = False
-        if self.enabled:
-            return session._deactivate_plugin_skill(name)
-        return True
+        return self._set_skill_enabled(name, False)
+
+    def _set_skill_enabled(self, name: str, enabled: bool) -> bool | Awaitable[bool]:
+        """
+        应用技能独立状态, 资源装配失败时恢复原开关和有效技能
+
+        参数:
+        - name: 已确认属于本插件的技能名
+        - enabled: 目标独立开关
+
+        返回:
+        - 同步会话返回 bool, 异步会话返回等待同一装配过程的协程
+        """
+        from satrap.edictum.simple_session.async_ import AsyncSimpleSession
+
+        session = self._session
+        if session is None:
+            return False
+        self._check_capability_change("skills", name, enabled)
+        previous = self.skills[name]
+        self.skills[name] = enabled
+        if not self.enabled:
+            return True
+        runtime = session._plugin_interop
+        if isinstance(session, AsyncSimpleSession):
+            async def apply() -> bool:
+                """
+                等待异步资源装配, 失败或取消后恢复旧状态
+
+                返回:
+                - 技能状态装配成功时返回 True
+                """
+                try:
+                    await runtime.synchronize_skills_async()
+                    return True
+                except (Exception, asyncio.CancelledError):
+                    self.skills[name] = previous
+                    await runtime.synchronize_skills_async()
+                    raise
+            return apply()
+        try:
+            runtime.synchronize_skills()
+            return True
+        except Exception:
+            self.skills[name] = previous
+            runtime.synchronize_skills()
+            raise
 
     def enable_mcp(self, name: str) -> bool:
         """
@@ -786,6 +946,7 @@ class Plugin:
             return False
         if name not in self.mcp:
             return False
+        self._check_capability_change("mcp", name, True)
         self.mcp[name] = True
         if self.enabled:
             for adapter in self._mcp_clients.get(name, (None, []))[1]:
@@ -808,6 +969,7 @@ class Plugin:
             return False
         if name not in self.mcp:
             return False
+        self._check_capability_change("mcp", name, False)
         self.mcp[name] = False
         if self.enabled:
             for adapter in self._mcp_clients.get(name, (None, []))[1]:
@@ -830,6 +992,7 @@ class Plugin:
             return False
         if name not in self.handlers:
             return False
+        self._check_capability_change("handlers", name, True)
         return session.enable_handler(name)
 
     def disable_handler(self, name: str) -> bool:
@@ -848,6 +1011,7 @@ class Plugin:
             return False
         if name not in self.handlers:
             return False
+        self._check_capability_change("handlers", name, False)
         return session.disable_handler(name)
 
     def enable_command(self, name: str) -> bool:
@@ -866,9 +1030,10 @@ class Plugin:
             return False
         if name not in self.commands:
             return False
+        self._check_capability_change("commands", name, True)
         self.commands[name] = True
         if self.enabled:
-            session.enable_command(name)
+            session._plugin_interop.command_registry().enable_command(name)
         return True
 
     def disable_command(self, name: str) -> bool:
@@ -887,9 +1052,46 @@ class Plugin:
             return False
         if name not in self.commands:
             return False
+        self._check_capability_change("commands", name, False)
         self.commands[name] = False
         if self.enabled:
-            session.disable_command(name)
+            session._plugin_interop.command_registry().disable_command(name)
+        return True
+
+    def enable_service(self, name: str) -> bool:
+        """
+        启用插件专用服务独立开关
+
+        参数:
+        - name: 实际服务名
+
+        返回:
+        - 服务存在且已更新时为 True
+        """
+        service = self._services.get(name)
+        if service is None:
+            return False
+        self._check_capability_change("services", name, True)
+        self.services[name] = True
+        service.enable()
+        return True
+
+    def disable_service(self, name: str) -> bool:
+        """
+        停用插件专用服务, 不修改导出声明
+
+        参数:
+        - name: 实际服务名
+
+        返回:
+        - 服务存在且已更新时为 True
+        """
+        service = self._services.get(name)
+        if service is None:
+            return False
+        self._check_capability_change("services", name, False)
+        self.services[name] = False
+        service.disable()
         return True
 
     # ---------- 状态查看 ----------
@@ -911,16 +1113,42 @@ class Plugin:
                 h = session._handlers.get(n)
                 handler_effective[n] = h is not None and h.enabled
 
-        def _items(kind: str, states: dict[str, bool], effective: dict[str, bool] | None = None) -> list[dict[str, str | bool]]:
+        def _items(kind: CapabilityKind, states: dict[str, bool], effective: dict[str, bool] | None = None) -> list[dict[str, str | bool]]:
+            """
+            保留用户开关并单独展示关系合成结果
+
+            参数:
+            - kind: 当前能力类别
+            - states: 已保存的独立开关
+            - effective: 处理器的实际独立位, 默认使用 states
+
+            返回:
+            - 含期望状态, 实效原因与公开范围的能力资料
+            """
             descriptions = self.capability_descriptions.get(kind, {})
-            return [
-                {
-                    "name": n,
-                    "enabled": self.enabled and (effective.get(n, False) if effective is not None else s),
-                    "description": descriptions.get(n, ""),
-                }
-                for n, s in states.items()
-            ]
+            runtime = session._plugin_interop_runtime if session is not None else None
+            result: list[dict[str, str | bool]] = []
+            for name, state in states.items():
+                requested = effective.get(name, False) if effective is not None else state
+                enabled = self.enabled and requested
+                reason, replacements = "", ()
+                if runtime is not None:
+                    enabled = enabled and runtime.capability_available(self.name, kind, name)
+                    if not enabled:
+                        reason, replacements = runtime.capability_reason(self.name, kind, name)
+                elif not enabled:
+                    reason = "plugin_disabled" if not self.enabled else "disabled"
+                service = self._services.get(name) if kind == "services" else None
+                result.append({
+                    "name": name,
+                    "enabled": enabled,
+                    "requested_enabled": requested,
+                    "exported": name in self.interop.exports.get(kind, ()),
+                    "reason": reason,
+                    "replaced_by": ", ".join(replacements),
+                    "description": descriptions.get(name, service.description if service is not None else ""),
+                })
+            return result
 
         return {
             "tools": _items("tools", self.tools),
@@ -928,4 +1156,5 @@ class Plugin:
             "mcp": _items("mcp", self.mcp),
             "handlers": _items("handlers", self.handlers, handler_effective),
             "commands": _items("commands", self.commands),
+            "services": _items("services", self.services),
         }
