@@ -1,4 +1,4 @@
-import type { LLMConfig } from './types';
+import type { LLMConfig, PluginCapabilityKind, PluginCapabilityState } from './types';
 import { getChatApiUrl } from '@/utils/constants';
 import { ensureApiSession, establishApiSession } from './auth';
 import type { SessionPluginSettings } from './pluginSettings';
@@ -207,13 +207,9 @@ export interface ChatPreloadSettings {
 }
 
 // 能力项
-export interface CapabilityItem {
-  name: string;
-  description: string;
-  enabled: boolean;
-}
+export type CapabilityItem = PluginCapabilityState;
 
-export type CapabilityKind = 'tools' | 'skills' | 'mcp' | 'handlers' | 'commands';
+export type CapabilityKind = PluginCapabilityKind;
 
 // 插件信息
 export interface ChatPlugin {

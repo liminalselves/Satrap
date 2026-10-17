@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Toggle } from '@/components/ui/Toggle';
 import { Link } from 'react-router-dom';
-import { PluginCapabilities } from '@/components/common/PluginCapabilities';
+import { PluginCapabilities, PluginInteractions } from '@/components/common/PluginCapabilities';
 import { cn } from '@/utils/cn';
 
 interface ManagedPluginState {
@@ -347,6 +347,8 @@ export function EdictumPluginManager({
                     onChange={(kind, capability, enabled) => setCapabilityEnabled(selectedPlugin.name, kind, capability, enabled)} />
                 </div>
               )}
+
+              <PluginInteractions interop={selectedPlugin.interop} />
 
               {!selectedPresent && (
                 <p className="border-t border-glass-border pt-4 text-sm text-text-tertiary">

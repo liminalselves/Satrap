@@ -11,7 +11,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { InstallPluginModal } from './InstallPluginModal';
 import { GlobalPluginSettings } from './GlobalPluginSettings';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
-import { PluginCapabilities, PLUGIN_CAPABILITY_LABELS as capabilityLabels } from '@/components/common/PluginCapabilities';
+import { PluginCapabilities, PluginInteractions, PLUGIN_CAPABILITY_LABELS as capabilityLabels } from '@/components/common/PluginCapabilities';
 import { PluginUsages } from './PluginUsages';
 import { StickerLibrary } from './StickerLibrary';
 
@@ -56,7 +56,7 @@ export function PluginOverview({ plugin }: { plugin: ManagedPlugin }) {
       <p className="whitespace-pre-wrap text-text-secondary">{plugin.description || '暂无说明'}</p>
       <p className="text-sm text-text-tertiary">{plugin.usage_count} 个使用位置。能力声明来自插件元数据，实际加载结果由各运行实例决定。</p>
     </Card>
-    <Card><h2 className="mb-4 text-lg font-semibold">声明的能力</h2><PluginCapabilities capabilities={plugin.capabilities} /></Card>
+    <Card><h2 className="mb-4 text-lg font-semibold">声明的能力</h2><PluginCapabilities capabilities={plugin.capabilities} /><PluginInteractions interop={plugin.interop} /></Card>
   </div>;
 }
 

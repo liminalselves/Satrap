@@ -2517,7 +2517,7 @@ function PluginCapabilitiesModal({
 }) {
   if (!plugin) return null;
   const descriptions = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.description]))]));
-  const values = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.enabled]))]));
+  const values = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.requested_enabled ?? item.enabled]))]));
 
   return (
     <Modal open={plugin !== null} onClose={onClose} title={`${plugin.name} 能力`} size="md">
@@ -2532,7 +2532,7 @@ function PluginCapabilitiesModal({
         </div>
 
         <Link className="text-sm text-accent" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(plugin.name)}`}>打开插件详情</Link>
-        <PluginCapabilities capabilities={descriptions} values={values} active={plugin.enabled}
+        <PluginCapabilities capabilities={descriptions} values={values} active={plugin.enabled} effective={plugin.capabilities}
           onChange={(kind, name, enabled) => onToggleCapability(plugin.name, kind as CapabilityKind, name, enabled)} />
 
         <div className="flex justify-end pt-1">
