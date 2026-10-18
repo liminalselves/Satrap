@@ -26,6 +26,7 @@ async function chat_reconnect(runtime) {
     const fixture = createBenchmarkFixture(2);
     const approval = { ok: true, available: true, mode: 'user', revision: 0, plan_mode: false };
     const approvalWrites = [];
+    let rejectApprovalSave = false;
     const projectWrites = [];
     const approvalAnswers = [];
     await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
@@ -42,6 +43,10 @@ async function chat_reconnect(runtime) {
       }
       if (pathname === '/api/chat/approval') {
         if (route.request().method() === 'PUT') {
+          if (rejectApprovalSave) {
+            rejectApprovalSave = false;
+            return route.fulfill({ status: 409, json: { error: '审批模式已变化, 请重新选择' }, headers });
+          }
           const payload = route.request().postDataJSON();
           assert.equal(payload.expected_revision, approval.revision);
           approvalWrites.push(payload.mode);
@@ -167,23 +172,45 @@ async function chat_reconnect(runtime) {
     assert.equal(await page.locator('.chat-message-item').count(), 2);
     assert.equal(await page.getByTitle('发送', { exact: true }).count(), 1);
     assert.deepEqual(errors, []);
+    await page.getByTitle('展开选项', { exact: true }).click();
+    const quickApproval = page.getByRole('group', { name: '审批', exact: true });
+    await quickApproval.getByRole('button', { name: '请求批准', exact: true }).click();
+    await page.getByRole('button', { name: '帮我审批', exact: true }).click();
+    await quickApproval.getByRole('button', { name: '帮我审批', exact: true }).waitFor();
     await page.getByTitle('对话设置', { exact: true }).click();
     const settings = page.getByRole('dialog', { name: '对话设置', exact: true });
     const approvalGroup = settings.getByRole('group', { name: '执行审批模式' });
     for (const [previous, label] of [
-      ['请求批准 (user)', '帮我审批 (auto)'],
-      ['帮我审批 (auto)', '完全访问 (full-access)'],
-      ['完全访问 (full-access)', '请求批准 (user)'],
+      ['帮我审批', '完全访问'],
+      ['完全访问', '请求批准'],
     ]) {
       await approvalGroup.getByRole('button', { name: previous, exact: true }).click();
       await page.getByRole('button', { name: label, exact: true }).click();
       await approvalGroup.getByRole('button', { name: label, exact: true }).waitFor();
+      assert.equal(await quickApproval.getByRole('button', { name: label, exact: true }).count(), 1);
     }
     assert.deepEqual(approvalWrites, ['auto', 'full-access', 'user']);
     if (process.env.SATRAP_UI_SCREENSHOT_DIR) {
-      await page.screenshot({ path: path.join(process.env.SATRAP_UI_SCREENSHOT_DIR, 'chat-approval-settings.png') });
+      await page.screenshot({ path: path.join(process.env.SATRAP_UI_SCREENSHOT_DIR, 'chat-approval-settings.png'), animations: 'disabled' });
     }
     await page.keyboard.press('Escape');
+    rejectApprovalSave = true;
+    await quickApproval.getByRole('button', { name: '请求批准', exact: true }).click();
+    await page.getByRole('button', { name: '完全访问', exact: true }).click();
+    await quickApproval.getByRole('alert').filter({ hasText: '审批模式已变化' }).waitFor();
+    assert.equal(approval.mode, 'user');
+    await quickApproval.getByRole('button', { name: '请求批准', exact: true }).waitFor();
+    approval.mode = 'auto';
+    approval.revision++;
+    approval.plan_mode = true;
+    await page.getByTitle('收起选项', { exact: true }).click();
+    await page.getByTitle('展开选项', { exact: true }).click();
+    await quickApproval.getByRole('button', { name: '帮我审批', exact: true }).waitFor();
+    assert.equal(await quickApproval.getByText('计划模式已开启', { exact: true }).isVisible(), true);
+    approval.plan_mode = false;
+    if (process.env.SATRAP_UI_SCREENSHOT_DIR) {
+      await page.screenshot({ path: path.join(process.env.SATRAP_UI_SCREENSHOT_DIR, 'chat-approval-shortcut.png'), animations: 'disabled' });
+    }
     await page.getByTitle('新建项目 (绑定工作区文件夹)', { exact: true }).click();
     await page.getByTitle('浏览服务器目录', { exact: true }).click();
     const picker = page.getByRole('dialog', { name: '选择工作区目录', exact: true });

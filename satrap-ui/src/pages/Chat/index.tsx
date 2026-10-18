@@ -1,4 +1,5 @@
 import { ApprovalSettings } from './ApprovalSettings';
+import { useApprovalMode, type ApprovalControl } from './useApprovalMode';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -373,6 +374,12 @@ export function Chat() {
     () => conversations.find((c) => c.id === activeId),
     [conversations, activeId]
   );
+  const approval = useApprovalMode(backendOk && active && active.id !== '__draft__' && !active.preloaded ? active.id : '');
+  const refreshApproval = approval.refresh;
+  useEffect(() => {
+    if ((optionsOpen || settingsOpen) && !generating) void refreshApproval();
+  }, [optionsOpen, settingsOpen, generating, active?.messages.length, plugins, pluginConfigRevision, refreshApproval]);
+  // 打开面板, 完成命令或更新插件后重新读实际模式, 两个入口共用同一状态
   const messageScroll = useChatScroll(`${backendOk}:${activeId}:${showEntryChoice}`, active?.messages, Boolean(active?.loaded));
   const activePendingUserInput = pendingUserInputs[activeId]?.[0];
   const activePendingUserAnswer = activePendingUserInput
@@ -1726,10 +1733,11 @@ export function Chat() {
           {/* 输入区(sticky 固定在消息流底部, 不随滚动消失; 底部渐变让滚过的内容淡出) */}
           <div className="sticky bottom-0 z-10 shrink-0 -mx-5 px-5 pt-3 pb-4 bg-gradient-to-t from-[var(--glass-bg)] to-transparent">
             <div className="max-w-3xl mx-auto">
-              {/* 折叠选项面板: think / model (紧凑 + 独立反光, 右对齐) */}
+              {/* 折叠选项面板: 思考, 模型和执行审批 */}
               {optionsOpen && (
-                <div className="mb-2 w-fit ml-auto">
+                <div className="mb-2 w-fit max-w-full ml-auto">
                   <OptionsPanel
+                    approval={approval}
                     think={settings.think}
                     model={settings.model}
                     modelOptions={modelOptions}
@@ -1835,7 +1843,7 @@ export function Chat() {
 
       {/* 聊天设置弹窗 */}
       <ChatSettingsModal
-        conversationId={activeId && activeId !== '__draft__' ? activeId : ''}
+        approval={approval}
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         settings={settings}
@@ -2151,6 +2159,7 @@ function DirectoryPicker({
 
 // 折叠选项面板(紧凑自适应宽度 + 独立反光)
 function OptionsPanel({
+  approval,
   think,
   model,
   modelOptions,
@@ -2158,6 +2167,7 @@ function OptionsPanel({
   onToggleThink,
   onModelChange,
 }: {
+  approval: ApprovalControl;
   think: string;
   model: string;
   modelOptions: { value: string; label: string }[];
@@ -2172,7 +2182,7 @@ function OptionsPanel({
   return (
     <div
       ref={reflectRef}
-      className="glass-card glass-card-accent rounded-xl px-3 py-2 flex items-center gap-4 animate-fade-in w-fit"
+      className="glass-card glass-card-accent rounded-xl px-3 py-2 flex flex-wrap items-center gap-3 animate-fade-in w-fit max-w-full"
     >
       {/* think 选择 */}
       <div className="flex items-center gap-2">
@@ -2199,6 +2209,8 @@ function OptionsPanel({
           />
         </div>
       </div>
+      <div className="w-px h-5 bg-glass-border" />
+      <ApprovalSettings approval={approval} compact />
     </div>
   );
 }
@@ -2215,7 +2227,7 @@ const CHAT_SETTINGS_CATEGORIES: { key: ChatSettingsCategory; label: string; icon
 
 // 聊天设置弹窗: 左侧分类导航 + 右侧分类内容
 function ChatSettingsModal({
-  conversationId,
+  approval,
   open,
   onClose,
   settings,
@@ -2234,7 +2246,7 @@ function ChatSettingsModal({
   onEditModel,
   onDeleteModel,
 }: {
-  conversationId: string;
+  approval: ApprovalControl;
   open: boolean;
   onClose: () => void;
   settings: ChatSettings;
@@ -2282,7 +2294,7 @@ function ChatSettingsModal({
           <div className="space-y-5">
             {category === 'chat' && (
               <>
-                <ApprovalSettings conversationId={conversationId} />
+                <ApprovalSettings approval={approval} />
                 {/* 模型 */}
                 <div>
                   <label className="block text-sm font-medium text-text-primary mb-2">模型</label>
