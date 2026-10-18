@@ -82,7 +82,7 @@ setup(
     license="GPL-3.0-only",
     packages=find_packages(include=["satrap", "satrap.*"]),
     include_package_data=True,
-    python_requires=">=3.10",
+    python_requires=">=3.11",
     install_requires=install_requires,
     extras_require=extras_require,
     entry_points={
@@ -95,7 +95,6 @@ setup(
         "Intended Audience :: Developers",
         "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",

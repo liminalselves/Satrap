@@ -487,7 +487,7 @@ Phase A 分别记录简单标准库任务, pandas 和 matplotlib 绘图任务的
 | Windows, CPython 3.13.5 | 迁移后 coding security/configuration 两个现有流程模块共 151 项通过, 27.67 秒 |
 | Linux, WSL Ubuntu, CPython 3.13.16 | 迁移后真实 worker 集中子集 14 项通过, 33 项未选, 26.17 秒 |
 | macOS | 未验收, 用户确认暂无可用环境 |
-| 其他 Python 版本 | 未本地实测, CI 矩阵登记 3.10/3.13 |
+| 其他 Python 版本 | 未本地实测, CI 矩阵登记 3.11/3.13; 最低支持 Python 3.11 |
 | CI | 已新增 Windows/Ubuntu/macOS 矩阵, 尚未触发运行 |
 | 类型检查 | 迁移后涉及的 15 个生产文件 Pyright 0 错误, 0 警告 |
 | 便携版 | 依赖入口已覆盖, 未执行完整构建验收 |

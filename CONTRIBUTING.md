@@ -24,7 +24,7 @@ Satrap 目前仍处于早期开发阶段，项目结构、功能设计和 API �
 
 ### Backend
 
-Satrap 需要 Python 3.10 或更高版本。
+Satrap 需要 Python 3.11 或更高版本。
 
 克隆仓库后安装开发版本：
 
