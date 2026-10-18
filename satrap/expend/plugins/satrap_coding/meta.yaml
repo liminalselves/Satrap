@@ -57,12 +57,12 @@ tools:
   grep_files: 在指定目录内按正则搜索文件内容
 skills:
   goal: "持续目标: 设置后每轮推进直至完成, 与 /goal 命令搭配"
-  plan: "计划模式: 禁用文件编辑与写操作, 只输出计划, 与 /plan 命令搭配"
+  plan: "计划模式: 只读分析和规划, 禁止修改文件和运行本机命令, 使用 /plan 切换"
 handlers:
   satrap_coding.inject: 在用户输入前注入持续目标上下文
 commands:
-  goal: 设置/查看/完成持续目标
-  plan: 进入/退出计划模式 (写操作全部禁用)
+  goal: "设置持续目标并自动推进: /goal <目标>; status 查看, done 完成, clear 清除"
+  plan: "切换计划模式: /plan on 只读分析和规划, 禁止修改文件和运行本机命令; /plan off 恢复"
 mcp: {}
 
 compatibility:

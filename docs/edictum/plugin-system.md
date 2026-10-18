@@ -53,7 +53,7 @@ description: "..."
 
 ### 能力声明 (可选)
 
-`meta.yaml` 除身份字段外, 还可用五类键声明插件的**能力组成描述** (名字 -> 描述), 供前端 / 文档展示:
+`meta.yaml` 除身份字段外, 还可用六类键声明插件的**能力组成描述** (名字 -> 描述), 供前端 / 文档展示; `commands` 同时提供 `/help` 的命令说明:
 
 ```yaml
 name: my-plugin
@@ -69,10 +69,15 @@ handlers:
   my-plugin.inject: 注入上下文
 commands:
   plan: 进入/退出计划模式
+services: {}
 mcp: {}
 ```
 
 > 声明仅作**描述补充**: 能力的实际注册由自动扫描 (`collect_*`) 决定 (真相源), meta.yaml 声明不改变安装行为。声明了但扫描不到的能力仅在安装时给出 `warning` 日志; 扫描到但未声明的能力照常安装 (描述留空)。声明经 `plugin.capability_descriptions` 读取, 并在 `plugin.list_capabilities()` 的每项以 `description` 字段返回。
+
+插件命令注册时, 优先将 `commands.<命令名>` 的非空说明作为 `intro`, 同步和异步入口共用该声明。旧插件未提供说明或声明为空时, 兼容回退到对应命令函数 docstring 的首行; 两者均缺失时 `/help` 显示“暂无说明”。因此新插件的用户文案应写在 `meta.yaml`, 代码注释只需说明实现。描述在安装时读取, 更新后需重新安装插件或重启会话。
+
+普通命令仍可通过 `session.add_command(name, handler, intro="用户说明")` 或命令处理器的 `register_command(..., intro=...)` 显式指定, 不改变原有接口。
 
 ### 配置项声明 `config_schema` (可选)
 

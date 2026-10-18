@@ -39,7 +39,7 @@ def build_commands(
 
     def command(*args: str) -> str:
         """
-        查询状态或通过原生命令修改模式
+        同步处理审批状态查询与模式修改
 
         参数:
         - args: 用户原生命令参数, 不接受模型转发
@@ -66,7 +66,7 @@ def build_commands(
 
     async def command_async(*args: str) -> str:
         """
-        异步执行相同的可信原生命令
+        异步处理审批状态查询与模式修改
 
         参数:
         - args: 用户原生命令参数

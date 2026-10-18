@@ -18,7 +18,7 @@ config_schema:
     default: ""
     description: 审批模式和日志目录, 留空使用宿主会话缓存目录; 更改后需重启会话
 commands:
-  approve: 切换 user/auto/full-access 审批模式或查看状态
+  approve: "切换执行审批: /approve mode user 由你确认, auto AI 审批, full-access 直接执行; /approve status 查看"
 command_permissions: {}
 tools: {}
 services: {}

@@ -204,7 +204,7 @@ def parse_capability_descriptions(meta: dict[str, Any]) -> dict[str, dict[str, s
     参数:
     - meta: 元数据
 
-    声明仅作描述补充 (供前端/文档展示), 自动扫描仍是注册的真相源;
+    声明供前端和文档展示, commands 同时用作命令帮助, 自动扫描仍是注册的真相源;
     非字典的类别键跳过并警告, 其余未识别键忽略
 
     返回:

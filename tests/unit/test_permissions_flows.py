@@ -57,6 +57,11 @@ async def test_permission_plugin_lifetime_and_real_coding_execution(tmp_path, mo
             assert "已切换" not in await command("/approve mode user")
         assert engine.mode == "full-access"
         await _await(session.install_plugin(str(PRESETS / "satrap_coding"), config={"workspace_root": str(workspace)}))
+        help_text = await command("/help")
+        assert "/goal: 设置持续目标并自动推进" in help_text
+        assert "/plan: 切换计划模式" in help_text
+        assert "/approve: 切换执行审批" in help_text
+        assert "None" not in help_text and "可信原生命令" not in help_text
         tool = session.tools_manager.tools["write_file"]
         assert "已写入" in await _await(tool.execute("test.txt", "approved"))
         assert "计划模式" in await command("/plan on")

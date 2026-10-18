@@ -78,31 +78,31 @@ def _cmd_goal_impl(state: dict[str, Any], session: SessionType, args: list[str])
     goal = goals.set_goal(sid, text)
     return (
         f"目标已设置 (active): {goal['text']}\n"
-        "目标自动推进 (yolo) 已启动: 模型将连续执行直到报告完成, 每轮自动推进; "
+        "目标自动推进已启动: 模型将连续执行直到报告完成, 每轮自动推进; "
         "/goal done 或 /goal clear 可随时停止"
     )
 
 
 def _cmd_plan_impl(state: dict[str, Any], args: list[str]) -> str:
     """
-    计划模式: 写类工具全部拒绝, 只输出计划
+    切换只读分析与规划模式, 禁止文件修改和本机命令
 
     参数:
     - state: 状态
     - args: 额外位置参数
 
     返回:
-    - str: 计划模式: 写类工具全部拒绝, 只输出计划
+    - 模式切换结果或用法说明, 不改变当前审批模式
     """
     engine = state["engine"]
     assert isinstance(engine, PermissionEngine)
     sub = args[0] if args else "on"
     if sub in ("on", "进入", "start"):
         engine.set_plan_mode(True)
-        return "已进入计划模式: 文件编辑/写命令等写操作全部禁用, 只输出计划; 完成后 /plan off 恢复"
+        return "已进入计划模式: 可以读取文件并分析规划, 禁止修改文件和运行本机命令; 使用 /plan off 恢复执行"
     if sub in ("off", "退出", "end"):
         engine.set_plan_mode(False)
-        return "已退出计划模式: 写操作恢复可用"
+        return "已退出计划模式: 文件修改和本机命令按当前审批模式执行"
     if sub == "approve":
         return "/plan approve 已移除 (与审批语义混淆), 请使用 /plan off 退出计划模式"
     return "用法: /plan on 进入计划模式; /plan off 退出"
@@ -125,7 +125,7 @@ def build_commands(
 
     def cmd_goal(*args: str) -> str:
         """
-        设置/查看/完成持续目标
+        同步处理持续目标的设置, 查询与完成
 
         参数:
         - args: 额外位置参数
@@ -137,20 +137,38 @@ def build_commands(
 
     def cmd_plan(*args: str) -> str:
         """
-        进入/退出计划模式 (写操作全部禁用)
+        同步处理计划模式切换
 
         参数:
         - args: 额外位置参数
 
         返回:
-        - str: 进入/退出计划模式 (写操作全部禁用)
+        - 模式切换结果或用法说明
         """
         return _cmd_plan_impl(state, list(args))
 
     async def cmd_goal_async(*args: str) -> str:
+        """
+        异步处理持续目标的设置, 查询与完成
+
+        参数:
+        - args: 目标内容或 status, done, clear 等子命令
+
+        返回:
+        - 目标状态或操作结果
+        """
         return _cmd_goal_impl(state, session, list(args))
 
     async def cmd_plan_async(*args: str) -> str:
+        """
+        异步处理计划模式切换
+
+        参数:
+        - args: on 开启计划模式, off 恢复执行
+
+        返回:
+        - 模式切换结果或用法说明
+        """
         return _cmd_plan_impl(state, list(args))
 
     sync_map: dict[str, Callable[..., Any]] = {

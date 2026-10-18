@@ -32,6 +32,92 @@ from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
 from satrap.edictum.plugin_spec import PluginSpec
 from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states, reconcile_plugin_states_async
 
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_command_help_metadata_legacy_fallback_and_reinstallation(tmp_path, monkeypatch, asynchronous):
+    """实际命令帮助使用声明文案, 保留旧插件与显式 intro, 重装和回滚使用对应元数据"""
+    import inspect
+    from textwrap import dedent
+    from satrap.edictum import simple_session as ss_mod
+    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin_settings import PluginInstallConfig
+
+    monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
+    root = tmp_path / "command-help"
+    root.mkdir()
+    metadata = dedent("""\
+        name: command_help_probe
+        commands:
+          declared: 面向用户的命令说明
+          blank: "   "
+          nullable:
+          ghost: 只有声明, 没有实现
+    """)
+    (root / "meta.yaml").write_text(metadata, encoding="utf-8")
+    (root / "commands.py").write_text(dedent('''\
+        def declared():
+            """内部同步实现说明"""
+            return "done"
+        async def declared_async():
+            """内部异步实现说明"""
+            return "done"
+        def legacy():
+            """旧插件帮助文案
+
+            后续实现注释不应进入帮助
+            """
+            return "legacy"
+        async def legacy_async():
+            return legacy()
+        legacy_async.__doc__ = legacy.__doc__
+        def undocumented():
+            return "done"
+        async def undocumented_async():
+            return "done"
+        commands = {"declared": declared, "legacy": legacy, "blank": legacy,
+                    "nullable": legacy, "undocumented": undocumented}
+        async_commands = {"declared": declared_async, "legacy": legacy_async, "blank": legacy_async,
+                          "nullable": legacy_async, "undocumented": undocumented_async}
+    '''), encoding="utf-8")
+    session = (AsyncSimpleSession if asynchronous else SimpleSession)(
+        "command-help", Mock(spec=AsyncLLM if asynchronous else LLM), db_path=str(tmp_path / "chat.db"))
+
+    async def resolve(value):
+        return await value if inspect.isawaitable(value) else value
+
+    async def command(text):
+        registry = session.command_handler if asynchronous else session.cmd_handler
+        result, matched = await resolve(registry.process_message(text))
+        assert matched
+        return result
+
+    try:
+        plugin = await resolve(session.install_plugin(str(root)))
+        original_meta = dict(plugin._metadata)
+        help_text = await command("/help")
+        assert "/declared: 面向用户的命令说明" in help_text
+        for name in ("legacy", "blank", "nullable"):
+            assert f"/{name}: 旧插件帮助文案" in help_text
+        assert "/undocumented: 暂无说明" in help_text
+        assert "/ghost:" not in help_text and "内部" not in help_text and "后续实现" not in help_text
+        assert await command("/declared") == "done"
+        assert plugin.capability_descriptions["commands"]["declared"] == "面向用户的命令说明"
+        async def manual_async():
+            return "manual"
+        session.add_command("manual", manual_async if asynchronous else lambda: "manual", intro="显式注册的说明")
+        assert "/manual: 显式注册的说明" in await command("/help")
+        await resolve(session.uninstall_plugin(plugin.name))
+        assert "/declared:" not in await command("/help")
+        (root / "meta.yaml").write_text(metadata.replace("面向用户的命令说明", "更新后的命令说明"), encoding="utf-8")
+        await resolve(session.install_plugin(str(root)))
+        assert "/declared: 更新后的命令说明" in await command("/help")
+        await resolve(session.uninstall_plugin(plugin.name))
+        await resolve(session.install_plugin(str(root), config=PluginInstallConfig({}, metadata_snapshot=original_meta)))
+        assert "/declared: 面向用户的命令说明" in await command("/help")
+    finally:
+        for installed in list(session.list_plugins()):
+            await resolve(session.uninstall_plugin(installed.name))
+
 def archive_bytes(files):
     """构造内存 ZIP 测试文件"""
     buffer = io.BytesIO()

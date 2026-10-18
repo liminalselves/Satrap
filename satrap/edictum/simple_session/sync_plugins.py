@@ -162,6 +162,7 @@ def install_plugin(
             if not handler_states[h.name]:
                 h.enabled = False
 
+        descriptions = parse_capability_descriptions(meta)
         sync_commands, _async_commands = collect_commands(
             plugin_dir, name, self, plugin_config, resources, plugin_host=plugin_host
         )
@@ -171,7 +172,7 @@ def install_plugin(
             if cname in self.cmd_handler.commands or cname in command_states:
                 raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
             self.cmd_handler.register_command(
-                cname, chandler, intro=_command_intro(chandler),
+                cname, chandler, intro=_command_intro(chandler, descriptions.get("commands", {}).get(cname)),
                 permission_binding=PluginEntryBinding(name, "commands", cname, permissions, plugin_config, weakref.ref(chandler), weakref.ref(self))
                 if cname in permissions.commands or getattr(chandler, "requires_native_scope", False) is True else None,
             )
@@ -225,8 +226,8 @@ def install_plugin(
         plugin._metadata = dict(meta)
         plugin._services = services
         plugin.services = {service_name: initial_capabilities.get("services", {}).get(service_name, True) for service_name in services}
-        # meta.yaml 能力声明: 读入描述并校验未匹配项 (仅警告, 不改变安装行为)
-        plugin.capability_descriptions = parse_capability_descriptions(meta)
+        plugin.capability_descriptions = descriptions
+        # 命令帮助与能力展示共用声明, 未匹配项仅警告, 不额外注册能力
         plugin.config_schema = schema_to_payload(config_schema)
         _warn_undeclared_capabilities(
             name,
