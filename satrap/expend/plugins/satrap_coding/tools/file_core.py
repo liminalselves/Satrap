@@ -11,6 +11,7 @@ import os
 import re
 
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+from satrap.core.file_access.reads import FileRead, prepare_file_read, read_error
 from .approval import _parse_integer_argument
 from .paths import (
     _tool_root,
@@ -19,16 +20,18 @@ from .paths import (
     _resolve_grep_file,
     _FileProtectionMixin,
     _read_file_page,
+    _tool_environment,
+    _session_sandbox_root,
 )
 
 
 class _ReadFileToolCore(_FileProtectionMixin, _ToolBase):
-    """读取工作区内文件 (支持分页)"""
+    """分页读取单个文件, 目录外读取使用宿主审批"""
 
     recovery_policy = "retry"
 
     tool_name = "read_file"
-    description = "读取文件并支持 offset/limit 分页; 普通模式限工作区, full-access 可使用显式外部路径"
+    description = "分页读取单个文件; 工作区和本会话上传/沙箱内直接读取, 外部文件按 user/auto/full-access 审批"
     params_dict = {
         "path": ("string", "文件路径 (绝对或相对工作区)"),
         "offset": ("number", "起始行号, 默认 0"),
@@ -39,38 +42,53 @@ class _ReadFileToolCore(_FileProtectionMixin, _ToolBase):
         """初始化 ReadFileTool"""
         super().__init__()
 
-    def _execute(self, path: str, offset: int = 0, limit: int = 200) -> str:
+    def _prepare_read(self, path: str, offset: int, limit: int) -> tuple[FileRead, int, int]:
         """
-        执行
+        校验分页并固定宿主文件读取目标
 
         参数:
-        - path: 路径
-        - offset: 偏移量
-        - limit: 数量上限
+        - path: 文件路径, 相对路径基于工作区
+        - offset: 起始行偏移
+        - limit: 最大返回行数
 
         返回:
-        - str: 执行
+        - 读取计划与规范化分页参数, 非法参数或保护路径抛出异常
+        """
+        from . import _SYSTEM_PROTECTED_ROOT
+
+        start, error = _parse_integer_argument(offset, "offset", minimum=0, maximum=10_000_000)
+        if error is not None or start is None:
+            raise ValueError(error or "offset 无效")
+        page_size, error = _parse_integer_argument(limit, "limit", minimum=1, maximum=2000)
+        if error is not None or page_size is None:
+            raise ValueError(error or "limit 无效")
+        environment = _tool_environment(self)
+        read = prepare_file_read(
+            self, path, workspace=_tool_root(self), environment=environment,
+            current_environment=lambda: _tool_environment(self),
+            parameters={"offset": start, "limit": page_size},
+            sandbox_root=_session_sandbox_root(getattr(self, "_session", None), self.sandbox_root),
+            system_root=_SYSTEM_PROTECTED_ROOT,
+        )
+        return read, start, page_size
+
+    def _execute(self, path: str, offset: int = 0, limit: int = 200) -> str:
+        """
+        同步审批并读取本次固定文件
+
+        参数:
+        - path: 文件路径
+        - offset: 起始行偏移, 默认 0
+        - limit: 返回行数, 默认 200
+
+        返回:
+        - 分页结果; 无批准或目标失效时返回明确错误
         """
         try:
-            abs_path = _resolve_path(path, _tool_root(self), full_access=_full_access(self))
-        except ValueError as e:
-            return f"错误: {e}"
-        reason = self._protection_reason(abs_path, _tool_root(self))
-        if reason is not None:
-            return f"拒绝读取: {reason}"
-        if not abs_path.is_file():
-            return f"错误: 文件不存在: {abs_path}"
-        start, error = _parse_integer_argument(
-            offset, "offset", minimum=0, maximum=10_000_000
-        )
-        if error is not None or start is None:
-            return error or "错误: offset 无效"
-        page_size, error = _parse_integer_argument(
-            limit, "limit", minimum=1, maximum=2000
-        )
-        if error is not None or page_size is None:
-            return error or "错误: limit 无效"
-        return _read_file_page(abs_path, start, page_size)
+            read, start, page_size = self._prepare_read(path, offset, limit)
+            return read.read_sync(lambda target: _read_file_page(target, start, page_size))
+        except Exception as error:
+            return read_error(error)
 
 
 class _ListDirToolCore(_FileProtectionMixin, _ToolBase):

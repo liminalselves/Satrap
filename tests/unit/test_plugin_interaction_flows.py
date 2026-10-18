@@ -805,7 +805,7 @@ async def test_official_plugin_replacement_and_rebindable_environment(tmp_path, 
         bind_environment(session, replace(before, workspace_root=project_b, sandbox_root=sandbox_b, project="b"))
         assert environment_snapshot(session).revision > before.revision
         assert "project-b" in await execute("read_document", {"path": "document.txt"})
-        assert "错误" in await execute("read_document", {"path": str(project_a / "document.txt")})
+        assert "project-a" in await execute("read_document", {"path": str(project_a / "document.txt")})
         missing = await execute("code_sandbox", {"operation": "read", "path": "marker.txt"})
         assert missing["returncode"] != 0
         assert (await execute("code_sandbox", {"operation": "save", "path": "marker.txt", "code": "second"}))["returncode"] == 0
@@ -822,12 +822,14 @@ async def test_official_plugin_replacement_and_rebindable_environment(tmp_path, 
         assert stale["error_type"] == "capability_stale", stale
         assert not (sandbox_b / "stale.txt").exists()
         reader = manager.tools["read_file"]
-        original_read = reader._execute
+        read_globals = (reader.execute if asynchronous else reader._execute).__func__.__globals__
+        original_read = read_globals["_read_file_page"]
+        # 绑定实际工具函数所属的模块, 避免前序装卸或回滚后 patch 到另一份模块实例
         def rebind_during_read(*args, **kwargs):
             text = original_read(*args, **kwargs)
             bind_environment(session, replace(environment_snapshot(session), project="changed-during-read"))
             return text
-        monkeypatch.setattr(reader, "_execute", rebind_during_read)
+        monkeypatch.setitem(read_globals, "_read_file_page", rebind_during_read)
         stale_read = await execute("read_file", {"path": "document.txt"})
         assert stale_read["error_type"] == "capability_stale", stale_read
         assert not hasattr(session, "coding_workspace_root") and not hasattr(session, "coding_sandbox_root")

@@ -16,7 +16,7 @@ config_schema:
   workspace_root:
     type: path
     default: ""
-    description: "工作区根目录 (文件工具白名单根, 留空用项目根)"
+    description: "文件工具默认工作区 (外部单文件读取按宿主模式审批, 留空用项目根)"
   data_root:
     type: path
     default: ""
@@ -47,7 +47,7 @@ tools:
   ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图; 需要宿主通过 session.user_input_provider 特殊适配提问展示和回答回填
   shell: 在本机执行 shell 命令 (PowerShell/cmd), user 人工审批, auto 模型审批, full-access 直接执行, 计划模式禁用
   subagent: 在独立上下文中运行子代理处理任务, 用于并行调研/独立子任务
-  read_file: 读取工作区内文件内容, 支持分页
+  read_file: 分页读取单个文件, 外部文件按宿主三档模式审批
   write_file: 写入或追加内容到工作区内文件 (需批准)
   edit_file: 在文件中精确替换一段文本 (old -> new)
   search_replace: 在一个文件内批量执行多对精确文本替换

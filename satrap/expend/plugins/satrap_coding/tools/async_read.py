@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from functools import partial
+import asyncio
 
+from satrap.core.file_access.reads import read_error
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
-from .paths import _tool_environment
 from .file_core import (
     _ReadFileToolCore,
     _ListDirToolCore,
@@ -19,6 +19,7 @@ from .file_core import (
     _GrepFilesToolCore,
     _TodoWriteToolCore,
 )
+from .paths import _tool_environment, _read_file_page
 
 class AsyncReadFileTool(_ReadFileToolCore, AsyncTool):
     async def execute(self, path: str, offset: int = 0, limit: int = 200) -> str:
@@ -33,8 +34,11 @@ class AsyncReadFileTool(_ReadFileToolCore, AsyncTool):
         返回:
         - 操作结果或输入错误说明, 文件操作还可能返回访问失败说明
         """
-        environment = _tool_environment(self)
-        return await asyncio.to_thread(self._read_in_environment, partial(self._execute, path, offset, limit), environment)
+        try:
+            read, start, page_size = self._prepare_read(path, offset, limit)
+            return await read.read_async(lambda target: _read_file_page(target, start, page_size))
+        except Exception as error:
+            return read_error(error)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """

@@ -1,7 +1,9 @@
 """base_take 异步工具入口, 复用文档读取核心"""
 from __future__ import annotations
+
 from typing import Any
-import asyncio
+
+from satrap.core.file_access.reads import read_error
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
 from .base import _DocumentCore
@@ -11,7 +13,7 @@ class AsyncReadDocumentTool(_DocumentCore, AsyncTool):
     """异步读取本地图片和文档文本, 按模型能力分页查看 PDF 图像"""
 
     tool_name = "read_document"
-    description = "读取本地图片 (png/jpg/jpeg/webp/gif/bmp/tiff) 和 xlsx/docx/pdf/txt/md 等文档; 图片返回视觉内容, 动图仅第一帧; PDF 支持分页, auto 随模型能力返回文字或页面图像, text 只读文字, visual 查看图表和扫描页"
+    description = "读取本地图片 (png/jpg/jpeg/webp/gif/bmp/tiff) 和 xlsx/docx/pdf/txt/md 等文档; 图片返回视觉内容, 动图仅第一帧; 目录外读取按 user/auto/full-access 审批; PDF 支持分页, auto 随模型能力返回文字或页面图像, text 只读文字, visual 查看图表和扫描页"
     params_dict = {
         "path": ("string", "文档或图片路径 (绝对或相对工作区)"),
         "max_length": ("number", "返回文本最大长度, 默认 131072, 超出截断"),
@@ -28,7 +30,7 @@ class AsyncReadDocumentTool(_DocumentCore, AsyncTool):
         读取文档文字, 本地图片及可选 PDF 页面图片
 
         参数:
-        - path: 工作区或当前会话上传目录内的文档或图片路径
+        - path: 文档或图片路径, 目录外单文件读取按当前审批模式处理
         - max_length: 文本字符上限, 默认 131072
         - mode: auto 随模型能力选择, text 只读文字, visual 返回图片或页面图像
         - start_page: PDF 起始页码, 默认 1
@@ -37,7 +39,10 @@ class AsyncReadDocumentTool(_DocumentCore, AsyncTool):
         返回:
         - 文本或可持久化的媒体结果, 读取失败时返回错误文本
         """
-        environment = self._environment()
-        result = await asyncio.to_thread(self._read_document, path, max_length, mode, start_page, page_count, environment=environment)
-        self._verify_environment(environment)
-        return result
+        try:
+            options = self._prepare_document(path, max_length, mode, start_page, page_count)
+            return await options.file.read_async(
+                lambda target: self._read_document(target, options),
+            )
+        except Exception as error:
+            return read_error(error)

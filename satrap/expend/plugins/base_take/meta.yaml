@@ -21,7 +21,7 @@ config_schema:
   workspace_root:
     type: path
     default: ""
-    description: "工作区根目录 (read_document 路径白名单, 留空用项目根)"
+    description: "工作区根目录 (read_document 范围内免审批, 外部单文件按宿主模式审批; 留空用项目根)"
   search_timeout:
     type: number
     default: 10

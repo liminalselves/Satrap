@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Callable, cast
 import time
 
-from satrap.core.approval.policy import PermissionEngine
+from satrap.core.plugin_interop.environment import EnvironmentSnapshot, environment_snapshot
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
-from satrap.core.call_context import current_call_origin, current_tool_workflow, CallOrigin
-from satrap.core.platform import current_adapter_manager
-from satrap.core.plugin_interop.environment import EnvironmentSnapshot, environment_snapshot
+from satrap.core.file_access.reads import source_check as _source_check
+from satrap.core.file_access.paths import protection_reason
+from satrap.core.approval.policy import PermissionEngine
+from satrap.core.call_context import current_call_origin, current_tool_workflow
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost, PluginInteractionError
 from .approval import _turn_identity
 
@@ -176,35 +177,10 @@ def _protection_reason(
     返回:
     - str | None: 原因 (敏感目录/文件)
     """
-    from . import (
-        WORKSPACE_ROOT,
-        _PROTECTED_DIRS,
-        _PROTECTED_FILES,
-        _SYSTEM_PROTECTED_ROOT,
-    )
+    from . import WORKSPACE_ROOT, _SYSTEM_PROTECTED_ROOT
 
-    root = root or WORKSPACE_ROOT
-    resolved = path.resolve()
-    in_sandbox_workspace = (
-        sandbox_root is not None and resolved.is_relative_to(root)
-        and resolved.is_relative_to(sandbox_root)
-    )
-    if not in_sandbox_workspace and (
-        resolved == _SYSTEM_PROTECTED_ROOT or resolved.is_relative_to(_SYSTEM_PROTECTED_ROOT)
-    ):
-        return "路径位于受保护目录 .satrap/ 下"
-    protection_root = sandbox_root if in_sandbox_workspace and sandbox_root is not None else root
-    rel = resolved.relative_to(protection_root) if resolved.is_relative_to(protection_root) else resolved
-    parts = [p.lower() for p in rel.parts]
-    if in_sandbox_workspace and sandbox_root is not None and sandbox_root.is_relative_to(root):
-        parts.extend(p.lower() for p in sandbox_root.relative_to(root).parts if p.lower() != ".satrap")
-    for name in (*_PROTECTED_DIRS, *sorted(protected_dirs)):
-        if name in parts:
-            return f"路径位于受保护目录 {name}/ 下"
-    for name in _PROTECTED_FILES:
-        if path.name.lower() == name:
-            return f"路径命中受保护文件 {name}"
-    return None
+    return protection_reason(path, root or WORKSPACE_ROOT, protected_dirs=protected_dirs,
+                             sandbox_root=sandbox_root, system_root=_SYSTEM_PROTECTED_ROOT)
 
 
 def _session_sandbox_root(
@@ -259,45 +235,6 @@ def _full_access(tool: _ToolBase) -> bool:
     """
     engine = getattr(tool, "engine", None)
     return isinstance(engine, PermissionEngine) and engine.mode == "full-access"
-
-
-def _source_check(origin: CallOrigin | None) -> Callable[[], None]:
-    """
-    冻结平台实例并在本机副作用前核验账号与路由代次
-
-    参数:
-    - origin: 宿主真实来源, 本地 Chat 为 None
-
-    返回:
-    - 可从执行线程调用的同步核验函数, 来源失效时抛出 PermissionError
-    """
-    manager = current_adapter_manager()
-    adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
-
-    def check() -> None:
-        """使用宿主现有路由存储校验, 不接受模型指定来源"""
-        if origin is None:
-            return
-        if (manager is None or current_adapter_manager() is not manager or adapter is None
-                or manager.get_adapter(origin.adapter_id) is not adapter
-                or not adapter.config.enable or adapter.client_self_id != origin.self_id):
-            raise PermissionError("来源平台或机器人账号已经失效")
-        if origin.conversation_kind:
-            store = adapter.agent_route_store
-            if store is not None:
-                revision = store.current_revision(origin.self_id, origin.conversation_kind, origin.chat_id)
-            else:
-                state = adapter._agent_route_memory.get((origin.self_id, origin.conversation_kind, origin.chat_id))
-                revision = state[1] if state else 0
-            if revision != origin.agent_route_generation:
-                raise PermissionError("来源 Agent 路由已经变化")
-            if origin.conversation_kind == "group":
-                route = getattr(adapter, "group_route", None)
-                if callable(route):
-                    current = route(origin.chat_id)
-                    if not isinstance(current, tuple) or len(current) != 2 or current[1] != origin.group_route_generation:
-                        raise PermissionError("来源群会话路由已经变化")
-    return check
 
 
 def _execution_guard(tool: _ToolBase, engine: PermissionEngine, path: Path) -> Callable[[], None]:

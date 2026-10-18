@@ -170,12 +170,12 @@ class PermissionEngine:
         - description: 兼容调用方的动作摘要, 不作为授权证据
 
         返回:
-        - 硬拒绝和计划模式返回 DENY, full-access 或普通读取返回 ALLOW, 其它返回 ASK
+        - 硬拒绝和计划模式返回 DENY, full-access 或范围内普通读取返回 ALLOW, 外部读取等其它动作返回 ASK
         """
         with self._lock:
             if int(risk) >= RiskLevel.FORBIDDEN or self.is_plan_mode_block(operation, risk):
                 return PermissionDecision.DENY
-            if self.mode == "full-access" or operation != "shell" and int(risk) <= RiskLevel.READ:
+            if self.mode == "full-access" or (operation not in {"shell", "file_read_external"} and int(risk) <= RiskLevel.READ):
                 return PermissionDecision.ALLOW
             return PermissionDecision.ASK
 

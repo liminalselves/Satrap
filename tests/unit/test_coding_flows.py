@@ -531,14 +531,14 @@ async def test_grep_does_not_follow_symlink_outside_workspace(tmp_path: Path, wo
     assert "external-secret" not in await async_tools["grep_files"].execute("external-secret")
 
 def test_file_tools_path_boundary_and_protection(tmp_path: Any, workspace: Any):
-    """文件工具: 工作区外拒绝, 受保护路径拒绝"""
+    """文件工具: 外部读取需要审批, 受保护路径拒绝"""
     session = _make_session(tmp_path)
     tools = _install_tools(session)
 
     outside = workspace.parent / "outside.txt"
     outside.write_text("x", encoding="utf-8")
     out = tools["read_file"].execute(str(outside))
-    assert "越出工作区" in out
+    assert "approval_required" in out
 
     out = tools["read_file"].execute("no-such-file-xyz.txt")
     assert "不存在" in out

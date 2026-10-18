@@ -1,5 +1,7 @@
+"""同步文件读取, 目录查询和待办入口, 共享宿主边界并保留各自操作范围"""
 from __future__ import annotations
 from functools import partial
+
 from satrap.core.utils.TCBuilder import Tool
 from satrap.edictum import SimpleSession
 from .file_core import (
@@ -22,9 +24,9 @@ class ReadFileTool(_ReadFileToolCore, Tool):
         - limit: 最大返回行数, 默认 200
 
         返回:
-        - 搜索或读取结果; 目录改绑时拒绝返回旧请求内容
+        - 分页读取结果或错误说明; 审批与目录状态变化时取消原操作
         """
-        return self._read_in_environment(partial(self._execute, path, offset, limit))
+        return self._execute(path, offset, limit)
 
     def _bind(self, session: SimpleSession) -> None:
         """

@@ -425,7 +425,7 @@ async def test_local_image_document_flow_preserves_visual_content_and_scope(tmp_
     assert isinstance(await read("upload.png", "visual"), dict)
     assert "越出当前会话可见范围" in await read(external)
     assert "auto 或 visual" in await read(image_path, "text")
-    assert "图片读取失败" in await read(workspace / "missing.png")
+    assert "不存在" in await read(workspace / "missing.png")
     broken = workspace / "broken.jpg"
     broken.write_bytes(b"not an image")
     assert "图片读取失败" in await read(broken)

@@ -3,13 +3,10 @@
 from __future__ import annotations
 import re
 
+from satrap.core.file_access.paths import PROTECTED_DIRS as _PROTECTED_DIRS, PROTECTED_FILES as _PROTECTED_FILES
 from satrap.core.utils.paths import get_project_root
 
 WORKSPACE_ROOT = get_project_root()
-
-_PROTECTED_DIRS = (".satrap", ".git", "node_modules")
-
-_PROTECTED_FILES = (".env", ".env.local", "api-token", "model_config.json")
 
 _SYSTEM_PROTECTED_ROOT = (get_project_root() / ".satrap").resolve()
 

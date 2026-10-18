@@ -12,8 +12,11 @@ from pathlib import Path
 from typing import Any, cast
 from typing import Awaitable, Callable
 import sys
-from satrap.core.utils.config_text import comma_names
+
 from satrap.expend.plugins.base_take.core.docread import extract_text
+from satrap.core.plugin_interop.environment import environment_snapshot
+from satrap.edictum.plugin_resources import PluginResources
+from satrap.core.utils.config_text import comma_names
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.utils.paths import get_project_root
@@ -27,20 +30,16 @@ from satrap.expend.tools import (
 )
 from satrap.core.type import safe_getattr_callable
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
-from satrap.core.plugin_interop.environment import environment_snapshot
-from satrap.edictum.plugin_resources import PluginResources
+from .async_ import (
+    AsyncReadDocumentTool,
+)
 from .utils import (
     SessionType,
     DEFAULT_SANDBOX_ROOT,
-    _resolve_doc_path,
     _doc_workspace_root,
-    _doc_upload_root,
 )
 from .sync import (
     ReadDocumentTool,
-)
-from .async_ import (
-    AsyncReadDocumentTool,
 )
 
 
