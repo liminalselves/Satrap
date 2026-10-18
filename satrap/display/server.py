@@ -176,6 +176,8 @@ class ChatHTTPServer(MiniHTTPServer):
         返回:
         - 当前路由的请求体字节上限
         """
+        if method == "POST" and urlsplit(path).path == "/api/chat/upload":
+            return 32 * 1024 * 1024 * 4 // 3 + 65536
         if method == "POST" and urlsplit(path).path == "/api/chat/rag/upload":
             return DEFAULT_MAX_FILE_SIZE
         return super()._request_body_limit(method, path)
@@ -527,7 +529,11 @@ class ChatHTTPServer(MiniHTTPServer):
                 file_data = base64.b64decode(file_data_b64)
             except Exception:
                 return 400, {"error": "file_data base64 解码失败"}
-            return 200, svc.save_upload(conv, file_name, file_data)
+            try:
+                return 200, await asyncio.to_thread(svc.save_upload, conv, file_name, file_data)
+            except (OSError, ValueError) as error:
+                logger.warning(f"[媒体上传] 无法保存: {error}")
+                return 400, {"error": str(error)}
         # 文件上传
 
         if method == "GET" and clean == "/api/chat/runs":

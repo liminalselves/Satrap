@@ -92,7 +92,7 @@ MSG_ERROR = "error"
 
 from satrap.edictum.simple_session.recovery import store_for_session, prepare_session_recovery
 from satrap.core.framework.Base.execution.engine import configuration
-from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS
+from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS, MAX_MEDIA_BYTES
 from satrap.core.config.conversation_data import ConversationDataConflict
 from satrap.core.config.conversation_runtime import perform_data_operation
 
@@ -702,6 +702,8 @@ class ChatService:
                 thinking_field_name=config.get("thinking_field_name"),
                 thinking_fields=config.get("thinking_fields"),
                 supports_visual_input=config.get("supports_visual_input", False),
+                supports_native_video_input=config.get("supports_native_video_input", False),
+                video_frame_interval=config.get("video_frame_interval", 2.0),
                 thinking_levels=thinking_levels,
                 omit_none_thinking_fields=bool(config.get("omit_none_thinking_fields")),
             )
@@ -744,7 +746,7 @@ class ChatService:
             "allow_insecure_base_url",
             "thinking_field_name",
             "thinking_fields",
-            "supports_visual_input",
+            "supports_visual_input", "supports_native_video_input", "video_frame_interval",
             "thinking_levels",
             "omit_none_thinking_fields",
         }
@@ -2123,6 +2125,8 @@ class ChatService:
                 if copied > 0 and not context_messages and not src.recorder.has_context_deltas_before(turn_index):
                     context_messages = self._legacy_fork_context(src, turn_index)
                 if context_messages:
+                    from satrap.core.utils.media_store import referenced_media, store_for
+                    store_for(src.session.ctx.db_path, src.session.ctx.conversation_id).copy_to(store_for(new_conv.session.ctx.db_path, new_conv.session.ctx.conversation_id), referenced_media(context_messages))
                     await new_conv.session.ctx.add_turn_messages(context_messages)
             except BaseException:
                 await self.delete_conversation(new_cid)
@@ -2396,12 +2400,16 @@ class ChatService:
                 if declared.startswith(("image/", "video/")):
                     raise ValueError("附件媒体类型与文件格式不符")
                 continue
-            if not visual_enabled(conv.session.llm):
-                raise ValueError("当前模型未启用图像与视频输入")
             root = self._storage.session_uploads(self._platform_id, conv.conversation_id).resolve()
             path = Path(source).resolve()
             if not path.is_relative_to(root) or not path.is_file():
                 raise ValueError("媒体附件必须是当前会话已上传的文件")
+            from satrap.core.utils.media import sniff_media_mime
+            with path.open("rb") as stream:
+                actual = sniff_media_mime(stream.read(32), detected)
+            kind = actual.split("/", 1)[0]
+            if not visual_enabled(conv.session.llm) and not (kind == "video" and getattr(conv.session.llm, "supports_native_video_input", False) is True):
+                raise ValueError("当前模型未启用相应的图片或视频输入能力")
             (images if kind == "image" else videos).append(str(path))
             if len(images) + len(videos) > MAX_MEDIA_ITEMS:
                 raise ValueError("单次媒体输入不能超过 16 项")
@@ -2427,9 +2435,11 @@ class ChatService:
         if not mime.startswith(("image/", "video/")):
             raise ValueError("仅支持预览图像和视频")
         with path.open("rb") as file:
-            data = file.read(10 * 1024 * 1024 + 1)
-        if len(data) > 10 * 1024 * 1024:
-            raise ValueError("预览文件超过 10 MiB 限制")
+            data = file.read(MAX_MEDIA_BYTES + 1)
+        if len(data) > MAX_MEDIA_BYTES:
+            raise ValueError("预览文件超过 32 MiB 限制")
+        from satrap.core.utils.media import sniff_media_mime
+        mime = sniff_media_mime(data[:32], mime)
         return {"data_url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}
 
     def save_upload(self, conversation_id: str, file_name: str, file_data: bytes) -> dict[str, Any]:
@@ -2450,16 +2460,28 @@ class ChatService:
         safe_name = Path(file_name).name   # 防路径穿越
         if not safe_name:
             return {"ok": False, "error": "文件名非法"}
-        # 限制 10MB
-        if len(file_data) > 10 * 1024 * 1024:
-            return {"ok": False, "error": "文件超过 10MB 限制"}
+        from satrap.core.utils.media import inspect_media, sniff_media_mime
+        from satrap.core.utils.media_store import store_for
+        file_type = sniff_media_mime(file_data[:32], mimetypes.guess_type(safe_name)[0] or "application/octet-stream")
+        is_media = file_type.startswith(("image/", "video/"))
+        limit = MAX_MEDIA_BYTES if is_media else 10 * 1024 * 1024
+        if len(file_data) > limit:
+            return {"ok": False, "error": f"文件超过 {limit // (1024 * 1024)} MiB 限制"}
         upload_dir = self._storage.session_uploads(self._platform_id, conversation_id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
         fpath = upload_dir / unique_name
-        fpath.write_bytes(file_data)
+        animated = False
+        kind = ""
+        if is_media:
+            file_type, kind, animated = inspect_media(file_data, file_type)
+        if animated or kind == "video":
+            conv = self._conversations.get(conversation_id)
+            scope = conv.session.ctx.conversation_id if conv is not None else conversation_id + "_main"
+            store_for(self._chat_db_path, scope).write_upload(file_data, file_type, fpath)
+        else:
+            fpath.write_bytes(file_data)
 
-        file_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
         return {
             "ok": True,
             "file_name": safe_name,

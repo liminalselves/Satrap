@@ -31,6 +31,8 @@ class _LLMBase(Generic[_ClientT]):
         thinking_fields: Optional[List[str]] = None,
         omit_none_thinking_fields: bool = False,
         supports_visual_input: bool = False,
+        supports_native_video_input: bool = False,
+        video_frame_interval: float = 2.0,
     ):
         """
         LLM API 共用配置初始化
@@ -50,7 +52,9 @@ class _LLMBase(Generic[_ClientT]):
         - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
         - thinking_fields: 可选参数, 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
         - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
-        - supports_visual_input: 是否支持图像与原生视频输入, 默认 False
+        - supports_visual_input: 是否支持图片输入, 默认 False
+        - supports_native_video_input: 是否支持当前原生视频请求格式, 默认 False
+        - video_frame_interval: 动画及兼容视频抽帧间隔秒数, 默认 2.0
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
@@ -70,6 +74,10 @@ class _LLMBase(Generic[_ClientT]):
         if not isinstance(supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
         self.supports_visual_input = supports_visual_input
+        from satrap.core.utils.media_config import validate_video_settings
+        validate_video_settings(supports_native_video_input, video_frame_interval)
+        self.supports_native_video_input = supports_native_video_input
+        self.video_frame_interval = video_frame_interval
 
         self.client = self._create_client(api_key, timeout)
 
@@ -114,6 +122,8 @@ class _LLMBase(Generic[_ClientT]):
         thinking_fields: Optional[List[str]] = None,
         omit_none_thinking_fields: Optional[bool] = None,
         supports_visual_input: Optional[bool] = None,
+        supports_native_video_input: Optional[bool] = None,
+        video_frame_interval: Optional[float] = None,
     ):
         """
         更新 LLM 实例的默认参数设置
@@ -125,10 +135,18 @@ class _LLMBase(Generic[_ClientT]):
         - max_tokens: 新的最大 token 数
         - thinking_fields: 新的思考字段列表
         - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
-        - supports_visual_input: 是否支持图像与原生视频输入, None 表示保持原值
+        - supports_visual_input: 是否支持图片输入, None 表示保持原值
+        - supports_native_video_input: 是否支持原生视频, None 表示保持原值
+        - video_frame_interval: 抽帧间隔秒数, None 表示保持原值
         """
+        from satrap.core.utils.media_config import validate_video_settings
+        native = getattr(self, "supports_native_video_input", False) if supports_native_video_input is None else supports_native_video_input
+        interval = getattr(self, "video_frame_interval", 2.0) if video_frame_interval is None else video_frame_interval
+        validate_video_settings(native, interval)
         if supports_visual_input is not None and not isinstance(supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
+        self.supports_native_video_input = native
+        self.video_frame_interval = interval
         if supports_visual_input is not None:
             self.supports_visual_input = supports_visual_input
         if model is not None:

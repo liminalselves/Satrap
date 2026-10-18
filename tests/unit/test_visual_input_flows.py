@@ -97,7 +97,8 @@ def test_local_video_is_frozen(tmp_path):
     assert isinstance(content, list)
     path.write_bytes(b"video-after")
     assert content[1]["type"] == "video_url"
-    assert base64.b64decode(content[1]["video_url"]["url"].split(",")[1]) == b"video-before"
+    from satrap.core.utils.media_store import current_store
+    assert current_store().read(content[1]["video_url"]["url"])[0] == b"video-before"
 
 def test_media_tool_results_follow_all_tool_responses():
     messages: list[dict[str, Any]] = []

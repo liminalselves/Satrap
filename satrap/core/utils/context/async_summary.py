@@ -8,6 +8,7 @@ from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import freeze_request_blocks, attach_request_blocks
 from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING
 import copy
+import asyncio
 from satrap.core.type import TokenUsage
 from satrap.core.log import logger
 from .utils import (
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 from .async_checkpoints import _AsyncCheckpoints
 from .base import _ContextCore
 
-from satrap.core.utils.media import project_messages, visual_enabled
+from satrap.core.utils.media import project_context_media, limit_history_media
 
 
 class _AsyncSummary(_AsyncCheckpoints):
@@ -160,8 +161,9 @@ class _AsyncSummary(_AsyncCheckpoints):
             raise ValueError("keep_recent_turns 不能小于 0")
         model = _llm_model_name(llm)
         request_blocks = freeze_request_blocks(request_blocks)
-        history = project_messages(copy.deepcopy(self._messages), visual_enabled(llm))
-        pending = project_messages(copy.deepcopy(pending_messages or []), visual_enabled(llm))
+        history = await asyncio.to_thread(project_context_media, copy.deepcopy(self._messages), llm, self.db_path, self.conversation_id)
+        pending = await asyncio.to_thread(project_context_media, copy.deepcopy(pending_messages or []), llm, self.db_path, self.conversation_id)
+        history, pending = limit_history_media(history, pending)
         messages = history + pending
         source = history if request_blocks else messages
 

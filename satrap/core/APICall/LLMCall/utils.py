@@ -179,6 +179,7 @@ def prepare_call_messages(
     thinking_field_name: str | None,
     img_urls: list[str] | None,
     *, video_urls: list[str] | None = None, supports_visual_input: bool = False,
+    supports_native_video_input: bool = False, video_frame_interval: float = 2.0,
 ) -> list[dict[str, Any]]:
     """
     统一思考字段与多模态消息预处理
@@ -188,17 +189,20 @@ def prepare_call_messages(
     - thinking_field_name: 供应商思考字段名称, None 表示保持原字段
     - img_urls: 追加到最后一条用户消息的图片来源, 默认无图片
     - video_urls: 视频来源, 默认 None
-    - supports_visual_input: 是否允许媒体输入, 默认 False
+    - supports_visual_input: 是否支持图片输入, 默认 False
+    - supports_native_video_input: 是否支持原生视频输入, 默认 False
+    - video_frame_interval: 抽帧间隔秒数, 默认 2.0
 
     返回:
     - 可发送给模型的消息, 工具媒体只在此处展开; 未启用视觉时拒绝媒体
     """
 
-    prepared = project_messages(_rename_thinking_field(messages, thinking_field_name), True)
+    capabilities = SimpleNamespace(supports_visual_input=supports_visual_input, supports_native_video_input=supports_native_video_input, video_frame_interval=video_frame_interval)
+    prepared = project_messages(_rename_thinking_field(messages, thinking_field_name), True, capabilities)
     if img_urls or video_urls:
         for message in reversed(prepared):
             if message.get("role") == "user":
-                content = user_media_content("", img_urls, video_urls, SimpleNamespace(supports_visual_input=supports_visual_input))
+                content = user_media_content("", img_urls, video_urls, capabilities)
                 assert isinstance(content, list)
                 existing = message.get("content", "")
                 parts = existing if isinstance(existing, list) else [{"type": "text", "text": existing}]
@@ -206,11 +210,18 @@ def prepare_call_messages(
                 break
         else:
             raise ValueError("媒体输入需要关联用户消息")
-    if not supports_visual_input and any(
+    if not supports_visual_input and not supports_native_video_input and any(
         isinstance(message.get("content"), list) and any(part.get("type") in {"image_url", "video_url"} for part in message["content"])
         for message in prepared
     ):
         raise ValueError("当前模型未启用图像与视频输入")
+    prepared = project_messages(prepared, supports_visual_input, capabilities)
+    image_count = sum(part.get("type") == "image_url" for message in prepared if isinstance(message.get("content"), list) for part in message["content"])
+    if image_count > 16:
+        raise ValueError("本轮图片超过 16 张, 请减少图片或分段读取媒体")
+    media_bytes = sum(len(part[part["type"]]["url"]) for message in prepared if isinstance(message.get("content"), list) for part in message["content"] if part.get("type") in {"image_url", "video_url"})
+    if media_bytes > 32 * 1024 * 1024 * 4 // 3 + 4096:
+        raise ValueError("本轮媒体总量超过 32 MiB, 请分段读取")
     return expand_tool_media(prepared)
 
 

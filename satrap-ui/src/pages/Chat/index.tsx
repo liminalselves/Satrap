@@ -1099,8 +1099,7 @@ export function Chat() {
   const handleSend = useCallback(async () => {
     const content = input.trim();
     if ((!content && pendingAttachments.length === 0) || generating) return;
-    if (pendingAttachments.some((attachment) => /^(image|video)\//.test(attachment.type ?? ''))
-      && !modelsDetail[settings.model]?.supports_visual_input) {
+    if (pendingAttachments.some((attachment) => ((attachment.type ?? '').startsWith('image/') && !modelsDetail[settings.model]?.supports_visual_input) || ((attachment.type ?? '').startsWith('video/') && !modelsDetail[settings.model]?.supports_visual_input && !modelsDetail[settings.model]?.supports_native_video_input))) {
       alert('当前模型未启用图像与视频输入, 请切换模型或移除媒体附件');
       return;
     }
@@ -1264,12 +1263,13 @@ export function Chat() {
     }
 
     for (const file of Array.from(files)) {
-      if ((file.type.startsWith('image/') || file.type.startsWith('video/')) && !modelsDetail[settings.model]?.supports_visual_input) {
+      if ((file.type.startsWith('image/') && !modelsDetail[settings.model]?.supports_visual_input) || (file.type.startsWith('video/') && !modelsDetail[settings.model]?.supports_native_video_input && !modelsDetail[settings.model]?.supports_visual_input)) {
         alert('当前模型未启用图像与视频输入');
         continue;
       }
-      if (file.size > 10 * 1024 * 1024) {
-        alert(`文件 ${file.name} 超过 10MB 限制`);
+      const limitMiB = /^(image|video)\//.test(file.type) ? 32 : 10;
+      if (file.size > limitMiB * 1024 * 1024) {
+        alert(`文件 ${file.name} 超过 ${limitMiB} MiB 限制`);
         continue;
       }
       try {
@@ -1814,7 +1814,7 @@ export function Chat() {
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  accept={modelsDetail[settings.model]?.supports_visual_input ? "image/*,video/*,.txt,.md,.pdf" : ".txt,.md,.pdf"}
+                  accept={(modelsDetail[settings.model]?.supports_visual_input ? 'image/*,video/*,' : modelsDetail[settings.model]?.supports_native_video_input ? 'video/*,' : '') + '.txt,.md,.pdf'}
                   onChange={handleFileSelect}
                   className="hidden"
                 />

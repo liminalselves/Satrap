@@ -332,12 +332,18 @@ class LLMConfig:
     """关闭思考时是否省略值为 none 的思考字段"""
 
     supports_visual_input: bool = False
-    """是否声明模型支持图像与原生视频输入, 默认关闭"""
+    """是否声明模型支持图片输入, 默认关闭"""
+    supports_native_video_input: bool = False
+    """是否声明当前 API 支持原生视频, 默认关闭"""
+    video_frame_interval: float = 2.0
+    """动画和兼容视频的抽帧间隔秒数, 范围 0.5 至 5.0"""
 
     def __post_init__(self) -> None:
         """拒绝非布尔值的模型视觉能力声明"""
         if not isinstance(self.supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
+        from satrap.core.utils.media_config import validate_video_settings
+        validate_video_settings(self.supports_native_video_input, self.video_frame_interval)
 
 
 @dataclass

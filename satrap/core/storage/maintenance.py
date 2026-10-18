@@ -515,6 +515,8 @@ class StorageMaintenanceService:
                         raise ValueError("拒绝回收符号链接会话目录")
                     shutil.move(str(source), str(files_root))
                     moved_files = True
+                from satrap.core.utils.media_store import archive_session_media, release_session_media
+                archive_session_media(str(database), session_id, archive / "media")
                 delete_session_domain_rows(database, session_id)
                 manifest: dict[str, Any] = {
                     "layout_version": self.layout.layout_version,
@@ -531,11 +533,15 @@ class StorageMaintenanceService:
                     json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
+                release_session_media(str(database), session_id)
                 return manifest
             except Exception:
                 if moved_files and files_root.exists() and not source.exists():
                     source.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(files_root), str(source))
+                if (archive / "media").exists():
+                    from satrap.core.utils.media_store import restore_session_media
+                    restore_session_media(str(database), archive / "media")
                 if records:
                     try:
                         restore_session_domain(database, session_id, records)
@@ -756,6 +762,8 @@ class StorageMaintenanceService:
                 raise ValueError("回收包文件目录缺失或无效")
         elif files_root.exists():
             raise ValueError("回收包文件与清单不匹配")
+        from satrap.core.utils.media_store import restore_session_media
+        restore_session_media(str(database), self._resolve_archive_member(archive, "media"))
         restore_session_domain(
             database, session_id, records, restore_id=archive_id,
             restore_metadata=json.dumps(manifest, ensure_ascii=False, sort_keys=True),

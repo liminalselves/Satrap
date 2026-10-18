@@ -62,6 +62,8 @@ export interface LLMConfig {
   thinking_levels?: string[];
   omit_none_thinking_fields?: boolean;
   supports_visual_input?: boolean;
+  supports_native_video_input?: boolean;
+  video_frame_interval?: number;
 }
 
 export interface EmbeddingConfig {

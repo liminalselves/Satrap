@@ -394,6 +394,7 @@ async def test_user_media_recovery_survives_source_deletion(tmp_path, asynchrono
     script = Script([RuntimeError("模型暂时失败"), ANSWER])
     wf, _ = await make_workflow(tmp_path, script, asynchronous, True)
     wf.llm.supports_visual_input = True
+    wf.llm.supports_native_video_input = kind == "video"
     images = [str(source)] if kind == "image" else None
     videos = [str(source)] if kind == "video" else None
     with pytest.raises(RuntimeError, match="模型暂时失败"):
@@ -411,7 +412,11 @@ async def test_user_media_recovery_survives_source_deletion(tmp_path, asynchrono
     message = wf.ctx.get_context()[-2]
     assert message["role"] == "user"
     data = message["content"][1][kind + "_url"]["url"]
-    assert base64.b64decode(data.split(",")[1]) == b"original-input"
+    if kind == "video":
+        from satrap.core.utils.media_store import store_for
+        assert store_for(wf.ctx.db_path, wf.ctx.conversation_id).read(data)[0] == b"original-input"
+    else:
+        assert base64.b64decode(data.split(",")[1]) == b"original-input"
 
 
 @pytest.mark.asyncio
@@ -440,6 +445,7 @@ async def test_temporary_tools_agent_accepts_video(tmp_path, asynchronous, strea
     script = Script([ANSWER])
     wf, _ = await make_workflow(tmp_path, script, asynchronous, False)
     wf.llm.supports_visual_input = True
+    wf.llm.supports_native_video_input = True
     video = "data:video/mp4;base64,dmlkZW8="
     if isinstance(wf, AsyncModelWorkflowFramework):
         if stream:

@@ -46,6 +46,7 @@ extras_require = {
     "vector": [
         "faiss-cpu>=1.7.4",
     ],
+    "video": ["av>=15,<19"],
     "audio": [
         "av>=15,<19",
     ],

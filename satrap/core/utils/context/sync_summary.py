@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from satrap.core.APICall.LLMCall import LLM
 from .sync_checkpoints import _SyncCheckpoints
 
-from satrap.core.utils.media import project_messages, visual_enabled
+from satrap.core.utils.media import project_context_media, limit_history_media
 
 
 class _SyncSummary(_SyncCheckpoints):
@@ -181,8 +181,9 @@ class _SyncSummary(_SyncCheckpoints):
             raise ValueError("keep_recent_turns 不能小于 0")
         model = _llm_model_name(llm)
         request_blocks = freeze_request_blocks(request_blocks)
-        history = project_messages(copy.deepcopy(self._messages), visual_enabled(llm))
-        pending = project_messages(copy.deepcopy(pending_messages or []), visual_enabled(llm))
+        history = project_context_media(copy.deepcopy(self._messages), llm, self.db_path, self.conversation_id)
+        pending = project_context_media(copy.deepcopy(pending_messages or []), llm, self.db_path, self.conversation_id)
+        history, pending = limit_history_media(history, pending)
         messages = history + pending
         source = history if request_blocks else messages
 

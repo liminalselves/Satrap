@@ -274,7 +274,6 @@ async def test_command_history_setting_survives_preload_restart_and_fork(tmp_pat
         await resumed.close()
 
 
-
 @pytest.mark.asyncio
 async def test_chat_run_pagination_preserves_python_all_results(tmp_path, monkeypatch):
     """HTTP 使用分页, Python 无参接口仍返回全部摘要"""
@@ -1728,5 +1727,17 @@ async def test_visual_attachments_rejected_before_turn_creation(tmp_path, monkey
         assert service._attachment_media(conv, [{"url": video["file_url"], "type": "video/mp4"}]) == (
             [], [str(Path(video["file_url"]).resolve())],
         )
+        conv.session.llm.supports_visual_input = False
+        conv.session.llm.supports_native_video_input = True
+        assert service._attachment_media(conv, [{"url": video["file_url"], "type": "video/mp4"}])[1]
+        with pytest.raises(ValueError, match="未启用"):
+            service._attachment_media(conv, [attachment])
+        from satrap.core.utils.media_store import store_for
+        import hashlib
+        store = store_for(conv.session.ctx.db_path, conv.session.ctx.conversation_id)
+        blob = store.root / "blobs" / hashlib.sha256(b"video").hexdigest()
+        assert blob.read_bytes() == Path(video["file_url"]).read_bytes() == b"video"
+        assert blob.samefile(video["file_url"])
+        assert server._request_body_limit("POST", "/api/chat/upload") > 32 * 1024 * 1024 * 4 // 3
     finally:
         await service.close()

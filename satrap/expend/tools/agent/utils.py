@@ -83,6 +83,8 @@ def _serialize_llm(llm: LLM) -> bytes:
             "base_url": llm.base_url,
             "model": llm.model,
             "supports_visual_input": llm.supports_visual_input,
+            "supports_native_video_input": getattr(llm, "supports_native_video_input", False),
+            "video_frame_interval": getattr(llm, "video_frame_interval", 2.0),
             "temperature": llm.temperature,
             "top_p": llm.top_p,
             "max_tokens": llm.max_tokens,
