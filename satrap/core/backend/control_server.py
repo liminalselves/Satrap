@@ -2130,10 +2130,7 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
             )
             return 200, {
                 "items": [item.to_dict() for item in items],
-                "summary": {
-                    "count": len(items),
-                    "size_bytes": sum(item.size_bytes for item in items),
-                },
+                "summary": StorageMaintenanceService.audit_summary(items),
             }
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}

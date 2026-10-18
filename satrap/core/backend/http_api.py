@@ -1114,10 +1114,7 @@ class BackendHTTPServer(MiniHTTPServer):
             items = await asyncio.to_thread(service.scan, configured_platforms)
             return 200, {
                 "items": [item.to_dict() for item in items],
-                "summary": {
-                    "count": len(items),
-                    "size_bytes": sum(item.size_bytes for item in items),
-                },
+                "summary": service.audit_summary(items),
             }
         # 接口: GET /api/storage/audit
 

@@ -15,7 +15,7 @@ export interface StorageAuditItem {
   platform_id: string;
   session_id: string;
   path: string;
-  size_bytes: number;
+  size_bytes: number | null;
   modified_at: number;
   reason: string;
   recommended_action: string;
@@ -32,6 +32,7 @@ export interface StorageAuditResult {
   summary: {
     count: number;
     size_bytes: number;
+    unmeasured_count: number;
   };
 }
 

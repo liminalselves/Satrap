@@ -388,18 +388,61 @@ def restore_session_domain(
             raise
 
 
-def delete_session_domain_rows(database: str | Path, session_id: str) -> None:
+def preserved_session_ids(connection: sqlite3.Connection) -> set[str]:
+    """
+    从同一数据库快照读取需要保留的会话和明确归属的上下文标识
+
+    参数:
+    - connection: 只读快照或写事务连接
+
+    返回:
+    - 现存会话, 它们登记的上下文以及明确声明的独立上下文集合
+    """
+    tables = _table_names(connection)
+    sessions: set[str] = set()
+    for table, column in (("session_configs", "session_id"), ("conversation_meta", "conversation_id")):
+        if table in tables:
+            sessions.update(str(row[0]) for row in connection.execute(f"SELECT {column} FROM {table}"))
+    protected = set(sessions)
+    if "context_catalog" in tables:
+        for context_id, owner, kind in connection.execute("SELECT context_id, session_id, context_kind FROM context_catalog"):
+            if owner in sessions or (owner is None and kind == "standalone"):
+                protected.add(str(context_id))
+    return protected
+
+
+def preserved_session_scope(connection: sqlite3.Connection, identity: str, protected_ids: set[str] | None = None) -> bool:
+    """
+    判断标识是否属于现存会话或明确登记的独立上下文
+
+    参数:
+    - connection: 当前数据库快照或写事务连接
+    - identity: 待检查的会话或上下文标识
+    - protected_ids: 同一快照的保留标识集合, 不提供时从当前事务读取
+
+    返回:
+    - 精确归属, 旧工作流前缀或潜在删除范围涉及现存会话时为 True
+    """
+    preserved = preserved_session_ids(connection) if protected_ids is None else protected_ids
+    return any(identity == root or identity.startswith(root + "_") or root.startswith(identity + "_") for root in preserved)
+
+
+def delete_session_domain_rows(database: str | Path, session_id: str, *, orphan_only: bool = False) -> None:
     """
     删除指定会话的上下文, 检查点和长期记忆记录
 
     参数:
     - database: 平台数据库路径
     - session_id: 会话 ID
+    - orphan_only: 默认 False; 孤儿清理时在同一写事务内拒绝涉及现存会话的数据
     """
     database_path = Path(database)
     if not database_path.exists():
         return
     with sqlite3.connect(str(database_path)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if orphan_only and preserved_session_scope(connection, session_id):
+            raise ValueError("该范围仍属于现存会话或独立上下文, 拒绝孤儿清理, 请重新扫描")
         tables = _table_names(connection)
         related_pattern = _related_scope_pattern(session_id)
         if "display_tool_calls" in tables and "display_turns" in tables:
