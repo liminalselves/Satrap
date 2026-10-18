@@ -503,7 +503,7 @@ def test_history_batch_queries_preserve_full_variants(tmp_path):
 @pytest.mark.parametrize("answer,expected", [("批准本次", "allow"), ("拒绝", "deny"), ("y", "deny"), ("all", "deny")])
 async def test_coding_approval_ui_result_binds_exact_pending_request(answer, expected):
     """Chat 使用待回答 ID 回填单次审批, 普通肯定文本不获得权限"""
-    from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest
+    from satrap.core.approval.contracts import ApprovalRequest
     request = ApprovalRequest.create(session_id="approval-ui", turn_id="turn", actor_id="", tool="write_file",
         operation="file_write", risk=1, description="修改文件", mode="user", revision=0,
         action={"path": "test.txt", "before": "before", "after": "after"},
@@ -514,7 +514,7 @@ async def test_coding_approval_ui_result_binds_exact_pending_request(answer, exp
     service._conversations = {"approval-ui": conv}
     events = []
     service._broadcast = lambda conv, event: events.append(event)
-    task = asyncio.create_task(service._request_coding_approval(conv, request))
+    task = asyncio.create_task(service._request_approval(conv, request))
     await asyncio.sleep(0)
     pending_id = events[0]["request_id"]
     assert events[0]["options"] == ["批准本次", "拒绝"]
@@ -537,7 +537,7 @@ async def test_coding_approval_ui_result_binds_exact_pending_request(answer, exp
 
 async def test_coding_approval_ui_timeout_and_cancel_remove_pending_requests():
     """审批超时或取消清理待回填, 迟到批准不能复活"""
-    from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest
+    from satrap.core.approval.contracts import ApprovalRequest
     request = ApprovalRequest.create(session_id="approval-ui", turn_id="", actor_id="", tool="shell",
         operation="shell", risk=2, description="命令", mode="user", revision=0,
         action={"command": "echo audit"}, evidence=[])
@@ -548,10 +548,10 @@ async def test_coding_approval_ui_timeout_and_cancel_remove_pending_requests():
     events = []
     service._broadcast = lambda conv, event: events.append(event)
     with pytest.raises(TimeoutError):
-        await service._request_coding_approval(conv, request)
+        await service._request_approval(conv, request)
     assert events[-1]["status"] == "timeout" and not conv.pending_user_inputs
     service._ask_user_timeout_seconds = 1
-    task = asyncio.create_task(service._request_coding_approval(conv, request))
+    task = asyncio.create_task(service._request_approval(conv, request))
     await asyncio.sleep(0)
     pending_id = events[-1]["request_id"]
     task.cancel()

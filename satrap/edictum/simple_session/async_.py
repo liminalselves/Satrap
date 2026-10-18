@@ -23,7 +23,7 @@ from satrap.core.type import CommandAction
 from satrap.core.log import logger
 from .utils import (
     AsyncUserInputProvider,
-    AsyncCodingApprovalProvider,
+    AsyncApprovalProvider,
     HandlerResult,
     HandlerAbortError,
     HandlerConfig,
@@ -115,7 +115,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         self._init_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
         """run 串行化锁: 同一会话不支持并发 run (第二个 run 排队等待)"""
-        self.coding_approval_provider: AsyncCodingApprovalProvider | None = None
+        self.approval_provider: AsyncApprovalProvider | None = None
         """单次编程审批专用回调, 不接受普通用户提问的文本回答"""
         self.user_input_provider: AsyncUserInputProvider | None = None
         """用户输入通道: 仅供 ask_user 获取缺失信息使用 (CLI 或 Web 前端均可注入)"""

@@ -1,5 +1,5 @@
 """
-编程工具的三档审批策略与版本状态
+宿主操作的三档审批策略与版本状态
 
 user 由宿主人工批准, auto 由独立审查上下文决定, full-access 跳过审批
 计划模式和硬拒绝优先, 旧模式与宽泛规则只备份迁移, 不静默扩大权限
@@ -13,7 +13,7 @@ from enum import IntEnum
 import json
 import time
 
-from satrap.expend.plugins.satrap_coding.core.approval import APPROVAL_MODES, ApprovalMode, ApprovalRequest, ApprovalResult
+from satrap.core.approval.contracts import APPROVAL_MODES, ApprovalMode, ApprovalRequest, ApprovalResult
 from satrap.core.utils.paths import get_data_dir
 
 from satrap.core.log import logger
@@ -37,8 +37,8 @@ class PermissionDecision(IntEnum):
 
 
 _FILE_LOCK = threading.RLock()
-DEFAULT_RULES_FILE = get_data_dir() / "coding" / "permissions.json"
-DEFAULT_LOG_FILE = get_data_dir() / "coding" / "approval_log.jsonl"
+DEFAULT_RULES_FILE = get_data_dir() / "permissions" / "permissions.json"
+DEFAULT_LOG_FILE = get_data_dir() / "permissions" / "approval_log.jsonl"
 
 
 class PermissionEngine:
@@ -51,7 +51,7 @@ class PermissionEngine:
 
         参数:
         - mode: 新引擎默认模式, 只接受 user, auto, full-access
-        - rules_file: 持久状态文件, 默认使用插件默认目录
+        - rules_file: 持久状态文件, 默认使用宿主审批目录
         - log_file: 不含动作正文的审计日志文件
         """
         if mode not in APPROVAL_MODES:
@@ -81,16 +81,16 @@ class PermissionEngine:
                     self.mode = "user"
                     self.migration_notice = "旧审批模式和宽泛规则已备份, 请明确选择 user/auto/full-access"
                     self._save()
-                    logger.warning("[satrap_coding] 旧审批状态已保守迁移为 user")
+                    logger.warning("[审批] 旧审批状态已保守迁移为 user")
                 elif data.get("mode") in APPROVAL_MODES:
                     self.mode = APPROVAL_MODES[APPROVAL_MODES.index(data["mode"])]
                 else:
                     raise ValueError("持久审批模式无效")
             except FileNotFoundError:
-                logger.debug("[satrap_coding] 尚无审批状态文件, 使用默认模式")
+                logger.debug("[审批] 尚无审批状态文件, 使用默认模式")
             except (OSError, ValueError, TypeError) as error:
                 self.mode = "user"
-                logger.warning(f"[satrap_coding] 审批配置读取失败, 使用 user: {error}")
+                logger.warning(f"[审批] 审批配置读取失败, 使用 user: {error}")
 
     def _save(self) -> None:
         """原子保存版本化模式, 不保存动作级批准或旧规则"""
@@ -99,17 +99,20 @@ class PermissionEngine:
         temporary.write_text(json.dumps({"version": 2, "mode": self.mode}, ensure_ascii=False), encoding="utf-8")
         temporary.replace(self.rules_file)
 
-    def set_mode(self, mode: str, persist: bool = True) -> None:
+    def set_mode(self, mode: str, persist: bool = True, *, expected_revision: int | None = None) -> None:
         """
         显式切换审批模式并使正在等待的旧请求失效
 
         参数:
         - mode: user, auto 或 full-access, 不接受旧名称
         - persist: 默认 True 持久保存, False 仅修改当前实例
+        - expected_revision: 可选的读取版本, 在状态锁内比较以拒绝并发覆盖
         """
         if mode not in APPROVAL_MODES:
             raise ValueError("审批模式必须为 user, auto 或 full-access")
         with _FILE_LOCK, self._lock:
+            if expected_revision is not None and self.revision != expected_revision:
+                raise ValueError("审批状态已变化, 请刷新后重试")
             previous = self.mode
             self.mode = APPROVAL_MODES[APPROVAL_MODES.index(mode)]
             try:
@@ -130,6 +133,18 @@ class PermissionEngine:
         with self._lock:
             self.plan_mode = bool(enabled)
             self.revision += 1
+
+    def set_approval_model(self, name: str) -> None:
+        """
+        更新审批模型并撤销使用旧配置创建的请求
+
+        参数:
+        - name: 专用审批模型名称, 空字符串表示使用当前会话模型
+        """
+        with self._lock:
+            if name != self.approval_model:
+                self.approval_model = name
+                self.revision += 1
 
     def is_plan_mode_block(self, operation: str, risk: RiskLevel | int) -> bool:
         """
@@ -195,4 +210,4 @@ class PermissionEngine:
             with self._lock, self.log_file.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as error:
-            logger.warning(f"[satrap_coding] 审批日志写入失败: {error}")
+            logger.warning(f"[审批] 审批日志写入失败: {error}")

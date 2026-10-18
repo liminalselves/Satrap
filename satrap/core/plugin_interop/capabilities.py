@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from satrap.core.framework.command.async_ import AsyncCommandHandler
     from satrap.core.framework.command.sync import CommandHandler
     from satrap.core.plugin_interop.artifacts import ArtifactAccess
+    from satrap.core.plugin_interop.approvals import ApprovalAccess
 
     SessionType = SimpleSession | AsyncSimpleSession
 
@@ -367,6 +368,19 @@ class PluginHost:
 
         self._runtime()
         return ArtifactAccess(self)
+
+    @property
+    def approvals(self) -> ApprovalAccess:
+        """
+        取得受真实入口约束的宿主审批接口
+
+        返回:
+        - 当前插件的审批入口, 不公开内部引擎
+        """
+        from satrap.core.plugin_interop.approvals import ApprovalAccess
+
+        self._runtime()
+        return ApprovalAccess(self)
 
 
 @dataclass(frozen=True)

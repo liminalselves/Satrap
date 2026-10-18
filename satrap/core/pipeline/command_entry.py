@@ -14,7 +14,10 @@ from satrap.core.platform.event import MessageEvent
 from satrap.core.components import At, AtAll, BaseMessageComponent, Plain, Reply, is_self_mention
 
 
-OPERATOR_ONLY_COMMANDS: frozenset[str] = frozenset({"approve", "plan"})
+OPERATOR_COMMAND_PLUGINS: dict[str, str] = {"approve": "permissions", "plan": "satrap_coding"}
+"""调度前置检查使用实际命令所属插件的管理员范围"""
+
+OPERATOR_ONLY_COMMANDS: frozenset[str] = frozenset(OPERATOR_COMMAND_PLUGINS)
 """需要已授权操作员才能执行的命令名
 
 `/approve` 与 `/plan` 改的是同一个 PermissionEngine 的安全状态 (`/plan off` 会放宽写操作限制),

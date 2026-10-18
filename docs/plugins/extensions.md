@@ -277,4 +277,5 @@ schema 默认 < 全局配置 (.satrap/config/plugins/<name>.json, PluginConfigMa
 官方插件:
 - [base_take](base-take-plugin.md): 基础能力集 (搜索 / 沙箱 / 文档解析)
 - [satrap_coding](satrap-coding-plugin.md): Coding Agent (文件读写 / shell / 子代理 / 目标与计划)
+- [permissions](permissions-plugin.md): 宿主执行审批模式与用户管理命令
 - [rag](rag-and-session-overrides.md): 分层知识库检索与文档导入 (`rag_search` / `rag_list` / `rag_ingest`), 结果由当前会话模型组织回答

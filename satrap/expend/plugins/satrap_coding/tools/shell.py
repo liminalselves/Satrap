@@ -6,7 +6,7 @@ import shutil
 import os
 
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
-from satrap.expend.plugins.satrap_coding.core.permission import RiskLevel
+from satrap.core.approval.policy import RiskLevel
 from satrap.core.utils.proc_env import sanitized_child_env
 
 

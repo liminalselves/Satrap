@@ -10,7 +10,7 @@ from __future__ import annotations
 import shlex
 import re
 
-from satrap.expend.plugins.satrap_coding.core.permission import RiskLevel
+from satrap.core.approval.policy import RiskLevel
 
 from satrap.core.log import logger
 

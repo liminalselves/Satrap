@@ -21,7 +21,7 @@ session.install_plugin("./satrap/expend/plugins/satrap_coding")
 plugin = session.list_plugins()[0]
 plugin.name          # "satrap_coding"
 plugin.tools         # 11 个工具 (名称 -> 独立启用状态)
-plugin.commands      # goal / plan / approve
+plugin.commands      # goal / plan
 plugin.skills        # goal / plan
 plugin.handlers      # satrap_coding.inject
 plugin.capability_descriptions   # meta.yaml 声明的五类能力描述 (kind -> {名字: 描述})
@@ -41,7 +41,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 | 执行 | shell | 本机 PowerShell/cmd, 按三档模式审批, 计划模式禁用 |
 | 任务 | todo_write | 会话级任务清单: add / done / list / clear |
 | 子代理 | subagent | 独立上下文, 继承主会话工具与审批策略 |
-| 命令 | /goal /plan /approve | 目标、计划模式与审批策略的用户侧接口 |
+| 命令 | /goal /plan | 目标与计划模式的用户侧接口 |
 | 技能 | goal / plan | 同命令的面向 Agent 的技能指令 |
 | 处理器 | satrap_coding.inject | 用户消息进入模型前注入目标块 |
 
@@ -49,7 +49,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 
 ## 三档审批
 
-Chat 可在「对话设置 → 对话 → 编程审批模式」切换当前会话模式, 与 `/approve mode` 共用同一份状态, 保存后立即生效并持久化; 默认 `user`:
+审批策略由宿主统一持有, /approve 和 approval_model 已迁至独立的 [permissions 插件](permissions-plugin.md)。先启用该插件, Chat 可在「对话设置 → 对话 → 执行审批模式」切换当前会话模式, 与 `/approve mode` 共用同一份状态, 保存后立即生效并持久化; 默认 `user`:
 
 | 操作 | user | auto | full-access |
 | --- | --- | --- | --- |
@@ -74,7 +74,7 @@ Shell 运行在本机进程权限下, 没有操作系统文件或网络隔离; �
 
 ### auto 的独立审查
 
-默认使用当前模型客户端; `approval_model` 可指定宿主模型表中的配置名称
+默认使用当前模型客户端; permissions 插件的 `approval_model` 可指定宿主模型表中的配置名称
 请求使用独立消息列表, 不注册工具, 不运行主 Agent 或子代理循环
 证据包含有界主会话及实际执行工作流的用户消息, 可见助手消息和工具调用结果, 不读取隐藏思考
 执行协议在工具边界冻结本轮尚未提交的可见消息, 嵌套子代理保留主代理证据入口; 作用域结束即撤销, 不为了审批提前写入历史
@@ -93,7 +93,7 @@ Shell 运行在本机进程权限下, 没有操作系统文件或网络隔离; �
 ### 人工回填与宿主权限
 
 `ask_user` 只负责询问信息, 不再授予执行权限
-宿主通过 `session.coding_approval_provider` 接收不可变 `ApprovalRequest`, 返回绑定该请求的 `ApprovalResult`
+宿主通过 `session.approval_provider` 接收不可变 `ApprovalRequest`, 返回绑定该请求的 `ApprovalResult`
 Chat 复用带独立 request_id 的待回答回填链路, 使用专用审批卡片; 命令或文件操作详情默认折叠, 不把模型审查使用的对话证据作为卡片正文。Shell 展开后显示本次命令, 解释器和工作目录, 可进一步查看固定参数。卡片只提供 `批准本次` 和 `拒绝`, 无自由输入或跳过入口; 后端拒绝非选项回答, 重连快照保留卡片类型和实际动作
 普通 `y`, `all` 或后续群聊消息不能批准操作, 也不能隐式切换模式
 平台或嵌入式宿主未接入专用回调时, 人工审批返回 `approval_required`, 不假装已挂起并可跨消息自动恢复
@@ -111,10 +111,10 @@ Chat 复用带独立 request_id 的待回答回填链路, 使用专用审批卡�
 ```
 
 本地 Chat 允许用户通过真实原生命令切换模式
-已获本插件授权的宿主管理员可以通过平台调度器前置检查; 旧 command_operators 名单不会替代最终插件授权
-平台来源还必须获得 `satrap_coding.approval_manage` 宿主管理权限; 系统管理组按本插件授权范围判定
+已获 permissions 插件授权的宿主管理员可以通过平台调度器前置检查; 旧 command_operators 名单不会替代最终插件授权
+平台来源还必须获得 `permissions.approval_manage` 宿主管理权限; 系统管理组按 permissions 插件授权范围判定
 QQ 群管理员或群主身份本身不授予机器执行权限, 模型和子代理也不能自行提高模式
-模式保存于当前会话插件数据目录, 子代理使用相同共享引擎; 不保存一次性批准
+模式保存于当前会话宿主审批目录, 子代理使用相同共享引擎; 不保存一次性批准
 旧版无版本状态, 包括 `auto-agent`, `full` 和操作类别级宽泛规则, 原字节备份为 `permissions.legacy-v1.json` 后迁移为 `user`
 旧 `rule/rules` 放行机制及通过 `all` 改模式的行为已移除, 必须明确选择新模式
 
@@ -125,12 +125,12 @@ QQ 群管理员或群主身份本身不授予机器执行权限, 模型和子代
 
 插件不再提供独立 sandbox 工具 (与 shell / 文件工具重复, 已移除)。平台运行时注入会话私有 sandbox; Chat 项目会话可以操作外部工作区, 但插件缓存和沙箱仍属于当前会话。
 
-文件/shell 工具在调用时优先读取宿主注入的 `session.coding_workspace_root`; 未注入时使用安装期保存在工具实例上的 `workspace_root`, 再回落项目根。其他会话的安装或空配置不会修改已有工具的工作区。文件写操作审批后会复核计划模式、工作区和目标路径, 审批期间发生变化则取消执行。
+文件/shell 工具在调用时优先读取宿主注入的 `plugin_host.environment_snapshot().workspace_root`; 未注入时使用安装期保存在工具实例上的 `workspace_root`, 再回落项目根。其他会话的安装或空配置不会修改已有工具的工作区。文件写操作审批后会复核计划模式、工作区和目标路径, 审批期间发生变化则取消执行。
 
 免审批范围:
 
 - 文件和目录只读工具访问工作区内路径
-- 文件写工具修改有效沙箱内的非保护路径; 沙箱按宿主 `coding_sandbox_root`、工具实例 `sandbox_root`、固定默认目录依次选取, `/plan on` 仍拒绝所有文件写入
+- 文件写工具修改有效沙箱内的非保护路径; 沙箱按宿主环境的 `sandbox_root`、工具实例 `sandbox_root`、固定默认目录依次选取, `/plan on` 仍拒绝所有文件写入
 
 文件保护与免审批共用实际沙箱的选择规则, 包括宿主属性、插件实例配置和固定默认值。工作区与沙箱可以相同或互相包含; 位于系统数据目录时, 只有同时属于工作区和实际沙箱的普通文件获得例外, 不因其祖先是系统 `.satrap` 而误拦截。沙箱内 `.env`、`.git`、`.satrap`、`node_modules` 和额外保护目录仍拒绝, 其余运行数据不被放行。
 
@@ -145,20 +145,13 @@ QQ 群管理员或群主身份本身不授予机器执行权限, 模型和子代
 
 ## 数据目录
 
-权限引擎、目标命令和目标注入处理器共用同一数据根。选择顺序为宿主注入的 `coding_cache_root/satrap_coding`、显式插件 `data_root`、当前会话的默认缓存目录。默认目录为会话数据库旁的 `sessions/<storage_key(session_id)>/cache/satrap_coding`; 无数据库的 embedded Session 使用项目根下 `.satrap/data/unscoped/<storage_key(session_id)>`。路径键由框架生成, 不直接拼接未经处理的 ID。
+目标命令和目标注入处理器共用 coding 数据根。宿主 session_root/cache/satrap_coding 优先, 否则使用插件的 data_root, 再按会话数据库目录推导。coding 目录只持有 goal.json, 审批模式和日志由宿主统一维护, 默认位于 session_root/cache/permissions。
 
-```text
-<data_root>/
-├── permissions.json     # 版本化会话审批模式
-├── approval_log.jsonl   # 审批记录
-└── goal.json            # 目标与子任务状态
-```
-
-> 长期记忆由 memory 插件管理并写入当前平台的 `platform.db`; 沙箱, 索引和缓存全部按会话隔离。旧数据不迁移。
+旧 permissions.json 和 approval_log.jsonl 在目标不存在时复制到宿主目录, 原文件保留。显式配置旧数据根时继续识别该目录; 新配置优先。一次性操作批准不会持久化。
 
 ## 卸载与隔离
 
-`uninstall_plugin` 回收全部工具 / 命令 / 技能 / 处理器并调用插件清理回调, 重置内存级状态 (计划模式 / 审批状态 / 注入缓存), 不遗留孤儿; 目标等数据文件保留, 重装后数据仍在。插件级共享状态按会话隔离 (state.py), 同一会话的工具、命令、处理器共享同一份权限引擎 / 目标状态。安装失败时回滚已注册能力与 sys.path, 并调用清理回调释放已构建的共享状态; 重复安装已安装插件只报错, 不清除其正常状态。
+`uninstall_plugin` 回收全部工具 / 命令 / 技能 / 处理器并调用插件清理回调, 重置 coding 内存状态 (计划模式 / 注入缓存), 保留宿主审批模式, 不遗留孤儿; 目标等数据文件保留, 重装后数据仍在。插件级共享状态按会话隔离 (state.py), 同一会话的工具、命令、处理器共享同一份宿主审批引擎和插件目标状态。安装失败时回滚已注册能力与 sys.path, 并调用清理回调释放已构建的共享状态; 重复安装已安装插件只报错, 不清除其正常状态。
 
 ## 插件配置
 
@@ -167,8 +160,7 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | 配置键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | workspace_root | path | 项目根 | 文件工具白名单根目录 |
-| data_root | path | 会话缓存 | 权限、目标和审批日志的数据根, 选择规则见“数据目录” |
-| approval_model | string | 当前会话模型 | auto 专用审批模型配置名, 留空使用当前模型的独立审查请求 |
+| data_root | path | 会话缓存 | 目标数据根, 选择规则见“数据目录” |
 | sandbox_root | path | 项目根/.satrap/sandbox | 文件免审批目录; 宿主会话路径优先, 内部敏感路径和计划模式仍受保护 |
 | shell_timeout | number | 120 | 1-3600 的整数秒; 按工具实例保存; 模型调用可省略 timeout, 单次调用可覆盖; 工厂拒绝超出范围或非整数的生效值 |
 | protected_dirs | string | - | 额外保护目录名 (逗号分隔, 忽略大小写); 按工具实例保存, 空配置仅保留内置保护 |

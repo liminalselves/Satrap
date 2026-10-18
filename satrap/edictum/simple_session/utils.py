@@ -22,10 +22,10 @@ from satrap.core.log import logger
 
 
 if TYPE_CHECKING:
-    from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
+    from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 
-SyncCodingApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult"]
-AsyncCodingApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult | Awaitable[ApprovalResult]"]
+SyncApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult"]
+AsyncApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult | Awaitable[ApprovalResult]"]
 
 SyncUserInputProvider = Callable[..., str]
 

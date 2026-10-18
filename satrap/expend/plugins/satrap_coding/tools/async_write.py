@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine, RiskLevel
+from satrap.core.approval.policy import PermissionEngine, RiskLevel
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
 from .contracts import require_bound_session

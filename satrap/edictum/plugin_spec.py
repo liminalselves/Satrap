@@ -139,6 +139,8 @@ def parse_plugin_specs(
     from satrap.edictum.plugin_migrations import migrate_group_tool_specs
     from satrap.edictum.memory_migration import migrate_memory_specs
     value = migrate_memory_specs(migrate_group_tool_specs(value, catalog, migration_manager), catalog)
+    from satrap.edictum.approval_migration import migrate_approval_specs
+    value = migrate_approval_specs(value, catalog)
     specs: list[PluginSpec] = []
     names: set[str] = set()
     for raw_item in cast(list[object], value):

@@ -50,7 +50,7 @@ from satrap.edictum.plugin_settings import (
 from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states_async
 from satrap.edictum.plugin_apply import PluginApplySnapshot, plugin_source_version
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
-from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
+from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.edictum.plugin_spec import plugin_specs_fingerprint
 from satrap.core.utils.paths import get_data_dir, get_project_root
@@ -417,9 +417,9 @@ class ChatService:
             self._orphan_queues.setdefault(conversation_id, set()).add(q)
         return q
 
-    async def get_coding_approval(self, conversation_id: str) -> dict[str, object]:
+    async def get_approval(self, conversation_id: str) -> dict[str, object]:
         """
-        获取当前 Chat 实际使用的编程审批状态, 不从前端缓存推断模式
+        获取当前 Chat 实际使用的宿主审批状态, 不从前端缓存推断模式
 
         参数:
         - conversation_id: 已存在的 Chat 会话 ID
@@ -431,17 +431,16 @@ class ChatService:
         if conv is None:
             raise ValueError("会话不存在")
         async with conv.plugin_lock:
-            from satrap.expend.plugins.satrap_coding.state import get_plugin_state
-            from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
-            plugin = next((plugin for plugin in conv.session.list_plugins() if plugin.name == "satrap_coding"), None)
-            if plugin is None:
+            from satrap.core.approval.state import session_approval
+            plugin = next((plugin for plugin in conv.session.list_plugins() if plugin.name == "permissions"), None)
+            if plugin is None and getattr(conv.session, "_approval_state", None) is None:
                 return {"ok": True, "available": False, "mode": "user", "revision": 0, "plan_mode": False}
-            engine = cast(PermissionEngine, get_plugin_state(conv.session)["engine"])
-            return {"ok": True, "available": bool(plugin.enabled), "mode": engine.mode,
+            engine = session_approval(conv.session)
+            return {"ok": True, "available": bool(plugin and plugin.enabled), "mode": engine.mode,
                     "revision": engine.revision, "plan_mode": engine.plan_mode}
 
     @_exclusive_conversation_operation
-    async def set_coding_approval(self, conversation_id: str, mode: object, expected_revision: object) -> dict[str, Any]:
+    async def set_approval(self, conversation_id: str, mode: object, expected_revision: object) -> dict[str, Any]:
         """
         通过已认证的 Chat 管理入口修改共享审批引擎, 不运行模型或写入对话历史
 
@@ -453,26 +452,23 @@ class ChatService:
         返回:
         - 保存后的实际状态; 未启用插件, 参数错误或版本冲突时抛出 ValueError
         """
-        from satrap.expend.plugins.satrap_coding.core.approval import APPROVAL_MODES
-        from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
-        from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+        from satrap.core.approval.contracts import APPROVAL_MODES
+        from satrap.core.approval.state import session_approval
         if not isinstance(mode, str) or mode not in APPROVAL_MODES or type(expected_revision) is not int:
             raise ValueError("审批模式或权限版本无效")
         conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
         if conv is None:
             raise ValueError("会话不存在")
         async with conv.plugin_lock:
-            plugin = next((plugin for plugin in conv.session.list_plugins() if plugin.name == "satrap_coding"), None)
+            plugin = next((plugin for plugin in conv.session.list_plugins() if plugin.name == "permissions"), None)
             if plugin is None or not plugin.enabled:
-                raise ValueError("请先启用 satrap_coding 插件")
-            engine = cast(PermissionEngine, get_plugin_state(conv.session)["engine"])
-            if engine.revision != expected_revision:
-                raise ValueError("审批状态已变化, 请刷新后重试")
-            engine.set_mode(mode)
+                raise ValueError("请先启用 permissions 插件")
+            engine = session_approval(conv.session)
+            engine.set_mode(mode, expected_revision=expected_revision)
             return {"ok": True, "available": True, "mode": engine.mode,
                     "revision": engine.revision, "plan_mode": engine.plan_mode}
 
-    async def _request_coding_approval(self, conv: _Conversation, request: ApprovalRequest) -> ApprovalResult:
+    async def _request_approval(self, conv: _Conversation, request: ApprovalRequest) -> ApprovalResult:
         """
         展示精确动作并把明确点击结果绑定到原始审批请求
 
@@ -486,7 +482,7 @@ class ChatService:
         approval = {"tool": request.tool, "operation": request.operation, "description": request.description,
                     "action": json.loads(request.action_json)}
         # 人工界面只展示被冻结的实际动作, 完整对话证据仅用于模型审查
-        answer = await self._request_user_input(conv, "是否批准本次编程操作?", ["批准本次", "拒绝"], approval=approval)
+        answer = await self._request_user_input(conv, "是否批准本次操作?", ["批准本次", "拒绝"], approval=approval)
         allowed = answer == "批准本次"
         return ApprovalResult.for_request(request, "allow" if allowed else "deny",
                                           "用户批准本次操作" if allowed else "用户未批准本次操作", "user")
@@ -941,7 +937,7 @@ class ChatService:
 
         session.user_input_provider = user_input_provider
 
-        async def coding_approval_provider(request: ApprovalRequest) -> ApprovalResult:
+        async def approval_provider(request: ApprovalRequest) -> ApprovalResult:
             """
             将会话审批交给当前 Chat 的绑定回填通道
 
@@ -951,9 +947,9 @@ class ChatService:
             返回:
             - 只对原请求有效的人工决定
             """
-            return await self._request_coding_approval(conv, request)
+            return await self._request_approval(conv, request)
 
-        session.coding_approval_provider = coding_approval_provider
+        session.approval_provider = approval_provider
 
         def on_tool_start(event: dict[str, Any]) -> None:
             """
@@ -1478,7 +1474,7 @@ class ChatService:
 
         session.user_input_provider = user_input_provider
 
-        async def coding_approval_provider(request: ApprovalRequest) -> ApprovalResult:
+        async def approval_provider(request: ApprovalRequest) -> ApprovalResult:
             """
             将会话审批交给当前 Chat 的绑定回填通道
 
@@ -1488,9 +1484,9 @@ class ChatService:
             返回:
             - 只对原请求有效的人工决定
             """
-            return await self._request_coding_approval(conv, request)
+            return await self._request_approval(conv, request)
 
-        session.coding_approval_provider = coding_approval_provider
+        session.approval_provider = approval_provider
 
         def on_tool_start(event: dict[str, Any]) -> None:
             recorder.on_tool_start(event)

@@ -1,5 +1,5 @@
 """
-satrap_coding 插件命令: /goal /plan /approve (同步 + 异步)
+satrap_coding 插件命令: /goal /plan (同步 + 异步)
 
 约定:
 - build_commands(session, config) 工厂返回 (同步命令映射, 异步命令映射)
@@ -12,16 +12,9 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.approval import APPROVAL_MODES
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.approval.policy import PermissionEngine
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_management_permissions, require_plugin_entry_permission
-from satrap.core.call_context import current_call_origin, current_tool_workflow
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-
-from satrap.core.log import logger
-
-_APPROVE_MODES = APPROVAL_MODES
 
 
 def _parse_args(args: list[str], default: str = "") -> str:
@@ -115,63 +108,6 @@ def _cmd_plan_impl(state: dict[str, Any], args: list[str]) -> str:
     return "用法: /plan on 进入计划模式; /plan off 退出"
 
 
-def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
-    """
-    审批命令: 切换三档策略或查看状态
-
-    参数:
-    - state: 状态
-    - args: 额外位置参数
-
-    返回:
-    - str: 审批命令: 切换三档策略或查看状态
-    """
-    engine = state["engine"]
-    assert isinstance(engine, PermissionEngine)
-    sub = args[0] if args else "mode"
-    if sub in ("mode", "策略"):
-        if len(args) < 2 or args[1] not in _APPROVE_MODES:
-            return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}>; 当前: {engine.mode}"
-        engine.set_mode(args[1])
-        return f"审批策略已切换: {args[1]}"
-    if sub in ("rules", "规则", "rule", "添加规则"):
-        return "操作类别级放行规则已移除, 请使用 /approve mode user|auto|full-access"
-    if sub == "status":
-        return f"当前审批模式: {engine.mode}; 计划模式: {engine.plan_mode}" + (f"\n{engine.migration_notice}" if engine.migration_notice else "")
-    return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}> | status; 当前策略: {engine.mode}"
-
-
-def _approval_command(session: SessionType, state: dict[str, Any], args: list[str]) -> str:
-    """
-    只允许可信原生命令修改宿主执行权限
-
-    参数:
-    - session: 命令所属会话
-    - state: 共享插件状态
-    - args: 用户直接输入的命令参数
-
-    返回:
-    - 命令结果或明确权限拒绝, 模型工作流不能提高权限
-    """
-    try:
-        registry = getattr(session, "command_handler", None) or getattr(session, "cmd_handler", None)
-        binding = getattr(registry, "_permission_bindings", {}).get("approve")
-        if not isinstance(binding, PluginEntryBinding) or current_tool_workflow() is not None:
-            raise PermissionError("修改审批模式必须使用可信的用户原生命令入口")
-        require_plugin_entry_permission(binding, refresh=True)
-        origin = current_call_origin()
-        if origin is None and session.plugin_environment.session_type == "platform":
-            raise PermissionError("平台审批命令缺少有效的调用者身份")
-        if origin is not None:
-            result = authorize_management_permissions(binding, ("approval_manage",))
-            if result.status != "allowed":
-                raise PermissionError("只有获得本插件宿主管理权限的用户可以管理审批模式")
-        return _cmd_approve_impl(state, args)
-    except (OSError, ValueError) as error:
-        logger.warning(f"[satrap_coding] 审批命令失败: {error}")
-        return f"权限或配置错误: {error}"
-
-
 def build_commands(
     session: SessionType, config: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
@@ -211,48 +147,18 @@ def build_commands(
         """
         return _cmd_plan_impl(state, list(args))
 
-    def cmd_approve(*args: str) -> str:
-        """
-        切换审批模式或查看状态
-
-        参数:
-        - args: 额外位置参数
-
-        返回:
-        - str: 切换审批模式或查看状态
-        """
-        return _approval_command(session, state, list(args))
-
     async def cmd_goal_async(*args: str) -> str:
         return _cmd_goal_impl(state, session, list(args))
 
     async def cmd_plan_async(*args: str) -> str:
         return _cmd_plan_impl(state, list(args))
 
-    async def cmd_approve_async(*args: str) -> str:
-        """
-        异步原生命令切换审批模式或查看状态
-
-        参数:
-        - args: 用户直接输入的命令参数
-
-        返回:
-        - 当前状态, 切换回执或权限拒绝
-        """
-        return _approval_command(session, state, list(args))
-
-    setattr(cmd_approve, "requires_native_scope", True)
-    setattr(cmd_approve_async, "requires_native_scope", True)
-    # 本地用户可用的命令也需绑定原生作用域, 平台来源再追加管理权限
     sync_map: dict[str, Callable[..., Any]] = {
         "goal": cmd_goal,
         "plan": cmd_plan,
-        "approve": cmd_approve,
     }
     async_map: dict[str, Callable[..., Any]] = {
         "goal": cmd_goal_async,
         "plan": cmd_plan_async,
-        "approve": cmd_approve_async,
     }
     return sync_map, async_map
-

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.approval.policy import PermissionEngine
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.utils.TCBuilder import Tool, ToolsManager
 from satrap.edictum import SimpleSession

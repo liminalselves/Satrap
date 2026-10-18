@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { chatApi, type CodingApprovalMode, type CodingApprovalState } from '@/api/chat';
+import { chatApi, type ApprovalMode, type ApprovalState } from '@/api/chat';
 import { Select } from '@/components/ui/Select';
 
 const MODES = [
@@ -8,8 +8,8 @@ const MODES = [
   { value: 'full-access', label: '完全访问 (full-access)' },
 ];
 
-export function CodingApprovalSettings({ conversationId }: { conversationId: string }) {
-  const [state, setState] = useState<CodingApprovalState | null>(null);
+export function ApprovalSettings({ conversationId }: { conversationId: string }) {
+  const [state, setState] = useState<ApprovalState | null>(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const generation = useRef(0);
@@ -21,7 +21,7 @@ export function CodingApprovalSettings({ conversationId }: { conversationId: str
     setError('');
     setSaving(false);
     if (conversationId) {
-      chatApi.getCodingApproval(conversationId, controller.signal).then((result) => {
+      chatApi.getApproval(conversationId, controller.signal).then((result) => {
         if (version === generation.current) setState(result);
       }).catch((reason: unknown) => {
         if (!controller.signal.aborted && version === generation.current) {
@@ -32,19 +32,19 @@ export function CodingApprovalSettings({ conversationId }: { conversationId: str
     return () => { generation.current++; controller.abort(); };
   }, [conversationId]);
 
-  const save = async (mode: CodingApprovalMode) => {
+  const save = async (mode: ApprovalMode) => {
     if (!state || !state.available || saving) return;
     const version = generation.current;
     setSaving(true);
     setError('');
     try {
-      const result = await chatApi.setCodingApproval(conversationId, mode, state.revision);
+      const result = await chatApi.setApproval(conversationId, mode, state.revision);
       if (version === generation.current) setState(result);
     } catch (reason) {
       if (version !== generation.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
       try {
-        const latest = await chatApi.getCodingApproval(conversationId);
+        const latest = await chatApi.getApproval(conversationId);
         if (version === generation.current) setState(latest);
       } catch { /* 保留原始保存错误, 不显示未经服务端确认的新模式 */ }
     } finally {
@@ -53,17 +53,17 @@ export function CodingApprovalSettings({ conversationId }: { conversationId: str
   };
 
   return (
-    <div className="space-y-2" role="group" aria-labelledby="coding-approval-label">
-      <label id="coding-approval-label" className="block text-sm font-medium text-text-primary">编程审批模式</label>
+    <div className="space-y-2" role="group" aria-labelledby="approval-label">
+      <label id="approval-label" className="block text-sm font-medium text-text-primary">执行审批模式</label>
       <Select
         value={state?.mode ?? ''}
         disabled={!state?.available || saving}
-        onChange={(event) => { void save(event.target.value as CodingApprovalMode); }}
+        onChange={(event) => { void save(event.target.value as ApprovalMode); }}
         options={state ? MODES : [{ value: '', label: conversationId ? '读取当前模式...' : '创建会话后可设置' }]}
       />
       <p className="text-xs text-text-tertiary">
         {saving ? '正在保存...' : !conversationId ? '先创建或打开一个对话'
-          : state && !state.available ? '请先在插件中启用 satrap_coding'
+          : state && !state.available ? '请先在插件中启用 permissions'
           : state?.mode === 'full-access' ? '允许直接执行本机命令和访问工作区外文件; 计划模式与固定保护仍生效'
           : state?.mode === 'auto' ? '需要审批的操作由独立模型审查, 不确定或失败时转人工'
           : '需要审批的操作交给你确认, 会话沙箱内普通文件修改可直接执行'}

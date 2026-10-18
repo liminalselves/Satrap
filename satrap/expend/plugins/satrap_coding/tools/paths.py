@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, cast
 import time
 
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.approval.policy import PermissionEngine
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
 from satrap.core.call_context import current_call_origin, current_tool_workflow, CallOrigin

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine, RiskLevel
+from satrap.core.approval.policy import PermissionEngine, RiskLevel
 from satrap.core.utils.TCBuilder import Tool
 from satrap.edictum import SimpleSession
 from .contracts import require_bound_session

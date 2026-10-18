@@ -2,13 +2,13 @@ import { useRef, type KeyboardEvent } from 'react';
 import { CheckCircle2, Loader2, Wrench } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/utils/cn';
-import type { CodingApprovalPresentation } from '@/api/chat';
+import type { ApprovalPresentation } from '@/api/chat';
 
 export interface PendingUserInput {
   requestId: string;
   question: string;
   options: string[];
-  approval?: CodingApprovalPresentation | null;
+  approval?: ApprovalPresentation | null;
 }
 
 interface AskUserPanelProps {
@@ -35,7 +35,7 @@ export function AskUserPanel({
     const { tool, description, action } = request.approval;
     const isShell = tool === 'shell';
     return (
-      <div className="glass-card glass-card-accent rounded-xl px-4 py-3 mb-2" data-ask-user-panel data-coding-approval>
+      <div className="glass-card glass-card-accent rounded-xl px-4 py-3 mb-2" data-ask-user-panel data-approval>
         <div className="flex items-center justify-between gap-3 text-sm font-medium text-accent">
           <span className="flex items-center gap-2"><Wrench className="h-4 w-4" />等待批准执行 · {tool}</span>
           <span className="text-xs text-text-tertiary">1 / {queueLength}</span>

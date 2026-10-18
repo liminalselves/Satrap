@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
-from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
+from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 
 from pathlib import Path
 from contextlib import closing
@@ -11,7 +11,7 @@ import pytest
 from typing import Any
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionDecision, PermissionEngine, RiskLevel
+from satrap.core.approval.policy import PermissionDecision, PermissionEngine, RiskLevel
 from satrap.core.memory.store import MemoryStore
 import tracemalloc
 from typing import Iterator, Callable, cast
@@ -562,15 +562,15 @@ def test_write_file_requires_approval(tmp_path: Any, workspace: Any):
     assert not target.exists()
 
     session.user_input_provider = _reply("y")
-    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     # y 仅批准本次: 写入成功, 但下次同类操作仍需询问
     out = tools["write_file"].execute(str(target), "hello")
     assert "已写入" in out
     assert target.read_text(encoding="utf-8") == "hello"
 
-    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "deny", "用户拒绝", "user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "deny", "用户拒绝", "user")
     assert "approval_denied" in tools["write_file"].execute(str(target), "again", append=True)
-    session.coding_approval_provider = None
+    session.approval_provider = None
     session.user_input_provider = _reply("all")
     assert "approval_required" in tools["write_file"].execute(str(target), "again", append=True)
     assert target.read_text(encoding="utf-8") == "hello"
@@ -579,7 +579,7 @@ def test_edit_file_tool(tmp_path: Any, workspace: Any):
     """编辑文件: 精确替换 + 未匹配报错"""
     session = _make_session(tmp_path)
     session.user_input_provider = _reply("y")
-    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = _install_tools(session)
     target = workspace / "edit.txt"
     target.write_text("aaa bbb aaa", encoding="utf-8")
@@ -595,7 +595,7 @@ def test_search_replace_tool(tmp_path: Any, workspace: Any):
     """批量替换: 多对 old->new, replace_all 独立控制, 全量预校验"""
     session = _make_session(tmp_path)
     session.user_input_provider = _reply("y")
-    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = _install_tools(session)
     target = workspace / "sr.txt"
     target.write_text("x a x b x a", encoding="utf-8")
@@ -755,7 +755,7 @@ async def test_async_file_tools(tmp_path: Any, workspace: Any):
     """异步文件工具: 读写/编辑/列表/glob/grep 主路径"""
     session = await _make_async_session(tmp_path)
     session.user_input_provider = _reply("y")
-    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = await _async_tools(session)
 
     target = workspace / "a.txt"
@@ -784,7 +784,7 @@ async def test_async_search_replace_and_todo(tmp_path: Any, workspace: Any):
     """异步 search_replace / todo_write 主路径"""
     session = await _make_async_session(tmp_path)
     session.user_input_provider = _reply("y")
-    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = await _async_tools(session)
 
     target = workspace / "a.txt"
@@ -807,7 +807,7 @@ async def test_async_ask_shell(tmp_path: Any, workspace: Any):
     """异步 ask_user / shell 主路径"""
     session = await _make_async_session(tmp_path)
     session.user_input_provider = _reply("y")
-    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = await _async_tools(session)
 
     out = await tools["ask_user"].execute("继续?")
@@ -830,7 +830,7 @@ async def test_async_ask_shell(tmp_path: Any, workspace: Any):
     assert "黑名单" in out
 
     session.user_input_provider = None
-    session.coding_approval_provider = None
+    session.approval_provider = None
     out = await tools["shell"].execute("git push")
     assert "approval_required" in out
     out = await tools["shell"].execute("type ../outside.txt")
@@ -1008,7 +1008,7 @@ async def test_three_modes_exact_actions_and_separate_user_questions(tmp_path, w
     """三档模式完整走文件和 Shell, 审批证据包含实际变化, 普通提问不能授权"""
     import inspect
     from satrap.expend.plugins.satrap_coding.state import get_plugin_state
-    from satrap.expend.plugins.satrap_coding.tools import approval
+    from satrap.core.approval import coordinator as approval
     from satrap.core.call_context import bind_tool_workflow
     from types import SimpleNamespace
     session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
@@ -1039,7 +1039,7 @@ async def test_three_modes_exact_actions_and_separate_user_questions(tmp_path, w
     bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(workspace / "private")))
     for mode in ("user", "auto", "full-access"):
         engine.set_mode(mode, persist=False)
-        session.coding_approval_provider = human
+        session.approval_provider = human
         before_human, before_model = len(approvals), len(reviews)
         assert "已写入" in await execute("write_file", f"private/{mode}.txt", "scratch")
         assert (len(approvals), len(reviews)) == (before_human, before_model)
@@ -1076,7 +1076,7 @@ async def test_auto_decisions_failures_human_fallback_and_timeout(tmp_path, work
     import asyncio
     import time
     from satrap.expend.plugins.satrap_coding.state import get_plugin_state
-    from satrap.expend.plugins.satrap_coding.tools import approval
+    from satrap.core.approval import coordinator as approval
     session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
     tools = await _async_tools(session) if asynchronous else _install_tools(session)
     engine = get_plugin_state(session)["engine"]
@@ -1104,7 +1104,7 @@ async def test_auto_decisions_failures_human_fallback_and_timeout(tmp_path, work
             return model(**kwargs)
         monkeypatch.setattr(session.llm, "chat", async_model if asynchronous else model)
         for with_human in (False, True):
-            session.coding_approval_provider = human if with_human else None
+            session.approval_provider = human if with_human else None
             target = workspace / f"fallback-{index}-{with_human}.txt"
             previous = len(human_calls)
             result = tools["write_file"].execute(str(target), "payload")
@@ -1151,7 +1151,7 @@ async def test_approval_cannot_authorize_changed_actions(tmp_path, workspace, as
         elif drift == "turn":
             session.recovery_origin = {"turn_id": 2, "variant_index": 0}
         return ApprovalResult.for_request(request, "allow", "本次批准", "user")
-    session.coding_approval_provider = provider
+    session.approval_provider = provider
     value = tool.execute(str(target), "should-never-write", append=True)
     result = await value if inspect.isawaitable(value) else value
     assert "已写入" not in result and "已追加" not in result
@@ -1192,7 +1192,7 @@ async def test_named_approval_model_uses_host_configuration(tmp_path, workspace,
     """专用审批模型来自宿主模型表, 不把调用转给主 Agent"""
     from types import SimpleNamespace
     from satrap.expend.plugins.satrap_coding.state import get_plugin_state
-    from satrap.expend.plugins.satrap_coding.tools import approval
+    from satrap.core.approval import coordinator as approval
     session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
     tools = await _async_tools(session) if asynchronous else _install_tools(session)
     engine = get_plugin_state(session)["engine"]

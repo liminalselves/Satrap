@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.approval.policy import PermissionEngine
 from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager
 from .sync_interaction import ShellTool, _shell_definition

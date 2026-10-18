@@ -117,6 +117,9 @@ class ChatPluginRegistry:
                                 **({"config_version": st_dict["config_version"]} if "config_version" in st_dict else {}),
                                 **({"migration_state": st_dict["migration_state"]} if "migration_state" in st_dict else {}),
                             }
+                from satrap.edictum.approval_migration import migrate_approval_specs
+                migrated = migrate_approval_specs([{"name": name, **state} for name, state in self._states.items()], self.catalog)
+                self._states = {item["name"]: {key: value for key, value in item.items() if key != "name"} for item in migrated}
             except (OSError, ValueError) as e:
                 if strict:
                     self._states = previous

@@ -194,6 +194,8 @@ class BackendConfig:
             raise ValueError(
                 "v2 数据布局不再支持独立数据库路径: " + ", ".join(configured_removed)
             )
+        from satrap.core.approval.migration import migrate_approval_admin_config
+        data = migrate_approval_admin_config(data)
         media_roots = data.get("media_allowed_roots")
         from satrap.core.config.administrator_groups import (normalize_administrator_overrides, migrate_legacy_scope_exclusions,
                                                              normalize_administrator_groups)

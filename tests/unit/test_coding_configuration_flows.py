@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
-from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
+from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 
 import inspect
 from pathlib import Path
@@ -65,7 +65,7 @@ async def test_factory_configuration_isolated_without_host_paths(
     try:
         maps = []
         for session, config in zip(sessions, configs):
-            session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+            session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
             maps.append({tool.tool_name: tool for tool in coding.get_tools(session, config)})
         first_config = configs[0]
         assert first_config is not None
@@ -91,7 +91,7 @@ async def test_factory_configuration_isolated_without_host_paths(
             (root / "private").mkdir(parents=True, exist_ok=True)
             (root / "source.txt").write_text(root.name, encoding="utf-8")
             assert root.name in await _execute(maps[index]["read_file"], "source.txt")
-            sessions[index].coding_approval_provider = None
+            sessions[index].approval_provider = None
             assert "已写入" in await _execute(maps[index]["write_file"], "private/result.txt", root.name)
             assert "approval_required" in await _execute(maps[index]["write_file"], "outside.txt", "blocked")
             assert not (root / "outside.txt").exists()
@@ -136,6 +136,9 @@ async def test_real_install_state_roots_commands_plan_and_reinstall(
         return str(value)
 
     await install(config)
+    installed = session.install_plugin(str(_coding_configuration_PLUGIN_DIR.with_name("permissions")))
+    if inspect.isawaitable(installed):
+        await installed
     try:
         state = get_plugin_state(session)
         assert Path(state["_data_root"]) == (tmp_path / "state").resolve()
@@ -151,13 +154,13 @@ async def test_real_install_state_roots_commands_plan_and_reinstall(
         injected = callback("message", context)
         assert isinstance(injected, str) and "shared-goal" in injected
         assert "已切换" in await command("/approve mode full-access")
-        assert (tmp_path / "state/permissions.json").is_file()
+        assert state["engine"].rules_file.is_file()
         assert "计划模式" in await command("/plan on")
         assert "计划模式" in await _execute(tool, "private/new.txt", "blocked")
         assert not (workspace / "private/new.txt").exists()
         assert "退出" in await command("/plan off")
         assert "已写入" in await _execute(tool, "outside.txt", "approved")
-        assert (tmp_path / "state/approval_log.jsonl").is_file()
+        assert state["engine"].log_file.is_file()
         await uninstall()
         await install({**config, "data_root": str(tmp_path / "new-state")})
         assert get_plugin_state(session) is not state
@@ -224,7 +227,6 @@ async def test_failed_install_clears_state_and_duplicate_install_preserves_it(
     """失败安装释放状态, 重复安装不破坏已加载插件"""
     from satrap.edictum import simple_session as ss_mod
     from satrap.edictum.plugin_config import PluginConfigManager
-    from satrap.expend.plugins.satrap_coding import state as state_mod
 
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
     base, llm_type = (AsyncSimpleSession, AsyncLLM) if asynchronous else (SimpleSession, LLM)
@@ -241,7 +243,7 @@ async def test_failed_install_clears_state_and_duplicate_install_preserves_it(
         await install("failed-state")
     assert session.list_tools() == []
     assert session.list_plugins() == []
-    assert id(session) not in state_mod._registry
+    assert not hasattr(session, "_coding_plugin_state")
     manager.unregister_command("goal")
     await install("retry-state")
     try:
@@ -287,7 +289,7 @@ async def test_file_approval_rechecks_execution_context(
             engine.set_plan_mode(True)
         return ApprovalResult.for_request(request, "allow", "用户批准", "user")
 
-    session.coding_approval_provider = approve
+    session.approval_provider = approve
     try:
         assert "执行已取消" in await _execute(tools[tool_name], *args)
         assert target.read_text(encoding="utf-8") == "original"
@@ -502,18 +504,19 @@ def test_plugin_install_full_capabilities(_satrap_coding_plugin_session: SimpleS
     plugin = _satrap_coding_plugin_session.list_plugins()[0]
     assert plugin.name == "satrap_coding"
     assert len(plugin.tools) == 11
-    assert set(plugin.commands) == {"goal", "plan", "approve"}
+    assert set(plugin.commands) == {"goal", "plan"}
     assert set(plugin.skills) == {"goal", "plan"}
     assert set(plugin.handlers) == {"satrap_coding.inject"}
     assert len(_satrap_coding_plugin_session.list_tools()) == 11
-    assert set(_satrap_coding_plugin_session.list_commands()) >= {"goal", "plan", "approve"}
+    assert set(_satrap_coding_plugin_session.list_commands()) >= {"goal", "plan"}
+    assert "approve" not in _satrap_coding_plugin_session.list_commands()
     assert "goal" in _satrap_coding_plugin_session.list_skills()
 
     # meta.yaml 能力声明读入 plugin.capability_descriptions
     desc = plugin.capability_descriptions
     assert desc["tools"]["read_file"] and desc["tools"]["shell"]
     assert desc["skills"]["goal"] and desc["handlers"]["satrap_coding.inject"]
-    assert desc["commands"]["approve"]
+    assert desc["commands"]["plan"]
     assert desc.get("mcp", {}) == {}
 
     # list_capabilities 每项带 name / enabled / description
@@ -589,6 +592,7 @@ def test_uninstall_resets_plugin_state(_satrap_coding_plugin_session: SimpleSess
 
 def test_approve_command(_satrap_coding_plugin_session: SimpleSession):
     """/approve: 策略切换与持久规则"""
+    _satrap_coding_plugin_session.install_plugin(str(_satrap_coding_plugin_PLUGIN_DIR.with_name("permissions")))
     write_tool = _satrap_coding_plugin_session.tools_manager.tools["write_file"]
     target = tools_mod._tool_root(write_tool) / "x.txt"
 
@@ -857,10 +861,13 @@ async def test_approval_mode_requires_native_host_administrator(tmp_path, monkey
     value = session.install_plugin(str(_coding_configuration_PLUGIN_DIR), config={"workspace_root": str(tmp_path), "data_root": str(tmp_path / "state")})
     if inspect.isawaitable(value):
         await value
+    installed = session.install_plugin(str(_coding_configuration_PLUGIN_DIR.with_name("permissions")))
+    if inspect.isawaitable(installed):
+        await installed
     admins = AdministratorService(lambda: [{"id": "qq", "type": "onebot", "instance_id": "instance"}], [
         {"id": "hosts", "name": "宿主管理员", "enabled": True,
          "members": [{"platform_id": "qq", "platform_instance_id": "instance", "user_id": "host-admin"}],
-         "plugin_scope": {"mode": "selected", "included": ["satrap_coding"], "excluded": []}}])
+         "plugin_scope": {"mode": "selected", "included": ["permissions"], "excluded": []}}])
     previous = current_adapter_manager()
     set_current_adapter_manager(cast(Any, SimpleNamespace(administrator_service=admins)))
     manager = session.command_handler if asynchronous else session.cmd_handler

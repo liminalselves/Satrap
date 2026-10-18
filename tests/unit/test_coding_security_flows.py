@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
 import json
-from satrap.expend.plugins.satrap_coding.core.approval import ApprovalRequest, ApprovalResult
+from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 
 from pathlib import Path
 import pytest
@@ -15,7 +15,7 @@ import shutil
 from types import SimpleNamespace
 import os
 from typing import Any, cast
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine, RiskLevel
+from satrap.core.approval.policy import PermissionEngine, RiskLevel
 from satrap.expend.plugins.satrap_coding import tools as coding
 from satrap.core.utils.proc_env import sanitized_child_env
 
@@ -391,7 +391,7 @@ async def test_shell_harness_read_control(shell_env, asynchronous):
     output = await reader.execute("control.txt") if isinstance(reader, coding.AsyncReadFileTool) else reader.execute("control.txt")
     assert "audit-control" in output
     engine.set_plan_mode(False)
-    session.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     for shell in ("powershell", "cmd"):
         output = await execute_shell(shell_env, asynchronous, "echo 审计中文-control", shell=shell)
         assert "审计中文-control" in output
@@ -436,7 +436,7 @@ async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asyn
         approvals.append(request)
         return ApprovalResult.for_request(request, "allow" if answer == "y" else "deny", "人工决定", "user")
 
-    session = SimpleNamespace(coding_approval_provider=provider if answer else None)
+    session = SimpleNamespace(approval_provider=provider if answer else None)
 
     bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(tmp_path)))
     monkeypatch.setattr(coding, "_run_shell", lambda *args, **kwargs: calls.append(args) or "executed")
@@ -464,7 +464,7 @@ async def test_shell_rechecks_scope_after_approval(tmp_path, monkeypatch, asynch
             bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(tmp_path.parent)))
         return ApprovalResult.for_request(request, "allow", "用户批准", "user")
 
-    session.coding_approval_provider = provider
+    session.approval_provider = provider
     monkeypatch.setattr(coding, "_run_shell", lambda *args, **kwargs: pytest.fail("已失效授权不能执行"))
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
     tool._bind(cast(Any, session))
@@ -492,7 +492,7 @@ async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatc
         def __init__(self):
             self._wf = SimpleNamespace(llm=None, tools_manager=None)
             bind_environment(self, replace(environment_snapshot(self), workspace_root=Path(tmp_path)))
-            self.coding_approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
+            self.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
 
     def state(session, *, config=None):
         return {"engine": PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl"), "todos": {}}
@@ -651,7 +651,7 @@ async def test_native_write_rechecks_live_platform_route(tmp_path, monkeypatch, 
     def approve(request):
         route[0] = 2
         return ApprovalResult.for_request(request, "allow", "用户批准", "user")
-    session.coding_approval_provider = approve
+    session.approval_provider = approve
     tool = coding.AsyncWriteFileTool(engine) if asynchronous else coding.WriteFileTool(engine)
     tool._bind(cast(Any, session))
     try:

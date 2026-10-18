@@ -76,6 +76,9 @@ class PluginSettingsService:
         if name in {"base_take", "memory"}:
             from satrap.edictum.memory_migration import migrate_memory_overrides
             migrate_memory_overrides(self.overrides.store, session_id)
+        if name in {"satrap_coding", "permissions"}:
+            from satrap.edictum.approval_migration import migrate_approval_overrides
+            migrate_approval_overrides(self.overrides.store, session_id)
         global_values = self.manager.load_global_explicit(name, schema)
         layers = [("default", {key: item.default for key, item in schema.items()}), ("global", global_values)]
         if named:
@@ -195,6 +198,9 @@ def resolve_session_plugin_config(
     if name in {"base_take", "memory"}:
         from satrap.edictum.memory_migration import migrate_memory_overrides
         migrate_memory_overrides(store, session.session_id)
+    if name in {"satrap_coding", "permissions"}:
+        from satrap.edictum.approval_migration import migrate_approval_overrides
+        migrate_approval_overrides(store, session.session_id)
     values = store.read(session.session_id, f"plugins.{name}")["overrides"]
     if name == "friend_manager":
         from satrap.edictum.friend_migration import FRIEND_SWITCHES

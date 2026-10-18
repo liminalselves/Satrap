@@ -25,10 +25,10 @@ describe('chatApi conversation preload', () => {
 
   it('读写审批模式携带当前会话和权限版本', async () => {
     const fetchSpy = mockFetch({ ok: true, available: true, mode: 'auto', revision: 2, plan_mode: false });
-    await chatApi.getCodingApproval('conv & test');
+    await chatApi.getApproval('conv & test');
     expect(String(fetchSpy.mock.calls[0][0])).toContain('conversation=conv+%26+test');
     fetchSpy.mockClear();
-    const state = await chatApi.setCodingApproval('conv & test', 'auto', 1);
+    const state = await chatApi.setApproval('conv & test', 'auto', 1);
     expect(state.mode).toBe('auto');
     expect(fetchSpy.mock.calls[0][1]?.method).toBe('PUT');
     expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toEqual({ mode: 'auto', expected_revision: 1 });

@@ -22,7 +22,7 @@ import os
 import re
 
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
-from satrap.expend.plugins.satrap_coding.core.permission import (
+from satrap.core.approval.policy import (
     PermissionDecision,
     PermissionEngine,
     RiskLevel,
@@ -137,7 +137,6 @@ def get_tools(
 
     state = get_plugin_state(session, config=cfg)
     engine = cast(PermissionEngine, state["engine"])
-    engine.approval_model = str(cfg.get("approval_model") or "").strip()
     todos = cast(dict[str, Any], state["todos"])
 
     if isinstance(session, AsyncSimpleSession):

@@ -27,6 +27,7 @@ from satrap.core.config.platform_policy import normalize_group_whitelist, policy
 from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.command_entry import (
+    OPERATOR_COMMAND_PLUGINS,
     OPERATOR_REQUIRED_FEEDBACK,
     command_name_from_text,
     extract_command_candidate,
@@ -942,7 +943,8 @@ class PipelineScheduler:
         返回:
         - 非受保护命令或非平台来源为 True; 平台来源需本插件宿主管理权限或旧操作员名单
         """
-        if not is_operator_only_command(command_name_from_text(command_text)):
+        command_name = command_name_from_text(command_text)
+        if not is_operator_only_command(command_name):
             return True
         origin = event.call_origin
         # 管理面与库内直调已过管理面认证, 不继承为平台操作员
@@ -953,7 +955,7 @@ class PipelineScheduler:
         administrators = getattr(manager, "administrator_service", None)
         if administrators is not None:
             try:
-                if administrators.resolve(origin, "satrap_coding").allowed:
+                if administrators.resolve(origin, OPERATOR_COMMAND_PLUGINS[command_name]).allowed:
                     return True
             except Exception:
                 logger.error(f"[平台命令] 宿主管理权限核验失败: {traceback.format_exc()}")

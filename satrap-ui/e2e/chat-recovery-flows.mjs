@@ -40,7 +40,7 @@ async function chat_reconnect(runtime) {
         approvalAnswers.push(route.request().postDataJSON());
         return route.fulfill({ json: { ok: true }, headers });
       }
-      if (pathname === '/api/chat/coding-approval') {
+      if (pathname === '/api/chat/approval') {
         if (route.request().method() === 'PUT') {
           const payload = route.request().postDataJSON();
           assert.equal(payload.expected_revision, approval.revision);
@@ -133,8 +133,8 @@ async function chat_reconnect(runtime) {
     const operation = { tool: 'shell', operation: 'shell', description: '运行目录查询',
       action: { command: 'Get-ChildItem D:/project/images', cwd: 'D:/project', interpreter: 'powershell.exe', argv: ['powershell.exe', '-Command', 'Get-ChildItem D:/project/images'] } };
     send(sockets[1], { type: 'ask_user', conversation_id: 'benchmark-active', request_id: 'approval-live',
-      question: '是否批准本次编程操作?', options: ['批准本次', '拒绝'], approval: operation, seq: 32, stream_id: 'test-epoch' });
-    const panel = page.locator('[data-coding-approval]');
+      question: '是否批准本次操作?', options: ['批准本次', '拒绝'], approval: operation, seq: 32, stream_id: 'test-epoch' });
+    const panel = page.locator('[data-approval]');
     await panel.waitFor();
     assert.equal(await panel.locator('textarea').count(), 0);
     assert.equal(await panel.locator('details').first().evaluate((element) => element.open), false);
@@ -153,7 +153,7 @@ async function chat_reconnect(runtime) {
     send(sockets[1], { type: 'resync_required' });
     await waitFor(() => sockets.length === 3);
     send(sockets[2], snapshot(40, '恢复审批请求', [{
-      request_id: 'approval-recovered', question: '是否批准本次编程操作?', options: ['批准本次', '拒绝'], approval: operation,
+      request_id: 'approval-recovered', question: '是否批准本次操作?', options: ['批准本次', '拒绝'], approval: operation,
     }]));
     await panel.waitFor();
     assert.equal(await panel.locator('textarea').count(), 0);
@@ -169,7 +169,7 @@ async function chat_reconnect(runtime) {
     assert.deepEqual(errors, []);
     await page.getByTitle('对话设置', { exact: true }).click();
     const settings = page.getByRole('dialog', { name: '对话设置', exact: true });
-    const approvalGroup = settings.getByRole('group', { name: '编程审批模式' });
+    const approvalGroup = settings.getByRole('group', { name: '执行审批模式' });
     for (const [previous, label] of [
       ['请求批准 (user)', '帮我审批 (auto)'],
       ['帮我审批 (auto)', '完全访问 (full-access)'],

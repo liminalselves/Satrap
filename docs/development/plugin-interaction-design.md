@@ -2,7 +2,7 @@
 
 状态: A1/A2/B/C 已实现, 最终验收记录见第 18 节
 基线: fix/issue19, e5de0a9
-范围: 已授权实施 A1 -> A2 -> B -> C, D 仍仅为后续方向
+范围: 已授权实施 A1 -> A2 -> B -> C, D 中权限插件拆分已实施, 目录外读取仍为后续方向
 
 ## 1. 本版调整
 
@@ -1059,3 +1059,26 @@ interop:
 - 两插件可以同时安装, 任一安装顺序采用相同替代规则; coding 单独安装不要求 base_take 存在
 - 共享宿主目录, worker 边界和各自原审批规则保持原定义
 - 本次交互回归 17 项通过, 插件安装/配置/目录及编程配置回归 264 项通过; 补充卸载与重新安装断言后, 官方替代场景 4 项通过; git diff --check 通过
+
+## 19. 权限插件拆分
+
+2026-10-18 实施 D 中的权限管理拆分, 不包含 base_take 目录外读取。
+
+- /approve 与审批模型配置迁至官方 permissions 插件; /goal, /plan, 文件与 Shell 保留在 coding
+- 审批契约, 策略, 审查协调和持久状态由 core/approval/ 统一管理, coding 卸载不重置会话模式
+- PluginHost 新增 approvals.snapshot/set_mode/request_sync/request_async; 模式修改只允许具备有效原生作用域的用户管理命令, 插件服务或模型转发不具备修改权限
+- 其他插件请求实际操作审批不需要依赖 coding 或导入其私有实现, 请求完成后仍须执行领域边界与实际副作用前复核
+- Chat 使用 /api/chat/approval 和 session.approval_provider, 前端入口为“执行审批模式”, 不再依赖 coding 状态
+- 旧命令开关与审批模型按全局, 命名配置及会话覆盖迁移; 新插件显式配置优先, coding 配置版本升级为 1 后不重复补回权限插件
+- 旧管理员 coding 范围的允许与否决同时复制到 permissions; 文档的 approval_plugin_migration: 1 记录迁移完成, 后续撤销不会重新被推导
+- 原审批模式与日志只在目标缺失时迁移并保留原文件, 旧无版本规则继续保守迁移为 user
+- full-access 不改变受限 code_sandbox worker, coding 对基础沙箱的声明替代保持原样
+
+### 19.1 拆分验收
+
+- 后端集中回归: 15 个业务模块, 679 项通过, 1 项因本机无 Windows 文件符号链接权限跳过
+- 平台命令与权限迁移专项: 71 项通过, 前置门分别按 permissions 和 satrap_coding 核验 approve 与 plan
+- 独立冷启动场景覆盖权限插件单独使用, coding 装卸保留模式, 安装失败不改变审批模型, 等待期间配置变化撤销旧请求
+- 旧配置通过真实插件协调器安装, 保留自定义数据根, auto 模式, 专用模型和已关闭命令; 管理员允许与否决经实际授权服务复核
+- 前端 18 个测试文件共 300 项通过, 生产构建通过; chat-reconnect 与 plugins 两个浏览器场景通过
+- 变动生产 Python 的 Pyright 检查与 git diff --check 通过; 无真实模型调用或群消息发送

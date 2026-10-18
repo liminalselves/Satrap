@@ -1,4 +1,4 @@
-import { CodingApprovalSettings } from './CodingApprovalSettings';
+import { ApprovalSettings } from './ApprovalSettings';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -2282,7 +2282,7 @@ function ChatSettingsModal({
           <div className="space-y-5">
             {category === 'chat' && (
               <>
-                <CodingApprovalSettings conversationId={conversationId} />
+                <ApprovalSettings conversationId={conversationId} />
                 {/* 模型 */}
                 <div>
                   <label className="block text-sm font-medium text-text-primary mb-2">模型</label>
