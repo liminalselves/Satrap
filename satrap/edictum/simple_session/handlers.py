@@ -44,7 +44,7 @@ class _HandlerRegistryMixin:
 
         参数:
         - handler: 处理器
-        - replace: replace 输入值
+        - replace: 是否覆盖同名处理器, 默认 False; 覆盖时继承原插件归属并同步名册
 
         返回:
         - bool: 注册处理器 (协议级校验: 拒绝异步回调; 同名冲突抛 ValueError; replace=True 覆盖并 close 旧对象)
@@ -72,6 +72,10 @@ class _HandlerRegistryMixin:
             self._handler_seq += 1
             handler._seq = self._handler_seq
             self._handlers[handler.name] = handler
+            owner = self._plugins.get(handler.owner_plugin) if handler.owner_plugin else None
+            if owner is not None:
+                owner.handlers[handler.name] = handler.enabled
+                # 新对象的独立状态同步回所属插件, 避免可用性检查把已注册的处理器过滤掉
         if old is not None:
             self._close_handler(old.name, old)
         return True
@@ -217,7 +221,7 @@ class _HandlerRegistryMixin:
 
     def _sync_owner_roster(self, handler: SessionHandler) -> None:
         """
-        remove/replace 时同步清理所属插件的 handlers 名册, 防 list_capabilities 残留
+        移除旧处理器的插件名册记录, 覆盖注册时由新对象补回当前归属和状态
         (调用方须持 _registry_lock)
 
         参数:
