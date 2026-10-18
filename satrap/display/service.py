@@ -468,6 +468,47 @@ class ChatService:
             return {"ok": True, "available": True, "mode": engine.mode,
                     "revision": engine.revision, "plan_mode": engine.plan_mode}
 
+    async def get_command_history(self, conversation_id: str) -> dict[str, object]:
+        """
+        读取会话命令历史设置
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+
+        返回:
+        - 命令记录开关; 会话不存在时抛出 ValueError
+        """
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        return {"ok": True, "command_history_enabled": conv.session.command_history_enabled}
+
+    @_exclusive_conversation_operation
+    async def set_command_history(self, conversation_id: str, enabled: object) -> dict[str, object]:
+        """
+        保存命令历史设置, 与当前轮次互斥
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+        - enabled: 是否记录命令及回复, 必须为布尔值
+
+        返回:
+        - 已保存的开关状态
+        """
+        if type(enabled) is not bool:
+            raise ValueError("command_history_enabled 必须是布尔值")
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            store = conv.session.plugin_override_store
+            if store is None:
+                raise ValueError("会话覆盖存储尚未就绪")
+            current = store.read(conversation_id, "session.commands")
+            store.replace(conversation_id, "session.commands", {"command_history_enabled": enabled}, expected_revision=current["revision"])
+            conv.session.command_history_enabled = enabled
+        return {"ok": True, "command_history_enabled": enabled}
+
     async def _request_approval(self, conv: _Conversation, request: ApprovalRequest) -> ApprovalResult:
         """
         展示精确动作并把明确点击结果绑定到原始审批请求
@@ -1594,6 +1635,17 @@ class ChatService:
                     self._storage.purge_session(self._platform_id, conv.conversation_id)
                     raise
 
+            if "command_history_enabled" in settings:
+                enabled = settings["command_history_enabled"]
+                if type(enabled) is not bool:
+                    raise ValueError("command_history_enabled 必须是布尔值")
+                store = conv.session.plugin_override_store
+                if store is None:
+                    raise ValueError("会话覆盖存储尚未就绪")
+                current = store.read(conv.conversation_id, "session.commands")
+                store.replace(conv.conversation_id, "session.commands", {"command_history_enabled": enabled}, expected_revision=current["revision"])
+                conv.session.command_history_enabled = enabled
+
             if approval_mode is not None:
                 from satrap.core.approval.state import session_approval
                 async with conv.plugin_lock:
@@ -2063,11 +2115,12 @@ class ChatService:
             try:
                 new_conv = self._conversations[new_cid]
                 await RAG_WORKERS.run(fork_session_settings, self._storage, self._platform_id, conversation_id, new_cid)
+                new_conv.session.command_history_enabled = src.session.command_history_enabled
                 async with new_conv.plugin_lock:
                     await self._refresh_session_plugins(new_conv)
                 context_messages = src.recorder.active_context_before(turn_index)
                 copied = src.recorder.copy_turns_to(new_conv.recorder, turn_index)
-                if copied > 0 and not context_messages:
+                if copied > 0 and not context_messages and not src.recorder.has_context_deltas_before(turn_index):
                     context_messages = self._legacy_fork_context(src, turn_index)
                 if context_messages:
                     await new_conv.session.ctx.add_turn_messages(context_messages)
@@ -2091,6 +2144,7 @@ class ChatService:
         有项目时只共享外部工作区, sandbox 与 uploads 仍保持会话隔离
         """
         session.plugin_override_store = SessionOverrideStore(self._storage.platform_db(self._platform_id))
+        session.command_history_enabled = session.plugin_override_store.read(session.session_id, "session.commands")["overrides"].get("command_history_enabled", False)
         session.plugin_model_manager = self._model_cfg
         session.storage_layout = self._storage
         session.storage_platform_id = self._platform_id

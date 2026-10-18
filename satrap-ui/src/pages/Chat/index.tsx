@@ -112,6 +112,7 @@ interface ChatSettings {
   model: string;   // 模型配置名
   think: string;   // 思考强度 (off/low/medium/high)
   temperature: number;   // 采样温度
+  commandHistoryEnabled: boolean;   // 是否将已执行命令及回复写入模型上下文
   systemPrompt: string;   // 系统提示词
 }
 
@@ -119,6 +120,7 @@ const DEFAULT_SETTINGS: ChatSettings = {
   model: 'default',
   think: 'off',
   temperature: 0.7,
+  commandHistoryEnabled: false,
   systemPrompt: '',
 };
 
@@ -822,18 +824,35 @@ export function Chat() {
 
   // 更新单项设置
   const updateSettings = useCallback(<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
+    if (key === 'commandHistoryEnabled' && activeId && activeId !== '__draft__') {
+      void chatApi.setCommandHistory(activeId, value === true).then((result) => {
+        if (!result.ok) throw new Error(result.error || '保存失败');
+        if (activeIdRef.current === activeId) setSettings((prev) => ({ ...prev, commandHistoryEnabled: result.command_history_enabled }));
+      }).catch((error: unknown) => toast('error', String(error)));
+      return;
+    }
     setSettings((prev) => ({ ...prev, [key]: value }));
-  }, []);
+  }, [activeId]);
+
+  useEffect(() => {
+    if (!activeId || activeId === '__draft__') return;
+    let cancelled = false;
+    void chatApi.getCommandHistory(activeId).then((result) => {
+      if (!cancelled) setSettings((prev) => ({ ...prev, commandHistoryEnabled: result.command_history_enabled }));
+    }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
+    return () => { cancelled = true; };
+  }, [activeId]);
 
   // 生成会影响 Session, 模型或插件安装结果的前端设置键
   const preloadBaseKey = useMemo(() => JSON.stringify({
     model: settings.model,
     temperature: settings.temperature,
+    commandHistoryEnabled: settings.commandHistoryEnabled,
     systemPrompt: settings.systemPrompt,
     modelConfig: modelsDetail[settings.model] ?? null,
     plugins,
     pluginConfigRevision,
-  }), [settings.model, settings.temperature, settings.systemPrompt, modelsDetail, plugins, pluginConfigRevision]);
+  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, modelsDetail, plugins, pluginConfigRevision]);
 
   const preloadKeyFor = useCallback(
     (projectId: string | null | undefined) => `${preloadBaseKey}:${projectId ?? ''}`,
@@ -845,10 +864,11 @@ export function Chat() {
       model: settings.model,
       think: settings.think,
       temperature: settings.temperature,
+      commandHistoryEnabled: settings.commandHistoryEnabled,
       systemPrompt: settings.systemPrompt,
       projectId: projectId ?? null,
     }),
-    [settings.model, settings.think, settings.temperature, settings.systemPrompt]
+    [settings.model, settings.think, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled]
   );
 
   // 启动或复用当前设置对应的预加载请求
@@ -2334,6 +2354,15 @@ function ChatSettingsModal({
                     options={thinkingOptions}
                   />
                 </div>
+
+                <label className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-text-primary">命令写入上下文</div>
+                    <div className="text-xs text-text-tertiary">让 AI 在后续对话中看到已执行的命令及回复, 不会额外调用模型</div>
+                  </div>
+                  <input type="checkbox" checked={settings.commandHistoryEnabled}
+                    onChange={(e) => onChange('commandHistoryEnabled', e.target.checked)} />
+                </label>
 
                 {/* 温度 */}
                 <div>

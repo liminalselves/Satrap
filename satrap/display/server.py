@@ -220,6 +220,22 @@ class ChatHTTPServer(MiniHTTPServer):
                 logger.error(f"[对话数据] Chat/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
                 return 500, {"error": "对话数据操作失败, 请查看 Chat 日志"}
 
+        if clean == "/api/chat/command-history" and method in {"GET", "PUT"}:
+            conversation_id = self._query_param(path, "conversation")
+            try:
+                if not conversation_id:
+                    raise ValueError("缺少 conversation")
+                if method == "GET":
+                    return 200, await svc.get_command_history(conversation_id)
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or set(payload) != {"command_history_enabled"}:
+                    raise ValueError("命令历史设置参数无效")
+                result = await svc.set_command_history(conversation_id, payload["command_history_enabled"])
+                return (200 if result.get("ok") else 409), result
+            except (OSError, TypeError, ValueError) as error:
+                logger.warning(f"[命令历史] 设置读取或更新失败: {error}")
+                return 400, {"error": str(error)}
+
         if clean == "/api/chat/approval" and method in {"GET", "PUT"}:
             conversation_id = self._query_param(path, "conversation")
             try:
@@ -467,7 +483,7 @@ class ChatHTTPServer(MiniHTTPServer):
             think = str(think) if think is not None else None
             preload_settings = {
                 key: payload[key]
-                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode")
+                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled")
                 if key in payload
             }
             result = await svc.send(

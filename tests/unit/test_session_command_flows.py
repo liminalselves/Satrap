@@ -25,6 +25,52 @@ from support.providers import RunnableRegistry
 from support.adapters import RecorderAdapter
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_command_history_switch_and_history_edit(tmp_path, asynchronous):
+    """命令记录由会话开关控制, 清空和切换不回灌历史, 不调用模型"""
+    from satrap.edictum import SimpleSession, AsyncSimpleSession
+    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
+
+    model = AsyncLLM(api_key="test") if asynchronous else LLM(api_key="test")
+    cls = AsyncSimpleSession if asynchronous else SimpleSession
+    session = cls("commands", model, db_path=str(tmp_path / "platform.db"), enable_checkpoint=False)
+    if asynchronous:
+        await session.initialize()
+
+    async def invoke(text):
+        return await session.run(text) if asynchronous else session.run(text)
+
+    async def answer_async():
+        return "已执行"
+
+    async def clear_async():
+        await session.ctx.del_context()
+        return "已清空"
+
+    registry = session.command_handler
+    registry.register_command("answer", answer_async if asynchronous else lambda: "已执行")
+    assert await invoke("/answer") == "已执行"
+    assert session.ctx.get_context() == []
+    session.command_history_enabled = True
+    assert await invoke("/answer") == "已执行"
+    assert session.ctx.get_context() == [
+        {"role": "user", "content": "/answer"}, {"role": "assistant", "content": "已执行"},
+    ]
+    registry.register_command("clear", clear_async if asynchronous else lambda: session.ctx.del_context())
+    await invoke("/clear")
+    assert session.ctx.get_context() == []
+    await invoke("/clear")
+    assert session.ctx.get_context() == []
+    session.command_history_enabled = False
+    await invoke("/answer")
+    assert session.ctx.get_context() == []
+    if asynchronous:
+        await model.client.close()
+    else:
+        model.client.close()
+
+
 def _event(
     components: list[BaseMessageComponent],
     *,

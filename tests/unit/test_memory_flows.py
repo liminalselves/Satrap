@@ -180,7 +180,7 @@ async def test_memory_commands_through_platform_session(tmp_path, asynchronous, 
     # Step.1 检查命令简介和空记忆提示, 覆盖真实注册与分发路径
     adapter, event, script, invoke = await _platform_memory_command_session(tmp_path, asynchronous, private)
     help_text = await invoke("/help")
-    assert "/memory: 管理长期记忆" in help_text
+    assert "/memory: 管理当前范围内的长期记忆" in help_text
     assert "/memory: None" not in help_text
     initial = await invoke("/memory")
     assert initial == ("当前没有长期记忆" if private else "当前没有可查看的长期记忆")

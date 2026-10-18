@@ -18,6 +18,7 @@ from satrap.core.log import logger
 
 
 class _ContextCore:
+    _edit_revision: int = 0
     db_path: str
     conversation_id: str
     persistent: bool
@@ -427,6 +428,7 @@ class _ContextCore:
 
     def _mark_dirty(self) -> None:
         """标记历史编辑并清除总结, 下次保存全量重写消息"""
+        self._edit_revision = getattr(self, "_edit_revision", 0) + 1   # 历史重写使本轮命令记录失效, 避免清空后补回命令
         self._saved_count = -1
         self._reset_summary_state()
 

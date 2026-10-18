@@ -242,6 +242,40 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
 
 
 @pytest.mark.asyncio
+async def test_command_history_setting_survives_preload_restart_and_fork(tmp_path, monkeypatch):
+    """Chat 初始开关在首条命令前生效, 重启和分支继承, HTTP 拒绝非布尔值"""
+    service = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(service)
+    cid = await service.preload_conversation()
+    result = await service.send(cid, "/help", preload_settings={"command_history_enabled": True})
+    assert result["ok"] is True
+    await _wait_conversation_task(service, cid)
+    session = _must_conversation(service, cid).session
+    assert session.ctx.get_context()[0] == {"role": "user", "content": "/help"}
+    fork = await service.fork(cid, 1)
+    assert fork["ok"] is True
+    assert (await service.get_command_history(fork["conversation_id"]))["command_history_enabled"] is True
+    status, _ = await server._route("PUT", f"/api/chat/command-history?conversation={cid}", b'{"command_history_enabled":"false"}')
+    assert status == 400
+    await service.close()
+    resumed = _make_service(tmp_path, monkeypatch)
+    try:
+        assert (await resumed.get_command_history(cid))["command_history_enabled"] is True
+        assert (await resumed.set_command_history(cid, False))["ok"] is True
+        assert (await resumed.get_command_history(cid))["command_history_enabled"] is False
+        excluded = await resumed.create_conversation()
+        for text in ("/help", "/help", "分支之后的问题一", "分支之后的问题二"):
+            assert (await resumed.send(excluded, text))["ok"] is True
+            await _wait_conversation_task(resumed, excluded)
+        empty_fork = await resumed.fork(excluded, 1)
+        assert empty_fork["ok"] is True
+        assert _must_conversation(resumed, empty_fork["conversation_id"]).session.ctx.get_context() == []
+    finally:
+        await resumed.close()
+
+
+
+@pytest.mark.asyncio
 async def test_chat_run_pagination_preserves_python_all_results(tmp_path, monkeypatch):
     """HTTP 使用分页, Python 无参接口仍返回全部摘要"""
     from satrap.edictum.simple_session.recovery import store_for_session

@@ -54,6 +54,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         *,
         system_prompt: str | None = None,
         thinking: str = "off",
+        command_history_enabled: bool = False,
         model_params: dict[str, Any] | None = None,
         tools: Iterable[AsyncTool] | None = None,
         content_callback: Callable[[str], Any] | None = None,
@@ -73,6 +74,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         - llm: 主模型实例
         - system_prompt: 系统提示词, 默认 None 保留已有系统提示词, 提供时在初始化阶段重置
         - thinking: 默认思考强度, 默认 off; run 可逐次覆盖
+        - command_history_enabled: 是否记录命令及回复到模型上下文, 默认 False
         - model_params: temperature/top_p/max_tokens 的会话覆盖, 默认 None 继承模型配置
         - tools: 初始工具列表, 默认 None 表示不预注册工具
         - content_callback: 内容回调, 用于模型与命令输出, 默认 None 表示不回调
@@ -89,6 +91,9 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         - 恢复不重放会话输入和输出处理器, 工具结果未知时按恢复策略重试或等待人工确认
         - recoverable 不等同于检查点, 也不表示进程启动后自动恢复任务
         """
+        if type(command_history_enabled) is not bool:
+            raise ValueError("command_history_enabled 必须是布尔值")
+        self.command_history_enabled = command_history_enabled
         self.recoverable = recoverable
         self.plugin_environment = plugin_environment or PluginEnvironment()
         super().__init__(
@@ -252,14 +257,21 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         返回:
         - str | CommandAction: 命令结果或最终模型输出
         """
-        self._require_wf().reset_context_stats()
-        command_result, is_command = await self.cmd_process(user_input)
-        if is_command:
-            if isinstance(command_result, CommandAction):
-                return command_result
-            return "" if command_result is None else str(command_result)
-
         async with self._run_lock:
+            self._require_wf().reset_context_stats()
+            history_revision = getattr(self.ctx, "_edit_revision", 0)
+            command_result, is_command = await self.cmd_process(user_input)
+            if is_command:
+                if isinstance(command_result, CommandAction):
+                    return command_result
+                if (self.command_history_enabled and not getattr(self.command_handler, "_execution_failed", False)
+                    and history_revision == getattr(self.ctx, "_edit_revision", 0)):
+                    messages = [{"role": "user", "content": user_input}]
+                    if command_result is not None:
+                        messages.append({"role": "assistant", "content": str(command_result)})
+                    await self.ctx.add_turn_messages(messages)
+                return "" if command_result is None else str(command_result)
+
             thinking = self.default_thinking if thinking is None else thinking
             wf = self._require_wf()
             if self._plugin_interop_runtime is not None:
