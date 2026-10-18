@@ -2652,13 +2652,28 @@ class ChatService:
         layer = str(payload.get("layer", "context"))
         if not isinstance(conversation, str) or not conversation:
             raise ValueError("缺少对话 ID")
+
+        async def read_saved() -> dict[str, Any]:
+            """
+            只读展示已保存快照, 不占用或绕过正在运行的会话写操作
+
+            返回:
+            - 带已保存数据来源提示的快照
+            """
+            database = self._chat_db_path if layer == "context" else self._display_db_path
+            result = await RAG_WORKERS.run(perform_data_operation, database, conversation, layer, payload)
+            return {**result, "read_notice": "此对话正在处理消息或激活实例, 当前显示已保存的数据, 可稍后重新读取"}
+
         if any(conversation == identity or conversation.startswith(identity + "_") for identity in {*self._creation_tasks, *self._resume_tasks}):
+            if not payload.get("action"):
+                return await read_saved()
             raise ConversationDataConflict("此对话正在激活, 请等待完成后重新读取")
         owner = next((conv.conversation_id for conv in self._conversations.values()
                       if conv.conversation_id == conversation or conversation.startswith(conv.conversation_id + "_") or any(context.conversation_id == conversation for context in conv.session._all_contexts().values())), None)
-        if owner is None:
-            return await self._manage_conversation_data_reserved(conversation, conversation, layer, payload)
-        return await self._manage_conversation_data_reserved(owner, conversation, layer, payload)
+        result = await self._manage_conversation_data_reserved(owner or conversation, conversation, layer, payload)
+        if not payload.get("action") and not result.get("ok"):
+            return await read_saved()
+        return result
 
     @_exclusive_conversation_operation
     async def _manage_conversation_data_reserved(self, owner: str, conversation: str, layer: str, payload: dict[str, Any]) -> dict[str, Any]:

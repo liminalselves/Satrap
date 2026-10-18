@@ -173,6 +173,9 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
     # 展示接口即使允许运行时更新 API Key 也必须始终脱敏
     assert listed["demo"]["api_key"] != "secret-key"
     assert str(listed["demo"]["api_key"]).endswith("-key")
+    assert service.reveal_api_key("llm", "demo") == "secret-key"
+    with pytest.raises(KeyError):
+        service.reveal_api_key("llm", "missing")
     assert listed["demo"]["thinking_fields"] == ["thinking.type", "reasoning_effort"]
     assert listed["demo"]["thinking_levels"] == ["low", "high", "xhigh"]
     assert listed["demo"]["omit_none_thinking_fields"] is True

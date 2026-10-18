@@ -41,7 +41,8 @@ export function Conversations() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
-  const [recordMeta, setRecordMeta] = useState<{ platform: string; selected: string; record: ConversationRecord }>();
+  const [recordMeta, setRecordMeta] = useState<{ platform: string; selected: string; record?: ConversationRecord; error?: string }>();
+  const detailRef = useRef<HTMLElement>(null);
   const dirty = useRef({ user: false, context: false });
   const setUserDirty = useCallback((value: boolean) => { dirty.current.user = value; }, []);
   const setContextDirty = useCallback((value: boolean) => { dirty.current.context = value; }, []);
@@ -60,9 +61,16 @@ export function Conversations() {
   useEffect(() => {
     if (archiveView || !selected || !recordPlatform) return;
     let disposed = false;
-    controlApi.listConversationRecords(recordPlatform, selected, 0, { filters: { kind: 'all' } }).then((data) => {
-      if (!disposed) setRecordMeta({ platform: recordPlatform, selected, record: data.items.find((item) => item.conversation_id === selected || item.context_ids.includes(selected)) || { conversation_id: selected, title: selected, context_ids: [selected], message_count: 0, history_count: 0 } });
-    }).catch((error) => { if (!disposed) setError(errorText(error)); });
+    setRecordMeta((current) => current?.platform === recordPlatform && current.selected === selected
+      ? { ...current, error: undefined } : { platform: recordPlatform, selected });
+    controlApi.listConversationRecords(recordPlatform, '', 0, { filters: { kind: 'all' }, conversation: selected }).then((data) => {
+      const record = data.items.find((item) => item.conversation_id === selected || item.context_ids.includes(selected));
+      if (!record) throw new Error('对话不存在或已被移除，请刷新后重试');
+      if (!disposed) setRecordMeta({ platform: recordPlatform, selected, record });
+    }).catch((error) => { if (!disposed) setRecordMeta((current) => ({
+      ...(current?.platform === recordPlatform && current.selected === selected ? current : {}),
+      platform: recordPlatform, selected, error: errorText(error),
+    })); });
     return () => { disposed = true; };
   }, [selected, recordPlatform, refresh, archiveView]);
   useEffect(() => {
@@ -82,7 +90,22 @@ export function Conversations() {
       .catch((error) => { if (!disposed) setError(errorText(error)); }).finally(() => { if (!disposed) setLoading(false); });
     return () => { disposed = true; };
   }, [platform, platformType, submitted, offset, filtersKey, refresh, userView, archiveView]);
-  const record = recordMeta?.platform === recordPlatform && recordMeta.selected === selected ? recordMeta.record : result.items.find((item) => item.conversation_id === selected && item.platform_id === recordPlatform);
+  const detail = recordMeta?.platform === recordPlatform && recordMeta.selected === selected ? recordMeta : undefined;
+  const record = detail?.record;
+  useEffect(() => {
+    if (userView && selected && recordPlatform) {
+      detailRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      detailRef.current?.focus({ preventScroll: true });
+    }
+  }, [userView, selected, recordPlatform]);
+  const detailPanel = selected && recordPlatform ? (
+    <section ref={detailRef} tabIndex={-1} aria-label="对话详情" className="min-w-0 scroll-mt-4 outline-none">
+      {record && detail?.error && <p role="alert" className="mb-3 text-error">详情刷新失败：{detail.error}<Button className="ml-2" onClick={() => setRefresh((value) => value + 1)}>重试读取对话</Button></p>}
+      {record ? <ConversationDetail key={JSON.stringify([recordPlatform, selected])} platform={recordPlatform} record={record} requestedContext={selected} onDirty={setContextDirty} onSaved={() => setRefresh((value) => value + 1)} /> : (
+        <Card>{detail?.error ? <div className="space-y-3"><p role="alert" className="text-error">{detail.error}</p><Button onClick={() => setRefresh((value) => value + 1)}>重试读取对话</Button></div> : <p role="status">正在读取对话详情…</p>}</Card>
+      )}
+    </section>
+  ) : <Card><p className="text-text-secondary">从列表选择一个对话</p></Card>;
   const names = { ...facetNames, ...result.facet_names };
   const types = [...new Map(platforms.map((item) => [item.type, item.type_label])).entries()];
   const viewControls = (
@@ -142,8 +165,14 @@ export function Conversations() {
       {!userView && <p className="text-xs text-text-tertiary">共 {result.total} 个对话，按最近活动排序。旧数据无法确定的归属与时间会标明未知；旧子代理记录默认隐藏。</p>}
     </Card>
     {userView ? <>
-      <UserView platform={platform} platformType={platformType} platforms={platforms} query={submitted} offset={offset} refresh={refresh} onDirty={setUserDirty} onOffset={setOffset} onRefresh={() => setRefresh((value) => value + 1)} onOpen={(platform, conversation) => { const next = new URLSearchParams(search); next.set('record_platform', platform); next.set('conversation', conversation); setSearch(next); }} />
-      {selected && recordPlatform && record && <ConversationDetail key={JSON.stringify([recordPlatform, selected])} platform={recordPlatform} record={record} requestedContext={selected} onDirty={setContextDirty} onSaved={() => setRefresh((value) => value + 1)} />}
+      <UserView platform={platform} platformType={platformType} platforms={platforms} query={submitted} offset={offset} refresh={refresh} onDirty={setUserDirty} onOffset={setOffset} onRefresh={() => setRefresh((value) => value + 1)} onOpen={(platform, conversation) => {
+        const next = new URLSearchParams(search); next.set('record_platform', platform); next.set('conversation', conversation); setSearch(next);
+        if (platform === recordPlatform && conversation === selected) {
+          detailRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+          detailRef.current?.focus({ preventScroll: true });
+        }
+      }} />
+      {selected && recordPlatform && detailPanel}
     </> : <div className="grid items-start gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
       <Card className="min-w-0 space-y-2">
         {loading && <p role="status" className="text-sm">正在读取列表…</p>}
@@ -156,15 +185,19 @@ export function Conversations() {
         </button>)}
         <div className="flex justify-between gap-2 pt-2"><Button size="sm" disabled={offset === 0 || loading} onClick={() => setOffset((value) => Math.max(0, value - 40))}>上一页对话</Button><Button size="sm" disabled={offset + 40 >= result.total || loading} onClick={() => setOffset((value) => value + 40)}>下一页对话</Button></div>
       </Card>
-      {selected && recordPlatform ? record ? <ConversationDetail key={JSON.stringify([recordPlatform, selected])} platform={recordPlatform} record={record} requestedContext={selected} onDirty={setContextDirty} onSaved={() => setRefresh((value) => value + 1)} /> : <Card><p role="status">正在读取对话详情…</p></Card> : <Card><p className="text-text-secondary">从列表选择一个对话</p></Card>}
+      {detailPanel}
     </div>}
   </div>;
 }
 
 function ConversationDetail({ platform, record, requestedContext, onDirty, onSaved }: { platform: string; record: ConversationRecord; requestedContext: string; onDirty: (dirty: boolean) => void; onSaved: () => void }) {
   const [layer, setLayer] = useState<'context' | 'history'>('context');
-  const [context, setContext] = useState(record.context_ids.includes(requestedContext) ? requestedContext : record.context_ids[0] || record.conversation_id);
+  const defaultContext = requestedContext !== record.conversation_id && record.context_ids.includes(requestedContext)
+    ? requestedContext : record.context_ids[0] || record.conversation_id;
+  const [context, setContext] = useState(defaultContext);
+  const contextChosen = useRef(false);
   const [dirty, setDirty] = useState(false);
+  useEffect(() => { if (!contextChosen.current && !dirty) setContext(defaultContext); }, [defaultContext, dirty]);
   useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
   useEffect(() => () => onDirty(false), [onDirty]);
   const switchLayer = (next: 'context' | 'history') => { if (next !== layer && (!dirty || confirmDiscard())) { setDirty(false); setLayer(next); } };
@@ -189,7 +222,7 @@ function ConversationDetail({ platform, record, requestedContext, onDirty, onSav
             aria-label="上下文范围"
             className="glass-input mt-1 w-full"
             value={context}
-            onChange={(event) => { if (!dirty || confirmDiscard()) { setDirty(false); setContext(event.target.value); } }}
+            onChange={(event) => { if (!dirty || confirmDiscard()) { contextChosen.current = true; setDirty(false); setContext(event.target.value); } }}
           >
             {[...new Set([context, ...record.context_ids])].map((item) => (
               <option key={item} value={item}>{contextLabel(item)}</option>
@@ -279,8 +312,9 @@ function DataPanel({ platform, conversation, layer, onDirty, onSaved }: { platfo
     </div>
     {error && !editor && <p role="alert" className="text-error">{error}</p>}
     {notice && <p role="status" className="text-success">{notice}</p>}
+    {snapshot?.read_notice && <p role="status" className="text-sm text-text-secondary">{snapshot.read_notice}</p>}
     {loading && <p role="status">正在读取消息…</p>}
-    {!loading && snapshot?.total === 0 && <p className="text-sm text-text-secondary">{layer === 'context' ? '此范围没有上下文消息；系统提示词也可能由 Agent 配置临时注入。' : '暂无独立展示历史'}</p>}
+    {!loading && !error && snapshot?.total === 0 && <p className="text-sm text-text-secondary">{layer === 'context' ? '此范围没有上下文消息；系统提示词也可能由 Agent 配置临时注入。' : '暂无独立展示历史'}</p>}
     {snapshot?.items.map((item) => <section key={item.index} className="min-w-0 space-y-2 rounded-lg bg-glass p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm">

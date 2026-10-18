@@ -173,6 +173,7 @@ def test_empty_shared_context_does_not_hide_main_workflow_messages(tmp_path):
     assert row["context_ids"][0] == "root_main"
     assert row["contexts"][0]["kind"] == "main"
     assert next(context for context in row["contexts"] if context["id"] == "root")["kind"] == "shared"
+    assert ConversationDataService(workflow.db_path).read("root", "context")["total"] == 0
     workflow.close()
     session.session_ctx.close()
 
@@ -334,9 +335,20 @@ async def test_live_async_context_is_updated_and_busy_round_is_rejected(saved):
     assert service.read("conversation_main", "context")["items"][-2]["content"] == "活动实例修改"
     entry.active_calls = 1
     before = service.read("conversation_main", "context")
+    busy_snapshot = await manage_platform_data(str(database), manager, "conversation_main", "context", {})
+    assert busy_snapshot["source"] == "storage" and busy_snapshot["read_notice"]
+    assert busy_snapshot["items"] == before["items"]
     with pytest.raises(ConversationDataConflict):
         await manage_platform_data(str(database), manager, "conversation_main", "context", {"action": "clear", "expected_revision": before["revision"]})
     assert service.read("conversation_main", "context")["revision"] == before["revision"]
+
+    cold = ContextManager("conversation_old", db_path=str(database))
+    cold.add_user_message("旧工作流消息")
+    cold.close()
+    historical = await manage_platform_data(str(database), manager, "conversation_old", "context", {})
+    assert historical["source"] == "storage" and historical["items"][0]["content"] == "旧工作流消息"
+    with pytest.raises(ConversationDataConflict):
+        await manage_platform_data(str(database), manager, "conversation_old", "context", {"action": "clear", "expected_revision": historical["revision"]})
 
 @pytest.mark.asyncio
 async def test_cancelled_edit_finishes_disk_and_memory_before_releasing_instance(saved, monkeypatch):

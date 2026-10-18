@@ -30,7 +30,7 @@ async function conversations(runtime) {
     const backups = { context: [], history: [] };
     let failSave = false;
     const requests = [];
-    const records = () => [{ conversation_id: 'conv-1', title: '测试对话', context_ids: ['conv-1_main'], message_count: contexts.length, history_count: history.length, platform_id: 'chat', supports_history: true }];
+    const records = () => [{ conversation_id: 'conv-1', title: '测试对话', context_ids: ['conv-1_main', 'conv-1'], message_count: contexts.length, history_count: history.length, platform_id: 'chat', supports_history: true }];
     const revision = (layer) => JSON.stringify(layer === 'context' ? contexts : history);
     await page.route('**/*', async (route) => {
       const request = route.request();
@@ -85,6 +85,12 @@ async function conversations(runtime) {
   await page.goto(`${origin}/conversations?platform=chat&conversation=conv-1`);
     await page.getByText('原始系统提示词', { exact: true }).waitFor();
     assert.equal(await page.getByLabel('上下文范围').inputValue(), 'conv-1_main');
+    assert.equal(requests.at(-1).conversation_id, 'conv-1_main');
+    const sharedRead = page.waitForResponse((response) => response.url().endsWith('/config/conversations/data') && response.request().postDataJSON()?.conversation_id === 'conv-1');
+    await page.getByLabel('上下文范围').selectOption('conv-1');
+    await sharedRead;
+    await page.getByLabel('上下文范围').selectOption('conv-1_main');
+    await page.getByText('原始系统提示词', { exact: true }).waitFor();
     await page.getByRole('button', { name: '编辑第 2 项' }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel('消息内容', { exact: true }).fill('修改后的模型输入');
@@ -203,6 +209,7 @@ async function conversation_users(runtime) {
     let users = [makeUser('future-instance', 'same-user', '未来用户', [related]), makeUser('stored-instance', 'same-user', '保存用户', [{ ...related, title: '另一个平台对话' }]), makeUser('future-instance', 'empty', '无对话用户')];
     const requests = [];
     let failSave = false;
+    let failDetail = true;
     let revision = 1;
     const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
     await page.route('**/*', async (route) => {
@@ -235,7 +242,11 @@ async function conversation_users(runtime) {
         user.revision = `v${++revision}`;
         return route.fulfill({ json: { ok: true, user }, headers: cors });
       }
-      if (pathname === '/config/conversations') return route.fulfill({ json: { items: [{ platform_id: url.searchParams.get('platform_id'), conversation_id: 'same-conversation', context_ids: ['same-conversation'], title: '对话详情', message_count: 1, history_count: 0, supports_history: false }], total: 1 }, headers: cors });
+      if (pathname === '/config/conversations') {
+        assert.equal(url.searchParams.get('conversation_id'), 'same-conversation');
+        if (failDetail) return route.fulfill({ status: 503, json: { error: '详情暂不可用' }, headers: cors });
+        return route.fulfill({ json: { items: [{ platform_id: url.searchParams.get('platform_id'), conversation_id: 'same-conversation', context_ids: ['same-conversation_main', 'same-conversation'], title: '对话详情', message_count: 1, history_count: 0, supports_history: false }], total: 1 }, headers: cors });
+      }
       if (pathname === '/config/conversations/data') {
         const payload = request.postDataJSON(); requests.push(payload);
         return route.fulfill({ json: { total: 1, items: [{ index: 0, role: 'user', content: `来自 ${payload.platform_id} 的上下文` }], revision: 'context-v1', backups: [] }, headers: cors });
@@ -249,8 +260,13 @@ async function conversation_users(runtime) {
     assert.equal(await page.getByRole('link', { name: '用户管理', exact: true }).count(), 0);
     assert.equal(await page.getByLabel('记录平台').inputValue(), 'future-instance');
     await page.getByRole('button', { name: '查看对话', exact: true }).click();
+    await page.getByRole('button', { name: '重试读取对话', exact: true }).waitFor();
+    assert.equal(await page.getByRole('region', { name: '对话详情', exact: true }).evaluate((element) => element === document.activeElement), true);
+    failDetail = false;
+    await page.getByRole('button', { name: '重试读取对话', exact: true }).click();
     await page.getByText('来自 future-instance 的上下文', { exact: true }).waitFor();
     assert.equal(requests.at(-1).platform_id, 'future-instance');
+    assert.equal(requests.at(-1).conversation_id, 'same-conversation_main');
     assert.deepEqual(errors, []);
     await page.getByRole('button', { name: '编辑用户资料', exact: true }).click();
     const dialog = page.getByRole('dialog');

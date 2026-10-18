@@ -476,6 +476,7 @@ export interface ConversationDataSnapshot {
   total: number;
   items: ConversationDataItem[];
   source: 'memory' | 'storage';
+  read_notice?: string;
   backups: Array<{ id: string; layer: string; reason: string; created_at: number }>;
   saved?: boolean;
   backup_id?: string;

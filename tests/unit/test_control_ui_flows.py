@@ -340,6 +340,12 @@ async def test_control_server_manages_models_while_backend_is_stopped(
     assert b'"ok": true' in created
     assert b'"model": "gpt-cold"' in listed
     assert b"secret-key" not in listed
+    revealed = await _request("/config/models/llm/cold-renamed/api-key", "POST")
+    assert b'"api_key": "secret-key"' in revealed
+    assert b"secret-key" not in await _request("/config/models?type=llm")
+    missing_key = await _request("/config/models/llm/missing/api-key", "POST")
+    assert b"404" in missing_key.split(b"\r\n", 1)[0]
+    assert b"secret-key" not in await _request("/config/models/llm/cold-renamed/api-key")
     assert b'"ok": true' in updated
 
     manager = control_server._model_config_service().manager

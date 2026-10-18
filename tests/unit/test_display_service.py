@@ -126,6 +126,8 @@ async def test_chat_data_edit_updates_live_context_without_rewriting_display(tmp
         await service.send(cid, "后续输入")
         status, refused = await server._route("POST", "/api/chat/conversation-data", json.dumps({**request, "action": "clear", "expected_revision": saved["revision"]}).encode("utf-8"))
         assert status == 409 and "进行" in refused["error"]
+        status, busy_snapshot = await server._route("POST", "/api/chat/conversation-data", json.dumps(request).encode("utf-8"))
+        assert status == 200 and busy_snapshot["source"] == "storage" and busy_snapshot["read_notice"]
         await _wait_conversation_task(service, cid)
         assert conversation.session.ctx.get_context()[edited_index]["content"] == "模型上下文输入"
     finally:

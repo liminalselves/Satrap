@@ -1997,6 +1997,19 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.path.startswith("/config/models/"):
         parts = ctx.path.removeprefix("/config/models/").split("/", 1)
+        if len(parts) == 2 and parts[1].endswith("/api-key"):
+            if ctx.method != "POST":
+                return 404, {"error": "not found"}
+            model_type = urllib.parse.unquote(parts[0])
+            name = urllib.parse.unquote(parts[1][:-len("/api-key")])
+            try:
+                return 200, {"api_key": _model_config_service().reveal_api_key(model_type, name)}
+            except KeyError:
+                logger.warning(f"[模型配置] 查看密钥失败, 配置不存在: {model_type}/{name}")
+                return 404, {"error": "模型配置不存在"}
+            except (OSError, ValueError) as error:
+                logger.warning(f"[模型配置] 查看密钥失败: {model_type}/{name}, {error}")
+                return 400, {"error": str(error)}
         if len(parts) == 2 and parts[0] == "asr" and parts[1].endswith("/test"):
             # ASR 转录测试: POST /config/models/asr/{name}/test, 请求体 {filename, audio_base64}
             if ctx.method != "POST":
@@ -2575,6 +2588,9 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
             items.sort(key=lambda item: (-(item["last_activity_at"] or 0), item["platform_id"], item["conversation_id"]))
             filters = {key.removeprefix("filter."): values[0] for key, values in query.items() if key.startswith("filter.")}
             matched = filter_records(items, query.get("q", [""])[0], filters)
+            identity = query.get("conversation_id", [""])[0]
+            if identity:
+                matched = [item for item in matched if item["conversation_id"] == identity or identity in item["context_ids"]]
             offset = max(0, int(query.get("offset", ["0"])[0]))
             limit = min(100, max(1, int(query.get("limit", ["40"])[0])))
             return 200, {"items": matched[offset:offset + limit], "total": len(matched), "facets": record_facets(items), "facet_names": {key: label for item in items for key, label in item["facet_names"].items()}, "warnings": warnings}
