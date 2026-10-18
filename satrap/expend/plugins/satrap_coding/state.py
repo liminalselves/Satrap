@@ -8,15 +8,17 @@ satrap_coding 插件级共享状态: 工具/命令/处理器共享同一实例
 """
 from __future__ import annotations
 
-import threading
+from threading import RLock
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.plugin_interop.environment import environment_snapshot
+from satrap.core.approval.state import session_approval
 from satrap.core.utils.paths import get_project_root
 from satrap.core.storage import storage_key
 from satrap.core.type import safe_getattr
+
 
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession
@@ -24,8 +26,8 @@ if TYPE_CHECKING:
     SessionType = SimpleSession | AsyncSimpleSession
     """插件支持的会话类型"""
 
-_registry: dict[int, dict[str, Any]] = {}
-_registry_lock = threading.Lock()
+
+_FALLBACK_LOCK = RLock()   # 独立构造工具的轻量嵌入会话可能尚未初始化处理器锁
 
 
 def _build_state(session: SessionType, data_root: Path) -> dict[str, Any]:
@@ -39,10 +41,7 @@ def _build_state(session: SessionType, data_root: Path) -> dict[str, Any]:
     返回:
     - dict[str, Any]: 构建一份插件状态 (权限引擎 / 目标状态 / 任务清单)
     """
-    engine = PermissionEngine(
-        rules_file=data_root / "permissions.json",
-        log_file=data_root / "approval_log.jsonl",
-    )
+    engine = session_approval(session, legacy_root=data_root)
     goals = GoalState(file_path=data_root / "goal.json")
     return {
         "engine": engine,
@@ -59,7 +58,7 @@ def get_plugin_state(
     config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    获取会话的插件共享状态 (同 ID 不同对象时重建, 防测试/重建污染)
+    获取实际会话对象持有的 coding 状态, 不受模块导入别名影响
 
     参数:
     - session: 会话
@@ -71,7 +70,8 @@ def get_plugin_state(
     返回:
     - dict[str, Any]: 当前会话的共享状态; 显式请求不同数据根时抛出 ValueError
     """
-    session_cache = safe_getattr(session, "coding_cache_root")
+    session_root = environment_snapshot(session).session_root
+    session_cache = session_root / "cache" if session_root is not None else None
     session_context = safe_getattr(session, "session_ctx")
     context_database = safe_getattr(session_context, "db_path")
     if session_cache:
@@ -94,13 +94,11 @@ def get_plugin_state(
     if configured_root and not session_cache:
         selected_root = Path(str(configured_root))
     resolved_data_root = (data_root or selected_root).resolve()
-    registry_key = id(session)
-    with _registry_lock:
-        state = _registry.get(registry_key)
-        if state is None or state.get("_owner") is not session:
+    with getattr(session, "_registry_lock", _FALLBACK_LOCK):
+        state = getattr(session, "_coding_plugin_state", None)
+        if state is None:
             state = _build_state(session, resolved_data_root)
-            state["_owner"] = session
-            _registry[registry_key] = state
+            setattr(session, "_coding_plugin_state", state)
         elif (data_root is not None or config is not None) and state.get("_data_root") != str(resolved_data_root):
             raise ValueError("插件数据目录已绑定, 更改配置前请先卸载 satrap_coding")
     return state
@@ -113,8 +111,8 @@ def reset_plugin_state(session: SessionType) -> None:
     参数:
     - session: 会话
     """
-    with _registry_lock:
-        registry_key = id(session)
-        state = _registry.get(registry_key)
-        if state is not None and state.get("_owner") is session:
-            _registry.pop(registry_key, None)
+    with getattr(session, "_registry_lock", _FALLBACK_LOCK):
+        state = getattr(session, "_coding_plugin_state", None)
+        if state is not None:
+            delattr(session, "_coding_plugin_state")
+            session_approval(session).set_plan_mode(False)   # 只解除 coding 计划限制, 保留宿主审批模式

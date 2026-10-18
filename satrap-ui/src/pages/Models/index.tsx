@@ -8,12 +8,8 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
 import { toast } from '@/components/ui/Toast';
-import {
-  DEFAULT_THINKING_LEVELS,
-  MODEL_TYPES,
-  THINKING_FIELD_OPTIONS,
-  THINKING_LEVEL_OPTIONS,
-} from '@/utils/constants';
+import { MODEL_TYPES } from '@/utils/constants';
+import { LLMConfigModal } from '@/components/common/LLMConfigModal';
 import { PageHeader, FormModal, FormField, EmptyState } from '@/components/common';
 import { Plus, Edit2, Trash2, Eye, EyeOff, Mic } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
@@ -25,14 +21,6 @@ interface ModelFormData {
   model?: string;
   base_url?: string;
   api_key?: string;
-  temperature?: number;
-  top_p?: number;
-  max_tokens?: number;
-  thinking_field_name?: string | null;
-  thinking_fields?: string[];
-  thinking_levels?: string[];
-  omit_none_thinking_fields?: boolean;
-  supports_visual_input?: boolean;
   dimensions?: number | null;
   max_batch_size?: number;
   top_k?: number;
@@ -45,38 +33,7 @@ interface ModelFormData {
 type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig;
 
 const FIELD_META: Record<ModelType, FormField[]> = {
-  llm: [
-    { key: "supports_visual_input", label: "图像与视频输入", type: "checkbox", placeholder: "声明此模型支持图片和原生视频输入" },
-    { key: 'model', label: '模型' },
-    { key: 'base_url', label: 'Base URL' },
-    { key: 'api_key', label: 'API Key', type: 'password' },
-    { key: 'temperature', label: 'Temperature', type: 'number' },
-    { key: 'top_p', label: 'Top P', type: 'number' },
-    { key: 'max_tokens', label: 'Max Tokens', type: 'number' },
-    {
-      key: 'thinking_field_name',
-      label: '上下文思考字段名',
-      placeholder: 'reasoning_content',
-    },
-    {
-      key: 'thinking_fields',
-      label: '思考请求字段',
-      type: 'checkbox-group',
-      options: [...THINKING_FIELD_OPTIONS],
-    },
-    {
-      key: 'thinking_levels',
-      label: '可用思考强度',
-      type: 'checkbox-group',
-      options: [...THINKING_LEVEL_OPTIONS],
-    },
-    {
-      key: 'omit_none_thinking_fields',
-      label: '关闭思考兼容',
-      type: 'checkbox',
-      placeholder: '关闭思考时不发送值为 none 的字段',
-    },
-  ],
+  llm: [],
   embedding: [
     { key: 'model', label: '模型' },
     { key: 'base_url', label: 'Base URL' },
@@ -136,29 +93,18 @@ export function Models() {
     setEditingName(null);
     setFormData({
       name: 'default',
-      ...(activeTab === 'llm'
-        ? {
-          thinking_fields: [],
-          thinking_levels: [...DEFAULT_THINKING_LEVELS],
-          omit_none_thinking_fields: false,
-          supports_visual_input: false,
-        }
-        : {}),
     });
     setShowModal(true);
-  }, [activeTab]);
+  }, []);
 
   const handleEdit = useCallback((name: string, config: ModelConfig) => {
     setEditingName(name);
     setFormData({
       ...config,
       name,
-      ...(activeTab === 'llm' && (config as LLMConfig).thinking_levels === undefined
-        ? { thinking_levels: [...DEFAULT_THINKING_LEVELS] }
-        : {}),
     });
     setShowModal(true);
-  }, [activeTab]);
+  }, []);
 
   const handleDelete = useCallback(async (name: string) => {
     if (!(await confirm(`确定要删除配置 "${name}" 吗？`))) return;
@@ -198,16 +144,15 @@ export function Models() {
   }, []);
 
   // 表单字段
-  const formFields: FormField[] = useMemo(() => {
-    const fields = formData.thinking_fields ?? [];
-    const hasThinkingLevelField = fields.includes('thinking_level') || fields.includes('reasoning_effort');
-    return [
-      { key: 'name', label: '配置名称', required: true },
-      ...FIELD_META[activeTab].filter((field) => (
-        field.key !== 'thinking_levels' || hasThinkingLevelField
-      )),
-    ];
-  }, [activeTab, formData.thinking_fields]);
+  const formFields: FormField[] = useMemo(() => [
+    { key: 'name', label: '配置名称', required: true }, ...FIELD_META[activeTab],
+  ], [activeTab]);
+
+  const handleLLMSave = async (config: LLMConfig) => {
+    const ok = editingName ? await updateModel('llm', editingName, config) : await createModel('llm', config.name, config);
+    toast(ok ? 'success' : 'error', ok ? (editingName ? '已更新' : '已创建') : '操作失败');
+    return ok;
+  };
 
   // 当前类型标签
   const currentTypeLabel = useMemo(() => 
@@ -268,7 +213,10 @@ export function Models() {
       <AsrTestModal name={asrTestName} onClose={() => setAsrTestName(null)} />
 
       {/* 编辑/新增模态框 */}
-      <FormModal
+      {showModal && activeTab === 'llm' ? <LLMConfigModal
+        key={editingName ?? ''} modelName={editingName ?? ''} defaultName="default" allowRename
+        initialConfig={editingName ? llmConfigs[editingName] : undefined} onClose={() => setShowModal(false)} onSave={handleLLMSave}
+      /> : <FormModal
         open={showModal}
         onClose={() => setShowModal(false)}
         title={editingName ? `编辑 ${currentTypeLabel}` : `新增 ${currentTypeLabel}`}
@@ -278,7 +226,7 @@ export function Models() {
         onSubmit={handleSubmit}
         submitText={editingName ? '保存修改' : '创建'}
         size="lg"
-      />
+      />}
     </div>
   );
 }

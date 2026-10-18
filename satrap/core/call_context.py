@@ -1,9 +1,15 @@
-"""逐次调用的可信来源, 与模型参数和持久会话状态分离"""
+"""
+逐次调用的可信来源与工具执行证据
+
+入站身份和待提交的可见消息通过可撤销作用域传递, 不进入持久会话状态,
+嵌套子代理可以定位主代理证据, 不把模型参数或隐藏思考当成用户授权
+"""
 from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
+import copy
 from dataclasses import dataclass
 
 
@@ -36,7 +42,19 @@ class _CallScope:
 
 
 _CURRENT_CALL: ContextVar[_CallScope | None] = ContextVar("satrap_current_call", default=None)
-_TOOL_WORKFLOW: ContextVar[object | None] = ContextVar("satrap_tool_workflow", default=None)
+
+
+@dataclass
+class _ToolScope:
+    """当前工具执行的可撤销工作流与可见待提交消息, 父作用域用于嵌套子代理"""
+
+    workflow: object
+    messages: tuple[dict[str, object], ...]
+    parent: _ToolScope | None
+    active: bool = True
+
+
+_TOOL_WORKFLOW: ContextVar[_ToolScope | None] = ContextVar("satrap_tool_workflow", default=None)
 
 
 def current_tool_workflow() -> object | None:
@@ -46,24 +64,48 @@ def current_tool_workflow() -> object | None:
     返回:
     - 工作流对象, 非模型工具调用时为 None
     """
-    return _TOOL_WORKFLOW.get()
+    scope = _TOOL_WORKFLOW.get()
+    return scope.workflow if scope is not None and scope.active else None
+
+
+def current_tool_messages(workflow: object) -> list[dict[str, object]]:
+    """
+    读取主代理或嵌套子代理当前尚未提交的可见消息
+
+    参数:
+    - workflow: 宿主已知的实际工作流对象
+
+    返回:
+    - 仍有效的匹配作用域消息副本, 不包含隐藏思考; 未绑定或已结束返回空列表
+    """
+    scope = _TOOL_WORKFLOW.get()
+    while scope is not None and scope.active:
+        if scope.workflow is workflow:
+            return copy.deepcopy(list(scope.messages))
+        scope = scope.parent
+    return []
 
 
 @contextmanager
-def bind_tool_workflow(workflow: object) -> Iterator[None]:
+def bind_tool_workflow(workflow: object, messages: Sequence[Mapping[str, object]] = ()) -> Iterator[None]:
     """
     在工具调用边界绑定执行者, 嵌套子 Agent 结束后恢复主工作流
 
     参数:
     - workflow: 实际调用工具的工作流
+    - messages: 本轮待提交消息, 默认空序列; 仅冻结可见角色, 正文和工具证据
 
     返回:
     - 工具执行上下文
     """
-    token = _TOOL_WORKFLOW.set(workflow)
+    visible = tuple({key: copy.deepcopy(row[key]) for key in ("role", "content", "tool_calls", "tool_call_id", "name")
+                     if key in row} for row in messages)
+    scope = _ToolScope(workflow, visible, _TOOL_WORKFLOW.get())
+    token = _TOOL_WORKFLOW.set(scope)
     try:
         yield
     finally:
+        scope.active = False
         _TOOL_WORKFLOW.reset(token)
 
 

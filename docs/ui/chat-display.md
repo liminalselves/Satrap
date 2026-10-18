@@ -156,7 +156,9 @@ Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下
 
 ## 模型与记忆
 
-- 模型配置与平台后端共用同一份 `.satrap/config/model_config.json` (ModelConfigManager), 新建会话时指定 `model` 名即可。
+- 模型配置与平台后端共用同一份 `.satrap/config/model_config.json` (ModelConfigManager), Chat 启动时也遵守后端的 `model_config_path`; 新建会话时指定 `model` 名即可。
+- 两端读写都会检查模型文件版本, 修改在跨进程锁内先刷新再合并, 使用原子写入避免旧缓存覆盖其他模型; 来源损坏时拒绝写入, 不用旧缓存重建文件。
+- Chat 模型列表在打开设置时刷新, 同时复用管理端的配置版本轮询 (页面可见时每 30 秒检查, 切回页面立即检查); 外部新增, 修改或删除会同步到列表, 未保存的编辑输入保持不变。
 - 记忆管理走 `chat/platform.db` 中的公共 `MemoryStore` 表, 默认 scope 为 `session:<conversation_id>`, 见 [运行数据布局](../core/data-layout.md)。
 - **记忆隔离**: 每个会话只读写 `session:<conversation_id>` 作用域。项目绑定不会自动共享记忆; 未来增加共享领域时需要单独的数据模型和授权。
 

@@ -6,6 +6,7 @@
 """
 
 from __future__ import annotations
+from contextlib import nullcontext
 from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import freeze_request_blocks
 import threading
@@ -22,6 +23,7 @@ from satrap.core.type import CommandAction
 from satrap.core.log import logger
 from .utils import (
     SyncUserInputProvider,
+    SyncApprovalProvider,
     HandlerResult,
     HandlerAbortError,
     HandlerConfig,
@@ -120,8 +122,10 @@ class SimpleSession(Session, _SessionFeatures):
         self._skills_manager: SkillsManager | None = None
         self._mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
         """插件 MCP 连接: 连接名 -> (客户端, 同步适配器列表) (同步版经后台事件循环桥接)"""
+        self.approval_provider: SyncApprovalProvider | None = None
+        """单次编程审批专用回调, 不接受普通用户提问的文本回答"""
         self.user_input_provider: SyncUserInputProvider | None = None
-        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 或 Web 前端均可注入)"""
+        """用户输入通道: 仅供 ask_user 获取缺失信息使用 (CLI 或 Web 前端均可注入)"""
         self._run_lock = threading.RLock()
         """同一同步会话的 run 串行锁"""
         self.stream = stream
@@ -244,6 +248,8 @@ class SimpleSession(Session, _SessionFeatures):
         返回:
         - str | CommandAction: 命令结果或最终模型输出
         """
+        if self._plugin_interop_runtime is not None:
+            self._plugin_interop_runtime.synchronize_skills()
         self._wf.reset_context_stats()
         command_result, is_command = self.cmd_process(user_input)
         if is_command:
@@ -376,7 +382,9 @@ class SimpleSession(Session, _SessionFeatures):
         """
         t0 = time.perf_counter()
         try:
-            return fn(*args)
+            scope = self._plugin_interop.execution(handler.owner_plugin, "handlers", handler.name) if handler.owner_plugin else nullcontext()
+            with scope:
+                return fn(*args)
         except HandlerAbortError:
             raise
         except Exception as e:
@@ -510,13 +518,6 @@ class SimpleSession(Session, _SessionFeatures):
         """停用插件 (压制名下全部能力, 不改独立状态; 工具/处理器由执行路径合成压制)"""
         return sync_plugins.disable_plugin(self, name)
 
-    def _activate_plugin_skill(self, name: str) -> bool:
-        """插件技能独立启用钩子 (同步版)"""
-        return sync_plugins._activate_plugin_skill(self, name)
-
-    def _deactivate_plugin_skill(self, name: str) -> bool:
-        """插件技能独立停用钩子 (同步版)"""
-        return sync_plugins._deactivate_plugin_skill(self, name)
 
     # ---------- 模型与流式 ----------
 

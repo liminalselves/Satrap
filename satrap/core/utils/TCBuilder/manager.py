@@ -1,5 +1,7 @@
+"""工具实际执行入口, 保留来源核验并绑定插件子调用作用域"""
 from typing import Dict, Any, cast
 from satrap.core.log import logger
+from satrap.core.plugin_interop.capabilities import bind_tool_plugin
 from .utils import _tool_execution_error
 from .tool import Tool
 from .manager_base import _ToolsRegistry
@@ -104,7 +106,8 @@ class ToolsManager(_ToolsRegistry[Tool]):
             return error
 
         try:
-            result = tool(**arguments)
+            with bind_tool_plugin(tool):
+                result = tool(**arguments)
             logger.debug(f"[执行工具] 工具 {tool_name} 执行成功")
             return result
         except Exception as e:

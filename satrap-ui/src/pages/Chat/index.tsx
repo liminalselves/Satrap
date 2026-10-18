@@ -1,6 +1,11 @@
+import { ApprovalSettings } from './ApprovalSettings';
+import { useApprovalMode, type ApprovalControl } from './useApprovalMode';
 import { useConfirm } from '@/hooks/useConfirm';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { restoreConversation, type Conversation as ConversationState } from './conversations';
 import { RunRecovery } from "./RunRecovery";
+import { LLMConfigModal } from '@/components/common/LLMConfigModal';
 import { RagManager } from '@/components/common/RagManager';
 import { MediaAttachment } from './MediaAttachment';
 import { useChatScroll } from './useChatScroll';
@@ -24,10 +29,7 @@ import { toast } from '@/components/ui/Toast';
 import { CopyButton } from '@/components/ui/CopyButton';
 import { cn } from '@/utils/cn';
 import {
-  DEFAULT_THINKING_LEVELS,
   getThinkingOptions,
-  THINKING_FIELD_OPTIONS,
-  THINKING_LEVEL_OPTIONS,
 } from '@/utils/constants';
 import { formatRelativeTime } from '@/utils/format';
 import { createAnimationFrameLimiter, MAX_UI_FRAME_RATE } from '@/utils/frameLimiter';
@@ -39,6 +41,7 @@ import {
   chatApi,
   subscribeChat,
   type Attachment,
+  type ApprovalMode,
   type CapabilityKind,
   type ChatEvent,
   type ChatPreloadSettings,
@@ -292,6 +295,7 @@ export function Chat() {
   }));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [draftApprovalMode, setDraftApprovalMode] = useState<ApprovalMode>('user');
   // 后端连接状态
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
   // 可选模型列表(来自聊天服务)
@@ -322,6 +326,9 @@ export function Chat() {
   const [showEntryChoice, setShowEntryChoice] = useState(false);
   // 待发送附件
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  useConfigWatch(['llm']);
+  const publishedModels = useConfigStore((state) => state.llmConfigs);
+  const modelReadVersion = useRef(0);
   // 模型详情 (设置弹窗管理用)
   const [modelsDetail, setModelsDetail] = useState<Record<string, ModelConfigItem>>({});
   // 模型编辑弹窗: null=关闭, ''=新增, 否则为编辑的模型名
@@ -369,6 +376,20 @@ export function Chat() {
     () => conversations.find((c) => c.id === activeId),
     [conversations, activeId]
   );
+  const approval = useApprovalMode(
+    backendOk && active && active.id !== '__draft__' && !active.preloaded ? active.id : '',
+    !active || active.id === '__draft__' || active.preloaded ? {
+      mode: draftApprovalMode,
+      available: plugins.some((plugin) => plugin.name === 'permissions' && plugin.enabled),
+      pending: generating,
+      onChange: setDraftApprovalMode,
+    } : undefined,
+  );
+  const refreshApproval = approval.refresh;
+  useEffect(() => {
+    if ((optionsOpen || settingsOpen) && !generating) void refreshApproval();
+  }, [optionsOpen, settingsOpen, generating, active?.messages.length, plugins, pluginConfigRevision, refreshApproval]);
+  // 打开面板, 完成命令或更新插件后重新读实际模式, 两个入口共用同一状态
   const messageScroll = useChatScroll(`${backendOk}:${activeId}:${showEntryChoice}`, active?.messages, Boolean(active?.loaded));
   const activePendingUserInput = pendingUserInputs[activeId]?.[0];
   const activePendingUserAnswer = activePendingUserInput
@@ -497,7 +518,7 @@ export function Chat() {
           setPendingUserInputs((previous) => ({
             ...previous,
             [conversationId]: event.pending_user_inputs.map((item) => ({
-              requestId: item.request_id, question: item.question, options: item.options,
+              requestId: item.request_id, question: item.question, options: item.options, approval: item.approval,
             })),
           }));
           break;
@@ -592,6 +613,7 @@ export function Chat() {
                   requestId: event.request_id,
                   question: event.question,
                   options: event.options ?? [],
+                  approval: event.approval,
                 },
               ],
             };
@@ -697,6 +719,27 @@ export function Chat() {
     };
   }, [activeId, handleEvent]);
 
+  const handleModelSaved = useCallback(async (signal?: AbortSignal) => {
+    const version = ++modelReadVersion.current;
+    try {
+      const { models: detail } = await chatApi.listModelsDetail(signal);
+      if (signal?.aborted || version !== modelReadVersion.current) return;
+      const names = Object.keys(detail);
+      setModels(names);
+      setModelsDetail(detail);
+      if (names.length) setSettings((previous) => names.includes(previous.model) ? previous : { ...previous, model: names[0] });
+    } catch (error) {
+      if (!signal?.aborted) console.error('[Chat] 刷新模型列表失败:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!settingsOpen && !Object.keys(publishedModels).length) return;
+    const controller = new AbortController();
+    void handleModelSaved(controller.signal);
+    return () => controller.abort();
+  }, [publishedModels, settingsOpen, handleModelSaved]);   // 配置版本变化或打开设置时刷新, Chat 仍从自己的服务读取模型详情
+
   // 初始化: 健康检查 + 加载模型/插件/会话列表
   useEffect(() => {
     let cancelled = false;
@@ -705,22 +748,16 @@ export function Chat() {
         await chatApi.health();
         if (cancelled) return;
         setBackendOk(true);
-        const [{ models: modelList }, { plugins: pluginList }, { conversations: convList }, { models: detail }, { projects: projectList }] =
+        const [{ plugins: pluginList }, { conversations: convList }, { projects: projectList }] =
           await Promise.all([
-            chatApi.listModels(),
             chatApi.listPlugins(),
             chatApi.listConversations(),
-            chatApi.listModelsDetail(),
             chatApi.listProjects(),
+            handleModelSaved(),
           ]);
         if (cancelled) return;
-        setModels(modelList);
         setPlugins(pluginList);
-        setModelsDetail(detail);
         setProjects(projectList);
-        if (modelList.length > 0) {
-          setSettings((prev) => (modelList.includes(prev.model) ? prev : { ...prev, model: modelList[0] }));
-        }
         // 恢复历史会话
         const restored = convList.map((item) => restoreConversation<ChatMessage>(item));
         setConversations(restored);
@@ -736,7 +773,7 @@ export function Chat() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [handleModelSaved]);
 
   // 切换会话时按需加载历史
   useEffect(() => {
@@ -949,6 +986,7 @@ export function Chat() {
       const abandonedIds = new Set(abandoned.map((conv) => conv.id));
       setConversations((prev) => prev.filter((conv) => !abandonedIds.has(conv.id)));
     }
+    setDraftApprovalMode('user');
     const draft = createDraft(projectId);
     setActiveId(draft.id);
     setShowEntryChoice(false);
@@ -1133,7 +1171,12 @@ export function Chat() {
         content,
         settings.think,
         atts,
-        preloadSettingsFor(targetConv.projectId),
+        {
+          ...preloadSettingsFor(targetConv.projectId),
+          ...((isDraft || targetConv.preloaded)
+            && (draftApprovalMode !== 'user' || plugins.some((plugin) => plugin.name === 'permissions' && plugin.enabled))
+            ? { approvalMode: draftApprovalMode } : {}),
+        },
       );
       updateConversation(realConvId, (conversation) => ({
         ...conversation,
@@ -1162,7 +1205,7 @@ export function Chat() {
     } finally {
       mutationPendingRef.current = false;
     }
-  }, [input, active, generating, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload]);
+  }, [input, active, generating, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload, draftApprovalMode, plugins]);
 
   // 选择文件
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1363,16 +1406,7 @@ export function Chat() {
     try {
       const result = await chatApi.deleteModel(name);
       if (result.ok) {
-        setModelsDetail((prev) => {
-          const next = { ...prev };
-          delete next[name];
-          return next;
-        });
-        setModels((prev) => prev.filter((m) => m !== name));
-        // 如果删除的是当前选中模型, 切换到第一个可用模型
-        if (settings.model === name) {
-          setSettings((prev) => ({ ...prev, model: models.find((m) => m !== name) ?? 'default' }));
-        }
+        await handleModelSaved();
       } else {
         alert(result.error || '删除失败');
       }
@@ -1380,21 +1414,7 @@ export function Chat() {
       console.error('[Chat] 删除模型失败:', err);
       alert(`删除模型失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [settings.model, models, confirm]);
-
-  // 模型保存后刷新列表
-  const handleModelSaved = useCallback(async () => {
-    try {
-      const [{ models: modelList }, { models: detail }] = await Promise.all([
-        chatApi.listModels(),
-        chatApi.listModelsDetail(),
-      ]);
-      setModels(modelList);
-      setModelsDetail(detail);
-    } catch (err) {
-      console.error('[Chat] 刷新模型列表失败:', err);
-    }
-  }, []);
+  }, [handleModelSaved, confirm]);
 
   // 停止生成 (调用后端取消 + 解除前端流式标记)
   const handleAnswerUserInput = useCallback(async (answerValue: string) => {
@@ -1729,10 +1749,11 @@ export function Chat() {
           {/* 输入区(sticky 固定在消息流底部, 不随滚动消失; 底部渐变让滚过的内容淡出) */}
           <div className="sticky bottom-0 z-10 shrink-0 -mx-5 px-5 pt-3 pb-4 bg-gradient-to-t from-[var(--glass-bg)] to-transparent">
             <div className="max-w-3xl mx-auto">
-              {/* 折叠选项面板: think / model (紧凑 + 独立反光, 右对齐) */}
+              {/* 折叠选项面板: 思考, 模型和执行审批 */}
               {optionsOpen && (
-                <div className="mb-2 w-fit ml-auto">
+                <div className="mb-2 w-fit max-w-full ml-auto">
                   <OptionsPanel
+                    approval={approval}
                     think={settings.think}
                     model={settings.model}
                     modelOptions={modelOptions}
@@ -1838,6 +1859,7 @@ export function Chat() {
 
       {/* 聊天设置弹窗 */}
       <ChatSettingsModal
+        approval={approval}
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         settings={settings}
@@ -2061,32 +2083,38 @@ function DirectoryPicker({
   onSelect: (path: string) => void;
 }) {
   const [current, setCurrent] = useState('');
+  const [location, setLocation] = useState('');
+  const generation = useRef(0);
   const [parent, setParent] = useState<string | null>(null);
   const [dirs, setDirs] = useState<DirEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const load = useCallback(async (path: string) => {
+    const version = ++generation.current;
     setLoading(true);
     setError('');
     try {
       const resp = await chatApi.browseDirs(path);
+      if (version !== generation.current) return;
       setCurrent(resp.path);
+      setLocation(resp.path);
       setParent(resp.parent);
       setDirs(resp.dirs);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (version === generation.current) setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (version === generation.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (open) void load(initialPath.trim());
+    return () => { generation.current++; };
   }, [open, initialPath, load]);
 
   // 根视图 (盘符页) 无具体路径可选
-  const canSelect = current !== '';
+  const canSelect = current !== '' && !loading && !error && location.trim() === current;
 
   return (
     <Modal open={open} onClose={onClose} title="选择工作区目录" size="md">
@@ -2101,9 +2129,15 @@ function DirectoryPicker({
           >
             <ArrowUp className="h-4 w-4" />
           </Button>
-          <div className="flex-1 min-w-0 text-sm text-text-secondary truncate" title={current}>
-            {current || '选择磁盘'}
-          </div>
+          <input
+            aria-label="目录路径"
+            className="glass-input flex-1 min-w-0 text-sm"
+            value={location}
+            onChange={(event) => setLocation(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void load(location.trim()); } }}
+            placeholder="选择磁盘或输入服务器目录路径"
+          />
+          <Button variant="ghost" size="sm" disabled={loading} onClick={() => void load(location.trim())}>前往</Button>
         </div>
         {error && <p className="text-sm text-error">{error}</p>}
         <div className="max-h-72 overflow-y-auto custom-scrollbar space-y-1">
@@ -2141,6 +2175,7 @@ function DirectoryPicker({
 
 // 折叠选项面板(紧凑自适应宽度 + 独立反光)
 function OptionsPanel({
+  approval,
   think,
   model,
   modelOptions,
@@ -2148,6 +2183,7 @@ function OptionsPanel({
   onToggleThink,
   onModelChange,
 }: {
+  approval: ApprovalControl;
   think: string;
   model: string;
   modelOptions: { value: string; label: string }[];
@@ -2162,7 +2198,7 @@ function OptionsPanel({
   return (
     <div
       ref={reflectRef}
-      className="glass-card glass-card-accent rounded-xl px-3 py-2 flex items-center gap-4 animate-fade-in w-fit"
+      className="glass-card glass-card-accent rounded-xl px-3 py-2 flex flex-wrap items-center gap-3 animate-fade-in w-fit max-w-full"
     >
       {/* think 选择 */}
       <div className="flex items-center gap-2">
@@ -2189,6 +2225,8 @@ function OptionsPanel({
           />
         </div>
       </div>
+      <div className="w-px h-5 bg-glass-border" />
+      <ApprovalSettings approval={approval} compact />
     </div>
   );
 }
@@ -2205,6 +2243,7 @@ const CHAT_SETTINGS_CATEGORIES: { key: ChatSettingsCategory; label: string; icon
 
 // 聊天设置弹窗: 左侧分类导航 + 右侧分类内容
 function ChatSettingsModal({
+  approval,
   open,
   onClose,
   settings,
@@ -2223,6 +2262,7 @@ function ChatSettingsModal({
   onEditModel,
   onDeleteModel,
 }: {
+  approval: ApprovalControl;
   open: boolean;
   onClose: () => void;
   settings: ChatSettings;
@@ -2270,6 +2310,7 @@ function ChatSettingsModal({
           <div className="space-y-5">
             {category === 'chat' && (
               <>
+                <ApprovalSettings approval={approval} />
                 {/* 模型 */}
                 <div>
                   <label className="block text-sm font-medium text-text-primary mb-2">模型</label>
@@ -2504,7 +2545,7 @@ function PluginCapabilitiesModal({
 }) {
   if (!plugin) return null;
   const descriptions = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.description]))]));
-  const values = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.enabled]))]));
+  const values = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.requested_enabled ?? item.enabled]))]));
 
   return (
     <Modal open={plugin !== null} onClose={onClose} title={`${plugin.name} 能力`} size="md">
@@ -2519,7 +2560,7 @@ function PluginCapabilitiesModal({
         </div>
 
         <Link className="text-sm text-accent" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(plugin.name)}`}>打开插件详情</Link>
-        <PluginCapabilities capabilities={descriptions} values={values} active={plugin.enabled}
+        <PluginCapabilities capabilities={descriptions} values={values} active={plugin.enabled} effective={plugin.capabilities}
           onChange={(kind, name, enabled) => onToggleCapability(plugin.name, kind as CapabilityKind, name, enabled)} />
 
         <div className="flex justify-end pt-1">
@@ -3340,462 +3381,30 @@ const ThinkingBlock = memo(function ThinkingBlock({ thinking }: { thinking: stri
   );
 });
 
-// 模型编辑弹窗
-function ModelEditModal({
-  modelName,
-  modelsDetail,
-  onClose,
-  onSaved,
-}: {
-  modelName: string | null;  // null=关闭, ''=新增, 否则为编辑的模型名
+// Chat 保留保存接口与运行时刷新, 字段和校验由两端共用的组件负责
+function ModelEditModal({ modelName, modelsDetail, onClose, onSaved }: {
+  modelName: string | null;
   modelsDetail: Record<string, ModelConfigItem>;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const isNew = modelName === '';
-  const existing = modelName ? modelsDetail[modelName] : undefined;
   const { isRunning, reloadConfig } = useBackendStore(useShallow((state) => ({ isRunning: state.isRunning, reloadConfig: state.reloadConfig })));
-
-  const [name, setName] = useState('');
-  const [model, setModel] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [temperature, setTemperature] = useState('');
-  const [topP, setTopP] = useState('');
-  const [maxTokens, setMaxTokens] = useState('');
-  const [contextWindow, setContextWindow] = useState('');
-  const [historyRatio, setHistoryRatio] = useState('');
-  const [contextStrategy, setContextStrategy] = useState<'sliding' | 'mid_truncate' | 'summarize'>('sliding');
-  const [contextThreshold, setContextThreshold] = useState('0.8');
-  const [truncationFloor, setTruncationFloor] = useState('0.4');
-  const [summaryKeepRecentTurns, setSummaryKeepRecentTurns] = useState('6');
-  const [thinkingFieldName, setThinkingFieldName] = useState('');
-  const [thinkingFields, setThinkingFields] = useState<string[]>([]);
-  const [thinkingLevels, setThinkingLevels] = useState<string[]>([...DEFAULT_THINKING_LEVELS]);
-  const [omitNoneThinkingFields, setOmitNoneThinkingFields] = useState(false);
-  const [supportsVisualInput, setSupportsVisualInput] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  // 打开时填充表单
-  useEffect(() => {
-    if (modelName === null) return;
-    if (isNew) {
-      setName('');
-      setModel('');
-      setBaseUrl('');
-      setApiKey('');
-      setTemperature('');
-      setTopP('');
-      setMaxTokens('');
-      setContextWindow('');
-      setHistoryRatio('');
-      setContextStrategy('sliding');
-      setContextThreshold('0.8');
-      setTruncationFloor('0.4');
-      setSummaryKeepRecentTurns('6');
-      setThinkingFieldName('');
-      setThinkingFields([]);
-      setThinkingLevels([...DEFAULT_THINKING_LEVELS]);
-      setOmitNoneThinkingFields(false);
-      setSupportsVisualInput(false);
-    } else if (existing) {
-      setName(existing.name);
-      setModel(existing.model ?? '');
-      setBaseUrl(existing.base_url ?? '');
-      // 脱敏的 api_key (含 *) 不回显, 留空表示不修改
-      const rawKey = existing.api_key ?? '';
-      setApiKey(rawKey.includes('*') ? '' : rawKey);
-      setTemperature(existing.temperature !== undefined ? String(existing.temperature) : '');
-      setTopP(existing.top_p !== undefined ? String(existing.top_p) : '');
-      setMaxTokens(existing.max_tokens !== undefined ? String(existing.max_tokens) : '');
-      setContextWindow(existing.context_window !== undefined ? String(existing.context_window) : '');
-      setHistoryRatio(existing.history_ratio !== undefined ? String(existing.history_ratio) : '');
-      setContextStrategy(existing.context_strategy ?? 'sliding');
-      setContextThreshold(String(existing.context_threshold ?? 0.8));
-      setTruncationFloor(String(existing.truncation_floor ?? 0.4));
-      setSummaryKeepRecentTurns(String(existing.summary_keep_recent_turns ?? 6));
-      setThinkingFieldName(existing.thinking_field_name ?? '');
-      setThinkingFields(existing.thinking_fields ?? []);
-      setThinkingLevels(existing.thinking_levels ?? [...DEFAULT_THINKING_LEVELS]);
-      setOmitNoneThinkingFields(existing.omit_none_thinking_fields ?? false);
-      setSupportsVisualInput(existing.supports_visual_input ?? false);
+  const handleSave = async (config: ModelConfigItem) => {
+    if (modelName === null) return false;
+    const result = modelName === '' ? await chatApi.addModel(config) : await chatApi.updateModel(modelName, config);
+    if (!result.ok) {
+      throw new Error(result.error || '保存失败');
     }
-  }, [modelName, isNew, existing]);
-
-  const handleSave = useCallback(async () => {
-    if (!name.trim()) {
-      alert('请输入配置名称');
-      return;
-    }
-    const parsedContextWindow = contextWindow.trim() ? Number(contextWindow) : 128000;
-    const parsedHistoryRatio = historyRatio.trim() ? Number(historyRatio) : 0.7;
-    const parsedContextThreshold = Number(contextThreshold);
-    const parsedTruncationFloor = Number(truncationFloor);
-    const parsedKeepRecentTurns = Number(summaryKeepRecentTurns);
-    if (!Number.isFinite(parsedContextWindow) || parsedContextWindow <= 0) {
-      alert('上下文窗口必须大于 0');
-      return;
-    }
-    if (!Number.isFinite(parsedHistoryRatio) || parsedHistoryRatio <= 0 || parsedHistoryRatio > 1) {
-      alert('历史比例必须在 0 到 1 之间');
-      return;
-    }
-    if (
-      !Number.isFinite(parsedContextThreshold)
-      || !Number.isFinite(parsedTruncationFloor)
-      || parsedTruncationFloor <= 0
-      || parsedTruncationFloor >= parsedContextThreshold
-      || parsedContextThreshold > 1
-    ) {
-      alert('上下文比例必须满足 0 < 压缩目标比例 < 触发比例 <= 1');
-      return;
-    }
-    if (!Number.isInteger(parsedKeepRecentTurns) || parsedKeepRecentTurns < 0) {
-      alert('保留最近轮数必须是大于等于 0 的整数');
-      return;
-    }
-    setSaving(true);
-    try {
-      const config: ModelConfigItem = {
-        name: name.trim(),
-        ...(model.trim() ? { model: model.trim() } : {}),
-        ...(baseUrl.trim() ? { base_url: baseUrl.trim() } : {}),
-        ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
-        ...(temperature.trim() ? { temperature: Number(temperature) } : {}),
-        ...(topP.trim() ? { top_p: Number(topP) } : {}),
-        ...(maxTokens.trim() ? { max_tokens: Number(maxTokens) } : {}),
-        ...(contextWindow.trim() ? { context_window: Number(contextWindow) } : {}),
-        ...(historyRatio.trim() ? { history_ratio: Number(historyRatio) } : {}),
-        context_strategy: contextStrategy,
-        context_threshold: parsedContextThreshold,
-        truncation_floor: parsedTruncationFloor,
-        summary_keep_recent_turns: parsedKeepRecentTurns,
-        thinking_field_name: thinkingFieldName.trim() || null,
-        thinking_fields: thinkingFields,
-        thinking_levels: thinkingLevels,
-        omit_none_thinking_fields: omitNoneThinkingFields,
-        supports_visual_input: supportsVisualInput,
-      };
-      const result = isNew
-        ? await chatApi.addModel(config)
-        : await chatApi.updateModel(modelName!, config);
-      if (result.ok) {
-        const platformReloaded = !isRunning || await reloadConfig();
-        const refreshed = result.refreshed_conversations ?? 0;
-        const deferred = result.deferred_conversations ?? 0;
-        const chatStatus = deferred > 0
-          ? `Chat 已更新 ${refreshed} 个会话, ${deferred} 个将在本轮结束后更新`
-          : `Chat 已更新 ${refreshed} 个会话`;
-        toast(
-          platformReloaded ? 'success' : 'warning',
-          platformReloaded ? `${chatStatus}, 平台配置已热加载` : `${chatStatus}, 平台热加载失败`,
-        );
-        onSaved();
-        onClose();
-      } else {
-        alert(result.error || '保存失败');
-      }
-    } catch (err) {
-      console.error('[Chat] 保存模型失败:', err);
-      alert(`保存失败: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setSaving(false);
-    }
-  }, [name, model, baseUrl, apiKey, temperature, topP, maxTokens, contextWindow, historyRatio, contextStrategy, contextThreshold, truncationFloor, summaryKeepRecentTurns, thinkingFieldName, thinkingFields, thinkingLevels, omitNoneThinkingFields, supportsVisualInput, isNew, modelName, isRunning, reloadConfig, onSaved, onClose]);
-
-  const contextBudgetPreview = useMemo(() => {
-    const windowTokens = contextWindow.trim() ? Number(contextWindow) : 128000;
-    const ratio = historyRatio.trim() ? Number(historyRatio) : 0.7;
-    const threshold = Number(contextThreshold);
-    const floor = Number(truncationFloor);
-    if (![windowTokens, ratio, threshold, floor].every(Number.isFinite)) return null;
-    const historyBudget = Math.floor(windowTokens * ratio);
-    return {
-      windowTokens,
-      historyBudget,
-      triggerTokens: Math.floor(historyBudget * threshold),
-      floorTokens: Math.floor(historyBudget * floor),
-      outputBudget: windowTokens - historyBudget,
-    };
-  }, [contextWindow, historyRatio, contextThreshold, truncationFloor]);
-
+    const platformReloaded = !isRunning || await reloadConfig();
+    const refreshed = result.refreshed_conversations ?? 0;
+    const deferred = result.deferred_conversations ?? 0;
+    const chatStatus = deferred > 0
+      ? `Chat 已更新 ${refreshed} 个会话, ${deferred} 个将在本轮结束后更新`
+      : `Chat 已更新 ${refreshed} 个会话`;
+    toast(platformReloaded ? 'success' : 'warning', platformReloaded ? `${chatStatus}, 平台配置已热加载` : `${chatStatus}, 平台热加载失败`);
+    onSaved();
+    return true;
+  };
   if (modelName === null) return null;
-
-  return (
-    <Modal open={modelName !== null} onClose={onClose} title={isNew ? '新增模型配置' : `编辑模型: ${modelName}`} size="md">
-      <div className="space-y-4">
-        {/* 配置名称 */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-1.5">配置名称</label>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="如: gpt-4o, claude-sonnet"
-            disabled={!isNew}
-            className="glass-input w-full text-sm"
-          />
-          {!isNew && <p className="text-xs text-text-tertiary mt-1">配置名称不可修改</p>}
-        </div>
-
-        {/* 模型 ID */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-1.5">模型 ID</label>
-          <input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="如: gpt-4o, claude-3-5-sonnet-20241022"
-            className="glass-input w-full text-sm"
-          />
-        </div>
-
-        {/* Base URL */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-1.5">Base URL</label>
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="如: https://api.openai.com/v1"
-            className="glass-input w-full text-sm"
-          />
-        </div>
-
-        {/* API Key */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-1.5">API Key</label>
-          <input
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={isNew ? 'sk-...' : '留空表示不修改'}
-            type="password"
-            className="glass-input w-full text-sm"
-          />
-        </div>
-
-        {/* 高级参数 */}
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">温度</label>
-            <input
-              value={temperature}
-              onChange={(e) => setTemperature(e.target.value)}
-              placeholder="0.7"
-              type="number"
-              step="0.1"
-              min="0"
-              max="2"
-              className="glass-input w-full text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">Top P</label>
-            <input
-              value={topP}
-              onChange={(e) => setTopP(e.target.value)}
-              placeholder="1.0"
-              type="number"
-              step="0.05"
-              min="0"
-              max="1"
-              className="glass-input w-full text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">Max Tokens</label>
-            <input
-              value={maxTokens}
-              onChange={(e) => setMaxTokens(e.target.value)}
-              placeholder="4096"
-              type="number"
-              min="1"
-              className="glass-input w-full text-sm"
-            />
-          </div>
-        </div>
-
-        {/* 上下文参数 */}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">上下文窗口</label>
-            <input
-              value={contextWindow}
-              onChange={(e) => setContextWindow(e.target.value)}
-              placeholder="128000"
-              type="number"
-              min="1"
-              className="glass-input w-full text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">历史比例</label>
-            <input
-              value={historyRatio}
-              onChange={(e) => setHistoryRatio(e.target.value)}
-              placeholder="0.7"
-              type="number"
-              step="0.05"
-              min="0"
-              max="1"
-              className="glass-input w-full text-sm"
-            />
-          </div>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-text-secondary mb-1">上下文处理策略</label>
-          <Select
-            value={contextStrategy}
-            onChange={(event) => setContextStrategy(event.target.value as typeof contextStrategy)}
-            align="left"
-            options={[
-              { value: 'sliding', label: '滑动窗口' },
-              { value: 'mid_truncate', label: '中间截取' },
-              { value: 'summarize', label: '总结压缩' },
-            ]}
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">触发比例</label>
-            <input
-              value={contextThreshold}
-              onChange={(event) => setContextThreshold(event.target.value)}
-              placeholder="0.8"
-              type="number"
-              step="0.05"
-              min="0"
-              max="1"
-              className="glass-input w-full text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">压缩目标比例</label>
-            <input
-              value={truncationFloor}
-              onChange={(event) => setTruncationFloor(event.target.value)}
-              placeholder="0.4"
-              type="number"
-              step="0.05"
-              min="0"
-              max="1"
-              className="glass-input w-full text-sm"
-            />
-          </div>
-        </div>
-        {contextStrategy === 'summarize' && (
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-1">保留最近轮数</label>
-            <input
-              value={summaryKeepRecentTurns}
-              onChange={(event) => setSummaryKeepRecentTurns(event.target.value)}
-              placeholder="6"
-              type="number"
-              min="0"
-              step="1"
-              className="glass-input w-full text-sm"
-            />
-          </div>
-        )}
-        {contextBudgetPreview && (
-          <div className="glass-card rounded-md px-3 py-2 text-[11px] text-text-tertiary grid grid-cols-2 gap-x-4 gap-y-1">
-            <span>总窗口: {contextBudgetPreview.windowTokens.toLocaleString()}</span>
-            <span>历史预算: {contextBudgetPreview.historyBudget.toLocaleString()}</span>
-            <span>触发处理: {contextBudgetPreview.triggerTokens.toLocaleString()}</span>
-            <span>处理目标: {contextBudgetPreview.floorTokens.toLocaleString()}</span>
-            <span>输出预算: {contextBudgetPreview.outputBudget.toLocaleString()}</span>
-          </div>
-        )}
-
-        {/* 思考参数 */}
-        <div>
-          <label className="block text-xs font-medium text-text-secondary mb-1">思考字段名</label>
-          <input
-            value={thinkingFieldName}
-            onChange={(e) => setThinkingFieldName(e.target.value)}
-            placeholder="reasoning_content"
-            className="glass-input w-full text-sm"
-          />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-text-secondary mb-2">思考请求字段</label>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {THINKING_FIELD_OPTIONS.map((option) => (
-              <label
-                key={option.value}
-                className="glass-card rounded-md px-3 py-2 flex items-start gap-2 cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={thinkingFields.includes(option.value)}
-                  onChange={(event) => setThinkingFields((current) => (
-                    event.target.checked
-                      ? [...current, option.value]
-                      : current.filter((field) => field !== option.value)
-                  ))}
-                  className="h-4 w-4 mt-0.5 accent-accent"
-                />
-                <span className="min-w-0">
-                  <span className="block text-xs font-mono text-text-primary">{option.label}</span>
-                  <span className="block text-[11px] text-text-tertiary mt-0.5">{option.description}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-        </div>
-        {(thinkingFields.includes('thinking_level') || thinkingFields.includes('reasoning_effort')) && (
-          <div>
-            <label className="block text-xs font-medium text-text-secondary mb-2">可用思考强度</label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {THINKING_LEVEL_OPTIONS.map((option) => (
-                <label
-                  key={option.value}
-                  className="glass-card rounded-md px-3 py-2 flex items-center gap-2 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={thinkingLevels.includes(option.value)}
-                    onChange={(event) => setThinkingLevels((current) => (
-                      event.target.checked
-                        ? [...current, option.value]
-                        : current.filter((level) => level !== option.value)
-                    ))}
-                    className="h-4 w-4 accent-accent"
-                  />
-                  <span className="min-w-0 text-xs text-text-primary">
-                    <span className="font-mono">{option.value}</span>
-                    <span className="ml-1 text-text-tertiary">{option.label}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
-            <p className="text-[11px] text-text-tertiary mt-1.5">Chat 只显示这里勾选的强度, 关闭选项始终保留</p>
-          </div>
-        )}
-        <label className="glass-card rounded-md px-3 py-2 flex items-start gap-2 cursor-pointer">
-          <input type="checkbox" checked={supportsVisualInput} onChange={(event) => setSupportsVisualInput(event.target.checked)} />
-          <span>图像与视频输入</span>
-        </label>
-        <label className="glass-card rounded-md px-3 py-2 flex items-start gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={omitNoneThinkingFields}
-            onChange={(event) => setOmitNoneThinkingFields(event.target.checked)}
-            className="h-4 w-4 mt-0.5 accent-accent"
-          />
-          <span>
-            <span className="block text-xs font-medium text-text-primary">关闭思考时省略 none 字段</span>
-            <span className="block text-[11px] text-text-tertiary mt-0.5">
-              不发送值为 none 的强度字段, 仍保留 disabled 或 false 等显式关闭字段
-            </span>
-          </span>
-        </label>
-
-        {/* 操作按钮 */}
-        <div className="flex justify-end gap-2 pt-2">
-          <Button variant="ghost" onClick={onClose}>取消</Button>
-          <Button variant="primary" onClick={handleSave} disabled={saving}>
-            {saving ? '保存中...' : '保存'}
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
+  return <LLMConfigModal key={modelName} modelName={modelName} initialConfig={modelsDetail[modelName]} onClose={onClose} onSave={handleSave} />;
 }

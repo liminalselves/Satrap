@@ -240,6 +240,9 @@ class PluginConfigManager:
         if name == "friend_manager":
             from satrap.edictum.friend_migration import migrate_friend_globals
             migrate_friend_globals(self)
+        if name in {"satrap_coding", "permissions"}:
+            from satrap.edictum.approval_migration import migrate_approval_globals
+            migrate_approval_globals(self)
         if name in {"base_take", "memory"}:
             from satrap.edictum.memory_migration import migrate_memory_globals
             migrate_memory_globals(self)
@@ -270,6 +273,9 @@ class PluginConfigManager:
         if name == "friend_manager":
             from satrap.edictum.friend_migration import migrate_friend_globals
             migrate_friend_globals(self)
+        if name in {"satrap_coding", "permissions"}:
+            from satrap.edictum.approval_migration import migrate_approval_globals
+            migrate_approval_globals(self)
         if name in {"base_take", "memory"}:
             from satrap.edictum.memory_migration import migrate_memory_globals
             migrate_memory_globals(self)
@@ -297,6 +303,9 @@ class PluginConfigManager:
         if name == "friend_manager":
             from satrap.edictum.friend_migration import migrate_friend_globals
             migrate_friend_globals(self)
+        if name in {"satrap_coding", "permissions"}:
+            from satrap.edictum.approval_migration import migrate_approval_globals
+            migrate_approval_globals(self)
         cleaned: dict[str, Any] = {}
         for key, value in config.items():
             fld = schema.get(key)

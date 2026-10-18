@@ -8,7 +8,7 @@ import { RuntimeApplicationProgress } from '@/components/common/RuntimeApplicati
 import { VersionedConfigRead } from '@/api/configVersions';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import type { ManagedPlugin, PluginLocation, PluginLocationState, PluginRuntimeResult, PluginRuntimeSnapshot, PluginUsagesResult } from '@/api/types';
-import { PluginCapabilities, PLUGIN_CAPABILITY_LABELS } from '@/components/common/PluginCapabilities';
+import { PluginCapabilities, PLUGIN_CAPABILITY_LABELS, capabilityStatus } from '@/components/common/PluginCapabilities';
 import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
 import type { PluginSettingsContext } from '@/api/pluginSettings';
 import { Button } from '@/components/ui/Button';
@@ -152,7 +152,7 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
         {service.status !== 'available' ? <p className="text-sm text-text-tertiary">{service.status === 'stopped' ? '服务未运行，启动后查看实例' : `读取失败：${service.error || '未知错误'}`}</p> : service.instances.length === 0 ? <p className="text-sm text-text-tertiary">暂无加载此插件的活动实例，新实例激活时按已保存配置加载</p> : service.instances.map((instance) => <div key={`${instance.platform_id}:${instance.session_id}`} className="space-y-2 rounded-lg bg-glass p-3">
           <p className="break-all text-sm">{instance.platform_id} / {instance.session_id} · {instance.location_id}</p>
           <p className={instance.plugin.error ? 'text-sm text-error' : 'text-sm text-text-secondary'}>{instance.plugin.restart_required ? '需要重新激活' : instance.plugin.drift ? '配置与运行状态不同步' : instance.plugin.status === 'loaded' ? instance.plugin.enabled ? '已加载并启用' : '已加载，未启用' : instance.plugin.status === 'error' ? '加载失败' : instance.plugin.status === 'disabled' ? '已停用' : '待应用'}{instance.plugin.error && ` · ${instance.plugin.error}`}</p>
-          <div className="space-y-1 text-xs text-text-secondary">{Object.entries(PLUGIN_CAPABILITY_LABELS).map(([kind, label]) => <p key={kind}>{label}：{instance.plugin.capabilities.loaded_known === false ? '未提供加载明细' : Object.entries(instance.plugin.capabilities.loaded?.[kind] || {}).map(([name, enabled]) => `${name} (${instance.plugin.enabled && enabled ? '启用' : '停用'})`).join('、') || '未加载'}</p>)}</div>
+          <div className="space-y-1 text-xs text-text-secondary">{Object.entries(PLUGIN_CAPABILITY_LABELS).map(([kind, label]) => <p key={kind}>{label}：{instance.plugin.capabilities.loaded_known === false ? '未提供加载明细' : instance.plugin.capabilities.effective?.[kind]?.map((item) => `${item.name} (期望${item.requested_enabled ? '启用' : '停用'}; ${capabilityStatus(item)})`).join('、') || Object.entries(instance.plugin.capabilities.loaded?.[kind] || {}).map(([name, enabled]) => `${name} (独立开关${enabled ? '启用' : '停用'})`).join('、') || '未加载'}</p>)}</div>
           <Button size="sm" onClick={() => setSessionContext({ platformId: instance.platform_id, sessionId: instance.session_id })}>配置此会话参数</Button>
         </div>)}
       </section>)}

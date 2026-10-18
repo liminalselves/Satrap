@@ -5,9 +5,12 @@ import traceback
 import weakref
 from pathlib import Path
 from .recovery import plugin_fingerprint
+from satrap.core.plugin_interop.contracts import parse_interop
+from satrap.core.plugin_interop.capabilities import wrap_plugin_command
+from satrap.core.plugin_interop.service import Service, AsyncService
 from satrap.edictum.plugin_compatibility import check_plugin_compatibility
 from satrap.edictum.plugin_permissions import parse_plugin_permissions, validate_permission_install
-from satrap.core.plugin_authorization import PluginEntryBinding, bind_plugin_tool
+from satrap.core.plugin_authorization import PluginEntryBinding, bind_plugin_tool, bind_plugin_service
 from typing import Any
 from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
 from satrap.edictum.plugin_settings import (
@@ -26,6 +29,7 @@ from satrap.edictum.plugin import (
     collect_mcp_clients,
     collect_skills,
     collect_tools,
+    collect_services,
     load_plugin_meta,
     parse_capability_descriptions,
 )
@@ -65,7 +69,7 @@ def install_plugin(
     - Plugin: 安装目录插件 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py)
     """
     plugin_dir = Path(path)
-    meta = load_plugin_meta(plugin_dir)
+    meta = dict(config.metadata_snapshot) if isinstance(config, PluginInstallConfig) and config.metadata_snapshot is not None else load_plugin_meta(plugin_dir)
     check_plugin_compatibility(meta, self.plugin_environment).require()
     _add_plugin_sys_path(plugin_dir)
     tool_states: dict[str, bool] = {}
@@ -77,6 +81,8 @@ def install_plugin(
     resources = None
     installed_plugin: Plugin | None = None
     name = ""
+    plugin_host = None
+    initial_capabilities = config.initial_capabilities if isinstance(config, PluginInstallConfig) else {}
     previous_tools = [(tool, tool.is_enabled()) for tool in self._wf.tools_manager.tools.values()]
     cleanup = None
     try:
@@ -86,6 +92,9 @@ def install_plugin(
         with self._registry_lock:
             if name in self._plugins:
                 raise ValueError(f"插件 {name} 已安装")
+
+        interop = parse_interop(meta)
+        plugin_host = self._plugin_interop.prepare(name, interop)
 
         config_schema = parse_config_schema(meta)
         permissions = parse_plugin_permissions(meta, config_schema)
@@ -111,14 +120,21 @@ def install_plugin(
         )
 
         cleanup = collect_cleanup(plugin_dir, name, self)
-        for t in collect_tools(plugin_dir, name, Tool, self, plugin_config, resources):
+        services = collect_services(plugin_dir, name, Service, self, plugin_config, resources, plugin_host=plugin_host)
+        for service in services.values():
+            bind_plugin_service(service, name, permissions, plugin_config, self)
+            if not initial_capabilities.get("services", {}).get(service.service_name, True):
+                service.disable()
+        for t in collect_tools(plugin_dir, name, Tool, self, plugin_config, resources, plugin_host=plugin_host):
             tname = t.get_tool_name()
             if tname in self._wf.tools_manager.tools or tname in tool_states:
                 raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
             t.owner_plugin = name
             bind_plugin_tool(t, name, permissions, getattr(t, "config", plugin_config), self)
             self._wf.tools_manager.register_tool(t)
-            tool_states[tname] = True
+            tool_states[tname] = initial_capabilities.get("tools", {}).get(tname, True)
+            if not tool_states[tname]:
+                t.disable()
 
         mgr = self._get_skills_manager()
         for s in collect_skills(plugin_dir, name):
@@ -129,7 +145,7 @@ def install_plugin(
             skill_states[key] = config.initial_skills.get(key, True) if isinstance(config, PluginInstallConfig) else True
 
         for h in collect_handlers(
-            plugin_dir, name, self, SessionHandler, plugin_config, resources
+            plugin_dir, name, self, SessionHandler, plugin_config, resources, plugin_host=plugin_host
         ):
             self._validate_handler(h)
             _assert_sync_callbacks(h)
@@ -142,22 +158,29 @@ def install_plugin(
                 self._handler_seq += 1
                 h._seq = self._handler_seq
                 self._handlers[h.name] = h
-            handler_states[h.name] = True
+            handler_states[h.name] = initial_capabilities.get("handlers", {}).get(h.name, True)
+            if not handler_states[h.name]:
+                h.enabled = False
 
+        descriptions = parse_capability_descriptions(meta)
         sync_commands, _async_commands = collect_commands(
-            plugin_dir, name, self, plugin_config, resources
+            plugin_dir, name, self, plugin_config, resources, plugin_host=plugin_host
         )
         for cname, chandler in sync_commands.items():
+            chandler = wrap_plugin_command(self._plugin_interop, name, cname, chandler)
+            sync_commands[cname] = chandler
             if cname in self.cmd_handler.commands or cname in command_states:
                 raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
             self.cmd_handler.register_command(
-                cname, chandler, intro=_command_intro(chandler),
+                cname, chandler, intro=_command_intro(chandler, descriptions.get("commands", {}).get(cname)),
                 permission_binding=PluginEntryBinding(name, "commands", cname, permissions, plugin_config, weakref.ref(chandler), weakref.ref(self))
-                if cname in permissions.commands else None,
+                if cname in permissions.commands or getattr(chandler, "requires_native_scope", False) is True else None,
             )
-            command_states[cname] = True
+            command_states[cname] = initial_capabilities.get("commands", {}).get(cname, True)
+            if not command_states[cname]:
+                self.cmd_handler.disable_command(cname)
 
-        for mcp_name, client in collect_mcp_clients(plugin_dir, name).items():
+        for mcp_name, client in collect_mcp_clients(plugin_dir, name, self, plugin_config, resources, plugin_host=plugin_host).items():
             if mcp_name in self._mcp_clients or mcp_name in mcp_states:
                 raise ValueError(f"插件 {name} 的 MCP 连接 {mcp_name} 与已接入连接冲突")
             try:
@@ -172,8 +195,13 @@ def install_plugin(
                     except Exception:
                         logger.error(f"[edictum] 插件 {name} 的 MCP {mcp_name} 回滚关闭失败\n{traceback.format_exc()}")
                 raise
+            for adapter in adapters:
+                adapter.owner_plugin = name
             mcp_clients[mcp_name] = (client, list(adapters))
-            mcp_states[mcp_name] = True
+            mcp_states[mcp_name] = initial_capabilities.get("mcp", {}).get(mcp_name, True)
+            if not mcp_states[mcp_name]:
+                for adapter in adapters:
+                    adapter.disable()
 
         plugin = Plugin(
             recovery_fingerprint=plugin_fingerprint(plugin_dir, plugin_config, model_manager, config_schema),
@@ -185,7 +213,7 @@ def install_plugin(
             path=str(plugin_dir),
         )
         plugin.resources = resources
-        validate_permission_install(permissions, tool_states, sync_commands)
+        validate_permission_install(permissions, tool_states, sync_commands, services)
         plugin._session = self
         plugin._cleanup = cleanup
         plugin.tools = tool_states
@@ -194,8 +222,12 @@ def install_plugin(
         plugin._mcp_clients = mcp_clients
         plugin.handlers = handler_states
         plugin.commands = command_states
-        # meta.yaml 能力声明: 读入描述并校验未匹配项 (仅警告, 不改变安装行为)
-        plugin.capability_descriptions = parse_capability_descriptions(meta)
+        plugin.interop = interop
+        plugin._metadata = dict(meta)
+        plugin._services = services
+        plugin.services = {service_name: initial_capabilities.get("services", {}).get(service_name, True) for service_name in services}
+        plugin.capability_descriptions = descriptions
+        # 命令帮助与能力展示共用声明, 未匹配项仅警告, 不额外注册能力
         plugin.config_schema = schema_to_payload(config_schema)
         _warn_undeclared_capabilities(
             name,
@@ -206,6 +238,7 @@ def install_plugin(
                 "mcp": mcp_states,
                 "handlers": handler_states,
                 "commands": command_states,
+                "services": plugin.services,
             },
         )
         with self._registry_lock:
@@ -216,9 +249,14 @@ def install_plugin(
                 mgr.deactivate(key, self._wf)
             elif not mgr.activate(key, self._wf):
                 raise RuntimeError(f"插件 {name} 的技能 {key} 激活失败")
+        self._plugin_interop.activate(plugin, services)
+        self._plugin_interop.synchronize_skills()
         logger.info(f"[edictum] 插件 {name} 已安装")
         return plugin
     except Exception:
+        if plugin_host is not None:
+            self._plugin_interop.remove(name)
+        logger.error(f"[edictum] 插件安装失败, 插件={name}\n{traceback.format_exc()}")
         if resources is not None:
             resources.close()
         _remove_plugin_sys_path(plugin_dir)
@@ -255,6 +293,7 @@ def install_plugin(
                 cleanup(self)
             except Exception:
                 logger.error(f"[edictum] 插件 {name} 安装回滚清理失败\n{traceback.format_exc()}")
+        self._plugin_interop.synchronize_skills()
         raise
 
 
@@ -268,10 +307,12 @@ def uninstall_plugin(self: SimpleSession, name: str) -> bool:
     返回:
     - bool: 卸载插件: 回收其全部能力 (含清理回调), 不留孤儿
     """
+    self._plugin_interop.check_remove(name)
     with self._registry_lock:
         plugin = self._plugins.pop(name, None)
     if plugin is None:
         return False
+    self._plugin_interop.remove(name)
     _remove_plugin_sys_path(Path(plugin.path))
     for tname in plugin.tools:
         self._wf.tools_manager.unregister_tool(tname)
@@ -304,6 +345,7 @@ def uninstall_plugin(self: SimpleSession, name: str) -> bool:
             logger.warning(f"[edictum] 插件 {name} 清理回调失败: {e}")
     if plugin.resources is not None:
         plugin.resources.close()
+    self._plugin_interop.synchronize_skills()
     logger.info(f"[edictum] 插件 {name} 已卸载")
     return True
 
@@ -325,13 +367,15 @@ def enable_plugin(self: SimpleSession, name: str) -> bool:
         check_plugin_compatibility(load_plugin_meta(Path(plugin.path)), self.plugin_environment).require()
         if plugin.enabled:
             return True
+        self._plugin_interop.check_change(name, enabled=True)
         plugin.enabled = True
     # 工具/处理器由执行路径合成承担 (effectiveness_guard / _enabled_handlers), 无需恢复循环
-    mgr = self._skills_manager
-    if mgr is not None:
-        for sname, st in plugin.skills.items():
-            if st:
-                mgr.activate(sname, self._wf)
+    try:
+        self._plugin_interop.synchronize_skills()
+    except Exception:
+        plugin.enabled = False
+        self._plugin_interop.synchronize_skills()
+        raise
     for cname, st in plugin.commands.items():
         if st:
             self.cmd_handler.enable_command(cname)
@@ -354,37 +398,15 @@ def disable_plugin(self: SimpleSession, name: str) -> bool:
             return False
         if not plugin.enabled:
             return True
+        self._plugin_interop.check_change(name, enabled=False)
         plugin.enabled = False
-    mgr = self._skills_manager
-    if mgr is not None:
-        for sname in plugin.skills:
-            mgr.deactivate(sname, self._wf)
+        self._plugin_interop.revoke_references(name)
+    try:
+        self._plugin_interop.synchronize_skills()
+    except Exception:
+        plugin.enabled = True
+        self._plugin_interop.synchronize_skills()
+        raise
     for cname in plugin.commands:
         self.cmd_handler.disable_command(cname)
     return True
-
-
-def _activate_plugin_skill(self: SimpleSession, name: str) -> bool:
-    """
-    插件技能独立启用钩子 (同步版)
-
-    参数:
-    - name: 名称
-
-    返回:
-    - bool: 插件技能独立启用钩子 (同步版)
-    """
-    return self._get_skills_manager().activate(name, self._wf)
-
-
-def _deactivate_plugin_skill(self: SimpleSession, name: str) -> bool:
-    """
-    插件技能独立停用钩子 (同步版)
-
-    参数:
-    - name: 名称
-
-    返回:
-    - bool: 插件技能独立停用钩子 (同步版)
-    """
-    return self._get_skills_manager().deactivate(name, self._wf)

@@ -1,5 +1,5 @@
 """
-satrap_coding 插件命令: /goal /plan /approve (同步 + 异步)
+satrap_coding 插件命令: /goal /plan (同步 + 异步)
 
 约定:
 - build_commands(session, config) 工厂返回 (同步命令映射, 异步命令映射)
@@ -12,11 +12,9 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.approval.policy import PermissionEngine
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-
-_APPROVE_MODES = ("user", "auto-agent", "full")
 
 
 def _parse_args(args: list[str], default: str = "") -> str:
@@ -80,72 +78,34 @@ def _cmd_goal_impl(state: dict[str, Any], session: SessionType, args: list[str])
     goal = goals.set_goal(sid, text)
     return (
         f"目标已设置 (active): {goal['text']}\n"
-        "目标自动推进 (yolo) 已启动: 模型将连续执行直到报告完成, 每轮自动推进; "
+        "目标自动推进已启动: 模型将连续执行直到报告完成, 每轮自动推进; "
         "/goal done 或 /goal clear 可随时停止"
     )
 
 
 def _cmd_plan_impl(state: dict[str, Any], args: list[str]) -> str:
     """
-    计划模式: 写类工具全部拒绝, 只输出计划
+    切换只读分析与规划模式, 禁止文件修改和本机命令
 
     参数:
     - state: 状态
     - args: 额外位置参数
 
     返回:
-    - str: 计划模式: 写类工具全部拒绝, 只输出计划
+    - 模式切换结果或用法说明, 不改变当前审批模式
     """
     engine = state["engine"]
     assert isinstance(engine, PermissionEngine)
     sub = args[0] if args else "on"
     if sub in ("on", "进入", "start"):
         engine.set_plan_mode(True)
-        return "已进入计划模式: 文件编辑/写命令等写操作全部禁用, 只输出计划; 完成后 /plan off 恢复"
+        return "已进入计划模式: 可以读取文件并分析规划, 禁止修改文件和运行本机命令; 使用 /plan off 恢复执行"
     if sub in ("off", "退出", "end"):
         engine.set_plan_mode(False)
-        return "已退出计划模式: 写操作恢复可用"
+        return "已退出计划模式: 文件修改和本机命令按当前审批模式执行"
     if sub == "approve":
         return "/plan approve 已移除 (与审批语义混淆), 请使用 /plan off 退出计划模式"
     return "用法: /plan on 进入计划模式; /plan off 退出"
-
-
-def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
-    """
-    审批命令: 切换策略 / 查看与添加持久规则
-
-    参数:
-    - state: 状态
-    - args: 额外位置参数
-
-    返回:
-    - str: 审批命令: 切换策略 / 查看与添加持久规则
-    """
-    engine = state["engine"]
-    assert isinstance(engine, PermissionEngine)
-    sub = args[0] if args else "mode"
-    if sub in ("mode", "策略"):
-        if len(args) < 2 or args[1] not in _APPROVE_MODES:
-            return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}>; 当前: {engine.mode}"
-        engine.set_mode(args[1])
-        return f"审批策略已切换: {args[1]}"
-    if sub in ("rules", "规则"):
-        rules = engine.list_persistent_rules()
-        if not rules:
-            return "暂无持久规则"
-        return "\n".join(f"- {op}: 风险级 <= {level} 直接放行" for op, level in rules.items())
-    if sub in ("rule", "添加规则"):
-        if len(args) < 3:
-            return "用法: /approve rule <操作> <风险级 0-1> (如: /approve rule file_write 1); 最高 1, 高危操作不开放持久放行"
-        try:
-            level = int(args[2])
-            if level not in (0, 1):
-                return "风险级仅允许 0-1 (高危操作不开放持久规则, 如需放行请用 /approve mode full)"
-            engine.add_persistent_rule(args[1], level)
-        except ValueError:
-            return "风险级必须是 0-1 的整数"
-        return f"持久规则已添加: {args[1]} -> 风险级 <= {args[2]}"
-    return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}> | rules | rule <操作> <风险级>; 当前策略: {engine.mode}"
 
 
 def build_commands(
@@ -165,7 +125,7 @@ def build_commands(
 
     def cmd_goal(*args: str) -> str:
         """
-        设置/查看/完成持续目标
+        同步处理持续目标的设置, 查询与完成
 
         参数:
         - args: 额外位置参数
@@ -177,46 +137,46 @@ def build_commands(
 
     def cmd_plan(*args: str) -> str:
         """
-        进入/退出计划模式 (写操作全部禁用)
+        同步处理计划模式切换
 
         参数:
         - args: 额外位置参数
 
         返回:
-        - str: 进入/退出计划模式 (写操作全部禁用)
+        - 模式切换结果或用法说明
         """
         return _cmd_plan_impl(state, list(args))
 
-    def cmd_approve(*args: str) -> str:
+    async def cmd_goal_async(*args: str) -> str:
         """
-        切换审批策略/管理持久规则
+        异步处理持续目标的设置, 查询与完成
 
         参数:
-        - args: 额外位置参数
+        - args: 目标内容或 status, done, clear 等子命令
 
         返回:
-        - str: 切换审批策略/管理持久规则
+        - 目标状态或操作结果
         """
-        return _cmd_approve_impl(state, list(args))
-
-    async def cmd_goal_async(*args: str) -> str:
         return _cmd_goal_impl(state, session, list(args))
 
     async def cmd_plan_async(*args: str) -> str:
-        return _cmd_plan_impl(state, list(args))
+        """
+        异步处理计划模式切换
 
-    async def cmd_approve_async(*args: str) -> str:
-        return _cmd_approve_impl(state, list(args))
+        参数:
+        - args: on 开启计划模式, off 恢复执行
+
+        返回:
+        - 模式切换结果或用法说明
+        """
+        return _cmd_plan_impl(state, list(args))
 
     sync_map: dict[str, Callable[..., Any]] = {
         "goal": cmd_goal,
         "plan": cmd_plan,
-        "approve": cmd_approve,
     }
     async_map: dict[str, Callable[..., Any]] = {
         "goal": cmd_goal_async,
         "plan": cmd_plan_async,
-        "approve": cmd_approve_async,
     }
     return sync_map, async_map
-

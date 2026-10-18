@@ -1,15 +1,17 @@
+"""
+编程工具的参数解析与普通提问适配
+
+保留普通提问的同步与异步适配, 执行审批统一使用宿主协调器
+"""
 from __future__ import annotations
 import inspect
 from typing import Awaitable, Callable, cast
-from satrap.expend.plugins.satrap_coding.core.permission import (
-    PermissionDecision,
-    PermissionEngine,
-    RiskLevel,
-)
+
+from satrap.core.approval.coordinator import approve_sync as _approve_sync, approve_async as _approve_async, _turn_identity
 from satrap.core.type import safe_getattr_callable
 from satrap.edictum import AsyncSimpleSession, SimpleSession
+
 from satrap.core.log import logger
-from .constants import _APPROVAL_PROMPT
 
 
 def _parse_integer_argument(
@@ -44,68 +46,6 @@ def _parse_integer_argument(
     if not minimum <= parsed <= maximum:
         return None, f"错误: {name} 必须在 {minimum} 到 {maximum} 之间"
     return parsed, None
-
-
-def _make_sync_judge(session: SimpleSession) -> Callable[[str, RiskLevel, str], str]:
-    """
-    构造同步 auto-agent 审批判断 (调用会话主模型, 只读判断不执行)
-
-    参数:
-    - session: 会话
-
-    返回:
-    - Callable[[str, RiskLevel, str], str]: 构造同步 auto-agent 审批判断 (调用会话主模型, 只读判断不执行)
-    """
-
-    from . import _APPROVAL_PROMPT
-
-    def judge(operation: str, risk: RiskLevel, description: str) -> str:
-        try:
-            prompt = _APPROVAL_PROMPT.format(
-                operation=operation,
-                risk=int(risk),
-                description=description,
-            )
-            resp = session.llm.chat(messages=[{"role": "user", "content": prompt}])
-            return str(resp or "ask")[:20]
-        except Exception as e:
-            logger.warning(f"[satrap_coding] 审批判断失败, 降级询问: {e}")
-            return "ask"
-
-    return judge
-
-
-def _make_async_judge(
-    session: AsyncSimpleSession,
-) -> Callable[[str, RiskLevel, str], Awaitable[str]]:
-    """
-    构造异步 auto-agent 审批判断
-
-    参数:
-    - session: 会话
-
-    返回:
-    - Callable[[str, RiskLevel, str], Awaitable[str]]: 构造异步 auto-agent 审批判断
-    """
-
-    from . import _APPROVAL_PROMPT
-
-    async def judge(operation: str, risk: RiskLevel, description: str) -> str:
-        try:
-            prompt = _APPROVAL_PROMPT.format(
-                operation=operation,
-                risk=int(risk),
-                description=description,
-            )
-            resp = await session.llm.chat(
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return str(resp or "ask")[:20]
-        except Exception as e:
-            logger.warning(f"[satrap_coding] 审批判断失败, 降级询问: {e}")
-            return "ask"
-
-    return judge
 
 
 def _ask_user_sync(
@@ -193,103 +133,3 @@ def _call_user_input_provider(
             return provider(f"{question} 可选: {numbered}")
         return provider(question, normalized_options)
     return provider(question)
-
-
-def _approve_sync(
-    session: SimpleSession,
-    engine: PermissionEngine,
-    operation: str,
-    risk: RiskLevel,
-    description: str,
-) -> tuple[bool, str]:
-    """
-    同步审批入口: 返回 (是否放行, 结果消息)
-
-    参数:
-    - session: 会话
-    - engine: 执行引擎
-    - operation: 操作信息
-    - risk: 风险级别
-    - description: 说明文本
-
-    返回:
-    - tuple[bool, str]:  (是否放行, 结果消息)
-    """
-    decision = engine.evaluate(
-        operation, risk, description, judge=_make_sync_judge(session)
-    )
-    if decision == PermissionDecision.ALLOW:
-        return True, ""
-    if decision == PermissionDecision.DENY:
-        if engine.is_plan_mode_block(operation, risk):
-            return False, f"计划模式已拒绝写操作: {description}"
-        return False, f"操作被拒绝: {description} (风险级 {int(risk)})"
-    choices = (
-        "y 仅本次批准 / n 拒绝"
-        if operation == "shell"
-        else "y 仅本次批准 / n 拒绝 / all 本会话全部放行"
-    )
-    answer = _ask_user_sync(session, f"是否允许执行: {description}? ({choices})")
-    if answer is None:
-        return (
-            False,
-            f"需要用户批准: {description} (未配置 user_input_provider, 已拒绝)",
-        )
-    answer = answer.strip().lower()
-    if answer in ("y", "yes", "允许", "批准"):
-        engine.approve(operation, risk, remember=False)
-        return True, ""
-    if operation != "shell" and answer in ("all", "全部", "全放行"):
-        engine.set_mode("full", persist=False)
-        return True, "已授予本会话全部权限"
-    return False, f"用户拒绝了操作: {description}"
-
-
-async def _approve_async(
-    session: AsyncSimpleSession,
-    engine: PermissionEngine,
-    operation: str,
-    risk: RiskLevel,
-    description: str,
-) -> tuple[bool, str]:
-    """
-    异步审批入口: 返回 (是否放行, 结果消息)
-
-    参数:
-    - session: 会话
-    - engine: 执行引擎
-    - operation: 操作信息
-    - risk: 风险级别
-    - description: 说明文本
-
-    返回:
-    - tuple[bool, str]:  (是否放行, 结果消息)
-    """
-    decision = await engine.evaluate_async(
-        operation, risk, description, judge=_make_async_judge(session)
-    )
-    if decision == PermissionDecision.ALLOW:
-        return True, ""
-    if decision == PermissionDecision.DENY:
-        if engine.is_plan_mode_block(operation, risk):
-            return False, f"计划模式已拒绝写操作: {description}"
-        return False, f"操作被拒绝: {description} (风险级 {int(risk)})"
-    choices = (
-        "y 仅本次批准 / n 拒绝"
-        if operation == "shell"
-        else "y 仅本次批准 / n 拒绝 / all 本会话全部放行"
-    )
-    answer = await _ask_user_async(session, f"是否允许执行: {description}? ({choices})")
-    if answer is None:
-        return (
-            False,
-            f"需要用户批准: {description} (未配置 user_input_provider, 已拒绝)",
-        )
-    answer = answer.strip().lower()
-    if answer in ("y", "yes", "允许", "批准"):
-        engine.approve(operation, risk, remember=False)
-        return True, ""
-    if operation != "shell" and answer in ("all", "全部", "全放行"):
-        engine.set_mode("full", persist=False)
-        return True, "已授予本会话全部权限"
-    return False, f"用户拒绝了操作: {description}"

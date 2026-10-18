@@ -21,14 +21,15 @@ import uuid
 import os
 import re
 
-from satrap.core.utils.config_text import comma_names
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
-from satrap.expend.plugins.satrap_coding.core.permission import (
+from satrap.core.approval.policy import (
     PermissionDecision,
     PermissionEngine,
     RiskLevel,
 )
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+from satrap.edictum.plugin_resources import PluginResources
+from satrap.core.utils.config_text import comma_names
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.framework.Base import (
     AsyncModelWorkflowFramework,
@@ -38,8 +39,7 @@ from satrap.core.utils.paths import get_project_root
 from .async_interaction import AsyncAskUserTool, AsyncShellTool, AsyncSubAgentTool
 from satrap.core.type import safe_getattr_callable
 from .sync_interaction import AskUserTool, ShellTool, SubAgentTool
-from satrap.edictum import AsyncSimpleSession, SimpleSession
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 from .async_write import AsyncWriteFileTool, AsyncEditFileTool, AsyncSearchReplaceTool
 from .sync_write import WriteFileTool, EditFileTool, SearchReplaceTool
 from .async_read import (
@@ -51,7 +51,6 @@ from .async_read import (
 )
 from .constants import (
     WORKSPACE_ROOT,
-    _APPROVAL_PROMPT,
     _PROTECTED_DIRS,
     _PROTECTED_FILES,
     _SYSTEM_PROTECTED_ROOT,
@@ -68,8 +67,6 @@ from .sync_read import (
 )
 from .approval import (
     _parse_integer_argument,
-    _make_sync_judge,
-    _make_async_judge,
     _ask_user_sync,
     _ask_user_async,
     _call_user_input_provider,
@@ -86,8 +83,6 @@ from .paths import (
     _FileProtectionMixin,
     _session_sandbox_root,
     _in_sandbox,
-    _approve_file_write,
-    _approve_file_write_async,
     _read_file_page,
 )
 from .shell import _resolve_shell_executable, _prepare_shell, _run_shell
@@ -109,7 +104,8 @@ def parse_allowed_env_vars(config: dict[str, Any]) -> frozenset[str]:
 
 
 def get_tools(
-    session: SimpleSession | AsyncSimpleSession, config: dict[str, Any] | None = None
+    session: SimpleSession | AsyncSimpleSession, config: dict[str, Any] | None = None,
+    *, plugin_host: PluginHost | None = None,
 ) -> list[Any]:
     """
     按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)
@@ -117,6 +113,7 @@ def get_tools(
     参数:
     - session: 会话
     - config: 配置信息
+    - plugin_host: 可选的受控宿主入口, 独立构造时使用统一会话环境
 
     注: search/fetch_page 由 base_take 提供, memory 由独立记忆插件提供, 本插件只保留 coding 专属能力
 
@@ -171,6 +168,8 @@ def get_tools(
             GrepFilesTool(),
         ]
     for tool in tools:
+        tool._plugin_host = plugin_host
+        tool.engine = engine
         tool.workspace_root = workspace_root
         tool.sandbox_root = sandbox_root
         if isinstance(tool, _FileProtectionMixin):

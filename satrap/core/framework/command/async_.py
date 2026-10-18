@@ -85,8 +85,8 @@ class AsyncCommandHandler(_CommandRegistry):
 
             lines = ["已注册的命令:"]
             for cmd, intro in intros.items():
-                lines.append(f"{self.prefix}{cmd}: {intro}\n")
-            return "\n".join(lines)
+                lines.append(f"{self.prefix}{cmd}: {intro}")
+            return "\n\n".join(lines)
 
         self.register_command("help", help_cmd, intro="显示帮助信息")
 

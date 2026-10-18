@@ -1,6 +1,7 @@
 """插件运行规格: 统一 Chat 与平台 Edictum 的配置结构和指纹"""
 from __future__ import annotations
 from satrap.edictum.plugin_compatibility import CompatibilityResult
+from satrap.core.plugin_interop.contracts import InteropSpec, parse_interop
 
 from dataclasses import dataclass, field, replace
 from copy import deepcopy
@@ -32,6 +33,7 @@ class PluginSpec:
     availability: CompatibilityResult | None = None
     config_version: int = 0
     migration_state: dict[str, Any] = field(default_factory=dict[str, Any])
+    interop: InteropSpec | None = None
 
     def to_config(self) -> dict[str, Any]:
         """
@@ -70,7 +72,7 @@ def _normalize_capabilities(
     entry: PluginCatalogEntry | None,
 ) -> dict[str, dict[str, bool]]:
     """
-    规范化五类子能力状态, 已声明但未配置的能力默认启用
+    规范化六类子能力状态, 已声明但未配置的能力默认启用
 
     参数:
     - raw: 原始能力配置
@@ -137,6 +139,8 @@ def parse_plugin_specs(
     from satrap.edictum.plugin_migrations import migrate_group_tool_specs
     from satrap.edictum.memory_migration import migrate_memory_specs
     value = migrate_memory_specs(migrate_group_tool_specs(value, catalog, migration_manager), catalog)
+    from satrap.edictum.approval_migration import migrate_approval_specs
+    value = migrate_approval_specs(value, catalog)
     specs: list[PluginSpec] = []
     names: set[str] = set()
     for raw_item in cast(list[object], value):
@@ -198,6 +202,7 @@ def parse_plugin_specs(
                 config=config,
                 capabilities=_normalize_capabilities(item.get("capabilities"), entry),
                 version=entry.version if entry is not None else "",
+                interop=parse_interop({"name": name, "interop": entry.interop}) if entry is not None else InteropSpec(),
                 path=str(entry.path) if entry is not None else "",
             )
         )
@@ -222,6 +227,7 @@ def plugin_specs_fingerprint(specs: list[PluginSpec]) -> str:
             "capabilities": spec.capabilities,
             "version": spec.version,
             "resources_revision": spec.resources_revision,
+            "interop": spec.interop.to_payload() if spec.interop is not None else {},
         }
         for spec in sorted(specs, key=lambda item: item.name)
     ]

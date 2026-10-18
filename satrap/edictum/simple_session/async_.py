@@ -6,6 +6,7 @@
 """
 
 from __future__ import annotations
+from contextlib import nullcontext
 from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import freeze_request_blocks
 import asyncio
@@ -22,6 +23,7 @@ from satrap.core.type import CommandAction
 from satrap.core.log import logger
 from .utils import (
     AsyncUserInputProvider,
+    AsyncApprovalProvider,
     HandlerResult,
     HandlerAbortError,
     HandlerConfig,
@@ -113,8 +115,10 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         self._init_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
         """run 串行化锁: 同一会话不支持并发 run (第二个 run 排队等待)"""
+        self.approval_provider: AsyncApprovalProvider | None = None
+        """单次编程审批专用回调, 不接受普通用户提问的文本回答"""
         self.user_input_provider: AsyncUserInputProvider | None = None
-        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 或 Web 前端均可注入)"""
+        """用户输入通道: 仅供 ask_user 获取缺失信息使用 (CLI 或 Web 前端均可注入)"""
         self.stream = stream
 
     async def _async_init(self):
@@ -258,6 +262,8 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         async with self._run_lock:
             thinking = self.default_thinking if thinking is None else thinking
             wf = self._require_wf()
+            if self._plugin_interop_runtime is not None:
+                await self._plugin_interop_runtime.synchronize_skills_async()
             with self._registry_lock:
                 self._active_runs += 1
                 handlers = self._enabled_handlers()
@@ -390,7 +396,9 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         t0 = time.perf_counter()
         timeout = HANDLER_TIMEOUT if handler.timeout is None else handler.timeout
         try:
-            return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
+            scope = self._plugin_interop.execution(handler.owner_plugin, "handlers", handler.name) if handler.owner_plugin else nullcontext()
+            with scope:
+                return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
         except HandlerAbortError:
             raise
         except Exception as e:  # 含 asyncio.TimeoutError
@@ -553,13 +561,6 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         """停用插件 (压制名下全部能力, 不改独立状态; 工具/处理器由执行路径合成压制)"""
         return await async_plugins.disable_plugin(self, name)
 
-    async def _activate_plugin_skill(self, name: str) -> bool:
-        """插件技能独立启用钩子 (异步版)"""
-        return await async_plugins._activate_plugin_skill(self, name)
-
-    async def _deactivate_plugin_skill(self, name: str) -> bool:
-        """插件技能独立停用钩子 (异步版)"""
-        return await async_plugins._deactivate_plugin_skill(self, name)
 
     # ---------- 模型与流式 ----------
 

@@ -21,7 +21,7 @@ async function plugins(runtime) {
     await runtime.listen(server);
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     const plugins = [
-      { name: 'builtin_probe', version: '1', author: '作者', description: '内置测试', source: 'builtin', usage_count: 1, edictum_configs: ['assistant'], chat_enabled: false, config_schema: {}, capabilities: { tools: { probe_tool: '测试工具' }, skills: { probe_skill: '测试技能' }, mcp: { probe_mcp: '测试连接' }, handlers: { probe_handler: '测试前处理' }, commands: { probe_command: '测试命令' } } },
+      { name: 'builtin_probe', version: '1', author: '作者', description: '内置测试', source: 'builtin', usage_count: 1, edictum_configs: ['assistant'], chat_enabled: false, config_schema: {}, interop: { exports: { services: ['probe_service'] }, requires: { formatter: { optional: true, services: ['format'] } }, replaces: { legacy: { tools: { old_tool: 'probe_tool' } } } }, capabilities: { services: { probe_service: '测试服务' }, tools: { probe_tool: '测试工具' }, skills: { probe_skill: '测试技能' }, mcp: { probe_mcp: '测试连接' }, handlers: { probe_handler: '测试前处理' }, commands: { probe_command: '测试命令' } } },
       { name: 'group_probe', version: '2', author: '群聊作者', description: '群聊测试', source: 'user', usage_count: 0, edictum_configs: [], chat_enabled: false, config_schema: {}, applicability: { session_types: ['platform'], platforms: ['onebot'] }, capabilities: { skills: { group_skill: '群聊技能' }, handlers: { pre_process: '前处理描述' } } },
     ];
     const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,PUT,OPTIONS' };
@@ -79,7 +79,7 @@ async function plugins(runtime) {
           await new Promise((resolve) => { releaseRuntime = resolve; runtimeHeld(); });
         }
         if (route.request().failure()) return;
-        return route.fulfill({ json: { ok: true, services: [{ target: 'Chat', status: 'stopped', instances: [] }, { target: 'Edictum', status: 'available', instances: [{ platform_id: 'onebot', session_id: 'group-1', location_id: 'assistant', plugin: { name: 'builtin_probe', status: failed ? 'error' : 'loaded', enabled: true, error: failed ? '加载测试失败' : '', drift: failed, capabilities: { applied: caps, desired: caps, loaded: failed ? { skills: { probe_skill: true } } : caps } } }] }] }, headers: cors });
+        return route.fulfill({ json: { ok: true, services: [{ target: 'Chat', status: 'stopped', instances: [] }, { target: 'Edictum', status: 'available', instances: [{ platform_id: 'onebot', session_id: 'group-1', location_id: 'assistant', plugin: { name: 'builtin_probe', status: failed ? 'error' : 'loaded', enabled: true, error: failed ? '加载测试失败' : '', drift: failed, capabilities: { applied: caps, desired: caps, loaded: failed ? { skills: { probe_skill: true } } : caps, effective: { services: [{ name: 'probe_service', description: '测试服务', requested_enabled: true, enabled: false, reason: 'replaced_by', replaced_by: 'replacement.services.new_service' }] } } } }] }] }, headers: cors });
       }
       if (pathname === '/config/plugins/builtin_probe/config') {
         if (route.request().method() === 'PUT') {
@@ -165,6 +165,8 @@ async function plugins(runtime) {
     await page.getByRole('link', { name: '← 返回插件列表' }).click();
     await page.getByRole('link', { name: /installed_probe/ }).waitFor();
     await page.goto(origin + '/plugins/builtin_probe');
+    await page.getByRole('region', { name: '插件交互关系' }).getByText('可选依赖 · formatter', { exact: true }).waitFor();
+    await page.getByText('old_tool → probe_tool', { exact: true }).waitFor();
     await page.getByRole('button', { name: '全局参数', exact: true }).click();
     await page.getByLabel('note', { exact: true }).fill('保留草稿');
     await page.getByLabel('count', { exact: true }).fill('0');
@@ -203,7 +205,7 @@ async function plugins(runtime) {
     await page.getByRole('button', { name: '使用位置', exact: true }).click();
     await page.getByRole('button', { name: '添加到此位置', exact: true }).click();
     await page.getByLabel('工具 probe_tool', { exact: true }).uncheck();
-    for (const name of ['技能 probe_skill', 'MCP probe_mcp', '前处理 probe_handler', '命令 probe_command']) {
+    for (const name of ['插件服务 probe_service', '技能 probe_skill', 'MCP probe_mcp', '前处理 probe_handler', '命令 probe_command']) {
       await page.getByLabel(name, { exact: true }).uncheck();
       await page.getByLabel(name, { exact: true }).check();
     }
@@ -211,6 +213,7 @@ async function plugins(runtime) {
     await page.waitForResponse((response) => new URL(response.url()).pathname === '/config/plugins/builtin_probe/runtime' && runtimeReads > beforePoll);
     assert.equal(await page.getByLabel('工具 probe_tool', { exact: true }).isChecked(), false);
     await page.getByText('工具：未加载', { exact: true }).waitFor();
+    await page.getByText('插件服务：probe_service (期望启用; 已被替代: replacement.services.new_service)', { exact: true }).waitFor();
     failUsageSave = true;
     await page.getByRole('button', { name: '保存使用配置', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: '位置保存测试失败' }).waitFor();
@@ -281,7 +284,7 @@ async function plugins(runtime) {
     console.log('PASS: 插件目录搜索、来源与平台筛选、详情能力、直接打开和不存在提示');
     console.log('PASS: ZIP 上传预览、取消清理、显式安装、打开详情及刷新列表');
     console.log('PASS: 全局参数草稿跨刷新、离开确认、失败保留、零值保存、恢复默认及应用重试');
-    console.log('PASS: 使用位置添加、五类能力编辑、轮询保留草稿、失败保留、停用保留独立开关、移除及实际加载状态');
+    console.log('PASS: 使用位置添加、六类能力编辑和实际替代原因展示、轮询保留草稿、失败保留、停用保留独立开关、移除及实际加载状态');
     console.log('PASS: 在途旧运行状态读取不复用于应用后刷新, 迟到响应不能覆盖应用后的新状态');
     console.log('PASS: 命名配置深链、全局继承与恢复、Chat 快捷配置统一保存并重试 Edictum 应用');
   } finally {

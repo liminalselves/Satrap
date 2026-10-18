@@ -91,6 +91,10 @@ OneBot 支持组合图片与原生表情; Misskey 房间只支持一个图片附
 可信插件可以调用 `await satrap.core.group_chat.sdk.register_group_chat_asset(payload, mime_type, origin_ref)`
 `payload` 是插件实际生成的字节或受控产物 `Path`, `origin_ref` 是当前主工作流启用的产物工具名
 不得直接透传模型提供的文件路径; 登记检查真实格式并复制到平台缓存, 返回 `{"ok":true,"asset":...}` 或明确失败
+
+沙箱生成的图片可用 `group_chat_import_sandbox_image({"path":"heart.png"})` 显式登记, 再把返回的 `asset.asset_id` 放入 `group_chat_reply` 的 image 组件
+根目录由宿主绑定的当前会话提供, 不回退全局沙箱; 路径只接受相对路径, 拒绝上级目录, URL, 设备路径和符号链接/重解析点
+沿用图片格式与 10 MiB 大小限制, 不接收 PDF/SVG. 登记不发送消息, 原文件删除或修改不影响已复制的图片; 下一轮使用原文件需要重新登记
 后端自动维护会清理过期图片和无活动引用的表情文件, 租约仍在使用的文件等待发送结束后再回收
 
 ## 一次性提醒

@@ -93,7 +93,6 @@ async def test_chat_bound_concurrency_preserves_lock_and_isolates_failure(monkey
     service._platform_id = "chat"
     service._plugins = SimpleNamespace(resolve_specs=lambda manager, **kwargs: [spec], catalog=SimpleNamespace(scan=lambda: []), state_path=tmp_path / "chat.json", refresh=lambda **kwargs: None)
     monkeypatch.setattr(service_module.PluginApplySnapshot, "capture", lambda catalog, manager, **kwargs: SimpleNamespace(catalog=catalog, is_current=lambda: True, has_model_sources=False))
-    service._coordinate_sandbox = lambda session: None
     sessions = []
     for index in range(5):
         sessions.append(SimpleNamespace(conversation_id=str(index), persisted=True, plugin_states=[], plugin_lock=asyncio.Lock(),
@@ -147,7 +146,6 @@ async def test_chat_filter_skips_unrelated_and_keeps_old_enabled_reference(monke
     service._plugins = SimpleNamespace(resolve_specs=lambda manager, **kwargs: [PluginSpec(name="target", enabled=False)], catalog=SimpleNamespace(scan=lambda: []), state_path=tmp_path / "chat.json", refresh=lambda **kwargs: None)
     service._platform_id = "chat"
     monkeypatch.setattr(service_module.PluginApplySnapshot, "capture", lambda catalog, manager, **kwargs: SimpleNamespace(catalog=catalog, is_current=lambda: True, has_model_sources=False))
-    service._coordinate_sandbox = lambda session: None
     old = SimpleNamespace(conversation_id="old", persisted=True, plugin_states=[SimpleNamespace(name="target", enabled=True, handle=object())],
                           plugin_lock=asyncio.Lock(), session=SimpleNamespace(install_plugin="old", uninstall_plugin=None, plugin_model_manager=None))
     unrelated = SimpleNamespace(conversation_id="preload", persisted=False, plugin_states=[], build_fingerprint="unchanged", session=object())
@@ -204,7 +202,7 @@ def test_capture_retries_when_source_changes_during_read(tmp_path, monkeypatch, 
             raise AssertionError("模型来源未捕获")
         assert captured is snapshot.models_for(writer)
         assert captured.get_llm_config("resource").model == "new"
-        assert models.get_llm_config("resource").model == "old"
+        assert models.get_llm_config("resource").model == "new"
         assert snapshot.is_current()
         writer.update_llm_config("resource", model="latest")
         assert not snapshot.is_current()

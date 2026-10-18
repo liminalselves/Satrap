@@ -64,7 +64,7 @@ config_schema:
   media_reply_enabled:
     type: bool
     default: true
-    description: "允许从当前群消息取图, 使用已授权表情并附在回复中"
+    description: "允许从当前群消息取图, 登记当前会话沙箱图片, 使用已授权表情并附在回复中"
   max_reply_images:
     type: number
     default: 4
@@ -142,6 +142,7 @@ tools:
   group_chat_list_members: "分页查看当前群成员与角色"
   group_chat_set_group_nickname: "修改或清空机器人自己的群昵称"
   group_chat_get_message_assets: "取出当前群消息中的可用图片"
+  group_chat_import_sandbox_image: "将当前会话沙箱图片登记为本轮可发送资产"
   group_chat_list_stickers: "查找当前群已启用的表情"
   group_chat_prepare_summary: "读取指定时段的摘要来源"
   group_chat_read_summary_sources: "继续读取本次摘要来源"

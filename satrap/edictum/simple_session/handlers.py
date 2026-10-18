@@ -1,8 +1,13 @@
+"""会话处理器注册, 依赖可用性过滤与资源清理"""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import threading
 from satrap.edictum.plugin import Plugin
 from satrap.core.log import logger
 from .utils import _assert_sync_callbacks, SessionHandler
+
+if TYPE_CHECKING:
+    from satrap.core.plugin_interop.capabilities import PluginInterop
 
 
 class _HandlerRegistryMixin:
@@ -105,6 +110,10 @@ class _HandlerRegistryMixin:
             handler = self._handlers.get(name)
             if handler is None:
                 return False
+            plugin = self._plugins.get(handler.owner_plugin) if handler.owner_plugin else None
+            if plugin is not None:
+                plugin._check_capability_change("handlers", name, True)
+                plugin.handlers[name] = True
             handler.enabled = True
         return True
 
@@ -122,6 +131,10 @@ class _HandlerRegistryMixin:
             handler = self._handlers.get(name)
             if handler is None:
                 return False
+            plugin = self._plugins.get(handler.owner_plugin) if handler.owner_plugin else None
+            if plugin is not None:
+                plugin._check_capability_change("handlers", name, False)
+                plugin.handlers[name] = False
             handler.enabled = False
         return True
 
@@ -162,6 +175,7 @@ class _HandlerRegistryMixin:
         返回:
         - list[SessionHandler]: 生效中的处理器快照: 独立启用 AND 所属插件启用, 按优先级升序 (同值按注册序)
         """
+        runtime: PluginInterop | None = getattr(self, "_plugin_interop_runtime", None)
         with self._registry_lock:
             return sorted(
                 (
@@ -173,6 +187,7 @@ class _HandlerRegistryMixin:
                         or (
                             self._plugins.get(h.owner_plugin) is not None
                             and self._plugins[h.owner_plugin].enabled
+                            and (runtime is None or runtime.capability_available(h.owner_plugin, "handlers", h.name))
                         )
                     )
                 ),

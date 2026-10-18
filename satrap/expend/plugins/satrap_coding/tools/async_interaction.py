@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.approval.policy import PermissionEngine
 from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager
 from .sync_interaction import ShellTool, _shell_definition
@@ -18,8 +18,10 @@ from .contracts import require_bound_session
 from .constants import _SUBAGENT_PROMPT
 from .subagent import _AsyncCodingSubAgent
 from .approval import _parse_integer_argument, _ask_user_async, _approve_async
-from .paths import _tool_root, _resolve_path
+from .paths import _tool_root, _resolve_path, _execution_guard, _full_access
 from .shell import _prepare_shell
+
+from satrap.core.log import logger
 
 class AsyncAskUserTool(AsyncTool):
     """向用户询问请求 (异步)"""
@@ -72,7 +74,7 @@ class AsyncAskUserTool(AsyncTool):
 
 
 class AsyncShellTool(AsyncTool):
-    """执行本机 shell 命令 (异步), 每次执行均需批准"""
+    """执行本机 shell 命令 (异步), 按 user/auto/full-access 决定审批"""
 
     tool_name = "shell"
     description = ShellTool.description
@@ -144,24 +146,32 @@ class AsyncShellTool(AsyncTool):
             return error or "错误: timeout 无效"
         try:
             root = _tool_root(self)
-            workdir_path = _resolve_path(cwd, root) if cwd else root
+            workdir_path = _resolve_path(cwd, root, full_access=_full_access(self)) if cwd else root
             args, risk, description = _prepare_shell(command, shell, root, workdir_path)
-        except ValueError as e:
+            check = _execution_guard(self, self.engine, workdir_path)
+            check()
+            allowed_env = self.allowed_env
+        except (OSError, ValueError) as e:
+            logger.warning(f"[satrap_coding] Shell 准备失败: {e}")
             return f"错误: {e}"
         # Step.2 请求命令执行审批
         allowed, message = await _approve_async(
-            session, self.engine, "shell", risk, description
+            session, self.engine, "shell", risk, description,
+            action={"command": command, "argv": args, "interpreter": args[0], "cwd": str(workdir_path),
+                    "timeout": timeout_value, "allowed_env": sorted(allowed_env)}, tool_name=self.tool_name
         )
         if not allowed:
             return message
-        # Step.3 复核执行环境并运行已批准的命令
-        if (
-            self.engine.plan_mode
-            or _tool_root(self) != root
-            or workdir_path.resolve() != workdir_path
-        ):
-            return "执行已取消: 审批期间计划模式或工作区发生变化"
-        return await asyncio.to_thread(_run_shell, args, workdir_path, timeout_value, self.allowed_env)
+        # Step.3 在实际执行线程内核验来源与权限后运行固定参数
+        def run() -> str:
+            """紧邻启动本机进程执行最终复核"""
+            try:
+                check()
+                return _run_shell(args, workdir_path, timeout_value, allow=allowed_env)
+            except (OSError, ValueError) as error:
+                logger.warning(f"[satrap_coding] Shell 执行取消: {error}")
+                return f"执行已取消: {error}"
+        return await asyncio.to_thread(run)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """

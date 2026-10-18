@@ -2,24 +2,11 @@
 
 from __future__ import annotations
 import re
+
+from satrap.core.file_access.paths import PROTECTED_DIRS as _PROTECTED_DIRS, PROTECTED_FILES as _PROTECTED_FILES
 from satrap.core.utils.paths import get_project_root
 
 WORKSPACE_ROOT = get_project_root()
-
-_APPROVAL_PROMPT = """你是一个操作审批助手。请判断以下操作是否允许执行, 只回答一个词:
-- allow: 操作安全或属于常规开发操作
-- deny: 操作危险或明显有害
-- ask: 不确定, 需要询问用户
-
-操作类型: {operation}
-风险等级: {risk} (0=只读 1=常规写 2=高危 3=禁止)
-操作描述: {description}
-
-回答 (allow/deny/ask):"""
-
-_PROTECTED_DIRS = (".satrap", ".git", "node_modules")
-
-_PROTECTED_FILES = (".env", ".env.local", "api-token", "model_config.json")
 
 _SYSTEM_PROTECTED_ROOT = (get_project_root() / ".satrap").resolve()
 

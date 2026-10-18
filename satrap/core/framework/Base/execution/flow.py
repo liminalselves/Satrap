@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 from typing import Any, Generator
 
 from satrap.core.utils.context import add_bot_message, add_tools_call_flow, clear_reasoning_content
@@ -27,6 +28,7 @@ class ToolStep:
 
     key: str
     call: dict[str, Any]
+    messages: list[dict[str, Any]]
 
 
 def agent_flow(user_input: str | list[dict[str, Any]] | None, max_iterations: int) -> Generator[ModelStep | ToolStep, Any, tuple[list[dict[str, Any]], str]]:
@@ -56,7 +58,12 @@ def agent_flow(user_input: str | list[dict[str, Any]] | None, max_iterations: in
         calls: list[dict[str, Any]] = []
         results: list[dict[str, Any]] = []
         for index, call in enumerate(response["tool_calls"]):
-            tool_message, tool_result = yield ToolStep(f"tool:{iteration}:{index}", call)
+            visible = copy.deepcopy(messages)
+            if calls:
+                add_tools_call_flow(visible, response.get("content") or "", calls, results)
+            elif response.get("content"):
+                add_bot_message(visible, response["content"])
+            tool_message, tool_result = yield ToolStep(f"tool:{iteration}:{index}", call, visible)
             calls.append(tool_message)
             results.append(tool_result)
         add_tools_call_flow(messages, response.get("content") or "", calls, results, response.get("thinking"))

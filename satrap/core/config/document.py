@@ -13,6 +13,7 @@ import os
 import re
 import uuid
 from satrap.core.config.platform_identity import platform_instance_id
+from satrap.core.approval.migration import migrate_approval_admin_config
 
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words, validate_event_limits
 from satrap.core.backend.BackendManager import BackendConfig
@@ -208,7 +209,7 @@ def load_config_document(path: str | Path, *, locked: bool = False) -> dict[str,
         return {}
     if not isinstance(data, dict):
         raise ValueError("配置根节点必须是对象")
-    return dict(cast(dict[str, Any], data))
+    return migrate_approval_admin_config(dict(cast(dict[str, Any], data)))
 
 
 def load_raw_config(path: str | Path) -> str:
@@ -343,7 +344,7 @@ def validate_config_document(data: object) -> dict[str, Any]:
     """
     if not isinstance(data, dict):
         raise ValueError("配置根节点必须是对象")
-    normalized = dict(cast(dict[str, Any], data))
+    normalized = migrate_approval_admin_config(dict(cast(dict[str, Any], data)))
     normalized["platforms"] = validate_platforms(normalized.get("platforms", []))
     from satrap.core.config.administrator_groups import (migrate_legacy_scope_exclusions, normalize_administrator_overrides,
                                                          normalize_administrator_groups)

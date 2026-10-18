@@ -651,7 +651,7 @@ async def test_full_application_uses_fresh_shared_models_and_skips_independent_m
         external.update_llm_config("demo", model="new-model", temperature=0.7, context_window=64000, history_ratio=0.6)
         before = models.storage_path.read_bytes()
         modified_at = models.storage_path.stat().st_mtime_ns
-        assert models.get_llm_config("demo").model == "demo"
+        assert models.get_llm_config("demo").model == "new-model"
         monkeypatch.setattr(ModelConfigSnapshot, "read", counted_read)
         monkeypatch.setattr(module, "build_llm_from_config", counted_build)
         result = await backend.reconcile_edictum_runtime_async(config_name="assistant")
@@ -749,7 +749,7 @@ async def test_application_plugin_resources_use_captured_model_source(tmp_path: 
         writer.set_embedding_config(EmbeddingConfig(model="embedding-new", api_key="test"), "resource")
         writer.set_rerank_config(ReRankConfig(model="rerank-new", api_key="test", base_url="http://localhost:1"), "resource")
         writer.set_asr_config(ASRConfig(model="asr-new", api_key="test"), "resource")
-        assert not models.has_config("embedding", "resource")
+        assert models.has_config("embedding", "resource")
         plugin = tmp_path / "plugins" / "model_probe"
         plugin.mkdir(parents=True)
         (plugin / "meta.yaml").write_text(

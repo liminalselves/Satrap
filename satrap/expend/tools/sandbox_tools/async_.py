@@ -1,31 +1,35 @@
-from collections.abc import Awaitable
-import asyncio
-from typing import Dict, Any, Optional
+"""
+代码沙箱工具的异步适配入口
+
+校验模型参数并调用 CodeSandbox, 工具描述复用生效白名单
+业务结果与策略错误原样交给宿主, 不触发代码审批
+"""
+
+from typing import Optional
+from satrap.core.utils.sandbox.models import SandboxResult
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.log import logger
-from .utils import AsyncExecutionAuthorizer
-from .utils import prepare_operation, execute_operation
+from .utils import prepare_operation, sandbox_description, SandboxEnvironmentMixin
+from satrap.core.plugin_interop import PluginInteractionError
 
 
-class AsyncCodeSandboxTool(AsyncTool):
+class AsyncCodeSandboxTool(SandboxEnvironmentMixin, AsyncTool):
     """异步代码沙箱工具, 封装对 CodeSandbox 的各种异步操作"""
 
     def __init__(
         self,
         sandbox: CodeSandbox,
-        execution_authorizer: AsyncExecutionAuthorizer | None = None,
     ):
         """
-        初始化 AsyncCodeSandboxTool
+        创建异步工具并按沙箱生效配置生成描述
 
         参数:
-        - sandbox: 沙箱实例
-        - execution_authorizer: 代码执行授权回调, 未配置时拒绝执行
+        - sandbox: 已冻结根目录, 解释器和库白名单的沙箱实例
         """
         super().__init__(
             tool_name="code_sandbox",
-            description="在代码沙箱中执行代码或管理文件。支持的操作：run（执行代码字符串）、run_file（执行文件）、save（保存代码到文件）、read（读取文件内容）、delete（删除文件）、delete_dir（删除目录）、list（列出文件）。",
+            description=sandbox_description(sandbox.modules),
             params_dict={
                 "operation": (
                     "string",
@@ -39,44 +43,29 @@ class AsyncCodeSandboxTool(AsyncTool):
             },
         )
         self.sandbox = sandbox
-        self.execution_authorizer = execution_authorizer
-
-    async def _authorize_execution(self, description: str) -> bool:
-        """
-        异步执行高风险代码前请求明确授权, 未配置授权通道时默认拒绝
-
-        参数:
-        - description: 本次代码执行说明
-
-        返回:
-        - 授权回调明确批准时返回 True
-        """
-        if self.execution_authorizer is None:
-            return False
-        decision = self.execution_authorizer(description)
-        if isinstance(decision, Awaitable):
-            decision = await decision
-        return bool(decision)
 
     async def execute(
         self, operation: str, code: Optional[str] = None, path: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """校验参数与授权后执行共用沙箱操作"""
+    ) -> SandboxResult:
+        """
+        异步校验工具参数并执行一次免审批 worker 操作
+
+        参数:
+        - operation: run/run_file/save/read/delete/delete_dir/list 之一
+        - code: 默认 None, run/save 必须提供, 允许模型代码块
+        - path: 默认 None, 文件操作使用沙箱内路径, list 可省略
+
+        返回:
+        - 业务结果, 参数错误或结构化策略失败; 非预期工具异常记录日志并返回 error
+        """
         try:
             code, error = prepare_operation(operation, code, path)
             if error is not None:
                 return error
-            if operation in ("run", "run_file"):
-                description = (
-                    f"执行 Python 代码: {code}"
-                    if operation == "run"
-                    else f"执行沙箱文件: {path}"
-                )
-                if not await self._authorize_execution(description):
-                    return {"error": "代码执行需要用户明确批准, 当前请求已拒绝"}
-            return await asyncio.to_thread(
-                execute_operation, self.sandbox, operation, code, path
-            )
+            sandbox, verify = self._operation_sandbox()
+            return await sandbox.execute_async(operation, code, path, verify=verify)
+        except PluginInteractionError:
+            raise
         except Exception as e:
             logger.error(f"[AsyncCodeSandboxTool] 操作 {operation} 失败: {e}")
             return {"error": str(e)}

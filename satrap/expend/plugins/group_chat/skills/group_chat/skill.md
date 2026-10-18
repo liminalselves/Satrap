@@ -69,6 +69,11 @@ selection.truncated=true 时明确称为部分记录摘要, platform_history_com
 图片放入 group_chat_reply 的 image 组件, 例如 {"type":"image","asset_id":"工具返回的 ID"}
 工具产出的图片也必须先由可信工具登记, 不能把任意 URL, Base64 或服务器路径填入回复
 
+在沙箱中生成图片后, 调用 group_chat_import_sandbox_image, path 填当前会话沙箱内的相对路径, 例如 heart.png
+成功后取 asset.asset_id 放入 group_chat_reply 的 image 组件; 图片登记本身不会发送消息
+支持 PNG/JPEG/WebP/GIF, 不接受 PDF/SVG, 上级目录, 绝对路径或其它会话文件
+登记只授权当前群的当前主工作流轮次; 下一轮发送同一文件时需要重新登记, 不复用旧 asset_id
+
 需要表情时, 用 group_chat_list_stickers 按名称或标签查询当前群已启用的目录
 选择合适的 sticker_id, 放入 sticker 组件, 例如 {"type":"sticker","sticker_id":"目录返回的 ID"}
 没有可用表情时可以直接用文字回复, 不编造平台原生表情编号

@@ -2,7 +2,7 @@ name: base_take
 version: 0.1.0
 author: Satrap Team
 repo: https://github.com/satrap/base_take
-description: "基础能力插件: 联网搜索 / 网页抓取 / 代码沙箱 / 文档读取"
+description: "基础能力插件: 联网搜索 / 网页抓取 / 代码沙箱 / 文档与图片读取"
 
 # 配置项声明 (键 -> 类型/默认值/描述), 供校验/存储/前端渲染表单
 config_schema:
@@ -10,14 +10,18 @@ config_schema:
     type: path
     default: ""
     description: "独立调用的沙箱兜底路径 (平台运行时固定使用会话私有 sandbox)"
+  sandbox_allowed_modules:
+    type: string
+    default: "math,statistics,decimal,fractions,json,csv,re,datetime,time,collections,itertools,functools,random,numpy,numpy.linalg,numpy.random,pandas,matplotlib.pyplot,docx,docx.shared,docx.enum.text,docx.enum.table,docx.enum.section,pptx,pptx.util,pptx.enum.text,pptx.enum.shapes,pptx.dml.color,openpyxl,openpyxl.styles,openpyxl.utils,openpyxl.chart,pypdf,pdfplumber,reportlab.pdfgen.canvas,reportlab.lib.pagesizes,reportlab.lib.units,reportlab.lib.styles,reportlab.platypus,reportlab.pdfbase.pdfmetrics,reportlab.pdfbase.ttfonts"
+    description: "模型可导入的已支持模块 (逗号分隔, 子模块需显式登记); 空值禁止导入, 不代表全部允许"
   allowed_env_vars:
     type: string
     default: ""
-    description: "沙箱子进程显式放行的环境变量名 (逗号分隔); 其余密钥类变量 (如 *_API_KEY, *_TOKEN) 默认剥离"
+    description: "沙箱非敏感环境变量允许项 (逗号分隔); 免审批模式不接受密钥或启动/导入控制变量"
   workspace_root:
     type: path
     default: ""
-    description: "工作区根目录 (read_document 路径白名单, 留空用项目根)"
+    description: "工作区根目录 (read_document 范围内免审批, 外部单文件按宿主模式审批; 留空用项目根)"
   search_timeout:
     type: number
     default: 10
@@ -26,8 +30,8 @@ config_schema:
 tools:
   search: 联网搜索
   fetch_page: 抓取网页内容
-  code_sandbox: 在代码沙箱中执行代码或管理文件 (与 coding 启用时由服务层协调停用)
-  read_document: 读取文档文本, 按模型能力分页查看 PDF 图像 (xlsx/docx/pdf/txt/md)
+  code_sandbox: 免审批的一次性 Python 与文件操作, 白名单库, 拦截联网/外部程序, 产物不自动发送
+  read_document: 读取文档文本, 读取本地图片 (png/jpg/webp/gif 等, 动图仅第一帧), 按模型能力分页查看 PDF 图像 (xlsx/docx/pdf/txt/md)
 
 compatibility:
   satrap: ">=0.1,<0.2"

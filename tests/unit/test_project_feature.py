@@ -9,6 +9,9 @@
 """
 from __future__ import annotations
 
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
+
 from collections.abc import AsyncIterator
 import asyncio
 from pathlib import Path
@@ -213,17 +216,17 @@ def test_service_create_conversation_with_project(tmp_path: Path, monkeypatch: A
     conv = svc.get_conversation(cid)
     assert conv is not None and conv.project_id == pid
     session = conv.session
-    assert getattr(session, "coding_workspace_root") == str(ws.resolve())
+    assert str(environment_snapshot(session).workspace_root) == str(ws.resolve())
     expected_sandbox = svc._storage.session_sandbox("chat", cid)
-    assert getattr(session, "coding_sandbox_root") == str(expected_sandbox)
+    assert str(environment_snapshot(session).sandbox_root) == str(expected_sandbox)
     assert not expected_sandbox.is_relative_to(ws.resolve())
 
     plain_conv = svc.get_conversation(plain)
     # 无项目会话直接使用自己的私有沙箱作为工作区
     assert plain_conv is not None
     plain_sandbox = svc._storage.session_sandbox("chat", plain)
-    assert getattr(plain_conv.session, "coding_workspace_root") == str(plain_sandbox)
-    assert getattr(plain_conv.session, "coding_sandbox_root") == str(plain_sandbox)
+    assert str(environment_snapshot(plain_conv.session).workspace_root) == str(plain_sandbox)
+    assert str(environment_snapshot(plain_conv.session).sandbox_root) == str(plain_sandbox)
 
     meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
     # meta 持久化项目归属
@@ -256,17 +259,17 @@ def test_service_set_conversation_project_rebind(tmp_path: Path, monkeypatch: An
     # 绑定 A
     conv = svc.get_conversation(cid)
     assert conv is not None and conv.project_id == pid_a
-    assert getattr(conv.session, "coding_workspace_root") == str(ws_a.resolve())
+    assert str(environment_snapshot(conv.session).workspace_root) == str(ws_a.resolve())
 
     assert svc.set_conversation_project(cid, pid_b)["ok"] is True
     # 换绑 B
-    assert getattr(conv.session, "coding_workspace_root") == str(ws_b.resolve())
+    assert str(environment_snapshot(conv.session).workspace_root) == str(ws_b.resolve())
 
     assert svc.set_conversation_project(cid, None)["ok"] is True
     # 移出项目后使用会话私有沙箱作为工作区
     assert conv.project_id is None
     private_sandbox = svc._storage.session_sandbox("chat", cid)
-    assert getattr(conv.session, "coding_workspace_root") == str(private_sandbox)
+    assert str(environment_snapshot(conv.session).workspace_root) == str(private_sandbox)
 
     meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
     # 持久化同步
@@ -286,12 +289,12 @@ def test_service_delete_project_unbinds_active(tmp_path: Path, monkeypatch: Any)
     cid = asyncio.run(svc.create_conversation(model="default", project_id=pid))
 
     conv = svc.get_conversation(cid)
-    assert conv is not None and hasattr(conv.session, "coding_workspace_root")
+    assert conv is not None and environment_snapshot(conv.session).workspace_root is not None
 
     assert svc.delete_project(pid)["ok"] is True
     assert conv.project_id is None
     private_sandbox = svc._storage.session_sandbox("chat", cid)
-    assert getattr(conv.session, "coding_workspace_root") == str(private_sandbox)
+    assert str(environment_snapshot(conv.session).workspace_root) == str(private_sandbox)
     # 会话数据保留
     assert get_conversation_meta(cid, db_path=str(svc._display_db_path)) is not None
 
@@ -309,7 +312,7 @@ def test_service_resume_conversation_rebinds_project(tmp_path: Path, monkeypatch
 
     resumed = asyncio.run(svc._resume_conversation(cid))
     assert resumed is not None and resumed.project_id == pid
-    assert getattr(resumed.session, "coding_workspace_root") == str(ws.resolve())
+    assert str(environment_snapshot(resumed.session).workspace_root) == str(ws.resolve())
 
 
 def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
@@ -442,7 +445,7 @@ def test_coding_tools_per_session_workspace(tmp_path: Path, monkeypatch: Any):
     def _session(sid: str, ws: Path | None) -> SimpleSession:
         s = SimpleSession(sid, cast(LLM, _StubLLM()), db_path=str(tmp_path / f"{sid}.db"), enable_checkpoint=False)
         if ws is not None:
-            setattr(s, "coding_workspace_root", str(ws))
+            bind_environment(s, replace(environment_snapshot(s), workspace_root=Path(str(ws))))
             # 鸭子属性: 与 ChatService._apply_project 同款注入方式
         return s
 
@@ -463,3 +466,77 @@ def test_coding_tools_per_session_workspace(tmp_path: Path, monkeypatch: Any):
     # 互不干扰: A 看不到 B 的文件 (B 的文件不在 A 的工作区内)
     # 无项目会话行为与全局一致 (相对路径基于全局工作区)
     assert "错误" in _read_tool(sess_g).execute(path="a.txt")
+
+
+@pytest.mark.parametrize("roots", [None, [], ["."]])
+def test_default_workspace_browser_reaches_other_projects(tmp_path, monkeypatch, roots):
+    """默认及旧版自动配置可绑定 Satrap 外目录, 仍隐藏受保护数据目录"""
+    repository = tmp_path / "Satrap"
+    external = tmp_path / "other-project"
+    repository.mkdir()
+    external.mkdir()
+    monkeypatch.setattr(service_mod, "get_project_root", lambda: repository)
+    svc = ChatService(cast(ModelConfigManager, _FakeModelConfig()),
+        ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
+        chat_db_path=str(tmp_path / "chat.db"), display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"), workspace_roots=roots,
+        denied_workspace_roots=[tmp_path / "private"])
+    roots_view = svc.browse_directories()
+    assert roots_view["ok"] and roots_view["dirs"]
+    assert svc.browse_directories(str(external))["ok"]
+    created = svc.create_project("外部项目", str(external))
+    assert created["ok"]
+    parent = svc.browse_directories(str(external))["parent"]
+    assert parent and svc.browse_directories(str(parent))["ok"]
+    protected = tmp_path / "private"
+    protected.mkdir()
+    assert not svc.browse_directories(str(protected))["ok"]
+    visible = svc.browse_directories(str(tmp_path))["dirs"]
+    assert str(protected) not in [item["path"] for item in visible]
+
+
+@pytest.mark.asyncio
+async def test_chat_approval_settings_share_command_state_and_persistence(tmp_path, monkeypatch):
+    """Chat 设置直接读写原命令引擎, HTTP 拒绝旧版本及未启用插件, 切换不触发模型"""
+    import json
+    from satrap.display.server import ChatHTTPServer
+    from satrap.core.approval.policy import PermissionEngine
+    from satrap.core.approval.state import session_approval
+    svc = _make_service(tmp_path, monkeypatch)
+    cid = await svc.create_conversation()
+    conv = svc.get_conversation(cid)
+    assert conv is not None
+    server = ChatHTTPServer.__new__(ChatHTTPServer)
+    server.service = svc
+    server.application_status = lambda method, path: None
+    endpoint = "/api/chat/approval?conversation=" + cid
+    try:
+        status, absent = await server._route("GET", endpoint, b"")
+        assert status == 200 and absent["available"] is False
+        await conv.session.install_plugin(str(Path(__file__).resolve().parents[2] / "satrap/expend/plugins/permissions"))
+        status, current = await server._route("GET", endpoint, b"")
+        assert status == 200 and current["mode"] == "user" and current["available"]
+        async def save(mode, revision):
+            return await server._route("PUT", endpoint, json.dumps({"mode": mode, "expected_revision": revision}).encode("utf-8"))
+        status, saved = await save("auto", current["revision"])
+        assert status == 200 and saved["mode"] == "auto"
+        engine = session_approval(conv.session)
+        assert isinstance(engine, PermissionEngine) and engine.mode == "auto"
+        answer, _ = await conv.session.command_handler.process_message("/approve mode full-access")
+        assert "已切换" in answer
+        assert (await svc.get_approval(cid))["mode"] == "full-access"
+        status, stale = await save("user", saved["revision"])
+        assert status == 400 and "已变化" in stale["error"]
+        assert engine.mode == "full-access"
+        status, invalid = await save("full", engine.revision)
+        assert status == 400
+        reloaded = PermissionEngine(rules_file=engine.rules_file, log_file=engine.log_file)
+        assert reloaded.mode == "full-access"
+        history = conv.session.ctx.get_context()
+        assert not any(row.get("role") == "user" for row in history)
+        await conv.session.disable_plugin("permissions")
+        assert (await svc.get_approval(cid))["available"] is False
+        status, disabled = await save("user", engine.revision)
+        assert status == 400 and "启用" in disabled["error"]
+    finally:
+        await svc.close()

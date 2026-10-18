@@ -61,6 +61,7 @@ class ConfigLoader:
                 "port": cfg.api_port,
             },
             "platforms": list(cfg.platforms),
+            "approval_plugin_migration": 1,
             "administrator_groups": list(cfg.administrator_groups),
             "administrator_overrides": list(cfg.administrator_overrides),
         }

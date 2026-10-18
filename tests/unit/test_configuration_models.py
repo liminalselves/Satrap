@@ -4,6 +4,8 @@ from __future__ import annotations
 from unittest.mock import Mock
 from pathlib import Path
 import json
+import multiprocessing
+from multiprocessing.synchronize import Barrier
 import pytest
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.model_service import ModelConfigService
@@ -16,6 +18,93 @@ from satrap.edictum.plugin_config import parse_config_schema
 from satrap.edictum.plugin_resources import PluginResources, model_reference_fingerprint
 from typing import Any
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
+
+def _write_models_concurrently(path: str, name: str, barrier: Barrier) -> None:
+    """在不同进程预加载旧缓存后同时写入, 不使用真实模型服务"""
+    manager = ModelConfigManager(path)
+    barrier.wait(timeout=20)
+    manager.set_llm_config(LLMConfig(model=name, api_key="test"), name)
+    manager.set_embedding_config(EmbeddingConfig(model=name), name)
+
+def test_shared_model_file_sync_preserves_other_edits_and_covers_crud(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """独立管理器共用文件时, 新增, 修改, 重命名, 删除和重置互相可见且不覆盖其它类型"""
+    path = tmp_path / "models.json"
+    platform = ModelConfigManager(path)
+    chat = ModelConfigManager(path)
+    platform.set_llm_config(LLMConfig(model="step", api_key="test-key"), "step")
+    chat.update_llm_config(model="chat")
+    platform.set_embedding_config(EmbeddingConfig(model="embed"), "embed")
+    chat.update_named_config("llm", "step", {"temperature": 0.2}, new_name="renamed")
+    assert platform.get_llm_config("renamed").temperature == 0.2
+    assert not platform.has_config("llm", "step")
+    assert chat.get_embedding_config("embed").model == "embed"
+    assert platform.get_llm_config().model == "chat"
+    assert platform.remove_llm_config("renamed")
+    assert not chat.has_config("llm", "renamed")
+    chat.set_asr_config(ASRConfig(model="voice"), "voice")
+    platform.reset("embedding")
+    chat.save()
+    assert platform.get_asr_config("voice").model == "voice"
+    assert not chat.has_config("embedding", "embed")
+    assert chat.list_embedding_configs()["default"]["model"] is None
+    source = (path.read_bytes(), path.stat().st_mtime_ns)
+    for manager in (chat, platform):
+        manager.get_all_configs()
+        manager.get_runtime_configs()
+        manager.list_llm_configs()
+    assert source == (path.read_bytes(), path.stat().st_mtime_ns)
+    from satrap.core.framework import BackGroundManager as module
+    def fail_write(*args: object, **kwargs: object) -> None:
+        """模拟持久化失败, 缓存不能把未保存的新值当作真实配置"""
+        raise OSError("模拟写入失败")
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "atomic_write_json", fail_write)
+        with pytest.raises(OSError, match="模拟写入失败"):
+            chat.update_llm_config(model="unsaved")
+        assert chat.get_llm_config().model == "chat"
+        assert source == (path.read_bytes(), path.stat().st_mtime_ns)
+
+def test_model_file_concurrent_process_writes_keep_all_models(tmp_path: Path) -> None:
+    """真实跨进程读改写事务保留双方新增的模型和不同类型配置"""
+    path = tmp_path / "models.json"
+    reader = ModelConfigManager(path)
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(3)
+    workers = [ctx.Process(target=_write_models_concurrently, args=(str(path), name, barrier)) for name in ("first", "second")]
+    try:
+        for worker in workers:
+            worker.start()
+        barrier.wait(timeout=20)
+        for worker in workers:
+            worker.join(timeout=20)
+            assert worker.exitcode == 0
+        for name in ("first", "second"):
+            assert reader.get_llm_config(name).model == name
+            assert reader.get_embedding_config(name).model == name
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+            worker.join(timeout=5)
+
+@pytest.mark.parametrize("content", ["broken", "[]", '{"llm":[]}', '{"llm":{"bad":5}}'])
+def test_model_file_corruption_blocks_stale_write_and_recovers(tmp_path: Path, content: str) -> None:
+    """损坏来源不被旧缓存重建, 修复文件后同一管理器恢复读取"""
+    path = tmp_path / "models.json"
+    manager = ModelConfigManager(path)
+    manager.set_llm_config(LLMConfig(model="old"), "old")
+    valid = path.read_text(encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError):
+        manager.set_llm_config(LLMConfig(model="new"), "new")
+    assert path.read_text(encoding="utf-8") == content
+    path.write_text(valid, encoding="utf-8")
+    assert manager.get_llm_config("old").model == "old"
+    assert not manager.has_config("llm", "new")
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        manager.save()
+    assert not path.exists()
 
 def test_legacy_model_config_migrates_once_then_reload_preserves_file(tmp_path: Path) -> None:
     """旧格式仍迁移为命名配置, 后续读取不重复写回"""

@@ -1,16 +1,22 @@
-"""可信插件图片产物登记接口, 不将文件路径或下载地址开放为模型工具参数"""
+"""
+可信插件图片产物的群权限登记
+
+限定当前主工作流的群与轮次, 把图片复制到受管理缓存并返回不透明资产 ID
+文件读取由插件宿主的产物接口负责, 本模块只登记已取得的可信内容
+"""
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
-import asyncio
 import traceback
+from pathlib import Path
+import asyncio
+from typing import Any
 
-from satrap.core.call_context import current_call_origin, current_tool_workflow
+from satrap.core.group_chat.service import group_chat_service
 from satrap.core.group_chat.assets import AssetStore, MAX_IMAGE_BYTES
 from satrap.core.group_chat.reply import current_reply_turn
-from satrap.core.group_chat.service import group_chat_service
 from satrap.core.group_chat.types import GroupChatError
+from satrap.core.call_context import current_call_origin, current_tool_workflow
+
 from satrap.core.log import logger
 
 

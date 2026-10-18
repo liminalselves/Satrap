@@ -1,15 +1,52 @@
+"""同步与异步会话共用的能力管理和宿主接口"""
 from __future__ import annotations
-from typing import Any
+from typing import Any, TYPE_CHECKING, cast
+from satrap.core.plugin_interop.capabilities import PluginInterop
+from satrap.core.plugin_interop.contracts import CapabilityKind
 from satrap.core.utils.skills import SkillsManager
 from satrap.edictum.plugin import Plugin
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from .handlers import _HandlerRegistryMixin
 
 
+if TYPE_CHECKING:
+    from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+
 class _SessionFeatures(_HandlerRegistryMixin):
+    _plugin_interop_runtime: PluginInterop | None = None
+
+    @property
+    def _plugin_interop(self) -> PluginInterop:
+        """
+        惰性创建当前会话的插件交互注册表
+
+        返回:
+        - 与会话生命周期一致的内部注册表
+        """
+        if self._plugin_interop_runtime is None:
+            from .async_ import AsyncSimpleSession
+            session = cast("SimpleSession | AsyncSimpleSession", self)
+            self._plugin_interop_runtime = PluginInterop(session, async_=isinstance(self, AsyncSimpleSession))
+        return self._plugin_interop_runtime
+
     _skills_manager: SkillsManager | None
     stream: bool
     recovery_origin: dict[str, Any]
+
+    def _capability_plugin(self, kind: CapabilityKind, name: str) -> Plugin | None:
+        """
+        查找能力所属插件, 统一旧会话入口与插件命名空间的开关语义
+
+        参数:
+        - kind: 能力类别
+        - name: 已注册能力名
+
+        返回:
+        - 所属插件; 独立注册能力返回 None
+        """
+        with self._registry_lock:
+            return next((plugin for plugin in self._plugins.values() if name in getattr(plugin, kind)), None)
 
     def _get_skills_manager(self) -> SkillsManager:
         """

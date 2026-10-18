@@ -1,23 +1,30 @@
 name: satrap_coding
-version: 0.2.0
+version: 0.4.0
+config_version: 1
 author: Satrap Team
 repo: https://github.com/satrap/satrap_coding
 description: "简易 Coding Agent 插件: 文件工具 / shell / 沙箱 / 子代理 / 目标与计划模式"
+
+interop:
+  replaces:
+    base_take:
+      tools:
+        code_sandbox: shell   # Shell 可用时压制基础沙箱工具, 保留用户原有开关
 
 # 配置项声明 (键 -> 类型/默认值/描述), 供校验/存储/前端渲染表单
 config_schema:
   workspace_root:
     type: path
     default: ""
-    description: "工作区根目录 (文件工具白名单根, 留空用项目根)"
+    description: "文件工具默认工作区 (外部单文件读取按宿主模式审批, 留空用项目根)"
   data_root:
     type: path
     default: ""
-    description: "权限/目标/日志目录 (宿主 coding_cache_root 优先; 留空按会话数据库目录推导, 无数据库时按 session_id 隔离)"
+    description: "目标数据目录 (宿主会话缓存目录优先; 留空按会话数据库目录推导, 无数据库时按 session_id 隔离)"
   sandbox_root:
     type: path
     default: ""
-    description: "文件免审批目录 (宿主 coding_sandbox_root 优先; 留空用项目根/.satrap/sandbox, 与 base_take 默认目录一致; 计划模式仍拒绝写入)"
+    description: "文件免审批目录 (宿主环境中的沙箱根优先; 留空用项目根/.satrap/sandbox, 与 base_take 默认目录一致; 计划模式仍拒绝写入)"
   shell_timeout:
     type: number
     default: 120
@@ -38,9 +45,9 @@ config_schema:
 # 注: search/fetch_page 由 base_take 提供, memory 由独立记忆插件提供
 tools:
   ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图; 需要宿主通过 session.user_input_provider 特殊适配提问展示和回答回填
-  shell: 在本机执行 shell 命令 (PowerShell/cmd), 每次执行需明确批准, 计划模式禁用
+  shell: 在本机执行 shell 命令 (PowerShell/cmd), user 人工审批, auto 模型审批, full-access 直接执行, 计划模式禁用
   subagent: 在独立上下文中运行子代理处理任务, 用于并行调研/独立子任务
-  read_file: 读取工作区内文件内容, 支持分页
+  read_file: 分页读取单个文件, 外部文件按宿主三档模式审批
   write_file: 写入或追加内容到工作区内文件 (需批准)
   edit_file: 在文件中精确替换一段文本 (old -> new)
   search_replace: 在一个文件内批量执行多对精确文本替换
@@ -50,13 +57,12 @@ tools:
   grep_files: 在指定目录内按正则搜索文件内容
 skills:
   goal: "持续目标: 设置后每轮推进直至完成, 与 /goal 命令搭配"
-  plan: "计划模式: 禁用文件编辑与写操作, 只输出计划, 与 /plan 命令搭配"
+  plan: "计划模式: 只读分析和规划, 禁止修改文件和运行本机命令, 使用 /plan 切换"
 handlers:
   satrap_coding.inject: 在用户输入前注入持续目标上下文
 commands:
-  goal: 设置/查看/完成持续目标
-  plan: 进入/退出计划模式 (写操作全部禁用)
-  approve: 切换审批策略/管理持久规则
+  goal: "设置持续目标并自动推进: /goal <目标>; status 查看, done 完成, clear 清除"
+  plan: "切换计划模式: /plan on 只读分析和规划, 禁止修改文件和运行本机命令; /plan off 恢复"
 mcp: {}
 
 compatibility:

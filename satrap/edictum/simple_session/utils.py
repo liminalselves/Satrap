@@ -15,11 +15,17 @@ from satrap.core.type import RequestContextBlock
 from dataclasses import dataclass, field
 import inspect
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TYPE_CHECKING
 import sys
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.core.log import logger
 
+
+if TYPE_CHECKING:
+    from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+
+SyncApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult"]
+AsyncApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult | Awaitable[ApprovalResult]"]
 
 SyncUserInputProvider = Callable[..., str]
 
@@ -177,22 +183,25 @@ def _assert_sync_callbacks(handler: SessionHandler) -> None:
             )
 
 
-def _command_intro(handler: Callable[..., Any]) -> str:
+def _command_intro(handler: Callable[..., Any], intro: str | None = None) -> str:
     """
-    从命令函数 docstring 提取简介 (首行)
+    优先使用显式命令描述, 未声明时兼容旧插件的函数首行注释
 
     参数:
     - handler: 处理器
+    - intro: meta.yaml 的命令说明, 默认 None; 空白和 YAML 空值不作为说明
 
     返回:
-    - str: 从命令函数 docstring 提取简介 (首行)
+    - 用户说明或旧函数首行注释, 两者均缺失时返回 暂无说明
     """
+    if intro is not None and intro.strip() not in {"", "None"}:
+        return intro.strip()
     doc = inspect.getdoc(handler)
     if doc:
         first = doc.strip().splitlines()[0].strip()
         if first:
             return first
-    return "None"
+    return "暂无说明"
 
 
 def _add_plugin_sys_path(plugin_dir: Path) -> None:

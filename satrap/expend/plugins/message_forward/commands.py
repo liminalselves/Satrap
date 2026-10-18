@@ -53,19 +53,22 @@ def build_commands(session: Session | AsyncSession, config: dict[str, Any] | Non
                 params = {"message_ids": list(args[3:]), "mode": "merge" if subcommand == "merge" else "existing_forward",
                           "target": {"conversation_kind": args[1], "conversation_id": args[2]}}
                 operation = "send"
+            registry = getattr(session, "command_handler", None) or getattr(session, "cmd_handler", None)
+            binding = getattr(registry, "_permission_bindings", {}).get("forward")
+            if binding is None:
+                raise ForwardError("permission_denied", "命令没有有效的原生授权入口")
             def check() -> None:
                 """按真实命令入口复核子命令权限与发送开关"""
                 registry = getattr(session, "command_handler", None) or getattr(session, "cmd_handler", None)
-                binding = getattr(registry, "_permission_bindings", {}).get("forward")
-                if binding is None:
-                    raise ForwardError("permission_denied", "命令没有有效的原生授权入口")
+                if getattr(registry, "_permission_bindings", {}).get("forward") is not binding:
+                    raise ForwardError("stale_authorization", "命令授权入口已变化")
                 require_plugin_entry_permission(binding, subcommand=subcommand, refresh=True)
-                if operation == "send" and settings.get("send_enabled") is not True:
+                if operation == "send" and binding.config.get("send_enabled", True) is not True:
                     raise ForwardError("permission_denied", "转发发送功能尚未开启")
-            adapter, origin = resolve(settings, check, params, command=True)
+            adapter, origin = resolve(binding.config, check, params, command=True, binding=binding, subcommand=subcommand)
             def preflight() -> None:
                 """等待后复核来源账号与命令权限"""
-                current, current_origin = resolve(settings, check, params, command=True)
+                current, current_origin = resolve(binding.config, check, params, command=True, binding=binding, subcommand=subcommand)
                 if current is not adapter or current_origin != origin:
                     raise ForwardError("stale_account", "转发来源已变化")
             data = await adapter.message_forward(operation, origin, params, preflight)

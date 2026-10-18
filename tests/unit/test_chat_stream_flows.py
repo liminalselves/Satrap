@@ -498,3 +498,64 @@ def test_history_batch_queries_preserve_full_variants(tmp_path):
             assert [item["name"] for item in row["tool_calls"]] == ["read"]
     finally:
         recorder.close()
+
+
+@pytest.mark.parametrize("answer,expected", [("批准本次", "allow"), ("拒绝", "deny"), ("y", "deny"), ("all", "deny")])
+async def test_coding_approval_ui_result_binds_exact_pending_request(answer, expected):
+    """Chat 使用待回答 ID 回填单次审批, 普通肯定文本不获得权限"""
+    from satrap.core.approval.contracts import ApprovalRequest
+    request = ApprovalRequest.create(session_id="approval-ui", turn_id="turn", actor_id="", tool="write_file",
+        operation="file_write", risk=1, description="修改文件", mode="user", revision=0,
+        action={"path": "test.txt", "before": "before", "after": "after"},
+        evidence=[{"source": "main_history", "content": "不应显示给审批卡片的历史正文"}])
+    service = ChatService.__new__(ChatService)
+    service._ask_user_timeout_seconds = 1
+    conv = cast(_Conversation, SimpleNamespace(conversation_id="approval-ui", pending_user_inputs={}))
+    service._conversations = {"approval-ui": conv}
+    events = []
+    service._broadcast = lambda conv, event: events.append(event)
+    task = asyncio.create_task(service._request_approval(conv, request))
+    await asyncio.sleep(0)
+    pending_id = events[0]["request_id"]
+    assert events[0]["options"] == ["批准本次", "拒绝"]
+    assert events[0]["approval"]["action"]["before"] == "before"
+    assert events[0]["approval"]["action"]["after"] == "after"
+    assert "main_history" not in json.dumps(events[0], ensure_ascii=False)
+    assert conv.pending_user_inputs[pending_id].approval == events[0]["approval"]
+    assert not service.answer_user_input("approval-ui", "another-request", "批准本次")["ok"]
+    assert not task.done()
+    if answer not in {"批准本次", "拒绝"}:
+        assert not service.answer_user_input("approval-ui", pending_id, answer)["ok"]
+        assert not task.done()
+        answer = "拒绝"
+    assert service.answer_user_input("approval-ui", pending_id, answer)["ok"]
+    result = await task
+    assert (result.request_id, result.digest, result.reviewer, result.decision) == (request.request_id, request.digest, "user", expected)
+    assert not conv.pending_user_inputs
+    assert not service.answer_user_input("approval-ui", pending_id, "批准本次")["ok"]
+
+
+async def test_coding_approval_ui_timeout_and_cancel_remove_pending_requests():
+    """审批超时或取消清理待回填, 迟到批准不能复活"""
+    from satrap.core.approval.contracts import ApprovalRequest
+    request = ApprovalRequest.create(session_id="approval-ui", turn_id="", actor_id="", tool="shell",
+        operation="shell", risk=2, description="命令", mode="user", revision=0,
+        action={"command": "echo audit"}, evidence=[])
+    service = ChatService.__new__(ChatService)
+    service._ask_user_timeout_seconds = 0.01
+    conv = cast(_Conversation, SimpleNamespace(conversation_id="approval-ui", pending_user_inputs={}))
+    service._conversations = {"approval-ui": conv}
+    events = []
+    service._broadcast = lambda conv, event: events.append(event)
+    with pytest.raises(TimeoutError):
+        await service._request_approval(conv, request)
+    assert events[-1]["status"] == "timeout" and not conv.pending_user_inputs
+    service._ask_user_timeout_seconds = 1
+    task = asyncio.create_task(service._request_approval(conv, request))
+    await asyncio.sleep(0)
+    pending_id = events[-1]["request_id"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events[-1]["status"] == "cancelled" and not conv.pending_user_inputs
+    assert not service.answer_user_input("approval-ui", pending_id, "批准本次")["ok"]

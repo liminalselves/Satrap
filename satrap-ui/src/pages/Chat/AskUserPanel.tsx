@@ -2,11 +2,13 @@ import { useRef, type KeyboardEvent } from 'react';
 import { CheckCircle2, Loader2, Wrench } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/utils/cn';
+import type { ApprovalPresentation } from '@/api/chat';
 
 export interface PendingUserInput {
   requestId: string;
   question: string;
   options: string[];
+  approval?: ApprovalPresentation | null;
 }
 
 interface AskUserPanelProps {
@@ -28,6 +30,41 @@ export function AskUserPanel({
 }: AskUserPanelProps) {
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selectedIndex = request.options.indexOf(answer);
+
+  if (request.approval) {
+    const { tool, description, action } = request.approval;
+    const isShell = tool === 'shell';
+    return (
+      <div className="glass-card glass-card-accent rounded-xl px-4 py-3 mb-2" data-ask-user-panel data-approval>
+        <div className="flex items-center justify-between gap-3 text-sm font-medium text-accent">
+          <span className="flex items-center gap-2"><Wrench className="h-4 w-4" />等待批准执行 · {tool}</span>
+          <span className="text-xs text-text-tertiary">1 / {queueLength}</span>
+        </div>
+        <details className="mt-3 text-sm text-text-primary">
+          <summary className="cursor-pointer">{isShell ? '查看待执行命令' : '查看本次操作'}</summary>
+          <div className="mt-2 space-y-2">
+            {isShell && typeof action.command === 'string' ? (
+              <>
+                <pre className="max-h-64 overflow-auto rounded-lg bg-glass p-3 whitespace-pre-wrap break-words">{action.command}</pre>
+                {typeof action.cwd === 'string' && <p className="break-all">工作目录: {action.cwd}</p>}
+                {typeof action.interpreter === 'string' && <p className="break-all">Shell: {action.interpreter}</p>}
+              </>
+            ) : <p className="whitespace-pre-wrap break-words">{description}</p>}
+            <details>
+              <summary className="cursor-pointer text-text-secondary">查看完整操作参数</summary>
+              <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-glass p-3 whitespace-pre-wrap break-all">{JSON.stringify(action, null, 2)}</pre>
+            </details>
+          </div>
+        </details>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <Button variant="ghost" size="sm" disabled={submitting} onClick={() => onSubmit('拒绝')}>拒绝</Button>
+          <Button variant="primary" size="sm" disabled={submitting} onClick={() => onSubmit('批准本次')}>
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : '批准本次'}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   const handleOptionKeyDown = (
     event: KeyboardEvent<HTMLButtonElement>,

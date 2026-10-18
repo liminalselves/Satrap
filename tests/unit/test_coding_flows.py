@@ -1,13 +1,17 @@
 """业务链路场景与集中边界契约"""
 from __future__ import annotations
 
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
+from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+
 from pathlib import Path
 from contextlib import closing
 import pytest
 from typing import Any
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.permission import PermissionDecision, PermissionEngine, RiskLevel
+from satrap.core.approval.policy import PermissionDecision, PermissionEngine, RiskLevel
 from satrap.core.memory.store import MemoryStore
 import tracemalloc
 from typing import Iterator, Callable, cast
@@ -122,136 +126,42 @@ def engine(tmp_path: Path) -> PermissionEngine:
     )
 
 class TestPermissionEngine:
-    def test_read_always_allowed(self, engine: PermissionEngine):
-        """只读操作直接放行 (无论策略)"""
+    @pytest.mark.parametrize("mode", ["user", "auto", "full-access"])
+    def test_mode_policy_plan_persistence(self, tmp_path, mode, monkeypatch):
+        engine = PermissionEngine(rules_file=tmp_path / "permissions.json", log_file=tmp_path / "log.jsonl")
+        engine.set_mode(mode)
+        for operation, risk in (("file_write", RiskLevel.WRITE), ("shell", RiskLevel.READ)):
+            assert engine.evaluate(operation, risk) == (PermissionDecision.ALLOW if mode == "full-access" else PermissionDecision.ASK)
         assert engine.evaluate("read", RiskLevel.READ) == PermissionDecision.ALLOW
-
-    def test_user_mode_asks_write(self, engine: PermissionEngine):
-        """user 策略下常规写操作返回 ASK"""
-        assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
-
-    def test_full_mode_allows(self, engine: PermissionEngine):
-        """full 策略全部放行"""
-        engine.set_mode("full")
-        assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ALLOW
-
-    def test_forbidden_always_denied(self, engine: PermissionEngine):
-        """黑名单级操作永远拒绝"""
         assert engine.evaluate("shell", RiskLevel.FORBIDDEN) == PermissionDecision.DENY
-
-    def test_plan_mode_blocks_writes(self, engine: PermissionEngine):
-        """计划模式: 写类操作拒绝, 只读放行"""
         engine.set_plan_mode(True)
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.DENY
-        assert engine.evaluate("shell", RiskLevel.HIGH) == PermissionDecision.DENY
+        assert engine.evaluate("shell", RiskLevel.READ) == PermissionDecision.DENY
         assert engine.evaluate("read", RiskLevel.READ) == PermissionDecision.ALLOW
-        engine.set_plan_mode(False)
+        reloaded = PermissionEngine(rules_file=engine.rules_file, log_file=engine.log_file)
+        assert reloaded.mode == mode and not reloaded.plan_mode
+        original, revision = engine.rules_file.read_bytes(), engine.revision
+        monkeypatch.setattr(engine, "_save", Mock(side_effect=OSError("写入失败")))
+        with pytest.raises(OSError):
+            engine.set_mode("user" if mode != "user" else "full-access")
+        assert engine.mode == mode and engine.revision == revision
+        assert engine.rules_file.read_bytes() == original
+
+    @pytest.mark.parametrize("legacy", ["user", "auto-agent", "full"])
+    def test_legacy_state_backup_without_escalation(self, tmp_path, legacy):
+        path = tmp_path / "permissions.json"
+        original = json.dumps({"mode": legacy, "rules": {"file_write": 2, "shell": 2}}, ensure_ascii=False, indent=2).replace("\n", "\r\n").encode("utf-8")
+        path.write_bytes(original)
+        engine = PermissionEngine(rules_file=path, log_file=tmp_path / "log.jsonl")
+        assert engine.mode == "user" and engine.migration_notice
+        assert path.with_suffix(".legacy-v1.json").read_bytes() == original
+        assert json.loads(path.read_text(encoding="utf-8")) == {"version": 2, "mode": "user"}
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
-
-    def test_session_rule_after_approve(self, engine: PermissionEngine):
-        """批准一次后会话内同类操作放行"""
-        assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
-        engine.approve("file_write", RiskLevel.WRITE)
-        assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ALLOW
-        engine.clear_session_rules()
-        assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
-
-    def test_persistent_rule_lifecycle(self, engine: PermissionEngine, tmp_path: Path):
-        """持久规则: 添加生效 -> 落盘 -> 新引擎重载 -> 移除"""
-        engine.add_persistent_rule("file_write", RiskLevel.WRITE)
-        assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ALLOW
-
-        reloaded = PermissionEngine(
-            rules_file=tmp_path / "permissions.json",
-            log_file=tmp_path / "approval_log.jsonl",
-        )
-        assert reloaded.list_persistent_rules() == {"file_write": 1}
-        assert reloaded.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ALLOW
-
-        assert reloaded.remove_persistent_rule("file_write") is True
-        assert reloaded.remove_persistent_rule("file_write") is False
-        assert reloaded.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
-
-    def test_auto_agent_judge(self, engine: PermissionEngine):
-        """auto-agent 只允许模型拒绝或转人工"""
-        engine.set_mode("auto-agent")
-
-        def judge_allow(operation: str, risk: RiskLevel, description: str) -> str:
-            return "allow"
-
-        def judge_deny(operation: str, risk: RiskLevel, description: str) -> str:
-            return "deny"
-
-        assert engine.evaluate("file_write", RiskLevel.WRITE, judge=judge_allow) == PermissionDecision.ASK
-        assert engine.evaluate("file_write", RiskLevel.WRITE, judge=judge_deny) == PermissionDecision.DENY
-
-        def judge_maybe(operation: str, risk: RiskLevel, description: str) -> str:
-            return "maybe"
-
-        assert engine.evaluate("file_write", RiskLevel.WRITE, judge=judge_maybe) == PermissionDecision.ASK
-        assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
-
-    @pytest.mark.asyncio
-    async def test_evaluate_async_with_async_judge(self, engine: PermissionEngine, tmp_path: Path):
-        """异步评估支持异步 judge"""
-        engine = PermissionEngine(
-            rules_file=tmp_path / "permissions.json",
-            log_file=tmp_path / "approval_log.jsonl",
-            mode="auto-agent",
-        )
-
-        async def async_judge(op: str, risk: RiskLevel, desc: str) -> str:
-            return "allow"
-
-        assert await engine.evaluate_async(
-            "file_write", RiskLevel.WRITE, judge=async_judge,
-        ) == PermissionDecision.ASK
-        assert await engine.evaluate_async(
-            "file_write", RiskLevel.WRITE, judge=lambda op, risk, desc: "deny",
-        ) == PermissionDecision.DENY
-        assert await engine.evaluate_async(
-            "file_write", RiskLevel.WRITE,
-        ) == PermissionDecision.ASK
-
-    def test_set_mode_invalid(self, engine: PermissionEngine):
-        """非法策略名抛 ValueError"""
-        with pytest.raises(ValueError):
-            engine.set_mode("root")
-
-    def test_deny_logs_entry(self, engine: PermissionEngine, tmp_path: Path):
-        """拒绝操作写入审批日志"""
-        engine.deny("shell", RiskLevel.HIGH, "危险命令")
-        log = (tmp_path / "approval_log.jsonl").read_text(encoding="utf-8")
-        assert "shell" in log and "DENY" in log
-
-    def test_broken_rules_file_ignored(self, tmp_path: Path):
-        """损坏的规则文件加载为空, 不崩溃"""
-        bad = tmp_path / "permissions.json"
-        bad.write_text("{ not json", encoding="utf-8")
-        engine = PermissionEngine(rules_file=bad, log_file=tmp_path / "log.jsonl")
-        assert engine.list_persistent_rules() == {}
-
-    def test_mode_persisted_and_restored(self, tmp_path: Path):
-        """审批策略随规则文件持久化, 新引擎恢复"""
-        rules_file = tmp_path / "permissions.json"
-        PermissionEngine(rules_file=rules_file, log_file=tmp_path / "log.jsonl").set_mode("full")
-        engine = PermissionEngine(rules_file=rules_file, log_file=tmp_path / "log.jsonl")
-        assert engine.mode == "full"
-
-    def test_multi_engine_rule_merge(self, tmp_path: Path):
-        """M5: 多实例交错添加持久规则不丢失更新"""
-        rules_file = tmp_path / "permissions.json"
-        a = PermissionEngine(rules_file=rules_file, log_file=tmp_path / "log.jsonl")
-        b = PermissionEngine(rules_file=rules_file, log_file=tmp_path / "log.jsonl")
-        a.add_persistent_rule("file_write", RiskLevel.WRITE)
-        b.add_persistent_rule("shell", RiskLevel.WRITE)
-        a.add_persistent_rule("memory_write", RiskLevel.WRITE)
-        assert a.list_persistent_rules() == {"file_write": 1, "shell": 1, "memory_write": 1}
-        # 删除不复活: b 移除 shell 后, 磁盘不再有 shell
-        b.remove_persistent_rule("shell")
-        assert PermissionEngine(
-            rules_file=rules_file, log_file=tmp_path / "log.jsonl",
-        ).list_persistent_rules() == {"file_write": 1, "memory_write": 1}
+        for old in ("auto-agent", "full", "root"):
+            with pytest.raises(ValueError):
+                engine.set_mode(old)
+        path.write_text("{ broken", encoding="utf-8")
+        assert PermissionEngine(rules_file=path).mode == "user"
 
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
@@ -621,14 +531,14 @@ async def test_grep_does_not_follow_symlink_outside_workspace(tmp_path: Path, wo
     assert "external-secret" not in await async_tools["grep_files"].execute("external-secret")
 
 def test_file_tools_path_boundary_and_protection(tmp_path: Any, workspace: Any):
-    """文件工具: 工作区外拒绝, 受保护路径拒绝"""
+    """文件工具: 外部读取需要审批, 受保护路径拒绝"""
     session = _make_session(tmp_path)
     tools = _install_tools(session)
 
     outside = workspace.parent / "outside.txt"
     outside.write_text("x", encoding="utf-8")
     out = tools["read_file"].execute(str(outside))
-    assert "越出工作区" in out
+    assert "approval_required" in out
 
     out = tools["read_file"].execute("no-such-file-xyz.txt")
     assert "不存在" in out
@@ -642,40 +552,34 @@ def test_file_tools_path_boundary_and_protection(tmp_path: Any, workspace: Any):
     assert "受保护" in out or "不存在" in out
 
 def test_write_file_requires_approval(tmp_path: Any, workspace: Any):
-    """写文件: 无输入通道时拒绝, y 仅本次批准, all 本会话放行"""
+    """文件写入要求单次结构化批准, 普通 y/all 不授予权限"""
     session = _make_session(tmp_path)
     tools = _install_tools(session)
     target = workspace / "out.txt"
 
     out = tools["write_file"].execute(str(target), "hello")
-    assert "需要用户批准" in out
+    assert "approval_required" in out
     assert not target.exists()
 
     session.user_input_provider = _reply("y")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     # y 仅批准本次: 写入成功, 但下次同类操作仍需询问
     out = tools["write_file"].execute(str(target), "hello")
     assert "已写入" in out
     assert target.read_text(encoding="utf-8") == "hello"
 
-    session.user_input_provider = _reply("n")
-    # 第二次写仍需批准, 用户拒绝则拦截
-    out = tools["write_file"].execute(str(target), "again", append=True)
-    assert "拒绝了" in out or "拒绝" in out
-    assert target.read_text(encoding="utf-8") == "hello"
-
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "deny", "用户拒绝", "user")
+    assert "approval_denied" in tools["write_file"].execute(str(target), "again", append=True)
+    session.approval_provider = None
     session.user_input_provider = _reply("all")
-    # all = 本会话全部放行, 后续写不再询问
-    out = tools["write_file"].execute(str(target), "again", append=True)
-    assert "已追加" in out
-    session.user_input_provider = _reply("n")
-    out = tools["write_file"].execute(str(target), "third", append=True)
-    assert "已追加" in out
-    assert target.read_text(encoding="utf-8") == "helloagainthird"
+    assert "approval_required" in tools["write_file"].execute(str(target), "again", append=True)
+    assert target.read_text(encoding="utf-8") == "hello"
 
 def test_edit_file_tool(tmp_path: Any, workspace: Any):
     """编辑文件: 精确替换 + 未匹配报错"""
     session = _make_session(tmp_path)
     session.user_input_provider = _reply("y")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = _install_tools(session)
     target = workspace / "edit.txt"
     target.write_text("aaa bbb aaa", encoding="utf-8")
@@ -691,6 +595,7 @@ def test_search_replace_tool(tmp_path: Any, workspace: Any):
     """批量替换: 多对 old->new, replace_all 独立控制, 全量预校验"""
     session = _make_session(tmp_path)
     session.user_input_provider = _reply("y")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = _install_tools(session)
     target = workspace / "sr.txt"
     target.write_text("x a x b x a", encoding="utf-8")
@@ -850,6 +755,7 @@ async def test_async_file_tools(tmp_path: Any, workspace: Any):
     """异步文件工具: 读写/编辑/列表/glob/grep 主路径"""
     session = await _make_async_session(tmp_path)
     session.user_input_provider = _reply("y")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = await _async_tools(session)
 
     target = workspace / "a.txt"
@@ -878,6 +784,7 @@ async def test_async_search_replace_and_todo(tmp_path: Any, workspace: Any):
     """异步 search_replace / todo_write 主路径"""
     session = await _make_async_session(tmp_path)
     session.user_input_provider = _reply("y")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = await _async_tools(session)
 
     target = workspace / "a.txt"
@@ -900,6 +807,7 @@ async def test_async_ask_shell(tmp_path: Any, workspace: Any):
     """异步 ask_user / shell 主路径"""
     session = await _make_async_session(tmp_path)
     session.user_input_provider = _reply("y")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
     tools = await _async_tools(session)
 
     out = await tools["ask_user"].execute("继续?")
@@ -922,10 +830,11 @@ async def test_async_ask_shell(tmp_path: Any, workspace: Any):
     assert "黑名单" in out
 
     session.user_input_provider = None
+    session.approval_provider = None
     out = await tools["shell"].execute("git push")
-    assert "需要用户批准" in out
+    assert "approval_required" in out
     out = await tools["shell"].execute("type ../outside.txt")
-    assert "需要用户批准" in out
+    assert "approval_required" in out
 
 @pytest.mark.asyncio
 async def test_async_shell_and_subagent_reject_invalid_integer_arguments(
@@ -997,12 +906,14 @@ async def test_invalid_later_replacement_never_approves_or_writes(
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
     sync, async_tool = sync_write.SearchReplaceTool(engine), async_write.AsyncSearchReplaceTool(engine)
     sync._bind(SimpleSession.__new__(SimpleSession))
+    bind_environment(sync._session, replace(environment_snapshot(sync._session), workspace_root=Path(tmp_path)))
     async_tool._bind(AsyncSimpleSession.__new__(AsyncSimpleSession))
+    bind_environment(async_tool._session, replace(environment_snapshot(async_tool._session), workspace_root=Path(tmp_path)))
     for module in (sync_write, async_write):
         monkeypatch.setattr(module, "_tool_root", lambda tool: tmp_path)
     sync_approve, async_approve = Mock(), AsyncMock()
-    monkeypatch.setattr(sync_write, "_approve_file_write", sync_approve)
-    monkeypatch.setattr(async_write, "_approve_file_write_async", async_approve)
+    monkeypatch.setattr(sync_write, "_approve_sync", sync_approve)
+    monkeypatch.setattr(async_write, "_approve_async", async_approve)
     replacements = [{"old": "first", "new": "changed"}, invalid]
     result = sync.execute(str(path), replacements)
     assert result == await async_tool.execute(str(path), replacements)
@@ -1021,11 +932,13 @@ async def test_replacements_preserve_order_and_approval(
     engine = PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
     sync, async_tool = sync_write.SearchReplaceTool(engine), async_write.AsyncSearchReplaceTool(engine)
     sync._bind(SimpleSession.__new__(SimpleSession))
+    bind_environment(sync._session, replace(environment_snapshot(sync._session), workspace_root=Path(tmp_path)))
     async_tool._bind(AsyncSimpleSession.__new__(AsyncSimpleSession))
+    bind_environment(async_tool._session, replace(environment_snapshot(async_tool._session), workspace_root=Path(tmp_path)))
     for module in (sync_write, async_write):
         monkeypatch.setattr(module, "_tool_root", lambda tool: tmp_path)
-    monkeypatch.setattr(sync_write, "_approve_file_write", Mock(return_value=(allowed, "拒绝")))
-    monkeypatch.setattr(async_write, "_approve_file_write_async", AsyncMock(return_value=(allowed, "拒绝")))
+    monkeypatch.setattr(sync_write, "_approve_sync", Mock(return_value=(allowed, "拒绝")))
+    monkeypatch.setattr(async_write, "_approve_async", AsyncMock(return_value=(allowed, "拒绝")))
     replacements = [{"old": "first", "new": "second"}, {"old": "second", "new": "third", "replace_all": True}]
     path.write_text("first second", encoding="utf-8")
     sync_result = sync.execute(str(path), replacements)
@@ -1087,3 +1000,263 @@ async def test_parse_error_is_not_request_failure(monkeypatch: pytest.MonkeyPatc
     assert json.loads(sync.execute(url)) == json.loads(await async_tool.execute(url)) == {
         "url": url, "error": "解析失败: 坏页面",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_three_modes_exact_actions_and_separate_user_questions(tmp_path, workspace, monkeypatch, asynchronous):
+    """三档模式完整走文件和 Shell, 审批证据包含实际变化, 普通提问不能授权"""
+    import inspect
+    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+    from satrap.core.approval import coordinator as approval
+    from satrap.core.call_context import bind_tool_workflow
+    from types import SimpleNamespace
+    session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
+    tools = await _async_tools(session) if asynchronous else _install_tools(session)
+    engine = get_plugin_state(session)["engine"]
+    calls, approvals, reviews = [], [], []
+    monkeypatch.setattr(tools_mod, "_run_shell", lambda *args, **kwargs: calls.append(args) or "executed")
+    def human(request):
+        approvals.append(request)
+        return ApprovalResult.for_request(request, "allow", "用户批准本次", "user")
+    def model(**kwargs):
+        reviews.append(kwargs)
+        return '{"decision":"allow","reason":"用户已授权本次修改"}'
+    async def async_model(**kwargs):
+        return model(**kwargs)
+    monkeypatch.setattr(session.llm, "chat", async_model if asynchronous else model)
+    session.user_input_provider = lambda *args: "all"
+    async def execute(name, *args, **kwargs):
+        value = tools[name].execute(*args, **kwargs)
+        return await value if inspect.isawaitable(value) else value
+
+    assert "approval_required" in await execute("write_file", "blocked.txt", "not approved")
+    assert engine.mode == "user" and not (workspace / "blocked.txt").exists()
+    monkeypatch.setattr(session._wf.ctx, "get_context", lambda: [{"role": "user", "content": "用户主会话授权-marker"}])
+    child = SimpleNamespace(ctx=SimpleNamespace(get_context=lambda: [
+        {"role": "user", "content": "子任务不能冒充用户授权"},
+        {"role": "assistant", "content": "准备修改", "reasoning_content": "hidden-secret"}]))
+    bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(workspace / "private")))
+    for mode in ("user", "auto", "full-access"):
+        engine.set_mode(mode, persist=False)
+        session.approval_provider = human
+        before_human, before_model = len(approvals), len(reviews)
+        assert "已写入" in await execute("write_file", f"private/{mode}.txt", "scratch")
+        assert (len(approvals), len(reviews)) == (before_human, before_model)
+        with bind_tool_workflow(child):
+            assert "已写入" in await execute("write_file", "matrix.txt", "before")
+            assert "已编辑" in await execute("edit_file", "matrix.txt", "before", "middle")
+            assert "已批量替换" in await execute("search_replace", "matrix.txt", [{"old": "middle", "new": "after"}])
+            assert await execute("shell", "echo approved", timeout=13) == "executed"
+        assert (workspace / "matrix.txt").read_text(encoding="utf-8") == "after"
+        assert len(approvals) - before_human == (4 if mode == "user" else 0)
+        assert len(reviews) - before_model == (4 if mode == "auto" else 0)
+    change = approvals[1].payload()["action"]
+    assert change["before"] == "before" and change["after"] == "middle"
+    assert "-before" in change["diff"] and "+middle" in change["diff"]
+    shell = approvals[3].payload()["action"]
+    assert shell["command"] == "echo approved" and shell["timeout"] == 13
+    assert shell["argv"][0] == shell["interpreter"] and shell["cwd"] == str(workspace)
+    assert len({request.request_id for request in approvals}) == len(approvals)
+    assert all(set(review) == {"messages"} for review in reviews)
+    evidence = reviews[0]["messages"][1]["content"]
+    assert "main_history" in evidence and "用户主会话授权-marker" in evidence
+    assert "executing_history" in evidence and "子任务不能冒充用户授权" in evidence
+    assert "hidden-secret" not in evidence and "action_json" not in evidence
+    records = [json.loads(line) for line in engine.log_file.read_text(encoding="utf-8").splitlines()]
+    assert {"user", "model", "policy"} <= {row["reviewer"] for row in records}
+    assert all("before" not in row and "evidence" not in row for row in records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_auto_decisions_failures_human_fallback_and_timeout(tmp_path, workspace, monkeypatch, asynchronous):
+    """模型拒绝不执行, ask 与格式或调用失败转结构化人工, 超时不能迟到授权"""
+    import inspect
+    import asyncio
+    import time
+    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+    from satrap.core.approval import coordinator as approval
+    session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
+    tools = await _async_tools(session) if asynchronous else _install_tools(session)
+    engine = get_plugin_state(session)["engine"]
+    engine.set_mode("auto", persist=False)
+    monkeypatch.setattr(approval, "_REVIEW_TIMEOUT", 0.01)
+    human_calls = []
+    def human(request):
+        human_calls.append(request)
+        return ApprovalResult.for_request(request, "allow", "人工已批准", "user")
+    variants = ['{"decision":"deny","reason":"未获用户授权"}',
+                '{"decision":"ask","reason":"需要确认目标"}', "allow",
+                '{"decision":"allow","reason":"ok","extra":true}', RuntimeError("模型离线"), "timeout"]
+    for index, value in enumerate(variants):
+        def model(**kwargs):
+            if isinstance(value, Exception):
+                raise value
+            if value == "timeout":
+                time.sleep(0.04)
+                return '{"decision":"allow","reason":"迟到结果"}'
+            return value
+        async def async_model(**kwargs):
+            if value == "timeout":
+                await asyncio.sleep(0.04)
+                return '{"decision":"allow","reason":"迟到结果"}'
+            return model(**kwargs)
+        monkeypatch.setattr(session.llm, "chat", async_model if asynchronous else model)
+        for with_human in (False, True):
+            session.approval_provider = human if with_human else None
+            target = workspace / f"fallback-{index}-{with_human}.txt"
+            previous = len(human_calls)
+            result = tools["write_file"].execute(str(target), "payload")
+            result = await result if inspect.isawaitable(result) else result
+            denied = index == 0
+            assert target.exists() == (with_human and not denied)
+            assert len(human_calls) - previous == int(with_human and not denied)
+            if not target.exists():
+                assert ("approval_denied" if denied else "approval_required") in result
+                if value == "timeout":
+                    assert "超时" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("drift", ["file", "created", "mode", "disabled", "sandbox", "replay", "untyped", "turn"])
+async def test_approval_cannot_authorize_changed_actions(tmp_path, workspace, asynchronous, drift):
+    """文件变化, 权限版本变化, 禁用或审批回放均不得执行"""
+    import inspect
+    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+    session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
+    tools = await _async_tools(session) if asynchronous else _install_tools(session)
+    engine = get_plugin_state(session)["engine"]
+    session.recovery_origin = {"turn_id": 1, "variant_index": 0}
+    target = workspace / "drift.txt"
+    if drift != "created":
+        target.write_text("original", encoding="utf-8")
+    tool = tools["write_file"]
+    def provider(request):
+        if drift in {"file", "created"}:
+            target.write_text("external", encoding="utf-8")
+        elif drift == "mode":
+            engine.set_mode("full-access", persist=False)
+            engine.set_mode("user", persist=False)
+        elif drift == "disabled":
+            tool.disable()
+        elif drift == "sandbox":
+            bind_environment(session, replace(environment_snapshot(session), sandbox_root=Path(workspace / "other")))
+        elif drift == "replay":
+            from dataclasses import replace
+            return ApprovalResult.for_request(replace(request, request_id="other"), "allow", "重放", "user")
+        elif drift == "untyped":
+            return "y"
+        elif drift == "turn":
+            session.recovery_origin = {"turn_id": 2, "variant_index": 0}
+        return ApprovalResult.for_request(request, "allow", "本次批准", "user")
+    session.approval_provider = provider
+    value = tool.execute(str(target), "should-never-write", append=True)
+    result = await value if inspect.isawaitable(value) else value
+    assert "已写入" not in result and "已追加" not in result
+    assert target.read_text(encoding="utf-8") == ("external" if drift in {"file", "created"} else "original")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_full_access_outside_workspace_and_plan_override(tmp_path, workspace, asynchronous):
+    """full-access 文件工具可显式访问工作区外, 保留硬保护和计划模式"""
+    import inspect
+    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+    session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
+    tools = await _async_tools(session) if asynchronous else _install_tools(session)
+    engine = get_plugin_state(session)["engine"]
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "test.txt"
+    async def execute(name, *args):
+        value = tools[name].execute(*args)
+        return await value if inspect.isawaitable(value) else value
+    assert "越出工作区" in await execute("write_file", str(target), "external-content")
+    engine.set_mode("full-access", persist=False)
+    assert "已写入" in await execute("write_file", str(target), "external-content")
+    assert "external-content" in await execute("read_file", str(target))
+    assert "test.txt" in await execute("list_dir", str(outside))
+    assert "test.txt" in await execute("glob_files", str(outside / "*.txt"))
+    assert "external-content" in await execute("grep_files", "external-content", str(outside))
+    assert "受保护" in await execute("write_file", str(outside / ".env"), "blocked")
+    engine.set_plan_mode(True)
+    assert "计划模式" in await execute("write_file", str(target), "blocked")
+    assert target.read_text(encoding="utf-8") == "external-content"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_named_approval_model_uses_host_configuration(tmp_path, workspace, monkeypatch, asynchronous):
+    """专用审批模型来自宿主模型表, 不把调用转给主 Agent"""
+    from types import SimpleNamespace
+    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+    from satrap.core.approval import coordinator as approval
+    session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
+    tools = await _async_tools(session) if asynchronous else _install_tools(session)
+    engine = get_plugin_state(session)["engine"]
+    engine.set_mode("auto", persist=False)
+    engine.approval_model = "reviewer"
+    config, seen = object(), []
+    def lookup(name):
+        assert name == "reviewer"
+        return config
+    def chat(**kwargs):
+        seen.append(kwargs)
+        return '{"decision":"allow","reason":"指定审批模型确认"}'
+    async def async_chat(**kwargs):
+        return chat(**kwargs)
+    session.plugin_model_manager = SimpleNamespace(has_config=lambda target, name: (target, name) == ("llm", "reviewer"), get_llm_config=lookup)
+    def build(value, *, async_):
+        assert value is config and async_ == asynchronous
+        return SimpleNamespace(chat=async_chat if asynchronous else chat)
+    monkeypatch.setattr(approval, "build_llm_from_config", build)
+    value = tools["write_file"].execute("named.txt", "approved")
+    result = await value if asynchronous else value
+    assert "已写入" in result and len(seen) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_real_subagent_inherits_mode_and_supplies_its_own_evidence(tmp_path, workspace, monkeypatch, asynchronous):
+    """真实子代理循环共享同一引擎, 独立审查同时看到主用户授权与子任务"""
+    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+    session = await _make_async_session(tmp_path) if asynchronous else _make_session(tmp_path)
+    tools = await _async_tools(session) if asynchronous else _install_tools(session)
+    engine = get_plugin_state(session)["engine"]
+    seen, results = [], []
+    stage = [0]
+    def call(messages, **kwargs):
+        stage[0] += 1
+        if stage[0] % 4 == 1:
+            return LLMCallResponse(type="tools_call", content="", tool_calls=[
+                {"name": "subagent", "id": f"sub-{stage[0]}", "arguments": {"task": "独立子任务-marker", "tools": ["write_file"], "max_turns": 3}}])
+        if stage[0] % 4 == 2:
+            return LLMCallResponse(type="tools_call", content="", tool_calls=[
+                {"name": "write_file", "id": f"call-{stage[0]}", "arguments": {"path": "child.txt", "content": "child-result"}}])
+        if stage[0] % 4 == 3:
+            results.append(messages[-1]["content"])
+            return LLMCallResponse(type="answer", content="子任务结束")
+        return LLMCallResponse(type="answer", content="主任务结束")
+    def review(**kwargs):
+        seen.append(kwargs["messages"][1]["content"])
+        return '{"decision":"allow","reason":"主用户已授权"}'
+    async def async_call(messages, **kwargs):
+        return call(messages, **kwargs)
+    async def async_review(**kwargs):
+        return review(**kwargs)
+    monkeypatch.setattr(session.llm, "call", async_call if asynchronous else call)
+    monkeypatch.setattr(session.llm, "chat", async_review if asynchronous else review)
+    engine.set_mode("auto", persist=False)
+    value = session.run("真实用户授权-marker")
+    assert (await value if asynchronous else value) == "主任务结束"
+    assert (workspace / "child.txt").read_text(encoding="utf-8") == "child-result"
+    assert len(seen) == 1
+    assert all(marker in seen[0] for marker in ("main_history", "真实用户授权-marker", "executing_history", "独立子任务-marker")), seen[0]
+    engine.set_mode("user", persist=False)
+    (workspace / "child.txt").write_text("original", encoding="utf-8")
+    value = session.run("真实用户授权-marker")
+    assert (await value if asynchronous else value) == "主任务结束"
+    assert "approval_required" in str(results[-1])
+    assert (workspace / "child.txt").read_text(encoding="utf-8") == "original"

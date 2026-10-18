@@ -1,0 +1,55 @@
+name: Python worker compatibility
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'satrap/core/utils/sandbox/**'
+      - 'satrap/core/group_chat/**'
+      - 'satrap/expend/tools/sandbox_tools/**'
+      - 'satrap/expend/plugins/base_take/**'
+      - 'satrap/expend/plugins/group_chat/**'
+      - 'tests/unit/test_coding_security_flows.py'
+      - 'tests/unit/test_coding_configuration_flows.py'
+      - 'tests/unit/test_group_media_flows.py'
+      - 'setup.py'
+      - 'requirements.txt'
+      - '.github/workflows/code-sandbox.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  worker:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ['3.11', '3.13']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install execution dependencies
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          python -m pip install '.[sandbox,vector]' pytest pytest-asyncio
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise real worker and guards
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          python -m pytest tests/unit/test_coding_security_flows.py tests/unit/test_group_media_flows.py -q -k 'sandbox or internal_file or traversal or outside_path or delete_sandbox or code_execution_timeout or trusted_sdk'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

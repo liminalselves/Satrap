@@ -106,7 +106,7 @@ python -m satrap.main run
 
 ## 兼容性
 
-- Python >= 3.10
+- Python >= 3.11
 - LLM 模块兼容 OpenAI Chat Completions API
 - 图片输入支持 JPEG, PNG, WebP, GIF, BMP 等常见格式
 

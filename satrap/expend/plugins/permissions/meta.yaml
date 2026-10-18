@@ -1,0 +1,30 @@
+name: permissions
+version: 0.1.0
+author: Satrap Team
+description: 管理宿主执行的 user/auto/full-access 审批模式, 独立于编程插件
+permission_schema_version: 1
+management_permissions:
+  approval_manage:
+    description: 管理后端机器执行的审批模式
+    system_admin: true
+    requirements: [仅用户原生命令可以切换, QQ 群管理员身份不授予宿主执行权限]
+config_schema:
+  approval_model:
+    type: string
+    default: ""
+    description: auto 模式专用审批模型配置名, 留空使用当前会话模型, 审查请求不携带工具
+  data_root:
+    type: path
+    default: ""
+    description: 审批模式和日志目录, 留空使用宿主会话缓存目录; 更改后需重启会话
+commands:
+  approve: "切换执行审批: /approve mode user 由你确认, auto AI 审批, full-access 直接执行; /approve status 查看"
+command_permissions: {}
+tools: {}
+services: {}
+handlers: {}
+skills: {}
+mcp: {}
+applicability:
+  session_types: [chat, platform, embedded]
+  platforms: "*"

@@ -1,6 +1,9 @@
 """后端审计性能基线; 固定离线负载, 分开测量耗时, Python 分配峰值和查询数量"""
 from __future__ import annotations
 
+from dataclasses import replace
+from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
+
 import importlib.metadata
 from unittest.mock import AsyncMock, Mock, patch
 import tracemalloc
@@ -81,7 +84,8 @@ async def measure(call, repeats):
 async def file_baselines(root, repeats):
     """使用固定长度 ASCII 行, 测量首部及尾部分页的同步和异步路径"""
     cases = []
-    session = SimpleNamespace(coding_workspace_root=root)
+    session = SimpleNamespace()
+    bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(root)))
     for size_mib in (1, 8, 32):
         path = root / f"file-{size_mib}.txt"
         line = b"audit-line " + b"x" * 68 + b"\n"

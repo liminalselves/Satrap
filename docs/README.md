@@ -31,6 +31,7 @@
 ### plugins/ 内置插件与扩展
 
 - [satrap_coding 插件](plugins/satrap-coding-plugin.md): 简易 Coding Agent, 文件工具 / shell / 子代理 / 目标与计划模式
+- [permissions 插件](plugins/permissions-plugin.md): 独立管理宿主执行的三档审批模式与审批模型
 - [base_take 插件](plugins/base-take-plugin.md): 网页搜索与抓取, 代码沙箱和文档解析
 - [memory 插件](plugins/memory-plugin.md): 独立长期记忆, 来源, 权限与上下文注入
 - [RAG 与会话覆盖](plugins/rag-and-session-overrides.md): RAG 插件使用流程, 知识库参数与文档管理, Embedding 绑定与索引重建, 检索参数, 会话级插件配置覆盖

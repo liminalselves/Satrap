@@ -970,3 +970,24 @@ def test_execute_tool_call_handles_malformed_call_info_without_raising():
     assert tool_message["id"] == "call_bad_args"
     assert tool_result["error_type"] == "invalid_arguments"
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command, owner", [("/approve mode auto", "permissions"), ("/plan off", "satrap_coding")])
+@pytest.mark.parametrize("granted_plugin", ["permissions", "satrap_coding"])
+async def test_command_owner_administrator_passes_operator_precheck(monkeypatch, command, owner, granted_plugin):
+    """前置门按命令所属插件核验管理范围, 不借用其他插件的管理员身份"""
+    from types import SimpleNamespace
+    from satrap.core import platform
+    adapter = RecorderAdapter(settings={"command_operators": []})
+    manager = _FakeSessionManager()
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    reviewed = []
+    def resolve(origin, plugin):
+        reviewed.append((origin.actor_id, plugin))
+        return SimpleNamespace(allowed=origin.actor_id == "user-1" and plugin == granted_plugin)
+    monkeypatch.setattr(platform, "current_adapter_manager", lambda: SimpleNamespace(administrator_service=SimpleNamespace(resolve=resolve)))
+    await scheduler.execute(_protected_event(adapter, command))
+    assert [call.message for call in manager.calls] == ([command] if owner == granted_plugin else [])
+    assert reviewed == [("user-1", owner)]
+    assert bool(_feedback_texts(adapter)) == (owner != granted_plugin)

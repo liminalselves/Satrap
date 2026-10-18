@@ -619,7 +619,12 @@ class TestPolicyDefaultSingleSource:
         projection_adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={}))
         projection_event = await _event(projection_adapter, "x" * 200)
         monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 10)
-        assert len(project_input(projection_event, "none").message) <= 10
+        with pytest.raises(ValueError, match="输入文本额度不足以保留发言人和消息 ID"):
+            project_input(projection_event, "none")
+        monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 40)
+        limited = project_input(projection_event, "none").message
+        assert len(limited) <= 40
+        assert limited.startswith("[用户 30, 消息 1] ")
         monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 10000)
         assert project_input(projection_event, "none").message == "[用户 30, 消息 1] " + "x" * 200
 

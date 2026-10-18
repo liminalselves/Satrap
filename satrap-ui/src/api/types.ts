@@ -143,6 +143,26 @@ export interface EdictumPluginConfigField {
   scope?: string;
 }
 
+export type PluginCapabilityKind = 'tools' | 'services' | 'handlers' | 'mcp' | 'skills' | 'commands';
+
+export interface PluginCapabilityState {
+  name: string;
+  enabled: boolean;
+  requested_enabled?: boolean;
+  description: string;
+  exported?: boolean;
+  reason?: string;
+  replaced_by?: string;
+}
+export type PluginCapabilitySelection = Partial<Record<PluginCapabilityKind, string[]>>;
+
+export interface PluginInteropDeclarations {
+  exports?: PluginCapabilitySelection;
+  requires?: Record<string, true | (PluginCapabilitySelection & { optional?: boolean })>;
+  replaces?: Record<string, Partial<Record<PluginCapabilityKind, Record<string, string>>>>;
+  conflicts?: Record<string, true | PluginCapabilitySelection>;
+}
+
 export interface EdictumAvailablePlugin {
   name: string;
   config_version?: number;
@@ -153,6 +173,7 @@ export interface EdictumAvailablePlugin {
   capabilities: Record<string, Record<string, string>>;
   compatibility?: { satrap?: string };
   applicability?: { session_types?: string[]; platforms?: string[] | '*' };
+  interop?: PluginInteropDeclarations;
 }
 
 export interface ManagedPlugin extends EdictumAvailablePlugin {
@@ -221,7 +242,7 @@ export interface PluginRuntimeSnapshot {
       platform_id: string;
       session_id: string;
       location_id: string;
-      plugin: { name: string; status: string; enabled: boolean; error?: string; drift?: boolean; restart_required?: boolean; capabilities: { applied: Record<string, Record<string, boolean>>; desired: Record<string, Record<string, boolean>>; loaded: Record<string, Record<string, boolean>>; loaded_known?: boolean } };
+      plugin: { name: string; status: string; enabled: boolean; error?: string; drift?: boolean; restart_required?: boolean; capabilities: { applied: Record<string, Record<string, boolean>>; desired: Record<string, Record<string, boolean>>; loaded: Record<string, Record<string, boolean>>; loaded_known?: boolean; effective?: Record<string, PluginCapabilityState[]> } };
     }>;
   }>;
 }
@@ -271,6 +292,7 @@ export interface EdictumSessionConfig {
         capabilities?: {
           applied: Record<string, Record<string, boolean>>;
           desired: Record<string, Record<string, boolean>>;
+          effective?: Record<string, PluginCapabilityState[]>;
         };
       }>;
       plugin_summary?: {

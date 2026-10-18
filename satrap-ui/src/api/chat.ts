@@ -1,4 +1,4 @@
-import type { LLMConfig } from './types';
+import type { LLMConfig, PluginCapabilityKind, PluginCapabilityState } from './types';
 import { getChatApiUrl } from '@/utils/constants';
 import { ensureApiSession, establishApiSession } from './auth';
 import type { SessionPluginSettings } from './pluginSettings';
@@ -6,6 +6,16 @@ import type { ModelOptions } from '@/components/common/PluginConfigFields';
 import type { RagResult } from './rag';
 
 // ==================== 类型 ====================
+
+export type ApprovalMode = 'user' | 'auto' | 'full-access';
+
+export interface ApprovalState {
+  ok: boolean;
+  available: boolean;
+  mode: ApprovalMode;
+  revision: number;
+  plan_mode: boolean;
+}
 
 // 工具调用明细 (对齐 display_tool_calls)
 export interface ToolCall {
@@ -189,6 +199,7 @@ export type ModelConfigItem = LLMConfig;
 
 // 预加载及首次发送使用的会话构建设置
 export interface ChatPreloadSettings {
+  approvalMode?: ApprovalMode;   // 草稿首次发送时应用, 不改变已有会话的审批策略
   model: string;
   think: string;
   temperature: number;
@@ -197,13 +208,9 @@ export interface ChatPreloadSettings {
 }
 
 // 能力项
-export interface CapabilityItem {
-  name: string;
-  description: string;
-  enabled: boolean;
-}
+export type CapabilityItem = PluginCapabilityState;
 
-export type CapabilityKind = 'tools' | 'skills' | 'mcp' | 'handlers' | 'commands';
+export type CapabilityKind = PluginCapabilityKind;
 
 // 插件信息
 export interface ChatPlugin {
@@ -245,9 +252,16 @@ export interface MemoryRecord {
   updated_at: string;
 }
 
+export interface ApprovalPresentation {
+  tool: string;
+  operation: string;
+  description: string;
+  action: Record<string, unknown>;
+}
+
 // WS 推送事件
 export type ChatEvent = (
-  | { type: 'snapshot'; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[] }[] }
+  | { type: 'snapshot'; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[]; approval?: ApprovalPresentation | null }[] }
   | { type: 'resync_required' }
   | { type: 'subscribed'; conversation_id: string }
   | { type: 'turn_start'; user_input: string; turn_id: number; turn_index: number; variant_index: number; retry?: boolean }
@@ -255,7 +269,7 @@ export type ChatEvent = (
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_start'; name: string; arguments: unknown; call_id: string }
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
-  | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[] }
+  | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[]; approval?: ApprovalPresentation | null }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
   | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }
@@ -298,6 +312,10 @@ function historyQueryString(query: ChatHistoryQuery = {}): string {
 }
 
 export const chatApi = {
+  getApproval: (conversationId: string, signal?: AbortSignal) =>
+    request<ApprovalState>('GET', '/api/chat/approval?' + new URLSearchParams({ conversation: conversationId }), undefined, signal),
+  setApproval: (conversationId: string, mode: ApprovalMode, revision: number) =>
+    request<ApprovalState>('PUT', '/api/chat/approval?' + new URLSearchParams({ conversation: conversationId }), { mode, expected_revision: revision }),
   refreshHistoryStorage: () => request<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('POST', '/api/chat/history/storage'),
   ragList: (sessionId: string, kbId: string) => request<RagResult>('GET', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId, kb_id: kbId })}`),
   ragAction: (sessionId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>('POST', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId })}`, payload),
@@ -399,6 +417,7 @@ export const chatApi = {
         temperature: preloadSettings.temperature,
         system_prompt: preloadSettings.systemPrompt,
         project_id: preloadSettings.projectId,
+        approval_mode: preloadSettings.approvalMode,
       } : {}),
     }),
 
@@ -410,8 +429,8 @@ export const chatApi = {
     }),
 
   // 模型配置管理
-  listModelsDetail: () =>
-    request<{ ok: boolean; models: Record<string, ModelConfigItem> }>('GET', '/api/chat/models/detail'),
+  listModelsDetail: (signal?: AbortSignal) =>
+    request<{ ok: boolean; models: Record<string, ModelConfigItem> }>('GET', '/api/chat/models/detail', undefined, signal),
 
   addModel: (config: ModelConfigItem) =>
     request<{ ok: boolean; error?: string; refreshed_conversations?: number; deferred_conversations?: number }>('POST', '/api/chat/models', config),

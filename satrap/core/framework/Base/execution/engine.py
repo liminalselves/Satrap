@@ -80,6 +80,7 @@ class InvokeTool:
     """使用工作流工具管理器执行单个调用"""
 
     call: dict[str, Any]
+    messages: list[dict[str, Any]]
 
 
 @dataclass
@@ -295,7 +296,7 @@ def execute(
                             store.start_step(run_id, step.key, "tool", step.call, policy)
                         elif saved["recovery_policy"] != "retry":
                             raise RunNeedsAttention(f"工具步骤 {step.key} 的执行结果未知, 请确认是否重试")
-                    value = yield InvokeTool(step.call)
+                    value = yield InvokeTool(step.call, step.messages)
                     if store is not None and run_id is not None:
                         store.finish_step(run_id, step.key, value)
                 if isinstance(step, ModelStep):
@@ -357,7 +358,7 @@ async def run_async(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[ExecutionO
                 value = await wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                            tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks)
             elif isinstance(action, InvokeTool):
-                with bind_tool_workflow(wf):
+                with bind_tool_workflow(wf, action.messages):
                     tool_message, tool_result = await wf.tools_manager.execute_tool_call(action.call)
                 value = (tool_message, await asyncio.to_thread(freeze_tool_result, tool_result, wf.llm))
             elif isinstance(action, Commit):
@@ -428,7 +429,7 @@ def run_sync(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptions]) -> 
                 value = wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                      tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks)
             elif isinstance(action, InvokeTool):
-                with bind_tool_workflow(wf):
+                with bind_tool_workflow(wf, action.messages):
                     tool_message, tool_result = wf.tools_manager.execute_tool_call(action.call)
                 value = (tool_message, freeze_tool_result(tool_result, wf.llm))
             elif isinstance(action, Commit):

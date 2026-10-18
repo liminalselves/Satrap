@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from collections.abc import Iterator
 from dataclasses import asdict, fields
 import threading
 from pathlib import Path
@@ -20,9 +22,12 @@ from satrap.core.log import logger
 
 ConfigTarget = Literal["llm", "embedding", "rerank", "asr"]
 ResetTarget = Literal["llm", "embedding", "rerank", "asr", "all"]
-TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig)
+TConfig = TypeVar("TConfig", bound=LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig)
 
 from satrap.core.config_paths import get_config_path
+from satrap.core.storage.file_lock import FileLock
+from satrap.core.storage.persist import atomic_write_json
+from satrap.core.utils.file_snapshot import FileFingerprint, file_fingerprint
 
 
 class ConfigInUseError(ValueError):
@@ -78,6 +83,8 @@ class ModelConfigManager:
         - asr_in_use_checker: ASR 删除/重命名前的引用扫描, 返回引用清单; 未装配时不检查 (精简运行时)
         """
         self._lock = threading.RLock()
+        self._source_signature: FileFingerprint | None = None
+        self._loaded = False
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
         self._asr_in_use_checker = asr_in_use_checker
         self._llm_in_use_checker = llm_in_use_checker
@@ -230,51 +237,63 @@ class ModelConfigManager:
             "asr": dump_named(self._asr_configs),
         }
 
-    def _save_locked(self):
-        """保存配置"""
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.storage_path.open("w", encoding="utf-8") as f:
-            json.dump(self._to_payload_locked(mask_api_key=False), f, ensure_ascii=False, indent=2)
-
-    def reload(self):
-        """重新加载配置, 仅在格式迁移或归一化改变内容时写回"""
-        with self._lock:
-            if not self.storage_path.exists():
-                self._save_locked()
-                return
-
+    @contextmanager
+    def _synchronized(self, *, force: bool = False) -> Iterator[None]:
+        """在跨进程事务锁内刷新来源再执行读写, 写入失败后丢弃未落盘缓存"""
+        with FileLock(self.storage_path.with_name(self.storage_path.name + '.lock')), self._lock:
             try:
-                with self.storage_path.open("r", encoding="utf-8") as f:
-                    data: dict[str, Any] | None = json.load(f)
-            except Exception as e:
-                logger.error(f"[ModelConfigManager] 读取配置失败: {e}")
-                return
+                self._reload_locked(force=force)
+                yield
+            except Exception:
+                self._source_signature = None
+                raise
 
-            try:
-                if not isinstance(data, dict):
-                    logger.warning("[ModelConfigManager] 配置文件格式错误，已忽略并保留内存默认值")
-                    return
+    def _save_locked(self) -> None:
+        """调用方持有事务锁, 原子保存完整配置并更新缓存指纹"""
+        atomic_write_json(self.storage_path, self._to_payload_locked(mask_api_key=False), indent=2)
+        self._source_signature = file_fingerprint(self.storage_path)
+        self._loaded = True
 
-                self._llm_configs = self._deserialize_named_configs(
-                    data.get("llm", {}), LLMConfig, self.DEFAULT_NAME
-                )
-                self._embedding_configs = self._deserialize_named_configs(
-                    data.get("embedding", {}), EmbeddingConfig, self.DEFAULT_NAME
-                )
-                self._rerank_configs = self._deserialize_named_configs(
-                    data.get("rerank", {}), ReRankConfig, self.DEFAULT_NAME
-                )
-                self._asr_configs = self._deserialize_named_configs(
-                    data.get("asr", {}), ASRConfig, self.DEFAULT_NAME
-                )
-                if self._to_payload_locked(mask_api_key=False) != data:
-                    self._save_locked()   # 避免普通读取改动文件指纹, 导致前端版本校验持续重试
-            except Exception as e:
-                logger.error(f"[ModelConfigManager] 解析配置失败: {e}")
+    def _reload_locked(self, *, force: bool = False) -> None:
+        """只提交完整解析成功的配置, 损坏或被删除的来源不允许用旧缓存覆盖"""
+        if not self.storage_path.exists():
+            if self._loaded:
+                raise FileNotFoundError('模型配置文件已被删除, 请检查配置来源')
+            self._save_locked()
+            return
+        signature = file_fingerprint(self.storage_path)
+        if not force and signature == self._source_signature:
+            return
+        with self.storage_path.open('r', encoding='utf-8') as stream:
+            data = json.load(stream)
+        if not isinstance(data, dict):
+            raise ValueError('模型配置必须是对象')
+        parsed: dict[str, dict[str, LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig]] = {}
+        for target, kind in (('llm', LLMConfig), ('embedding', EmbeddingConfig), ('rerank', ReRankConfig), ('asr', ASRConfig)):
+            raw = data.get(target, {})
+            if not isinstance(raw, dict):
+                raise ValueError(f'模型配置 {target} 格式错误')
+            legacy = any(key in kind.__dataclass_fields__ for key in raw)
+            if not legacy and any(not isinstance(value, dict) for value in raw.values()):
+                raise ValueError(f'模型配置 {target} 格式错误')
+            parsed[target] = self._deserialize_named_configs(raw, kind, self.DEFAULT_NAME)
+        for target, values in parsed.items():
+            store = self._target_store(cast(ConfigTarget, target))
+            store.clear()
+            store.update(values)   # 保留集合身份, 删除操作捕获的引用也能读取刷新后的内容
+        self._source_signature = signature
+        self._loaded = True
+        if self._to_payload_locked(mask_api_key=False) != data:
+            self._save_locked()   # 仅迁移旧格式或补齐默认字段时写回, 普通读取保持文件版本
 
-    def save(self):
-        """保存配置"""
-        with self._lock:
+    def reload(self) -> None:
+        """显式刷新完整来源, 与读写共用事务锁和严格解析"""
+        with self._synchronized(force=True):
+            pass
+
+    def save(self) -> None:
+        """保存前合并最新文件, 不把另一进程的修改替换为旧缓存"""
+        with self._synchronized():
             self._save_locked()
 
     @staticmethod
@@ -319,7 +338,7 @@ class ModelConfigManager:
         返回:
         - LLMConfig:  LLM 配置
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             cfg = self._llm_configs.get(key)
             if cfg is None:
@@ -336,7 +355,7 @@ class ModelConfigManager:
         返回:
         - Dict[str, Dict[str, Any]]: 列出所有 LLM 配置
         """
-        with self._lock:
+        with self._synchronized():
             return self._to_payload_locked(mask_api_key=mask_api_key)["llm"]
 
     def set_llm_config(self, config: LLMConfig, name: str | None = None):
@@ -347,7 +366,7 @@ class ModelConfigManager:
         - config: 配置信息
         - name: 名称
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name or config.name)
             payload = asdict(config)
             payload["name"] = key
@@ -362,7 +381,7 @@ class ModelConfigManager:
         - name: 名称
         - kwargs: 额外关键字参数
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             current = asdict(self._llm_configs.get(key, LLMConfig(name=key)))
             current.update(kwargs)
@@ -408,7 +427,7 @@ class ModelConfigManager:
         返回:
         - 配置存在并完成保存时为 True
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             if key not in configs:
                 return False
@@ -455,7 +474,7 @@ class ModelConfigManager:
         返回:
         - EmbeddingConfig:  Embedding 配置
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             cfg = self._embedding_configs.get(key)
             if cfg is None:
@@ -472,7 +491,7 @@ class ModelConfigManager:
         返回:
         - Dict[str, Dict[str, Any]]: 列出所有 Embedding 配置
         """
-        with self._lock:
+        with self._synchronized():
             return self._to_payload_locked(mask_api_key=mask_api_key)["embedding"]
 
     def set_embedding_config(self, config: EmbeddingConfig, name: str | None = None):
@@ -483,7 +502,7 @@ class ModelConfigManager:
         - config: 配置信息
         - name: 名称
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name or config.name)
             payload = asdict(config)
             payload["name"] = key
@@ -498,7 +517,7 @@ class ModelConfigManager:
         - name: 名称
         - kwargs: 额外关键字参数
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             current = asdict(self._embedding_configs.get(key, EmbeddingConfig(name=key)))
             current.update(kwargs)
@@ -516,7 +535,7 @@ class ModelConfigManager:
         返回:
         - bool: 删除 Embedding 配置
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             if key not in self._embedding_configs:
                 return False
@@ -538,7 +557,7 @@ class ModelConfigManager:
         返回:
         - ReRankConfig:  ReRank 配置
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             cfg = self._rerank_configs.get(key)
             if cfg is None:
@@ -555,7 +574,7 @@ class ModelConfigManager:
         返回:
         - Dict[str, Dict[str, Any]]: 列出所有 ReRank 配置
         """
-        with self._lock:
+        with self._synchronized():
             return self._to_payload_locked(mask_api_key=mask_api_key)["rerank"]
 
     def set_rerank_config(self, config: ReRankConfig, name: str | None = None):
@@ -566,7 +585,7 @@ class ModelConfigManager:
         - config: 配置信息
         - name: 名称
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name or config.name)
             payload = asdict(config)
             payload["name"] = key
@@ -581,7 +600,7 @@ class ModelConfigManager:
         - name: 名称
         - kwargs: 额外关键字参数
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             current = asdict(self._rerank_configs.get(key, ReRankConfig(name=key)))
             current.update(kwargs)
@@ -599,7 +618,7 @@ class ModelConfigManager:
         返回:
         - bool: 删除 ReRank 配置
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             if key not in self._rerank_configs:
                 return False
@@ -621,7 +640,7 @@ class ModelConfigManager:
         返回:
         - ASRConfig: ASR 配置
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             cfg = self._asr_configs.get(key)
             if cfg is None:
@@ -638,7 +657,7 @@ class ModelConfigManager:
         返回:
         - Dict[str, Dict[str, Any]]: 列出所有 ASR 配置
         """
-        with self._lock:
+        with self._synchronized():
             return self._to_payload_locked(mask_api_key=mask_api_key)["asr"]
 
     def set_asr_config(self, config: ASRConfig, name: str | None = None) -> None:
@@ -649,7 +668,7 @@ class ModelConfigManager:
         - config: 配置信息
         - name: 名称
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name or config.name)
             payload = asdict(config)
             payload["name"] = key
@@ -664,7 +683,7 @@ class ModelConfigManager:
         - name: 名称
         - kwargs: 额外关键字参数
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             current = asdict(self._asr_configs.get(key, ASRConfig(name=key)))
             current.update(kwargs)
@@ -722,7 +741,7 @@ class ModelConfigManager:
         - changes: 待更新字段
         - new_name: 新配置名称, 不传时保持原名称
         """
-        with self._lock:
+        with self._synchronized():
             current_key = self._normalize_name(name)
             target_key = self._normalize_name(new_name) if new_name is not None else current_key
             store = self._target_store(target)
@@ -751,6 +770,9 @@ class ModelConfigManager:
             else:
                 updated = self._from_dict(payload, ReRankConfig)
 
+            if isinstance(updated, LLMConfig):
+                from satrap.core.utils.context_policy import resolve_context_policy
+                resolve_context_policy(updated)
             if target_key != current_key:
                 store.pop(current_key)
             store[target_key] = updated
@@ -766,7 +788,7 @@ class ModelConfigManager:
         返回:
         - Dict[str, Dict[str, Dict[str, Any]]]: 所有配置
         """
-        with self._lock:
+        with self._synchronized():
             return self._to_payload_locked(mask_api_key=mask_api_key)
 
     def get_runtime_configs(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
@@ -776,7 +798,7 @@ class ModelConfigManager:
         返回:
         - Dict[str, Dict[str, Dict[str, Any]]]: 运行时配置
         """
-        with self._lock:
+        with self._synchronized():
             return self._to_payload_locked(mask_api_key=False)
 
     def has_config(self, target: ConfigTarget, name: str) -> bool:
@@ -790,7 +812,7 @@ class ModelConfigManager:
         返回:
         - bool: 检查结果
         """
-        with self._lock:
+        with self._synchronized():
             key = self._normalize_name(name)
             return key in self._target_store(target)
 
@@ -801,7 +823,7 @@ class ModelConfigManager:
         参数:
         - target: 目标
         """
-        with self._lock:
+        with self._synchronized():
             if target in ("llm", "all"):
                 self._llm_configs = {self.DEFAULT_NAME: LLMConfig(name=self.DEFAULT_NAME)}
             if target in ("embedding", "all"):

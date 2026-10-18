@@ -140,8 +140,8 @@ class BackendConfig:
     session_classes: Dict[str, str] = field(default_factory=dict[str, str])
     # Session 类注册 (name -> class_path)
     session_scan_paths: List[str] = field(default_factory=lambda: [".satrap/session"])
-    workspace_roots: List[str] = field(default_factory=lambda: ["."])
-    # Chat 项目允许浏览和绑定的工作区根目录
+    workspace_roots: List[str] = field(default_factory=list)
+    # Chat 项目可浏览和绑定的目录根, 空列表默认列出本机磁盘
     media_allowed_roots: List[str] | None = None
     # 默认目录和显式覆盖语义见 docs/getting-started/configuration.md 的媒体来源白名单
 
@@ -194,6 +194,8 @@ class BackendConfig:
             raise ValueError(
                 "v2 数据布局不再支持独立数据库路径: " + ", ".join(configured_removed)
             )
+        from satrap.core.approval.migration import migrate_approval_admin_config
+        data = migrate_approval_admin_config(data)
         media_roots = data.get("media_allowed_roots")
         from satrap.core.config.administrator_groups import (normalize_administrator_overrides, migrate_legacy_scope_exclusions,
                                                              normalize_administrator_groups)
@@ -220,7 +222,7 @@ class BackendConfig:
             error_feedback=cls._as_bool(data.get("error_feedback", True)),
             session_classes=dict(data.get("session_classes", {})),
             session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
-            workspace_roots=list(data.get("workspace_roots", ["."])),
+            workspace_roots=list(data.get("workspace_roots") or []),
             media_allowed_roots=list(media_roots) if media_roots else None,
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),

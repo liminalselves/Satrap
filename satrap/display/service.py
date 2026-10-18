@@ -13,11 +13,12 @@
 - DisplayRecorder 内部 RLock + 独立连接, 多会话并发安全
 """
 from __future__ import annotations
+from satrap.core.plugin_interop.environment import EnvironmentSnapshot, bind_environment
 import mimetypes, base64
 
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 
-from dataclasses import asdict, dataclass, field, replace as dataclass_replace
+from dataclasses import asdict, dataclass, field
 from functools import wraps
 import asyncio
 import hashlib
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast, Iterable
 import copy
 import traceback
+import os
 import json
 import time
 import uuid
@@ -48,6 +50,7 @@ from satrap.edictum.plugin_settings import (
 from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states_async
 from satrap.edictum.plugin_apply import PluginApplySnapshot, plugin_source_version
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
+from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.edictum.plugin_spec import plugin_specs_fingerprint
 from satrap.core.utils.paths import get_data_dir, get_project_root
@@ -115,6 +118,7 @@ class _PendingUserInput:
     question: str
     options: tuple[str, ...]
     future: asyncio.Future[str]
+    approval: dict[str, object] | None = None
 
 
 @dataclass
@@ -297,7 +301,7 @@ class ChatService:
         - platform_id: Chat 存储平台实例 ID
         - preload_ttl_seconds: 未发送预加载会话的内存保留时间
         - ask_user_timeout_seconds: ask_user 等待前端回答的超时时间
-        - workspace_roots: 项目目录允许浏览和绑定的根目录
+        - workspace_roots: 项目目录允许浏览和绑定的根目录, 缺省或空列表使用本机磁盘, 兼容旧默认值 ["."]
         - denied_workspace_roots: 额外禁止绑定和浏览的目录根
         """
         self._model_cfg = model_config
@@ -310,7 +314,12 @@ class ChatService:
         self._display_db_path = display_db_path or platform_db
         self._preload_ttl_seconds = max(float(preload_ttl_seconds), 1.0)
         self._ask_user_timeout_seconds = max(float(ask_user_timeout_seconds), 1.0)
-        configured_roots = list(workspace_roots or [get_project_root()])
+        configured_roots = list(workspace_roots or [])
+        if configured_roots == ["."]:
+            configured_roots = []   # 旧版自动生成的默认值改为本机磁盘视图
+        if not configured_roots:
+            configured_roots = ([Path(f"{drive}:/") for drive in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                 if Path(f"{drive}:/").is_dir()] if os.name == "nt" else [Path("/")])
         resolved_roots: list[Path] = []
         for raw_root in configured_roots:
             root = Path(raw_root).expanduser().resolve()
@@ -383,7 +392,7 @@ class ChatService:
             "seq": self._event_sequences.get(conversation_id, 0), "state": state,
             "active_turn_id": active_turn, "turns": turns,
             "pending_user_inputs": [
-                {"request_id": item.request_id, "question": item.question, "options": list(item.options)}
+                {"request_id": item.request_id, "question": item.question, "options": list(item.options), "approval": item.approval}
                 for item in pending_inputs if not item.future.done()
             ],
         }
@@ -408,11 +417,83 @@ class ChatService:
             self._orphan_queues.setdefault(conversation_id, set()).add(q)
         return q
 
+    async def get_approval(self, conversation_id: str) -> dict[str, object]:
+        """
+        获取当前 Chat 实际使用的宿主审批状态, 不从前端缓存推断模式
+
+        参数:
+        - conversation_id: 已存在的 Chat 会话 ID
+
+        返回:
+        - 安装可用性, 当前模式, 权限版本和计划模式; 会话不存在时抛出 ValueError
+        """
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            from satrap.core.approval.state import session_approval
+            plugin = next((plugin for plugin in conv.session.list_plugins() if plugin.name == "permissions"), None)
+            if plugin is None and getattr(conv.session, "_approval_state", None) is None:
+                return {"ok": True, "available": False, "mode": "user", "revision": 0, "plan_mode": False}
+            engine = session_approval(conv.session)
+            return {"ok": True, "available": bool(plugin and plugin.enabled), "mode": engine.mode,
+                    "revision": engine.revision, "plan_mode": engine.plan_mode}
+
+    @_exclusive_conversation_operation
+    async def set_approval(self, conversation_id: str, mode: object, expected_revision: object) -> dict[str, Any]:
+        """
+        通过已认证的 Chat 管理入口修改共享审批引擎, 不运行模型或写入对话历史
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+        - mode: user, auto 或 full-access
+        - expected_revision: 前端最近读取的权限版本, 防止覆盖命令或其它页面的新决定
+
+        返回:
+        - 保存后的实际状态; 未启用插件, 参数错误或版本冲突时抛出 ValueError
+        """
+        from satrap.core.approval.contracts import APPROVAL_MODES
+        from satrap.core.approval.state import session_approval
+        if not isinstance(mode, str) or mode not in APPROVAL_MODES or type(expected_revision) is not int:
+            raise ValueError("审批模式或权限版本无效")
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            plugin = next((plugin for plugin in conv.session.list_plugins() if plugin.name == "permissions"), None)
+            if plugin is None or not plugin.enabled:
+                raise ValueError("请先启用 permissions 插件")
+            engine = session_approval(conv.session)
+            engine.set_mode(mode, expected_revision=expected_revision)
+            return {"ok": True, "available": True, "mode": engine.mode,
+                    "revision": engine.revision, "plan_mode": engine.plan_mode}
+
+    async def _request_approval(self, conv: _Conversation, request: ApprovalRequest) -> ApprovalResult:
+        """
+        展示精确动作并把明确点击结果绑定到原始审批请求
+
+        参数:
+        - conv: 宿主 Chat 会话
+        - request: 插件冻结的单次审批请求
+
+        返回:
+        - 仅批准本次或拒绝的结构化决定; 超时和取消沿用待回答请求的清理路径
+        """
+        approval = {"tool": request.tool, "operation": request.operation, "description": request.description,
+                    "action": json.loads(request.action_json)}
+        # 人工界面只展示被冻结的实际动作, 完整对话证据仅用于模型审查
+        answer = await self._request_user_input(conv, "是否批准本次操作?", ["批准本次", "拒绝"], approval=approval)
+        allowed = answer == "批准本次"
+        return ApprovalResult.for_request(request, "allow" if allowed else "deny",
+                                          "用户批准本次操作" if allowed else "用户未批准本次操作", "user")
+
     async def _request_user_input(
         self,
         conv: _Conversation,
         question: str,
         options: list[str] | None = None,
+        *,
+        approval: dict[str, object] | None = None,
     ) -> str:
         """
         向 Chat 前端发出问题并等待回答
@@ -421,6 +502,7 @@ class ChatService:
         - conv: 会话运行时
         - question: 问题内容
         - options: 推荐回答选项
+        - approval: 可信宿主生成的单次操作资料, 默认 None 表示普通问答
 
         返回:
         - str: 用户回答
@@ -435,6 +517,7 @@ class ChatService:
             question=question,
             options=normalized_options,
             future=future,
+            approval=approval,
         )
         conv.pending_user_inputs[request_id] = pending
         self._broadcast(conv, {
@@ -442,6 +525,7 @@ class ChatService:
             "request_id": request_id,
             "question": question,
             "options": list(normalized_options),
+            "approval": approval,
         })
         logger.info(f"[聊天] 会话 {conv.conversation_id} 等待用户回答: {request_id}")
         try:
@@ -489,6 +573,9 @@ class ChatService:
             return {"ok": False, "error": "询问不存在或已结束"}
         if not answer.strip():
             return {"ok": False, "error": "回答不能为空"}
+        if pending.approval is not None and answer not in pending.options:
+            logger.warning(f"[聊天] 会话 {conversation_id} 审批回答无效: {request_id}")
+            return {"ok": False, "error": "审批只能选择批准本次或拒绝"}
         pending.future.set_result(answer)
         self._broadcast(conv, {
             "type": MSG_ASK_USER_END,
@@ -632,13 +719,10 @@ class ChatService:
         if not kwargs:
             return {"ok": False, "error": "没有可更新的字段"}
         try:
-            current = self._model_cfg.get_llm_config(name)
-            candidate = dataclass_replace(current, **kwargs)
-            resolve_context_policy(candidate)
+            self._model_cfg.update_named_config("llm", name, kwargs)
         except (TypeError, ValueError) as e:
             return {"ok": False, "error": str(e)}
-        self._model_cfg.update_llm_config(name, **kwargs)
-        refreshed = self._refresh_chat_model_runtimes(name, candidate)
+        refreshed = self._refresh_chat_model_runtimes(name, self._model_cfg.get_llm_config(name))
         return {"ok": True, **refreshed}
 
     def delete_model(self, name: str) -> dict[str, Any]:
@@ -853,6 +937,20 @@ class ChatService:
 
         session.user_input_provider = user_input_provider
 
+        async def approval_provider(request: ApprovalRequest) -> ApprovalResult:
+            """
+            将会话审批交给当前 Chat 的绑定回填通道
+
+            参数:
+            - request: 本轮精确动作
+
+            返回:
+            - 只对原请求有效的人工决定
+            """
+            return await self._request_approval(conv, request)
+
+        session.approval_provider = approval_provider
+
         def on_tool_start(event: dict[str, Any]) -> None:
             """
             同步记录并广播工具开始事件
@@ -1063,26 +1161,7 @@ class ChatService:
                 logger.error(
                     f"[聊天] 会话插件同步失败 {item['plugin']}: {item.get('error', item['status'])}"
                 )
-        self._coordinate_sandbox(session)
         return states
-
-    def _coordinate_sandbox(self, session: AsyncSimpleSession) -> None:
-        """
-        沙箱协调: coding 启用时停用 base_take 的 code_sandbox (避免模型困惑)
-
-        参数:
-        - session: 会话
-
-        两插件共享当前会话的私有 sandbox, coding 的 shell 能力更强,
-        因此 coding 在场时 base_take 的 code_sandbox 工具禁用
-        """
-        coding_on = self._plugins.is_enabled("satrap_coding")
-        base_on = self._plugins.is_enabled("base_take")
-        if coding_on and base_on:
-            if session.tools_manager.disable_tool("code_sandbox"):
-                logger.info("[聊天] coding 插件在场, 已停用 base_take 的 code_sandbox")
-        elif base_on and self._plugins.capability_enabled("base_take", "tools", "code_sandbox"):
-            session.tools_manager.enable_tool("code_sandbox")
 
     def get_conversation(self, conversation_id: str) -> _Conversation | None:
         """
@@ -1395,6 +1474,20 @@ class ChatService:
 
         session.user_input_provider = user_input_provider
 
+        async def approval_provider(request: ApprovalRequest) -> ApprovalResult:
+            """
+            将会话审批交给当前 Chat 的绑定回填通道
+
+            参数:
+            - request: 本轮精确动作
+
+            返回:
+            - 只对原请求有效的人工决定
+            """
+            return await self._request_approval(conv, request)
+
+        session.approval_provider = approval_provider
+
         def on_tool_start(event: dict[str, Any]) -> None:
             recorder.on_tool_start(event)
             self._broadcast(conv, {"type": MSG_TOOL_START, **event})
@@ -1435,10 +1528,10 @@ class ChatService:
         参数:
         - conv: 当前预加载运行时
         - think: 首次发送使用的思考等级
-        - settings: 前端首次发送时的最新会话设置
+        - settings: 前端首次发送时的最新设置, 可用 approval_mode 显式指定初始审批模式
 
         返回:
-        - _Conversation: 已使用最新配置并完成元数据持久化的会话
+        - 已使用最新配置并持久化的会话; 初始审批模式无效或权限插件不可用时抛出 ValueError
         """
         lock = conv.preload_lock
         async with lock:
@@ -1448,6 +1541,12 @@ class ChatService:
                 conv = current
             if conv.persisted:
                 return conv
+
+            approval_mode = settings.get("approval_mode")
+            if "approval_mode" in settings:
+                from satrap.core.approval.contracts import APPROVAL_MODES
+                if not isinstance(approval_mode, str) or approval_mode not in APPROVAL_MODES:
+                    raise ValueError("审批模式必须是 user, auto 或 full-access")
 
             model = str(settings.get("model") or conv.model)
             system_prompt = (
@@ -1494,6 +1593,15 @@ class ChatService:
                 except Exception:
                     self._storage.purge_session(self._platform_id, conv.conversation_id)
                     raise
+
+            if approval_mode is not None:
+                from satrap.core.approval.state import session_approval
+                async with conv.plugin_lock:
+                    plugin = next((item for item in conv.session.list_plugins() if item.name == "permissions"), None)
+                    if plugin is None or not plugin.enabled:
+                        raise ValueError("请先启用 permissions 插件, 再选择初始审批模式")
+                    session_approval(conv.session).set_mode(approval_mode)
+                # 在会话持久化和首轮任务启动前应用显式选择, 重建预加载运行时后也必须生效
 
             conv.default_think = effective_think
             conv.recorder.save_meta(conv.model, effective_think, project_id=conv.project_id)
@@ -1973,7 +2081,7 @@ class ChatService:
 
     def _apply_project(self, session: AsyncSimpleSession, project: dict[str, Any] | None) -> None:
         """
-        把项目工作区绑定到会话 (鸭子属性, satrap_coding/base_take 工具按会话解析)
+        通过统一宿主环境绑定项目工作区, 插件在实际操作时读取冻结快照
 
         参数:
         - session: 会话
@@ -2002,14 +2110,15 @@ class ChatService:
                 workspace_root = session_root / "sandbox"
         else:
             workspace_root = session_root / "sandbox"
-        # 鸭子属性注入, 插件在安装和调用时解析当前会话作用域
-        setattr(session, "coding_workspace_root", str(workspace_root))
-        setattr(session, "coding_session_root", str(session_root))
-        setattr(session, "coding_sandbox_root", str(session_root / "sandbox"))
-        setattr(session, "coding_upload_root", str(session_root / "uploads"))
-        setattr(session, "coding_artifacts_root", str(session_root / "artifacts"))
-        setattr(session, "coding_indexes_root", str(session_root / "indexes"))
-        setattr(session, "coding_cache_root", str(session_root / "cache"))
+        bind_environment(session, EnvironmentSnapshot(
+            workspace_root=workspace_root,
+            sandbox_root=session_root / "sandbox",
+            upload_root=session_root / "uploads",
+            session_root=session_root,
+            artifacts_root=session_root / "artifacts",
+            scope=f"{self._platform_id}:{session.session_id}",
+            project=project_id,
+        ))   # 项目改绑统一递增环境版本, 不改变会话私有目录
         setattr(session, "memory_db", str(self._storage.platform_db(self._platform_id)))
         setattr(session, "memory_scope", f"session:{session.session_id}")
 
@@ -2175,8 +2284,9 @@ class ChatService:
         dirs: list[dict[str, str]] = []
         try:
             children = sorted(p.iterdir(), key=lambda c: c.name.lower())
-        except OSError:
-            children = []
+        except OSError as error:
+            logger.warning(f"[项目目录] 浏览失败, 路径={p}, 原因={error}")
+            return {"ok": False, "error": f"目录无法读取: {error}"}
         for child in children:
             if len(dirs) >= 500:
                 break
@@ -2399,7 +2509,6 @@ class ChatService:
                         )
                     finally:
                         conv.session.plugin_model_manager = original_models
-                    self._coordinate_sandbox(conv.session)
                 result['timings_ms'] = {**result.get('timings_ms', {}), **timings.to_payload(),
                                         'lock_wait_ms': round(lock_wait_ms, 3), 'config_read_ms': round(config_read_ms, 3)}
                 logger.debug(f"[聊天] 插件协调完成, 会话={conv.conversation_id}, timings_ms={result['timings_ms']}")
@@ -2644,7 +2753,6 @@ class ChatService:
             reload_models()
         desired = resolve_runtime_specs(conv.session, self._plugins.resolve_specs(PluginConfigManager()), self._plugins.catalog)
         result = await reconcile_plugin_states_async(conv.plugin_states, desired, conv.session.install_plugin, conv.session.uninstall_plugin)
-        self._coordinate_sandbox(conv.session)
         return result
 
     async def save_plugin_config(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
