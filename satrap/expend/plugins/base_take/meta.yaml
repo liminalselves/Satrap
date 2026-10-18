@@ -31,7 +31,8 @@ tools:
   search: 联网搜索
   fetch_page: 抓取网页内容
   code_sandbox: 免审批的一次性 Python 与文件操作, 白名单库, 拦截联网/外部程序, 产物不自动发送
-  read_document: 读取文档文本, 读取本地图片 (png/jpg/webp/gif 等, 动图仅第一帧), 按模型能力分页查看 PDF 图像 (xlsx/docx/pdf/txt/md)
+  read_document: 读取文档, 图片及视频, 动画和兼容视频可按秒分段采样, PDF 可分页查看
+  read_media: 按 media_id 和时间区间查看当前会话已收到的动画或视频
 
 compatibility:
   satrap: ">=0.1,<0.2"

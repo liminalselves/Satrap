@@ -27,6 +27,247 @@ from satrap.expend.plugins.base_take.tools.async_ import AsyncReadDocumentTool
 from satrap.expend.plugins.base_take.tools.sync import ReadDocumentTool
 from satrap.core.utils.pdf_pages import read_pdf_pages
 
+
+def _small_video(seconds=2):
+    """生成可解码的 MP4, 用于验证完整视觉输入链路"""
+    av = pytest.importorskip("av")
+    output = io.BytesIO()
+    with av.open(output, "w", format="mp4") as container:
+        stream = container.add_stream("mpeg4", rate=10)
+        stream.width, stream.height, stream.pix_fmt = 32, 24, "yuv420p"
+        for index in range(seconds * 10):
+            frame = av.VideoFrame.from_image(Image.new("RGB", (32, 24), (index % 255, 30, 90)))
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_video_sampling_history_cache_and_native_switch(tmp_path, monkeypatch, asynchronous):
+    """真实视频经过预算前抽帧, 历史保留引用, 缓存复用且切换后只发送原生视频"""
+    from satrap.core.utils import media_frames
+    from satrap.core.utils.media_store import REFERENCE_PREFIX, store_for
+
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(_small_video())
+    model = AsyncVisualModel() if asynchronous else VisualModel()
+    model.video_frame_interval = 0.5
+    cls = AsyncSimpleSession if asynchronous else SimpleSession
+    session = cls("sample-video", model, db_path=str(tmp_path / "platform.db"), enable_checkpoint=False)
+
+    async def run(text, **kwargs):
+        return await session.run(text, **kwargs) if asynchronous else session.run(text, **kwargs)
+
+    await run("查看画面", video_urls=[str(path)])
+    parts = model.requests[-1][0]["content"]
+    images = [part for part in parts if part["type"] == "image_url"]
+    assert len(images) == 5
+    assert "0.500 秒" in str(parts)
+    assert not any(part["type"] == "video_url" for part in parts)
+    reference = session.ctx.get_context()[0]["content"][1]["video_url"]["url"]
+    assert reference.startswith(REFERENCE_PREFIX)
+    assert store_for(session.ctx.db_path, session.ctx.conversation_id).read(reference)[0] == path.read_bytes()
+    path.unlink()
+
+    def unexpected_decode(*args, **kwargs):
+        raise AssertionError("相同媒体和采样参数不应重复解码")
+
+    monkeypatch.setattr(media_frames, "_decode", unexpected_decode)
+    await run("继续解释")
+    assert sum(part["type"] == "image_url" for part in model.requests[-1][0]["content"]) == 5
+    model.supports_native_video_input = True
+    model.supports_visual_input = False
+    await run("再次查看")
+    native_parts = model.requests[-1][0]["content"]
+    assert sum(part["type"] == "video_url" for part in native_parts) == 1
+    assert not any(part["type"] == "image_url" for part in native_parts)
+    assert reference in str(session.ctx.get_context())
+
+
+def test_video_range_budget_and_scope(tmp_path):
+    """长视频明确要求分段, 合法区间按原密度采样, 跨会话不能读取引用"""
+    from satrap.core.utils.media_store import current_store, media_scope
+    from satrap.core.utils.media_frames import sample_frames
+    from satrap.expend.plugins.base_take.tools.sync import ReadMediaTool
+
+    data = _small_video(seconds=10)
+    model = SimpleNamespace(supports_visual_input=True, video_frame_interval=0.5)
+    database = str(tmp_path / "platform.db")
+    with media_scope(database, "owner_main"):
+        url = "data:video/mp4;base64," + base64.b64encode(data).decode()
+        content = user_media_content("长视频", None, [url], model)
+        reference = content[1]["video_url"]["url"]
+        projected = project_messages([{"role": "user", "content": content}], True, model)
+        assert "尚未读取画面" in str(projected)
+        assert "21 帧" in str(projected)
+        assert "read_media" in str(projected)
+        tool = ReadMediaTool()
+        tool._bind(SimpleNamespace(ctx=SimpleNamespace(db_path=database, conversation_id="owner_main"), llm=model))
+        result = tool.execute(reference.split("://")[1], 2, 4)
+        frozen = freeze_tool_result(result, model)
+        sampled = project_messages([{"role": "user", "content": frozen["media"]}], True, model)
+        assert sum(part["type"] == "image_url" for part in sampled[0]["content"]) >= 4
+        assert "2.000 秒" in str(sampled)
+        source = current_store()
+    with media_scope(database, "other_main"):
+        with pytest.raises(ValueError, match="不属于当前会话"):
+            current_store().read(reference)
+        source.copy_to(current_store())
+        assert current_store().read(reference)[0] == data
+    with media_scope(database, "owner_main"):
+        with pytest.raises(ValueError, match="缺少视频解码依赖|decode|无法|媒体|file|Invalid"):
+            sample_frames(b"invalid-video", "video", 2)
+    with media_scope(str(tmp_path / "different.db"), "owner_main"):
+        with pytest.raises(ValueError, match="不属于当前会话"):
+            current_store().read(reference)
+
+
+@pytest.mark.parametrize("platform", ["onebot", "misskey"])
+def test_platform_media_transport_is_normalized_by_actual_bytes(tmp_path, platform):
+    """保留平台图片分类, 真 GIF 抽帧, 图片标签下的真实 MP4 按视频能力路由"""
+    from satrap.core.platform.onebot.onebot_utils import onebot_segments_to_components
+    from satrap.core.platform.misskey.misskey_utils import create_file_component
+    from satrap.core.utils.media import freeze_media
+    from satrap.core.utils.media_store import media_scope
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, format="GIF", save_all=True,
+        append_images=[Image.new("RGB", (8, 8), "blue")], duration=500)
+    model = SimpleNamespace(supports_visual_input=True, supports_native_video_input=True, video_frame_interval=0.5)
+    with media_scope(str(tmp_path / "platform.db"), platform):
+        for data, mime, expected in ((buffer.getvalue(), "image/gif", "image_url"), (_small_video(), "video/mp4", "video_url")):
+            url = f"data:{mime};base64," + base64.b64encode(data).decode()
+            if platform == "onebot":
+                components, _ = onebot_segments_to_components([{"type": "image", "data": {"file": "animation.gif", "url": url}}])
+                component = components[0]
+            else:
+                component, _ = create_file_component({"type": "image/gif", "name": "animation.gif", "url": url})
+            frozen = freeze_media(component.url, "image")
+            assert frozen["type"] == expected
+            prepared = project_messages([{"role": "user", "content": [frozen]}], True, model)[0]["content"]
+            assert any(part["type"] == expected for part in prepared)
+            assert not any(part["type"] == ("video_url" if expected == "image_url" else "image_url") for part in prepared)
+
+
+def test_media_worker_timeout_reaps_process_and_cache_is_bounded(tmp_path, monkeypatch):
+    """真实解码进程超时后被回收, 处理槽位可继续使用, 缓存按容量淘汰旧结果"""
+    from satrap.core.utils import media_frames
+    from satrap.core.utils.media_store import media_scope, current_store
+
+    data = _small_video()
+    processes = []
+    actual_popen = media_frames.subprocess.Popen
+
+    def capture(*args, **kwargs):
+        process = actual_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(media_frames.subprocess, "Popen", capture)
+    with media_scope(str(tmp_path / "platform.db"), "worker"):
+        monkeypatch.setattr(media_frames, "DECODE_TIMEOUT", 0)
+        with pytest.raises(ValueError, match="超时"):
+            media_frames.sample_frames(data, "video", 0.5)
+        assert processes and all(process.poll() is not None for process in processes)
+        monkeypatch.setattr(media_frames, "DECODE_TIMEOUT", 30)
+        first = media_frames.sample_frames(data, "video", 0.5)
+        assert len(first["frames"]) == 5
+        started = len(processes)
+        assert media_frames.sample_frames(data, "video", 0.5) == first
+        assert len(processes) == started
+        monkeypatch.setattr(media_frames, "MAX_CACHE_BYTES", 1)
+        media_frames.sample_frames(data, "video", 1.0)
+        caches = [entry for entry in (current_store().root / "frames").iterdir() if entry.is_dir() and not entry.name.startswith(".")]
+        assert len(caches) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_media_task_stops_real_worker(tmp_path, monkeypatch):
+    """异步任务取消会传播到后台解码进程, 不留下持续运行的子进程"""
+    import asyncio
+    import threading
+    from satrap.core.utils import media_frames
+    from satrap.core.utils.media_store import media_scope
+
+    data = _small_video()
+    started = threading.Event()
+    processes = []
+    actual_popen = media_frames.subprocess.Popen
+
+    def capture(*args, **kwargs):
+        process = actual_popen(*args, **kwargs)
+        processes.append(process)
+        started.set()
+        return process
+
+    monkeypatch.setattr(media_frames.subprocess, "Popen", capture)
+    with media_scope(str(tmp_path / "platform.db"), "cancel"), media_frames.cancellable_media():
+        task = asyncio.create_task(asyncio.to_thread(media_frames.sample_frames, data, "video", 0.5))
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    for process in processes:
+        await asyncio.to_thread(process.wait, timeout=5)
+        assert process.poll() is not None
+
+
+def test_new_media_budget_preserves_current_segment_without_rewriting_history(tmp_path):
+    """连续读取优先保留最新完整区间, 旧画面明确占位且原始历史仍可重读"""
+    from satrap.core.utils.media import limit_history_media
+
+    part = {"type": "image_url", "image_url": {"url": image_url()}}
+    context = ContextManager("budget", db_path=str(tmp_path / "platform.db"))
+    context.add_turn_messages([{"role": "user", "content": [part] * 16}])
+    pending = [{"role": "user", "content": [{"type": "text", "text": "下一段"}, part, part]}]
+    prepared = context.prepare_model_context(llm=VisualModel(), pending_messages=pending)
+    assert sum(item["type"] == "image_url" for message in prepared.messages for item in message["content"] if isinstance(message["content"], list)) == 2
+    assert "历史画面本轮未附加" in str(prepared.messages)
+    assert len(context.get_context()[0]["content"]) == 16
+    previous = {"role": "tool", "tool_call_id": "before", "content": [part] * 16}
+    current = {"role": "tool", "tool_call_id": "current", "content": [part] * 16}
+    _, projected = limit_history_media([], [previous, current])
+    assert "历史画面本轮未附加" in str(projected[0])
+    assert projected[1] == current
+    with pytest.raises(ValueError, match="本轮新读取"):
+        limit_history_media([], [{"role": "user", "content": [part] * 17}])
+    context.close()
+
+
+@pytest.mark.parametrize("format_name", ["GIF", "WEBP", "PNG"])
+def test_animated_image_sampling_respects_container_durations(tmp_path, format_name):
+    """动画按真实播放时长取样, APNG 默认静态封面不混入动画时间线"""
+    from satrap.core.utils.media_store import media_scope
+    from satrap.core.utils.media_frames import sample_frames
+
+    output = io.BytesIO()
+    red, blue = Image.new("RGBA", (8, 8), "red"), Image.new("RGBA", (8, 8), "blue")
+    if format_name == "PNG":
+        Image.new("RGBA", (8, 8), "green").save(output, format="PNG", save_all=True,
+            append_images=[red, blue], duration=500, default_image=True)
+    else:
+        red.save(output, format=format_name, save_all=True, append_images=[blue], duration=500, lossless=True)
+    mime = {"GIF": "image/gif", "WEBP": "image/webp", "PNG": "image/png"}[format_name]
+    url = f"data:{mime};base64," + base64.b64encode(output.getvalue()).decode()
+    model = SimpleNamespace(supports_visual_input=True, video_frame_interval=0.5)
+    with media_scope(str(tmp_path / "platform.db"), "animation"):
+        content = user_media_content("动画", [url], None, model)
+        prepared = project_messages([{"role": "user", "content": content}], True, model)
+        segment = sample_frames(output.getvalue(), "animation", 0.5, 0.25, 0.4)
+    assert len(segment["frames"]) == 1 and segment["frames"][0]["time"] == 0.25
+    with Image.open(io.BytesIO(segment["frames"][0]["data"])) as frame:
+        red_value, green_value, blue_value = frame.getpixel((0, 0))
+        assert red_value > 200 and green_value < 30 and blue_value < 30
+    assert "总时长 1.00 秒" in str(prepared)
+    assert "0.500 秒" in str(prepared)
+    images = [part for part in prepared[0]["content"] if part["type"] == "image_url"]
+    assert len(images) == 2
+    with Image.open(io.BytesIO(base64.b64decode(images[0]["image_url"]["url"].split(",")[1]))) as first:
+        red_value, green_value, blue_value = first.getpixel((0, 0))
+        assert red_value > 200 and green_value < 30 and blue_value < 30
+
 class VisualModel(LLM):
     def __init__(self):
         self.supports_visual_input = True
@@ -432,6 +673,9 @@ async def test_local_image_document_flow_preserves_visual_content_and_scope(tmp_
     assert "图片读取失败" in await read(broken)
     gif = workspace / "animation.gif"
     Image.new("RGB", (8, 8), "red").save(gif, save_all=True, append_images=[Image.new("RGB", (8, 8), "blue")])
-    assert "仅查看第一帧" in (await read(gif))["text"]
+    animation = freeze_tool_result(await read(gif), model)
+    assert "按模型配置采样" in animation["text"]
+    frames = project_messages([{"role": "user", "content": animation["media"]}], True, model)[0]["content"]
+    assert sum(part["type"] == "image_url" for part in frames) == 2
     model.supports_visual_input = False
     assert "启用模型" in await read(image_path)

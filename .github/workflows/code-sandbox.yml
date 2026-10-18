@@ -5,6 +5,9 @@ on:
   pull_request:
     paths:
       - 'satrap/core/utils/sandbox/**'
+      - 'satrap/core/utils/media*.py'
+      - 'tests/unit/test_visual_input_flows.py'
+      - 'tests/unit/test_session_command_flows.py'
       - 'satrap/core/group_chat/**'
       - 'satrap/expend/tools/sandbox_tools/**'
       - 'satrap/expend/plugins/base_take/**'
@@ -44,7 +47,7 @@ jobs:
           [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pip install '.[sandbox,vector]' pytest pytest-asyncio
+          python -m pip install '.[sandbox,vector,video]' pytest pytest-asyncio
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise real worker and guards
         run: |
@@ -52,4 +55,11 @@ jobs:
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           python -m pytest tests/unit/test_coding_security_flows.py tests/unit/test_group_media_flows.py -q -k 'sandbox or internal_file or traversal or outside_path or delete_sandbox or code_execution_timeout or trusted_sdk'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise media and command flows
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          python -m pytest tests/unit/test_visual_input_flows.py tests/unit/test_session_command_flows.py -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

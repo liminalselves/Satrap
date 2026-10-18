@@ -32,6 +32,7 @@ from satrap.core.type import safe_getattr_callable
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 from .async_ import (
     AsyncReadDocumentTool,
+    AsyncReadMediaTool,
 )
 from .utils import (
     SessionType,
@@ -40,6 +41,7 @@ from .utils import (
 )
 from .sync import (
     ReadDocumentTool,
+    ReadMediaTool,
 )
 
 
@@ -82,6 +84,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
             AsyncFetchPageTool(timeout=timeout),
             AsyncCodeSandboxTool(sandbox),
             AsyncReadDocumentTool(workspace_root),
+            AsyncReadMediaTool(),
         ]
     else:
         tools = [
@@ -89,6 +92,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
             FetchPageTool(timeout=timeout),
             CodeSandboxTool(sandbox),
             ReadDocumentTool(workspace_root),
+            ReadMediaTool(),
         ]
     # Step.4 绑定会话, 供文档工具在调用时解析当前可见目录
     for tool in tools:
