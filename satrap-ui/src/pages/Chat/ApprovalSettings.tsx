@@ -11,11 +11,12 @@ const MODES = [
 
 export function ApprovalSettings({ approval, compact = false }: { approval: ApprovalControl; compact?: boolean }) {
   const labelId = useId();
-  const { conversationId, state, error, saving, save } = approval;
-  const description = saving ? '正在保存...'
-    : !conversationId ? '打开或创建对话后可切换审批模式'
+  const { conversationId, state, isDraft, error, saving, save } = approval;
+  const description = saving ? (isDraft ? '正在应用所选审批模式...' : '正在保存...')
     : state && !state.available ? '请先在插件中启用 permissions (执行审批)'
-    : MODES.find((mode) => mode.value === state?.mode)?.description ?? '正在读取当前审批模式...';
+    : !conversationId && !isDraft ? '打开或创建对话后可切换审批模式'
+    : (MODES.find((mode) => mode.value === state?.mode)?.description ?? '正在读取当前审批模式...')
+      + (isDraft ? '; 从第一条消息开始生效' : '');
 
   return (
     <div className={compact ? 'flex flex-wrap items-center gap-2' : 'space-y-2'} role="group" aria-labelledby={labelId}>

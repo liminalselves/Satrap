@@ -29,6 +29,10 @@ async function chat_reconnect(runtime) {
     let rejectApprovalSave = false;
     const projectWrites = [];
     const approvalAnswers = [];
+    const preloads = [];
+    const firstSends = [];
+    const initialApprovals = new Map();
+    let releaseDraftPreload;
     await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
       backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
     } }));
@@ -42,6 +46,8 @@ async function chat_reconnect(runtime) {
         return route.fulfill({ json: { ok: true }, headers });
       }
       if (pathname === '/api/chat/approval') {
+        const cid = new URL(route.request().url()).searchParams.get('conversation');
+        const current = initialApprovals.get(cid) ?? approval;
         if (route.request().method() === 'PUT') {
           if (rejectApprovalSave) {
             rejectApprovalSave = false;
@@ -53,7 +59,24 @@ async function chat_reconnect(runtime) {
           approval.mode = payload.mode;
           approval.revision++;
         }
-        return route.fulfill({ json: approval, headers });
+        return route.fulfill({ json: current, headers });
+      }
+      if (pathname === '/api/chat/conversations/preload') {
+        preloads.push(route.request().postDataJSON());
+        const result = { ok: true, conversation_id: `draft-${preloads.length}` };
+        if (preloads.length === 1) {
+          return new Promise((resolve) => {
+            releaseDraftPreload = () => route.fulfill({ json: result, headers }).then(resolve);
+          });
+        }
+        return route.fulfill({ json: result, headers });
+      }
+      if (pathname === '/api/chat/send') {
+        const payload = route.request().postDataJSON();
+        firstSends.push(payload);
+        initialApprovals.set(payload.conversation, { ...approval, mode: payload.approval_mode, plan_mode: false });
+        return route.fulfill({ json: { ok: true, conversation_id: payload.conversation,
+          turn_id: 1, turn_index: 0, variant_index: 0 }, headers });
       }
       if (pathname === '/api/fs/browse') {
         const location = new URL(route.request().url()).searchParams.get('path') || '';
@@ -75,7 +98,8 @@ async function chat_reconnect(runtime) {
         '/api/chat/turns': { turns: fixture.turns },
         '/api/chat/models': { models: ['benchmark-model'] },
         '/api/chat/models/detail': { ok: true, models: {} },
-        '/api/chat/plugins': { plugins: [] },
+        '/api/chat/plugins': { plugins: [{ name: 'permissions', enabled: true, version: '0.1.0',
+          description: '执行审批', dir: '', capabilities: {} }] },
         // 执行记录与恢复面板在聊天页常驻, 缺该接口会让整个页面渲染失败
         '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
         '/api/projects': { projects: [] },
@@ -211,6 +235,34 @@ async function chat_reconnect(runtime) {
     if (process.env.SATRAP_UI_SCREENSHOT_DIR) {
       await page.screenshot({ path: path.join(process.env.SATRAP_UI_SCREENSHOT_DIR, 'chat-approval-shortcut.png'), animations: 'disabled' });
     }
+    await page.getByRole('button', { name: '新建对话', exact: true }).click();
+    await waitFor(() => Boolean(releaseDraftPreload));
+    await quickApproval.getByRole('button', { name: '请求批准', exact: true }).click();
+    await page.getByRole('button', { name: '完全访问', exact: true }).click();
+    await quickApproval.getByRole('button', { name: '完全访问', exact: true }).waitFor();
+    assert.deepEqual(approvalWrites, ['auto', 'full-access', 'user']);
+    if (process.env.SATRAP_UI_SCREENSHOT_DIR) {
+      await page.screenshot({ path: path.join(process.env.SATRAP_UI_SCREENSHOT_DIR, 'chat-initial-approval.png'), animations: 'disabled' });
+    }
+    await releaseDraftPreload();
+    await page.getByTitle('对话设置', { exact: true }).click();
+    await approvalGroup.getByRole('button', { name: '完全访问', exact: true }).waitFor();
+    assert.equal(await settings.getByText('从第一条消息开始生效', { exact: false }).isVisible(), true);
+    await page.keyboard.press('Escape');
+    await page.locator('textarea').fill('第一轮按完全访问执行');
+    await page.getByTitle('发送', { exact: true }).click();
+    await waitFor(() => firstSends.length === 1);
+    assert.equal(firstSends[0].approval_mode, 'full-access');
+    assert.equal(firstSends[0].conversation, 'draft-1');
+    assert.equal(preloads.length, 1);
+    await waitFor(() => quickApproval.getByRole('button', { name: '完全访问', exact: true }).isEnabled());
+    await waitFor(() => sockets.length >= 4);
+    send(sockets.at(-1), { ...snapshot(1, '初始审批模式已生效', [], 'idle'), conversation_id: 'draft-1' });
+    await waitFor(() => visible('初始审批模式已生效'));
+    await quickApproval.getByRole('button', { name: '完全访问', exact: true }).waitFor();
+    await page.getByRole('button', { name: '新建对话', exact: true }).click();
+    await waitFor(() => preloads.length === 2);
+    await quickApproval.getByRole('button', { name: '请求批准', exact: true }).waitFor();
     await page.getByTitle('新建项目 (绑定工作区文件夹)', { exact: true }).click();
     await page.getByTitle('浏览服务器目录', { exact: true }).click();
     const picker = page.getByRole('dialog', { name: '选择工作区目录', exact: true });

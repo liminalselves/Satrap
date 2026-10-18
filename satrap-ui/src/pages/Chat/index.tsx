@@ -41,6 +41,7 @@ import {
   chatApi,
   subscribeChat,
   type Attachment,
+  type ApprovalMode,
   type CapabilityKind,
   type ChatEvent,
   type ChatPreloadSettings,
@@ -294,6 +295,7 @@ export function Chat() {
   }));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [draftApprovalMode, setDraftApprovalMode] = useState<ApprovalMode>('user');
   // 后端连接状态
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
   // 可选模型列表(来自聊天服务)
@@ -374,7 +376,15 @@ export function Chat() {
     () => conversations.find((c) => c.id === activeId),
     [conversations, activeId]
   );
-  const approval = useApprovalMode(backendOk && active && active.id !== '__draft__' && !active.preloaded ? active.id : '');
+  const approval = useApprovalMode(
+    backendOk && active && active.id !== '__draft__' && !active.preloaded ? active.id : '',
+    !active || active.id === '__draft__' || active.preloaded ? {
+      mode: draftApprovalMode,
+      available: plugins.some((plugin) => plugin.name === 'permissions' && plugin.enabled),
+      pending: generating,
+      onChange: setDraftApprovalMode,
+    } : undefined,
+  );
   const refreshApproval = approval.refresh;
   useEffect(() => {
     if ((optionsOpen || settingsOpen) && !generating) void refreshApproval();
@@ -976,6 +986,7 @@ export function Chat() {
       const abandonedIds = new Set(abandoned.map((conv) => conv.id));
       setConversations((prev) => prev.filter((conv) => !abandonedIds.has(conv.id)));
     }
+    setDraftApprovalMode('user');
     const draft = createDraft(projectId);
     setActiveId(draft.id);
     setShowEntryChoice(false);
@@ -1160,7 +1171,12 @@ export function Chat() {
         content,
         settings.think,
         atts,
-        preloadSettingsFor(targetConv.projectId),
+        {
+          ...preloadSettingsFor(targetConv.projectId),
+          ...((isDraft || targetConv.preloaded)
+            && (draftApprovalMode !== 'user' || plugins.some((plugin) => plugin.name === 'permissions' && plugin.enabled))
+            ? { approvalMode: draftApprovalMode } : {}),
+        },
       );
       updateConversation(realConvId, (conversation) => ({
         ...conversation,
@@ -1189,7 +1205,7 @@ export function Chat() {
     } finally {
       mutationPendingRef.current = false;
     }
-  }, [input, active, generating, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload]);
+  }, [input, active, generating, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload, draftApprovalMode, plugins]);
 
   // 选择文件
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {

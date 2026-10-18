@@ -61,7 +61,7 @@ describe('chatApi conversation preload', () => {
   it('repeats current settings on the first send for backend validation', async () => {
     const fetchSpy = mockFetch({ ok: true });
 
-    await chatApi.send('conv-1', '你好', 'high', undefined, SETTINGS);
+    await chatApi.send('conv-1', '你好', 'high', undefined, { ...SETTINGS, approvalMode: 'auto' });
 
     const [, request] = fetchSpy.mock.calls[0];
     expect(JSON.parse(String(request?.body))).toMatchObject({
@@ -72,6 +72,7 @@ describe('chatApi conversation preload', () => {
       temperature: 0.35,
       system_prompt: '测试提示词',
       project_id: 'project-1',
+      approval_mode: 'auto',
     });
   });
 

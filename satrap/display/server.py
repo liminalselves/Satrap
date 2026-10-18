@@ -467,7 +467,7 @@ class ChatHTTPServer(MiniHTTPServer):
             think = str(think) if think is not None else None
             preload_settings = {
                 key: payload[key]
-                for key in ("model", "temperature", "system_prompt", "project_id")
+                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode")
                 if key in payload
             }
             result = await svc.send(

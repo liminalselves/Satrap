@@ -1528,10 +1528,10 @@ class ChatService:
         参数:
         - conv: 当前预加载运行时
         - think: 首次发送使用的思考等级
-        - settings: 前端首次发送时的最新会话设置
+        - settings: 前端首次发送时的最新设置, 可用 approval_mode 显式指定初始审批模式
 
         返回:
-        - _Conversation: 已使用最新配置并完成元数据持久化的会话
+        - 已使用最新配置并持久化的会话; 初始审批模式无效或权限插件不可用时抛出 ValueError
         """
         lock = conv.preload_lock
         async with lock:
@@ -1541,6 +1541,12 @@ class ChatService:
                 conv = current
             if conv.persisted:
                 return conv
+
+            approval_mode = settings.get("approval_mode")
+            if "approval_mode" in settings:
+                from satrap.core.approval.contracts import APPROVAL_MODES
+                if not isinstance(approval_mode, str) or approval_mode not in APPROVAL_MODES:
+                    raise ValueError("审批模式必须是 user, auto 或 full-access")
 
             model = str(settings.get("model") or conv.model)
             system_prompt = (
@@ -1587,6 +1593,15 @@ class ChatService:
                 except Exception:
                     self._storage.purge_session(self._platform_id, conv.conversation_id)
                     raise
+
+            if approval_mode is not None:
+                from satrap.core.approval.state import session_approval
+                async with conv.plugin_lock:
+                    plugin = next((item for item in conv.session.list_plugins() if item.name == "permissions"), None)
+                    if plugin is None or not plugin.enabled:
+                        raise ValueError("请先启用 permissions 插件, 再选择初始审批模式")
+                    session_approval(conv.session).set_mode(approval_mode)
+                # 在会话持久化和首轮任务启动前应用显式选择, 重建预加载运行时后也必须生效
 
             conv.default_think = effective_think
             conv.recorder.save_meta(conv.model, effective_think, project_id=conv.project_id)

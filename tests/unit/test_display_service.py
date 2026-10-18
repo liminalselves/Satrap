@@ -712,6 +712,73 @@ def test_service_cancel_pending_ask_user(tmp_path: Path, monkeypatch: Any):
     asyncio.run(_run())
 
 
+@pytest.mark.asyncio
+async def test_initial_approval_is_applied_before_first_turn_and_survives_rebuild(tmp_path, monkeypatch):
+    """首轮 HTTP 请求在任务启动前应用选择, 重建和恢复不丢模式, 后续消息不能覆盖"""
+    from satrap.core.approval.state import session_approval
+
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("permissions", True)
+    server = ChatHTTPServer(svc)
+    seen = []
+    original = svc._run_turn
+    async def observe(conv, *args, **kwargs):
+        seen.append(session_approval(conv.session).mode)
+        await original(conv, *args, **kwargs)
+    monkeypatch.setattr(svc, "_run_turn", observe)
+    latest = ""
+    try:
+        for mode in ("user", "auto", "full-access"):
+            cid = await svc.preload_conversation()
+            before = _must_conversation(svc, cid)
+            assert session_approval(before.session).mode == "user"
+            payload = {"conversation": cid, "text": "第一轮", "model": "fast", "approval_mode": mode}
+            status, result = await server._route("POST", "/api/chat/send", json.dumps(payload).encode("utf-8"))
+            assert status == 200 and result["ok"], result
+            await _wait_conversation_task(svc, cid)
+            after = _must_conversation(svc, cid)
+            assert after is not before and after.persisted
+            assert seen[-1] == mode
+            assert (await svc.get_approval(cid))["mode"] == mode
+            status, result = await server._route("POST", "/api/chat/send", json.dumps(
+                {**payload, "text": "后续消息", "approval_mode": "user" if mode != "user" else "full-access"}
+            ).encode("utf-8"))
+            assert status == 200 and result["ok"]
+            await _wait_conversation_task(svc, cid)
+            assert seen[-1] == mode
+            latest = cid
+    finally:
+        await svc.close()
+    resumed = _make_service(tmp_path, monkeypatch)
+    try:
+        assert (await resumed.get_approval(latest))["mode"] == "full-access"
+    finally:
+        await resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_initial_approval_rejects_invalid_or_unavailable_modes_without_starting_turn(tmp_path, monkeypatch):
+    """初始模式无效或插件不可用时拒绝首轮, 不静默降级, 未选择模式的旧客户端照常发送"""
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("permissions", False)
+    server = ChatHTTPServer(svc)
+    try:
+        cid = await svc.preload_conversation()
+        for mode in ("invalid", None, True, {"mode": "auto"}, "auto", "full-access"):
+            status, result = await server._route("POST", "/api/chat/send", json.dumps(
+                {"conversation": cid, "text": "不应启动", "approval_mode": mode}
+            ).encode("utf-8"))
+            assert status == 400 and not result["ok"], result
+            conv = _must_conversation(svc, cid)
+            assert not conv.persisted and conv.task is None and not conv.recorder.list_turns()
+        assert not list_conversations(str(svc._display_db_path))
+        result = await svc.send(cid, "未预选模式的普通对话")
+        assert result["ok"]
+        await _wait_conversation_task(svc, cid)
+    finally:
+        await svc.close()
+
+
 def test_service_preload_is_invisible_until_first_send(tmp_path: Path, monkeypatch: Any):
     """预加载只创建内存运行时, 首次发送时才写入会话列表"""
     svc = _make_service(tmp_path, monkeypatch)

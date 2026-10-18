@@ -199,6 +199,7 @@ export type ModelConfigItem = LLMConfig;
 
 // 预加载及首次发送使用的会话构建设置
 export interface ChatPreloadSettings {
+  approvalMode?: ApprovalMode;   // 草稿首次发送时应用, 不改变已有会话的审批策略
   model: string;
   think: string;
   temperature: number;
@@ -416,6 +417,7 @@ export const chatApi = {
         temperature: preloadSettings.temperature,
         system_prompt: preloadSettings.systemPrompt,
         project_id: preloadSettings.projectId,
+        approval_mode: preloadSettings.approvalMode,
       } : {}),
     }),
 

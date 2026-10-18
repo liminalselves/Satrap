@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { chatApi, type ApprovalMode, type ApprovalState } from '@/api/chat';
 
-// 设置页与输入框快捷入口共用服务端确认的模式, 不各自维护缓存
-export function useApprovalMode(conversationId: string) {
+// 两个入口共用模式状态, 草稿仅预选, 正式会话以服务端确认为准
+export function useApprovalMode(conversationId: string, draft?: {
+  mode: ApprovalMode;
+  available: boolean;
+  pending: boolean;
+  onChange: (mode: ApprovalMode) => void;
+}) {
   const [state, setState] = useState<ApprovalState | null>(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -39,6 +44,10 @@ export function useApprovalMode(conversationId: string) {
   }, [refresh]);
 
   const save = async (mode: ApprovalMode) => {
+    if (!conversationId && draft) {
+      if (draft.available && !draft.pending) draft.onChange(mode);
+      return;
+    }
     if (!state?.available || pendingSave.current || mode === state.mode) return;
     const version = generation.current;
     pendingSave.current = true;
@@ -63,7 +72,11 @@ export function useApprovalMode(conversationId: string) {
     }
   };
 
-  return { conversationId, state, error, saving, save, refresh };
+  const draftState: ApprovalState | null = !conversationId && draft ? {
+    ok: true, available: draft.available, mode: draft.mode, revision: 0, plan_mode: false,
+  } : null;
+  return { conversationId, state: draftState ?? state, isDraft: Boolean(draftState), error,
+    saving: saving || Boolean(draftState && draft?.pending), save, refresh };
 }
 
 export type ApprovalControl = ReturnType<typeof useApprovalMode>;
