@@ -22,10 +22,12 @@ export async function establishApiSession(baseUrl: string): Promise<void> {
 
   const token = consumeBootstrapToken();
   const request = Promise.resolve().then(async () => {
-    setApiSessionState(normalized, { state: 'checking', error: useApiSessionStore.getState().sessions[normalized]?.error });
+    const previous = useApiSessionStore.getState().sessions[normalized];
+    setApiSessionState(normalized, { ...previous, state: 'checking' });
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired = false;
+    let responseStatus: number | undefined;
     try {
       const deadline = new Promise<Response>((_resolve, reject) => {
         timer = setTimeout(() => {
@@ -38,11 +40,15 @@ export async function establishApiSession(baseUrl: string): Promise<void> {
         method: 'POST', credentials: 'include', signal: controller.signal,
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       }), deadline]);
+      responseStatus = response.status;
       if (!response.ok) throw new Error(`无法建立 API 会话: HTTP ${response.status}`);
       setApiSessionState(normalized, { state: 'ready' });
     } catch (error) {
-      const message = expired ? '认证请求超过 8 秒, 请确认服务运行后重试' : error instanceof Error ? error.message : '无法建立 API 会话';
-      setApiSessionState(normalized, { state: 'error', error: message });
+      const errorKind = expired ? 'timeout' : responseStatus !== undefined ? 'http' : error instanceof TypeError ? 'network' : 'unknown';
+      const message = expired ? '连接请求超过 8 秒, 请确认服务运行后重试'
+        : errorKind === 'network' ? '无法连接服务, 请检查服务是否已启动及连接地址'
+        : error instanceof Error ? error.message : '无法建立 API 会话';
+      setApiSessionState(normalized, { state: 'error', error: message, errorKind, status: responseStatus });
       throw new Error(message);
     } finally {
       clearTimeout(timer);

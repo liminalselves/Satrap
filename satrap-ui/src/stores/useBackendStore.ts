@@ -52,6 +52,7 @@ export const useBackendStore = create<BackendState>((set, get) => {
     lastError: null,
 
     refreshHealth: async () => {
+      if (get().controlStatus?.running === false) return;
       const request = ++healthRequest;
       set({ loading: true });
       try {
@@ -71,11 +72,8 @@ export const useBackendStore = create<BackendState>((set, get) => {
         const controlStatus = await controlApi.status();
         if (request !== controlRequest) return;
         if (!controlStatus.running) ++healthRequest;
-        const previousHealth = get().health;
-        const health = !controlStatus.running && previousHealth
-          ? { ...previousHealth, running: false, adapters: {} }
-          : previousHealth;
-        set({ controlStatus, health, ...(!controlStatus.running ? { loading: false } : {}),
+        const health = !controlStatus.running ? { running: false, adapters: {} } : get().health;
+        set({ controlStatus, health, ...(!controlStatus.running ? { loading: false, healthAvailable: false } : {}),
           ...runtimeState(controlStatus, health, get().healthAvailable) });
       } catch {
         if (request !== controlRequest) return;
@@ -84,7 +82,12 @@ export const useBackendStore = create<BackendState>((set, get) => {
     },
 
     refreshAll: async () => {
-      await Promise.all([get().refreshHealth(), get().refreshControlStatus()]);
+      if (get().controlStatus?.running === false) {
+        await get().refreshControlStatus();
+        await get().refreshHealth();
+      } else {
+        await Promise.all([get().refreshHealth(), get().refreshControlStatus()]);
+      }
     },
 
     reloadConfig: async () => {

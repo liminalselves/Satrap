@@ -20,8 +20,8 @@ import {
 
 export function Dashboard() {
   useConfigWatch(['llm', 'embedding', 'rerank', 'asr', 'sessions']);
-  const { health, isRunning, runState, controlStatus, statusConnected } = useBackendStore(useShallow((state) => ({
-    health: state.health, isRunning: state.isRunning, runState: state.runState, controlStatus: state.controlStatus, statusConnected: state.statusConnected })));
+  const { health, healthAvailable, isRunning, runState, controlStatus, statusConnected } = useBackendStore(useShallow((state) => ({
+    health: state.health, healthAvailable: state.healthAvailable, isRunning: state.isRunning, runState: state.runState, controlStatus: state.controlStatus, statusConnected: state.statusConnected })));
   const { llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses } = useConfigStore(useShallow((state) => ({
     llmConfigs: state.llmConfigs, embeddingConfigs: state.embeddingConfigs, rerankConfigs: state.rerankConfigs, asrConfigs: state.asrConfigs, sessionClasses: state.sessionClasses })));
 
@@ -53,11 +53,11 @@ export function Dashboard() {
         <AlertCard
           variant="warning"
           icon={<AlertCircle className="h-6 w-6 text-warning" />}
-          title="控制服务未运行"
+          title="暂时无法确认后端状态"
           description={
             <>
               <p>
-                请运行 <code className="px-2 py-1 rounded bg-glass text-accent">python -m satrap.core.backend.control_server</code> 启动控制服务
+                请检查控制服务是否已启动及连接地址是否正确。启动命令: <code className="px-2 py-1 rounded bg-glass text-accent">python -m satrap.core.backend.control_server</code>
               </p>
               <p className="text-text-tertiary text-sm mt-2">
                 或者手动运行 <code className="px-2 py-1 rounded bg-glass text-accent">python -m satrap.main run</code> 启动后端
@@ -119,7 +119,7 @@ export function Dashboard() {
       )}
 
       {/* 后端未运行提示 */}
-      {!isRunning && controlStatus && (
+      {runState === 'stopped' && controlStatus && (
         <AlertCard
           variant="warning"
           icon={<Server className="h-6 w-6 text-warning" />}
@@ -127,12 +127,13 @@ export function Dashboard() {
           description={
             <>
               <p>点击上方「启动后端」按钮启动服务</p>
-              {health?.error && (
-                <p className="text-error text-sm mt-2">错误: {health.error}</p>
-              )}
             </>
           }
         />
+      )}
+      {isRunning && !healthAvailable && health?.error && (
+        <AlertCard variant="warning" icon={<AlertCircle className="h-6 w-6 text-warning" />}
+          title="后端已启动, 暂时无法读取运行状态" description={health.error} />
       )}
     </div>
   );
