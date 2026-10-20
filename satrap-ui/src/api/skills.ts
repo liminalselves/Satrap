@@ -21,7 +21,18 @@ export interface SkillDraft {
   scopes?: string[];
 }
 
+export interface PluginSkill {
+  plugin: string;
+  name: string;
+  description: string;
+  source: string;
+  instructions: string | null;
+  tools: string[];
+}
+
 export const skillsApi = {
+  pluginCatalog: async (signal?: AbortSignal): Promise<{ items: PluginSkill[]; notices: string[] }> =>
+    (await controlClient.get('/api/skills/plugin-catalog', { signal })).data,
   list: async (signal?: AbortSignal): Promise<ManagedSkill[]> => (await controlClient.get('/api/skills', { signal })).data.items,
   create: async (draft: SkillDraft): Promise<ManagedSkill> => (await controlClient.post('/api/skills', draft)).data.item,
   update: async (name: string, draft: SkillDraft): Promise<ManagedSkill> => (await controlClient.put(`/api/skills/${encodeURIComponent(name)}`, draft)).data.item,

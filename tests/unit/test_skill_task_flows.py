@@ -227,6 +227,31 @@ async def test_skill_management_http_and_control_share_crud(tmp_path, monkeypatc
         return await control._route_skills(control._RouteContext(method, path, path, reader, headers))
 
     assert (await request("GET"))[1]["items"] == []
+
+    from satrap.expend.plugins.skills import catalog as skill_catalog
+    from satrap.edictum.plugin_catalog import PluginCatalog
+    plugin_root = tmp_path / "catalog-plugins"
+    sample = plugin_root / "sample"
+    sample.mkdir(parents=True)
+    (sample / "meta.yaml").write_text("name: sample\nskills:\n  runtime: 动态技能\n", encoding="utf-8")
+    folder = sample / "skills" / "notes"
+    folder.mkdir(parents=True)
+    (folder / "SKILL.md").write_text("---\nname: notes\ndescription: 整理笔记\ntools: [read_document]\n---\n只读说明正文", encoding="utf-8")
+    (sample / "skills.py").write_text("raise AssertionError('查看目录不允许执行插件代码')", encoding="utf-8")
+    monkeypatch.setattr(skill_catalog, "PluginCatalog", lambda: PluginCatalog(plugin_root, tmp_path / "empty"))
+    preview_status, preview = await request("GET", "/api/skills/plugin-catalog")
+    assert preview_status == 200
+    assert preview["items"] == [
+        {"plugin": "sample", "name": "notes", "description": "整理笔记", "source": "skills/notes/SKILL.md", "instructions": "只读说明正文", "tools": ["read_document"]},
+        {"plugin": "sample", "name": "runtime", "description": "动态技能", "source": "插件能力声明", "instructions": None, "tools": []},
+    ]
+    assert "代码提供技能" in preview["notices"][0]
+    oversized = sample / "skills" / "oversized"
+    oversized.mkdir()
+    (oversized / "skill.md").write_bytes(b"x" * (storage.MAX_MARKDOWN_BYTES + 1))
+    _, bounded = await request("GET", "/api/skills/plugin-catalog")
+    assert bounded["items"] == preview["items"]
+    assert any("256 KiB" in notice for notice in bounded["notices"])
     status, created = await request("POST", payload={"markdown": MARKDOWN})
     assert status == 200 and created["item"]["revision"] == 1
     assert (await request("POST", payload={"markdown": MARKDOWN}))[0] == 409
@@ -235,3 +260,62 @@ async def test_skill_management_http_and_control_share_crud(tmp_path, monkeypatc
     assert (await request("DELETE", "/api/skills/weekly", {"expected_revision": 1}))[0] == 409
     assert (await request("DELETE", "/api/skills/weekly", {"expected_revision": 2}))[0] == 200
     assert (await request("GET"))[1]["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_skill_library_http_entry_auth_cors_and_static_routing(tmp_path, monkeypatch):
+    """通过完整 TCP 入口验证技能接口不被 SPA 捕获, 同时保留 Cookie 认证和精确 CORS"""
+    import asyncio
+    from satrap.core.backend import control_server as control
+    from satrap.core.backend.static_ui import SPAStaticService
+    from satrap.core.server_auth import ServerAuth
+    monkeypatch.setattr(storage, "get_project_root", lambda: tmp_path)
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>spa-only</html>", encoding="utf-8")
+    monkeypatch.setattr(control, "CONTROL_STATIC_UI", SPAStaticService(
+        dist, excluded_prefixes=control.CONTROL_STATIC_UI.excluded_prefixes))
+    origin = "http://localhost:5173"
+    auth = ServerAuth.create("127.0.0.1", 0, token="skills-http-test-token-for-complete-entry-regression",
+                             allowed_origins=frozenset({origin}), session_namespace="skills-test")
+    monkeypatch.setattr(control, "_CONTROL_AUTH", auth)
+    server = await asyncio.start_server(control._handle_request, "127.0.0.1", 0)
+    async with server:
+        port = server.sockets[0].getsockname()[1]
+
+        async def request(method, path, cookie="", bearer=False):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            headers = {"Host": f"127.0.0.1:{port}", "Origin": origin, "Content-Length": "0"}
+            if cookie:
+                headers["Cookie"] = cookie
+            if bearer:
+                headers["Authorization"] = f"Bearer {auth.token}"
+            raw = f"{method} {path} HTTP/1.1\r\n" + "".join(f"{key}: {value}\r\n" for key, value in headers.items()) + "\r\n"
+            writer.write(raw.encode("utf-8"))
+            await writer.drain()
+            response = await asyncio.wait_for(reader.read(), timeout=5)
+            writer.close()
+            await writer.wait_closed()
+            head, body = response.split(b"\r\n\r\n", 1)
+            lines = head.decode("utf-8").split("\r\n")
+            return int(lines[0].split()[1]), dict(line.split(": ", 1) for line in lines[1:]), body
+
+        status, headers, _ = await request("POST", "/auth/session", bearer=True)
+        assert status == 200
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        for path in ("/api/skills", "/api/skills/plugin-catalog"):
+            status, headers, body = await request("GET", path, cookie)
+            assert status == 200
+            assert headers["Content-Type"] == "application/json"
+            assert headers["Access-Control-Allow-Origin"] == origin
+            assert headers["Access-Control-Allow-Credentials"] == "true"
+            assert isinstance(json.loads(body)["items"], list)
+            assert b"spa-only" not in body
+            status, _, _ = await request("GET", path)
+            assert status == 401
+        for method, path in (("POST", "/api/skills"), ("PUT", "/api/skills/example"),
+                             ("DELETE", "/api/skills/example")):
+            status, _, _ = await request(method, path)
+            assert status == 401
+        status, _, body = await request("GET", "/plugins/skills")
+        assert status == 200 and b"spa-only" in body

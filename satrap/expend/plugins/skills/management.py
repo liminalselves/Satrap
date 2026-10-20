@@ -51,17 +51,20 @@ def download_markdown(url: str) -> tuple[str, str]:
 def skill_management(method: str, name: str, payload: dict[str, object] | None = None,
                      store: SkillStore | None = None) -> dict[str, object]:
     """
-    执行已认证管理入口的列表, 导入, 更新和删除
+    执行已认证管理入口的外部技能管理与插件技能只读预览
 
     参数:
     - method: GET, POST, PUT 或 DELETE
-    - name: 更新或删除目标名称, 列表与新建时为空
+    - name: 更新或删除目标名称, 列表与新建时为空, plugin-catalog 的 GET 返回插件技能预览
     - payload: 管理参数, 不接受任意文件系统路径
     - store: 测试或迁移使用的目录, 默认使用插件管理目录
 
     返回:
     - 管理结果, 格式错误或版本冲突向调用边界传播
     """
+    if method == "GET" and name == "plugin-catalog":
+        from satrap.expend.plugins.skills.catalog import plugin_skill_catalog
+        return plugin_skill_catalog()
     store = store or SkillStore()
     values = dict(payload or {})
     if method == "GET" and not name:

@@ -781,6 +781,10 @@ async function skill_library(runtime) {
       if (url.pathname === '/config/plugins') return route.fulfill({ json: { plugins: [{
         name: 'skills', description: '按任务加载技能', source: 'builtin', usage_count: 0, config_schema: {}, capabilities: {},
       }] }, headers: cors });
+      if (url.pathname === '/api/skills/plugin-catalog') return route.fulfill({ json: { items: [
+        { plugin: 'memory', name: 'memory', description: '长期记忆操作说明', source: 'skills/memory/skill.md', instructions: '# 来自插件的说明\n按授权保存记忆', tools: ['list_memories'] },
+        { plugin: 'sample', name: 'dynamic', description: '运行时技能', source: '插件能力声明', instructions: null, tools: [] },
+      ], notices: ['sample 还可通过代码提供技能'] }, headers: cors });
       if (url.pathname.startsWith('/api/skills')) {
         if (request.method() === 'GET') return route.fulfill({ json: { items }, headers: cors });
         const payload = request.postDataJSON();
@@ -829,6 +833,20 @@ async function skill_library(runtime) {
     await mkdir(path.join(root, 'test-results', 'skill-library'), { recursive: true });
     await page.screenshot({ path: path.join(root, 'test-results', 'skill-library', 'narrow.png'), fullPage: true });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      const writesBeforePreview = writes.length;
+      await page.getByRole('button', { name: '插件技能', exact: true }).click();
+      await page.getByText('来自 memory · 只读', { exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: '删除', exact: true }).count(), 0);
+      assert.equal(await page.getByRole('button', { name: '查看和编辑', exact: true }).count(), 0);
+      await page.getByRole('button', { name: '查看说明', exact: true }).first().click();
+      await page.getByText('按授权保存记忆', { exact: false }).waitFor();
+      await page.screenshot({ path: path.join(root, 'test-results', 'skill-library', 'plugin-preview.png'), fullPage: true, animations: 'disabled' });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      await page.getByRole('button', { name: '关闭', exact: true }).click();
+      await page.getByRole('button', { name: '查看说明', exact: true }).nth(1).click();
+      await page.getByText('该能力由插件声明', { exact: false }).waitFor();
+      await page.getByRole('button', { name: '关闭', exact: true }).click();
+      assert.equal(writes.length, writesBeforePreview);
     assert.deepEqual(errors, []);
     console.log('PASS: 技能文件与 URL 导入, 版本冲突保留草稿, 编辑停用, 删除和窄屏布局');
   } finally {

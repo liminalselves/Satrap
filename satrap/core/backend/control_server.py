@@ -638,7 +638,7 @@ def _is_control_api_path(path: str) -> bool:
     返回:
     - 路径属于控制 API 时返回 True
     """
-    return path.startswith((
+    return path == "/api/skills" or path.startswith((
         "/status",
         "/start",
         "/stop",
@@ -650,6 +650,7 @@ def _is_control_api_path(path: str) -> bool:
         "/platforms",
         "/api/platforms/",
         "/api/group-chat/",
+        "/api/skills/",
     ))
 
 
