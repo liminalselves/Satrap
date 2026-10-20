@@ -31,6 +31,7 @@ install_requires = [
     "msgpack>=1.0.5",
     "aiosqlite>=0.19.0",
     "beautifulsoup4>=4.12.0",
+    "curl_cffi>=0.16.3,<0.17",
     "requests>=2.31.0",
     "aiohttp>=3.9.0",
     "websockets>=12.0",

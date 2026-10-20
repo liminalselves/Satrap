@@ -10,6 +10,8 @@ on:
       - 'tests/unit/test_session_command_flows.py'
       - 'satrap/core/group_chat/**'
       - 'satrap/expend/tools/sandbox_tools/**'
+      - 'satrap/expend/tools/search/**'
+      - 'tests/unit/test_web_research_flows.py'
       - 'satrap/expend/plugins/base_take/**'
       - 'satrap/expend/plugins/group_chat/**'
       - 'tests/unit/test_coding_security_flows.py'
@@ -62,4 +64,11 @@ jobs:
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           python -m pytest tests/unit/test_visual_input_flows.py tests/unit/test_session_command_flows.py -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise browser requests and outbound boundaries
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          python -m pytest tests/unit/test_web_research_flows.py -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

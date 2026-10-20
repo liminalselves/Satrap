@@ -25,7 +25,7 @@ config_schema:
   search_timeout:
     type: number
     default: 10
-    description: "搜索/网页抓取超时秒数"
+    description: "整次搜索/网页抓取的总时限秒数, 包括排队, DNS, 备用入口和重定向"
 # 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
 tools:
   search: 联网搜索

@@ -18,15 +18,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 from pathlib import Path
 import socket
-from typing import NoReturn, Protocol, cast
+from typing import Protocol, cast
 import json
 from satrap.core.components.message import download_file
 from satrap.core.utils.outbound import OutboundResponseTooLargeError, ResolvedOutboundTarget
 from satrap.core.utils.outbound import TRUSTED_DOWNLOAD_HOSTS_ENV_NAME, UnsafeOutboundURLError, _PinnedResolver
 from satrap.core.utils.outbound import safe_async_get, safe_sync_get, validate_outbound_http_url
 from satrap.core.utils.outbound import validate_outbound_redirect
-from satrap.expend.tools.search import FetchPageTool, SearchTool
-from satrap.expend.tools import search as search_module
 from satrap.core.config.wake_overrides import validate_wake_overrides
 from satrap.core.components import Reply
 from satrap.core.platform.event import MessageEvent
@@ -358,43 +356,6 @@ def test_trusted_service_host_may_use_private_address(monkeypatch: pytest.Monkey
     with pytest.raises(UnsafeOutboundURLError):
         validate_outbound_http_url("https://other.internal/file")
 
-def test_fetch_page_rejects_ssrf_before_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """FetchPageTool 应在发起请求前拒绝私网目标"""
-    monkeypatch.setattr(socket, "getaddrinfo", _resolver_for("169.254.169.254"))
-    called = False
-
-    def fail_get(*args: object, **kwargs: object) -> NoReturn:
-        """记录意外网络调用并立即失败"""
-        nonlocal called
-        called = True
-        raise AssertionError("不得发起网络请求")
-
-    monkeypatch.setattr(search_module, "_requests_get", fail_get)
-    result = json.loads(FetchPageTool().execute("http://metadata.example/latest"))
-    assert called is False
-    assert "非公网地址" in result["error"]
-
-def test_search_uses_structured_query_parameters(monkeypatch: pytest.MonkeyPatch) -> None:
-    """搜索关键词应通过 params 编码而不是直接拼接到 URL"""
-    captured: dict[str, object] = {}
-
-    class Response:
-        text = '<li class="b_algo"><h2><a href="https://example.com">title</a></h2></li>'
-
-        def raise_for_status(self) -> None:
-            """模拟成功响应"""
-
-    def fake_get(url: str, **kwargs: object) -> Response:
-        """记录结构化搜索请求"""
-        captured.update({"url": url, **kwargs})
-        return Response()
-
-    monkeypatch.setattr(search_module, "_requests_get", fake_get)
-    result = json.loads(SearchTool().execute("a&count=999", max_results=5))
-
-    assert result[0]["title"] == "title"
-    assert captured["url"] == "https://cn.bing.com/search"
-    assert captured["params"] == {"q": "a&count=999", "count": 5}
 
 _TRUST_LOOPBACK = ("127.0.0.1",)
 

@@ -35,10 +35,30 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | --- | --- | --- | --- |
 | sandbox_root | path | 空 | 独立调用的兜底值; 平台运行时始终使用会话私有 sandbox |
 | workspace_root | path | 项目根 | read_document 免审批工作区根, 外部单文件按宿主模式审批 |
-| search_timeout | number | 10 | 搜索超时 (秒) |
+| search_timeout | number | 10 | 整次搜索/网页读取的总时限秒数, 包括排队, DNS, 备用入口和重定向 |
 | allowed_env_vars | string | 空 | 代码子进程显式放行的环境变量名, 多个名称用逗号分隔 |
 
 安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/base_take.json`。
+
+## 网页搜索与读取
+
+`search` 和 `fetch_page` 默认使用 `curl_cffi` 的 Chrome 请求配置, 不需要搜索 API Key 或安装浏览器. 请求头与 TLS/HTTP 指纹由同一个配置生成, 每次工具调用独享临时会话, Cookie 仅在该次调用内使用, 不读取日常浏览器资料或写入磁盘
+
+两个工具继续使用已有公网地址限制. 每一跳都重新校验 DNS 并绑定实际连接地址, 禁止自动重定向到私网, 最多跟随五次重定向. 默认直接出站, 不继承系统代理环境变量. 每次响应的解压正文最多 8 MiB, 超限时立即停止下载; `max_length` 仅控制返回给模型的正文字符数
+
+同一进程中的会话共享站点限流: 每站点最多一个进行中的请求, 前一请求结束后至少等待一秒再发起下一请求. Bing 的中国与国际入口按同一站点管理, 仅连接错误或 5xx 允许在剩余总时限内尝试一次备用入口. 明确的 403 或验证页面冷却 60 秒, 429 优先遵守 `Retry-After`, 缺失或无效时冷却 60 秒; 冷却期间直接返回原因和剩余等待时间
+
+搜索成功结果缓存 60 秒, 最多 128 条且总容量不超过 8 MiB, 仅保存在进程内存. 查询词与结果数量共同作为键, 不缓存失败结果, 网页原文或 Cookie; `fetch_page` 正文不缓存. 多个后端进程各自维护限额, 不跨进程协调
+
+搜索成功仍返回 `title/url/snippet` 列表, 明确无结果返回空列表. 网页成功仍返回 `url/title/content/status_code`. 失败保留 `error` 和 `url`, 追加 `code`, 有 HTTP 响应或冷却信息时附带 `status_code` 和 `retry_after`. 常见类别包括 `access_denied`, `rate_limited`, `verification_required`, `parse_error`, `timeout`, `connection_error`, `unsafe_url`, `response_too_large` 和 `redirect_limit`. 未识别的搜索页面不能证明无结果; 明确验证页也不会作为正文返回
+
+浏览器请求配置只能改善部分客户端特征导致的拦截, 不保证解决出口 IP 限制, 登录要求或 JavaScript 验证. 本实现不执行网页脚本, 失败时应换用其它公开来源, 不把搜索摘要冒充已读取的全文
+
+### 本轮验收记录 (2026-10-20)
+
+Windows / Python 3.13 / curl_cffi 0.16.3 已通过本地真实 HTTP 流程验收, 包括重定向地址校验, DNS 绑定, Cookie 隔离, 403/429 和验证页冷却, 压缩与流式响应限额, 排队及 DNS 总时限, 异步取消和内存缓存上限
+
+联网对照使用三个中英文搜索词及两个公开文档地址, 普通客户端与浏览器请求配置均成功; 另行验证了异步搜索. 此样本未复现原来的 403, 因此没有据此宣称已消除封禁或提高成功率. Linux/macOS 及 Python 3.11 尚未在本轮实际运行验收, 已加入三平台 Python 3.11/3.13 CI 流程
 
 ## 沙箱协调
 
