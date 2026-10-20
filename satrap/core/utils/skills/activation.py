@@ -1,5 +1,5 @@
+"""技能可用状态与可信资源装配, 不持久化说明正文或修改外部工具开关"""
 from __future__ import annotations
-import inspect
 from typing import Any, List, cast
 from satrap.core.log import logger
 from .utils import SkillWorkflowProtocol
@@ -13,7 +13,7 @@ def activate(
     self: SkillsManager, skill_name: str, workflow: SkillWorkflowProtocol
 ) -> bool:
     """
-    将技能装配进 workflow: 指令注入系统提示词 + 注册自带工具 + 启用关联工具 (同步版)
+    将技能装配进 workflow: 登记可用技能 + 安装可信自带工具 (同步版)
 
     参数:
     - skill_name: 技能名称
@@ -30,8 +30,7 @@ def activate(
     key = skill.skill_id or skill.name
     if key in self._active.get(wf_id, {}):
         return True
-    self._strip_from_system(workflow, key)
-    workflow.ctx.add_at_system_end(skill.to_text(), separator="\n\n")
+    self.attach(workflow)
     before = set(workflow.tools_manager.tools) if workflow.tools_manager is not None else set()
     previous_tools = [(tool, tool.is_enabled()) for tool in workflow.tools_manager.tools.values()] if workflow.tools_manager is not None else []
     self._active.setdefault(wf_id, {})[key] = skill
@@ -39,7 +38,7 @@ def activate(
     self._active_mcp.setdefault(wf_id, {})[key] = connected
     try:
         self._register_bundled_tools(workflow, skill)
-        enabled = self._apply_tools(workflow, [*skill.tool_names, *(tool.get_tool_name() for tool in skill.tools)], enable=True)
+        enabled = len(skill.tools)
         if workflow.tools_manager is not None:
             for client in skill.mcp_clients:
                 register = getattr(client, "sync_register_tools", None)
@@ -67,14 +66,14 @@ async def activate_async(
     self: SkillsManager, skill_name: str, workflow: SkillWorkflowProtocol
 ) -> bool:
     """
-    将技能装配进 workflow (异步版): 额外自动连接并注册技能自带的 MCP 客户端
+    将技能装配进 workflow (异步版): 安装可信技能资源, 正文由任务按需读取
 
     参数:
     - skill_name: skill名称
     - workflow: 工作流实例
 
     返回:
-    - bool: 将技能装配进 workflow (异步版): 额外自动连接并注册技能自带的 MCP 客户端
+    - bool: 将技能装配进 workflow (异步版): 安装可信技能资源, 正文由任务按需读取
     """
     skill = self.get_skill(skill_name)
     if skill is None:
@@ -84,10 +83,7 @@ async def activate_async(
     key = skill.skill_id or skill.name
     if key in self._active.get(wf_id, {}):
         return True
-    self._strip_from_system(workflow, key)
-    result = workflow.ctx.add_at_system_end(skill.to_text(), separator="\n\n")
-    if inspect.isawaitable(result):
-        await result
+    self.attach(workflow)
     before = set(workflow.tools_manager.tools) if workflow.tools_manager is not None else set()
     tools_manager = workflow.tools_manager
     previous_tools = [(tool, tool.is_enabled()) for tool in tools_manager.tools.values()] if tools_manager is not None else []
@@ -96,7 +92,7 @@ async def activate_async(
     self._active_mcp.setdefault(wf_id, {})[key] = connected
     try:
         self._register_bundled_tools(workflow, skill)
-        enabled = self._apply_tools(workflow, [*skill.tool_names, *(tool.get_tool_name() for tool in skill.tools)], enable=True)
+        enabled = len(skill.tools)
         if tools_manager is not None:
             for client in skill.mcp_clients:
                 connected.append((client, []))
@@ -121,14 +117,14 @@ def deactivate(
     self: SkillsManager, skill_name: str, workflow: SkillWorkflowProtocol
 ) -> bool:
     """
-    取消技能激活: 从系统提示词剥离指令块 + 禁用关联工具 (同步版)
+    停用技能并回收本技能持有的可信资源 (同步版)
 
     参数:
     - skill_name: skill名称
     - workflow: 工作流实例
 
     返回:
-    - bool: 取消技能激活: 从系统提示词剥离指令块 + 禁用关联工具 (同步版)
+    - bool: 停用技能并回收本技能持有的可信资源 (同步版)
     """
     skill = self.get_skill(skill_name)
     if skill is None:
@@ -136,8 +132,6 @@ def deactivate(
         return False
     wf_id = id(workflow)
     key = skill.skill_id or skill.name
-    self._strip_from_system(workflow, key)
-    self._sync_context(workflow)
     active = self._active.get(wf_id, {})
     was_active = active.pop(key, None) is not None
     clients = self._active_mcp.get(wf_id, {})
@@ -152,6 +146,7 @@ def deactivate(
         self._active.pop(wf_id, None)
     if not clients:
         self._active_mcp.pop(wf_id, None)
+    self.detach_if_empty(workflow)
     logger.info(f"[技能管理] 技能 {skill.name} 已取消激活")
     return True
 
@@ -175,10 +170,6 @@ async def deactivate_async(
         return False
     wf_id = id(workflow)
     key = skill.skill_id or skill.name
-    self._strip_from_system(workflow, key)
-    sync_result = self._sync_context(workflow)
-    if inspect.isawaitable(sync_result):
-        await sync_result
     active = self._active.get(wf_id, {})
     was_active = active.pop(key, None) is not None
     clients = self._active_mcp.get(wf_id, {})
@@ -193,5 +184,6 @@ async def deactivate_async(
         self._active.pop(wf_id, None)
     if not clients:
         self._active_mcp.pop(wf_id, None)
+    self.detach_if_empty(workflow)
     logger.info(f"[技能管理] 技能 {skill.name} 已取消激活")
     return True

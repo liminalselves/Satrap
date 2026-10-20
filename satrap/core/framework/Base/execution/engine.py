@@ -63,6 +63,7 @@ class Prepare:
     tools: list[dict[str, Any]]
     images: list[str] | None
     request_blocks: tuple[RequestContextBlock, ...]
+    system_suffix: str = ""
 
 
 @dataclass
@@ -191,6 +192,7 @@ def execute(
     - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
     - recoverable: 是否记录执行步骤, 默认 True; workflow 入口显式传入自身配置
     - initial_response: 已取得的首次模型响应, 默认 None, 仅用于非持久化兼容执行
+    - request_blocks: 本轮固定资料, 默认空元组, 恢复时使用任务保存的快照
 
     返回:
     - 固定执行指令生成器, 成功时返回最终回答, 失败或取消向外传播
@@ -274,7 +276,8 @@ def execute(
                     seeded = initial_response if step.key == "model:0" else None
                     if saved is None and seeded is None:
                         tools = [] if step.final else wf.tools_manager.get_tools_definitions()
-                        prepared = yield Prepare(step, tools, payload["img_urls"], frozen_blocks)
+                        catalog = wf.skill_runtime.catalog(wf) if wf.skill_runtime is not None else ""
+                        prepared = yield Prepare(step, tools, payload["img_urls"], frozen_blocks, catalog)
                         request = {"messages": prepared.messages, "tools": tools,
                                    "thinking": payload["thinking"], "img_urls": payload["img_urls"],
                                    "_prepared": prepared_metadata(prepared)}
@@ -356,7 +359,7 @@ async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[Ex
                 value = await asyncio.to_thread(user_media_content, action.text, action.images, action.videos, wf.llm)
             elif isinstance(action, Prepare):
                 value = await wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
-                                                           tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks)
+                                                           tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks, system_suffix=action.system_suffix)
             elif isinstance(action, InvokeTool):
                 with bind_tool_workflow(wf, action.messages):
                     tool_message, tool_result = await wf.tools_manager.execute_tool_call(action.call)
@@ -427,7 +430,7 @@ def _run_sync_scoped(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptio
                 value = user_media_content(action.text, action.images, action.videos, wf.llm)
             elif isinstance(action, Prepare):
                 value = wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
-                                                     tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks)
+                                                     tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks, system_suffix=action.system_suffix)
             elif isinstance(action, InvokeTool):
                 with bind_tool_workflow(wf, action.messages):
                     tool_message, tool_result = wf.tools_manager.execute_tool_call(action.call)

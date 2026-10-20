@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from satrap.edictum.plugin import Plugin
     from satrap.core.framework.command.async_ import AsyncCommandHandler
     from satrap.core.framework.command.sync import CommandHandler
+    from satrap.core.plugin_interop.skills import SkillHostAccess
     from satrap.core.plugin_interop.artifacts import ArtifactAccess
     from satrap.core.plugin_interop.approvals import ApprovalAccess
 
@@ -344,6 +345,18 @@ class PluginHost:
         - 不包含发话者和审批授权的环境资料
         """
         return environment_snapshot(self._runtime().session())
+
+    @property
+    def skills(self) -> SkillHostAccess:
+        """
+        取得技能登记与本轮加载接口
+
+        返回:
+        - 当前插件身份绑定的技能宿主接口
+        """
+        from .skills import SkillHostAccess
+        self._runtime()
+        return SkillHostAccess(self)
 
     @property
     def plugins(self) -> PluginAccess:
@@ -816,6 +829,9 @@ class PluginInterop:
         - name: 被卸载或安装失败的插件名
         """
         self.bindings.pop(name, None)
+        manager = self.session()._skills_manager
+        if manager is not None:
+            manager.sources.pop(name, None)
 
     def check_remove(self, name: str) -> None:
         """

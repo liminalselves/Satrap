@@ -854,8 +854,9 @@ async def test_first_model_request_has_skill_tools_environment_and_no_early_outp
     assert seen == []
     assert instance._wf.content_callback is output
     first, args = script.requests[0]
-    assert first[0]["content"].startswith("基础提示词") and "<skill:group_chat>" in first[0]["content"]
-    assert {tool["function"]["name"] for tool in args["tools"] if tool["function"]["name"].startswith("group_chat_")} == (set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"]))
+    assert first[0]["content"].startswith("基础提示词") and "- group_chat:" in first[0]["content"]
+    assert {tool["function"]["name"] for tool in args["tools"] if tool["function"]["name"].startswith("group_chat_")} == set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"])
+    assert "load_skill" in {tool["function"]["name"] for tool in args["tools"]}
     assert '"speaker_id": "123"' in str(first) and '"source_message_id": "77"' in str(first)
     assert '"nickname": "机器人"' in str(first)
     assert "available_group_chat_tools" not in str(first)
@@ -891,13 +892,13 @@ async def test_plugin_disable_enable_preserves_definitions_in_private_chat(tmp_p
             method("group_chat")
     await toggle(False)
     await PipelineScheduler(cast(SessionManager, Invoker(instance, asynchronous))).execute(event)
-    assert "<skill:group_chat>" not in script.requests[0][0][0]["content"]
+    assert "- group_chat:" not in script.requests[0][0][0]["content"]
     assert not script.requests[0][1]["tools"]
     send_mock(adapter).reset_mock()
     await toggle(True)
     _, event, _ = setup(tmp_path)
     await PipelineScheduler(cast(SessionManager, Invoker(instance, asynchronous))).execute(event)
-    assert script.requests[1][0][0]["content"].count("<skill:group_chat>") == 1
+    assert script.requests[1][0][0]["content"].count("- group_chat:") == 1
     adapter, private, _ = setup(tmp_path, private=True)
     await PipelineScheduler(cast(SessionManager, Invoker(instance, asynchronous))).execute(private)
     assert script.requests[2][1]["tools"] == script.requests[1][1]["tools"]
@@ -954,15 +955,15 @@ async def test_named_backend_agent_first_load_restart_and_plugin_disable(tmp_pat
     await scheduler.execute(event)
     send_mock(adapter).assert_awaited_once()
     first, args = script.requests[0]
-    assert first[0]["content"].count("<skill:group_chat>") == 1
-    assert {tool["function"]["name"] for tool in args["tools"]} == (set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"]))
+    assert first[0]["content"].count("- group_chat:") == 1
+    assert {tool["function"]["name"] for tool in args["tools"]} == (set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"]) | {"load_skill"})
     assert any(message["role"] == "tool" and '"message_id": "77"' in message["content"] for message in script.requests[1][0])
     await manager.unload_session_async(event.session_id)
     send_mock(adapter).reset_mock()
     event = MessageEvent("重启后检查", event.platform_message, adapter.meta(), event.session_id, adapter, "edictum", "group-agent")
     event.is_wake = True
     await scheduler.execute(event)
-    assert script.requests[3][0][0]["content"].count("<skill:group_chat>") == 1
+    assert script.requests[3][0][0]["content"].count("- group_chat:") == 1
     send_mock(adapter).assert_awaited_once()
     configs.update("group-agent", {"plugins": []})
     results = await manager.reconcile_edictum_runtime_async(config_name="group-agent")
@@ -971,7 +972,7 @@ async def test_named_backend_agent_first_load_restart_and_plugin_disable(tmp_pat
     event = MessageEvent("停用后检查", event.platform_message, adapter.meta(), event.session_id, adapter, "edictum", "group-agent")
     event.is_wake = True
     await scheduler.execute(event)
-    assert "<skill:group_chat>" not in script.requests[4][0][0]["content"]
+    assert "- group_chat:" not in script.requests[4][0][0]["content"]
     assert script.requests[4][1]["tools"] == []
     send_mock(adapter).assert_awaited_once()
     await manager.unload_session_async(event.session_id)

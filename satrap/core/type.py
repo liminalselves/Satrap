@@ -592,6 +592,10 @@ class CommandAction:
     """目标会话 ID, 用于切换会话等操作"""
     message: str = ""
     """返回给用户的信息"""
+    user_input: str = ""
+    """run_task 动作立即执行的用户任务, 不递归调用会话锁"""
+    request_blocks: tuple[RequestContextBlock, ...] = ()
+    """run_task 动作仅供本轮模型请求使用的资料"""
 
 # ==================== State (检查点 / 回滚 / 分支) ====================
 

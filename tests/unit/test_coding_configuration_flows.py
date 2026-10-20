@@ -507,7 +507,7 @@ def test_plugin_install_full_capabilities(_satrap_coding_plugin_session: SimpleS
     assert set(plugin.commands) == {"goal", "plan"}
     assert set(plugin.skills) == {"goal", "plan"}
     assert set(plugin.handlers) == {"satrap_coding.inject"}
-    assert len(_satrap_coding_plugin_session.list_tools()) == 11
+    assert set(_satrap_coding_plugin_session.list_tools()) == set(plugin.tools) | {"load_skill"}
     assert set(_satrap_coding_plugin_session.list_commands()) >= {"goal", "plan"}
     assert "approve" not in _satrap_coding_plugin_session.list_commands()
     assert "goal" in _satrap_coding_plugin_session.list_skills()

@@ -2467,6 +2467,35 @@ async def _route_reminders(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": "提醒数据暂不可用", "code": "unavailable"}
 
 
+async def _route_skills(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    经已认证控制入口调用技能插件的统一管理逻辑
+
+    参数:
+    - ctx: 当前管理请求
+
+    返回:
+    - 操作结果, 未匹配时返回 None
+    """
+    if ctx.path != "/api/skills" and not ctx.path.startswith("/api/skills/"):
+        return None
+    from satrap.expend.plugins.skills.management import skill_management
+    from satrap.expend.plugins.skills.store import SkillConflict
+    from satrap.core.utils.outbound import OutboundHTTPError
+    try:
+        payload = await _read_json_body(ctx.reader, ctx.raw_request) if ctx.method != "GET" else {}
+        if not isinstance(payload, dict):
+            raise ValueError("技能管理请求必须是对象")
+        name = urllib.parse.unquote(ctx.path.removeprefix("/api/skills").lstrip("/"))
+        return 200, await RAG_WORKERS.run(skill_management, ctx.method, name, payload)
+    except SkillConflict as error:
+        return 409, {"error": str(error)}
+    except (OSError, ValueError, TypeError) as error:
+        return 400, {"error": str(error)}
+    except OutboundHTTPError as error:
+        return 502, {"error": str(error)}
+
+
 async def _route_group_chat_media(ctx: _RouteContext) -> ControlResponse | None:
     """
     在已认证控制入口管理表情, 上传与逐群授权
@@ -3546,6 +3575,7 @@ async def _handle_request(
             _route_memories,
             _route_reminders,
             _route_group_chat_media,
+            _route_skills,
             _route_conversation_data,
             _route_plugin_install,
             _route_plugin_application,

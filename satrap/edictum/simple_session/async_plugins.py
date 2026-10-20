@@ -142,7 +142,7 @@ async def install_plugin(
                 t.disable()
 
         mgr = self._get_skills_manager()
-        for s in collect_skills(plugin_dir, name):
+        for s in collect_skills(plugin_dir, name, self, plugin_config, plugin_host=plugin_host):
             key = s.skill_id or s.name
             if key in mgr.skills or key in skill_states:
                 raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")

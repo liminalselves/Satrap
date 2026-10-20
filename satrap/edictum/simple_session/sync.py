@@ -257,7 +257,13 @@ class SimpleSession(Session, _SessionFeatures):
             self._plugin_interop_runtime.synchronize_skills()
         self._wf.reset_context_stats()
         history_revision = getattr(self.ctx, "_edit_revision", 0)
+        if self._skills_manager is not None:
+            self._skills_manager.refresh()
         command_result, is_command = self.cmd_process(user_input)
+        if isinstance(command_result, CommandAction) and command_result.action == "run_task":
+            user_input = command_result.user_input
+            request_blocks = (*request_blocks, *command_result.request_blocks)
+            is_command = False
         if is_command:
             if isinstance(command_result, CommandAction):
                 return command_result
@@ -334,6 +340,8 @@ class SimpleSession(Session, _SessionFeatures):
             if self.recoverable:
                 recovery.prepare_session_recovery(self)
 
+            if final_override is None and self._skills_manager is not None:
+                ctx.request_blocks.extend(self._skills_manager.take_forced(self._wf))
             frozen_blocks = freeze_request_blocks(ctx.request_blocks)
             result: str | None = None
             ctx.error = None

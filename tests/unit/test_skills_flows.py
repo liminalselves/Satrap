@@ -225,7 +225,8 @@ async def test_activate_async_connects_and_deactivate_closes_mcp_clients(tmp_pat
 
     assert await manager.activate_async("coding-agent", wf) is True
     assert client.closed is False
-    assert "<skill:coding-agent>" in wf.ctx.get_context()[0]["content"]
+    assert "coding-agent" in manager.catalog(wf)
+    assert "<skill:" not in wf.ctx.get_context()[0]["content"]
 
     assert await manager.deactivate_async("coding-agent", wf) is True
     assert client.closed is True
@@ -263,7 +264,7 @@ def _make_sync_workflow(tmp_path: Path):
     ctx.reset_system_prompt("你是助手")
     return _skills_SyncStubWorkflow(ctx=ctx, tools_manager=tools_manager)
 
-def test_activate_injects_instructions_and_enables_tools(tmp_path: Path):
+def test_activate_publishes_catalog_without_changing_prompt_or_tool_switches(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
     _write_skill(tmp_path)
     manager.scan()
@@ -273,14 +274,15 @@ def test_activate_injects_instructions_and_enables_tools(tmp_path: Path):
 
     assert manager.activate("coding-agent", wf) is True
     system_text = wf.ctx.get_context()[0]["content"]
-    assert "<skill:coding-agent>" in system_text
-    assert "使用沙箱验证代码" in system_text
-    assert tools_manager.is_tool_enabled("code_sandbox") is True
+    assert system_text == "你是助手"
+    assert "coding-agent" in manager.catalog(wf)
+    assert "使用沙箱验证代码" in manager.read_skill("coding-agent", wf)
+    assert tools_manager.is_tool_enabled("code_sandbox") is False
 
     assert manager.activate("coding-agent", wf) is True   # 幂等
-    assert system_text.count("<skill:coding-agent>") == 1
+    assert manager.catalog(wf).count("- coding-agent:") == 1
 
-def test_deactivate_strips_instructions_and_disables_tools(tmp_path: Path):
+def test_deactivate_removes_catalog_without_changing_existing_tools(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
     _write_skill(tmp_path)
     manager.scan()
@@ -290,7 +292,9 @@ def test_deactivate_strips_instructions_and_disables_tools(tmp_path: Path):
     assert manager.deactivate("coding-agent", wf) is True
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:coding-agent>" not in system_text
-    assert wf.tools_manager.is_tool_enabled("code_sandbox") is False
+    assert wf.tools_manager.is_tool_enabled("code_sandbox") is True
+    with pytest.raises(ValueError, match="不可用"):
+        manager.read_skill("coding-agent", wf)
 
 def test_activate_unknown_skill_returns_false(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
@@ -320,8 +324,9 @@ async def test_activate_async_with_async_context(tmp_path: Path):
     wf = _AsyncStubWorkflow(ctx=ctx, tools_manager=tools_manager)
 
     assert await manager.activate_async("coding-agent", wf) is True
-    assert "<skill:coding-agent>" in wf.ctx.get_context()[0]["content"]
-    assert tools_manager.is_tool_enabled("code_sandbox") is True
+    assert "coding-agent" in manager.catalog(wf)
+    assert wf.ctx.get_context()[0]["content"] == "你是助手"
+    assert tools_manager.is_tool_enabled("code_sandbox") is False
 
     assert await manager.deactivate_async("coding-agent", wf) is True
     assert "<skill:coding-agent>" not in wf.ctx.get_context()[0]["content"]
@@ -339,15 +344,16 @@ async def test_skill_tool_returns_instructions(tmp_path: Path):
 
     result = await tool.execute(skill="ghost")
     assert "ghost" in result
-    assert "coding-agent" in result
+    assert "不可用" in result
 
-def test_skill_tool_definition_contains_available_skills(tmp_path: Path):
+def test_skill_tool_definition_uses_catalog_instead_of_duplicate_skill_names(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
     _write_skill(tmp_path)
     manager.scan()
     tool = SkillTool(manager)
     defined = tool.get_tool_defined()
-    assert "coding-agent" in defined["function"]["description"]
+    assert "coding-agent" not in defined["function"]["description"]
+    assert defined["function"]["name"] == "load_skill"
 
 class _skills_dirs_SyncStubWorkflow:
     """同步轻量工作流替身: 结构满足 SkillWorkflowProtocol"""
@@ -438,14 +444,12 @@ def test_same_name_sequential_activate_no_cross_strip(tmp_path: Path):
     assert mgr.activate("web-research", wf) is True   # 官方版本
     assert mgr.activate("user-web", wf) is True   # 用户版本 (同名, 不应被跳过)
 
-    system_text = wf.ctx.get_context()[0]["content"]
-    assert "<skill:web-research>" in system_text
-    assert "<skill:user-web>" in system_text
+    assert "<skill:web-research>" in mgr.read_skill("web-research", wf)
+    assert "<skill:user-web>" in mgr.read_skill("user-web", wf)
 
     assert mgr.deactivate("user-web", wf) is True
-    system_text = wf.ctx.get_context()[0]["content"]
-    assert "<skill:user-web>" not in system_text
-    assert "<skill:web-research>" in system_text   # 官方版本未被误伤
+    assert "- user-web:" not in mgr.catalog(wf)
+    assert "- web-research:" in mgr.catalog(wf)   # 官方版本未被误伤
 
 def _make_workflow(tmp_path: Path):
     """最小 workflow stub: ctx + tools_manager"""
@@ -464,11 +468,10 @@ def test_activate_by_skill_id(tmp_path: Path):
 
     wf = _make_workflow(tmp_path)
     assert mgr.activate("my-web-research", wf) is True
-    system_text = wf.ctx.get_context()[0]["content"]
-    assert "<skill:my-web-research>" in system_text
+    assert "<skill:my-web-research>" in mgr.read_skill("my-web-research", wf)
 
     assert mgr.deactivate("my-web-research", wf) is True
-    assert "<skill:my-web-research>" not in wf.ctx.get_context()[0]["content"]
+    assert "- my-web-research:" not in mgr.catalog(wf)
 
 def _make_mcp_tool(name: str = "read_file", description: str = "读取文件", schema: dict[str, Any] | None = None):
     return MCPTool(
