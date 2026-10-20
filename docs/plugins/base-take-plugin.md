@@ -44,15 +44,50 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 
 `search` 和 `fetch_page` 默认使用 `curl_cffi` 的 Chrome 请求配置, 不需要搜索 API Key 或安装浏览器. 请求头与 TLS/HTTP 指纹由同一个配置生成, 每次工具调用独享临时会话, Cookie 仅在该次调用内使用, 不读取日常浏览器资料或写入磁盘
 
-两个工具继续使用已有公网地址限制. 每一跳都重新校验 DNS 并绑定实际连接地址, 禁止自动重定向到私网, 最多跟随五次重定向. 默认直接出站, 不继承系统代理环境变量. 每次响应的解压正文最多 8 MiB, 超限时立即停止下载; `max_length` 仅控制返回给模型的正文字符数
+两个工具继续使用已有公网地址限制. 每一跳都重新校验 DNS 并绑定实际连接地址, 禁止自动重定向到私网, 最多跟随五次重定向. 默认直接出站, 不继承系统代理环境变量. 每次响应的解压正文最多 8 MiB, 超限时立即停止下载; HTML 原始及解码后的 UTF-8 内容各最多 2 MiB 才进入正文提取, 超出返回 `extraction_limit`. `max_length` 仅控制返回给模型的正文字符数
 
 同一进程中的会话共享站点限流: 每站点最多一个进行中的请求, 前一请求结束后至少等待一秒再发起下一请求. Bing 的中国与国际入口按同一站点管理, 仅连接错误或 5xx 允许在剩余总时限内尝试一次备用入口. 明确的 403 或验证页面冷却 60 秒, 429 优先遵守 `Retry-After`, 缺失或无效时冷却 60 秒; 冷却期间直接返回原因和剩余等待时间
 
-搜索成功结果缓存 60 秒, 最多 128 条且总容量不超过 8 MiB, 仅保存在进程内存. 查询词与结果数量共同作为键, 不缓存失败结果, 网页原文或 Cookie; `fetch_page` 正文不缓存. 多个后端进程各自维护限额, 不跨进程协调
+搜索成功结果缓存 60 秒, 最多 128 条且总容量不超过 8 MiB, 仅保存在进程内存. 查询词与结果数量共同作为键, 不缓存失败结果, 网页原文或 Cookie. `fetch_page` 的提取正文另外保存 5 分钟的续读快照, 不作为按 URL 复用的下载缓存. 多个后端进程各自维护限额, 不跨进程协调
 
-搜索成功仍返回 `title/url/snippet` 列表, 明确无结果返回空列表. 网页成功仍返回 `url/title/content/status_code`. 失败保留 `error` 和 `url`, 追加 `code`, 有 HTTP 响应或冷却信息时附带 `status_code` 和 `retry_after`. 常见类别包括 `access_denied`, `rate_limited`, `verification_required`, `parse_error`, `timeout`, `connection_error`, `unsafe_url`, `response_too_large` 和 `redirect_limit`. 未识别的搜索页面不能证明无结果; 明确验证页也不会作为正文返回
+搜索成功仍返回 `title/url/snippet` 列表, 明确无结果返回空列表. 网页成功保留 `url/title/content/status_code`, 并附带正文来源及分页信息. 失败保留 `error` 和 `url`, 追加 `code`, 有 HTTP 响应或冷却信息时附带 `status_code` 和 `retry_after`. 常见类别包括 `access_denied`, `rate_limited`, `verification_required`, `parse_error`, `timeout`, `connection_error`, `unsafe_url`, `response_too_large` 和 `redirect_limit`. 未识别的搜索页面不能证明无结果; 明确验证页也不会作为正文返回
 
 浏览器请求配置只能改善部分客户端特征导致的拦截, 不保证解决出口 IP 限制, 登录要求或 JavaScript 验证. 本实现不执行网页脚本, 失败时应换用其它公开来源, 不把搜索摘要冒充已读取的全文
+
+### 正文提取与快照续读
+
+HTML 使用 trafilatura 在本地提取正文, 保留段落, 标题, 列表, 表格和代码, 默认不附加评论. 失败时选择清理后的 article/main 候选, 最后回退清理后的整页文本. `extraction=main` 表示提取器结果, `fallback` 表示正文归属未确认并附带 warnings, `plain` 表示原响应是纯文本. 正文归属不等于事实已经核实, 视频页面文字不代表已观看视频
+
+```python
+first = fetch_page(url="https://example.com/article", max_length=5000)
+next_part = fetch_page(
+    url="https://example.com/article",
+    page_id=first["page_id"],
+    offset=first["next_offset"],
+    max_length=5000,
+)
+```
+
+上例表示模型工具的参数及解码后的 JSON 结果, 不是独立 Python 函数. 仅在 `has_more=true` 时按 `next_offset` 继续. 工具实例的 `execute` 返回 JSON 字符串, Python 调用者需先 `json.loads` 解码
+
+| 参数 | 约束 |
+| --- | --- |
+| url | 唯一必填项, 首次 HTTP/HTTPS 地址, 最多 8192 UTF-8 字节; 续读原样填写首次调用地址, 包括查询串 |
+| max_length | 默认 5000, 范围 1 至 20000 个字符, 超出报错而非静默缩小 |
+| offset | 默认 0, 非负整数; 首次必须为 0, 非零必须提供 page_id |
+| page_id | 首次省略, 续读填写当前工具实例返回的随机标识 |
+
+成功结果中的 `total_length` 是完整提取正文的字符数, `offset/end_offset` 是本次左闭右开区间. `has_more/next_offset` 只指向后方剩余正文; `truncated` 表示本次没有返回完整正文, 包括前方已有省略的情况. 起点等于正文长度时返回空文本和 `has_more=false`, 大于长度报 `invalid_argument`. content 中不再拼入截断提示
+
+快照只在当前工具实例范围内使用, 同步与异步实例不能相互取值. 续读不联网, 原页面变化也不会混入后续段落. 快照有效期从保存时算 5 分钟, 续读不延长. 过期, 淘汰, 工具重建, 后端重启或实例/URL 不匹配统一返回 `page_expired`, 不隐式重抓. 重新从头抓取是一次新的请求
+
+全进程最多 128 份快照, 键与文本/元数据的编码容量合计最多 32 MiB, 满时按 LRU 淘汰. 单份正文最多 1 MiB UTF-8, 超出返回 `extraction_limit`, 不截掉尾部再宣称是完整快照. 快照不落盘, 不保存原 HTML, Cookie 或登录资料; 工具结果中已返回的文字仍遵循宿主已有会话历史存储规则
+
+异步正文解析使用 2 个工作线程, 最多另有 8 个等待任务, 满时返回 `busy`. 超时或取消后, 已开始的解析仍占名额直到实际完成; 未开始的任务标记放弃, 实际出队时跳过解析并释放名额, 避免取消后的响应仍留在队列却允许继续排队. 总时限包括网络与提取, 超时不写入成功快照. 线程不能强制终止已开始的解析, 输入与并发限制不等于 CPU 硬超时
+
+HTTP 200 也可能返回 `javascript_required` (明确 JS 提示且页面为空壳) 或 `content_unavailable` (无可读取内容但原因不明), 保留真实 `status_code=200`, 不冒充 403. 这两类错误不触发站点封禁冷却. 短文或文章提到验证码/JavaScript 不会单凭关键词被拒绝
+
+每份成功结果标记 `source_type=external_web` 并附带 `content_notice`. 网页仍是工具返回的外部资料, 页面命令和身份声明不是用户授权, 不提升到 system prompt 或加载成 skill. 不自动执行页面指令, 不通过关键词过滤删除疑似注入原文, 也不承诺识别所有注入
 
 ### 本轮验收记录 (2026-10-20)
 

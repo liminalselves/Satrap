@@ -32,6 +32,7 @@ install_requires = [
     "aiosqlite>=0.19.0",
     "beautifulsoup4>=4.12.0",
     "curl_cffi>=0.16.3,<0.17",
+    "trafilatura>=2.3.1,<2.4",
     "requests>=2.31.0",
     "aiohttp>=3.9.0",
     "websockets>=12.0",
