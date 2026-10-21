@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-import msvcrt
 from typing import IO
 from types import TracebackType
 import os
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from satrap.core.runtime_paths import get_runtime_path
 
@@ -20,7 +24,11 @@ class BackendInstanceLock:
         参数:
         - path: 路径
         """
-        self.path = Path(path) if path is not None else get_runtime_path("backend.lock", require_idle=True)
+        self.path = (
+            Path(path)
+            if path is not None
+            else get_runtime_path("backend.lock", require_idle=True)
+        )
         self._fh: IO[str] | None = None
 
     def acquire(self, host: str, port: int) -> bool:
@@ -36,6 +44,7 @@ class BackendInstanceLock:
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = self.path.open("a+", encoding="utf-8")
+
         try:
             self._lock_file()
         except OSError:
@@ -52,6 +61,7 @@ class BackendInstanceLock:
         """释放锁并关闭文件句柄"""
         if self._fh is None:
             return
+
         try:
             self._unlock_file()
         finally:
@@ -59,17 +69,41 @@ class BackendInstanceLock:
 
     def _lock_file(self):
         assert self._fh is not None
+
         self._fh.seek(0)
-        self._fh.write(" ")
-        self._fh.flush()
-        self._fh.seek(0)
-        msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+
+        if os.name == "nt":
+            # Windows 的 msvcrt.locking 需要至少存在 1 字节可供锁定
+            self._fh.write(" ")
+            self._fh.flush()
+            self._fh.seek(0)
+            msvcrt.locking(
+                self._fh.fileno(),
+                msvcrt.LK_NBLCK,
+                1,
+            )
+        else:
+            fcntl.flock(
+                self._fh.fileno(),
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
 
     def _unlock_file(self):
         assert self._fh is not None
-        self._fh.seek(0)
-        msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
 
+        self._fh.seek(0)
+
+        if os.name == "nt":
+            msvcrt.locking(
+                self._fh.fileno(),
+                msvcrt.LK_UNLCK,
+                1,
+            )
+        else:
+            fcntl.flock(
+                self._fh.fileno(),
+                fcntl.LOCK_UN,
+            )
 
     def _close(self):
         if self._fh is not None:
@@ -79,5 +113,10 @@ class BackendInstanceLock:
     def __enter__(self) -> BackendInstanceLock:
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ):
         self.release()
