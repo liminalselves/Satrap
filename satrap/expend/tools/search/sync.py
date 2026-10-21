@@ -74,7 +74,7 @@ class FetchPageTool(_FetchCore, Tool):
             cached = self._continue_page(url, max_length, offset, page_id)
             if cached is not None:
                 return cached
-            with BrowserTransport(deadline, self.policy) as client:
+            with BrowserTransport(deadline, self.policy, js_challenge=self.js_challenge) as client:
                 response = client.get(url)
                 deadline.remaining()
                 page = extract_page(response)

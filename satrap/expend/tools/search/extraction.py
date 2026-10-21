@@ -111,7 +111,8 @@ def html_page(response: OutboundHTTPResponse) -> HtmlNode:
     paragraphs = [p.get_text(strip=True) for p in soup.select("p") if p.find_parent("form") is None]
     has_body = bool(article and article.get_text(strip=True)) or (
         len(paragraphs) >= 2 and sum(map(len, paragraphs)) >= 200)
-    if not has_body and (form or (script and title in {"just a moment...", "attention required! | cloudflare"})):
+    inline_challenge = soup.select_one("meta[name=aliyun_waf_aa]") is not None and soup.select_one("textarea#renderData") is not None
+    if not has_body and (form or inline_challenge or (script and title in {"just a moment...", "attention required! | cloudflare"})):
         raise WebRequestError("verification_required", "网站要求浏览器验证, 未取得有效正文",
                               status=200, retry_after=60)
     return soup

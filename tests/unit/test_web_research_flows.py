@@ -8,6 +8,7 @@ import socket
 import time
 import gzip
 import json
+from importlib.metadata import version, PackageNotFoundError
 
 import pytest
 
@@ -16,6 +17,24 @@ from satrap.expend.tools.search import SearchTool, AsyncSearchTool, FetchPageToo
 from satrap.expend.tools.search import transport
 from satrap.expend.tools.search.transport import BrowserTransport, AsyncBrowserTransport
 from satrap.expend.tools.search.utils import WebPolicy, Deadline, WebRequestError, retry_delay
+
+try:
+    version("mini-racer")
+    JS_AVAILABLE = True
+except PackageNotFoundError:
+    JS_AVAILABLE = False
+
+
+def inline_challenge(script: str) -> bytes:
+    """构造固定本地 HTTP 验证页, 脚本实际交给 V8 运行而非模拟执行结果"""
+    data = json.dumps({"l1": "var arg1='" + "a" * 50 + "';"})
+    return (f'<meta name="aliyun_waf_aa" content="test"><textarea id="renderData">{data}</textarea>'
+            '<script>const renderData=JSON.parse(document.getElementById("renderData").innerHTML);'
+            'const arg1=renderData.l1.slice(10,60);</script>'
+            f'<script name="aliyunwaf_test">{script}</script>').encode()
+
+
+GOOD_JS = 'document.cookie="acw_sc__v2="+arg1.slice(0,40)+"; Path=/"; document.location.reload();'
 
 
 class WebServer(ThreadingHTTPServer):
@@ -27,6 +46,7 @@ class WebServer(ThreadingHTTPServer):
         self.started = threading.Event()
         self.counts = Counter()
         self.pages: dict[str, tuple[bytes, dict[str, str]]] = {}
+        self.js_scripts: dict[str, str] = {}
         self.lock = threading.Lock()
         super().__init__(("127.0.0.1", 0), WebHandler)
 
@@ -59,6 +79,19 @@ class WebHandler(BaseHTTPRequestHandler):
         if path in server.pages:
             body, headers = server.pages[path]
             return self.respond(body, headers=headers)
+        if path.startswith("/js/"):
+            has_cookie = "acw_sc__v2=" + "a" * 40 in self.headers.get("Cookie", "")
+            if has_cookie and path != "/js/repeat":
+                if path == "/js/private":
+                    return self.respond(status=302, headers={"Location": "http://169.254.169.254/latest/meta-data"})
+                if path == "/js/cross":
+                    return self.respond(status=302, headers={"Location": server.base.replace("public.web.test", "child.public.web.test") + "/no-js-cookie"})
+                return self.respond('<title>验证后的正文</title><article><p>这是完成验证之后的真实正文。</p></article>'.encode())
+            return self.respond(inline_challenge(server.js_scripts.get(path, GOOD_JS)))
+        if path == "/no-js-cookie":
+            if "acw_sc__v2" in self.headers.get("Cookie", ""):
+                return self.respond(b"cookie-leaked", 500)
+            return self.respond(b"<p>no-cookie</p>")
         if path.endswith("/search"):
             query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
             if query == "none":
@@ -127,12 +160,12 @@ def web_server(monkeypatch):
     original = socket.getaddrinfo
 
     def dns(host, port, *args, **kwargs):
-        if host.rstrip(".").lower() == "public.web.test":
+        if host.rstrip(".").lower() in {"public.web.test", "child.public.web.test"}:
             return original("127.0.0.1", port, *args, **kwargs)
         return original(host, port, *args, **kwargs)
 
     def resolve(url):
-        return resolve_outbound_http_url(url, trusted_hosts=("public.web.test",))
+        return resolve_outbound_http_url(url, trusted_hosts=("public.web.test", "child.public.web.test"))
 
     monkeypatch.setattr(socket, "getaddrinfo", dns)
     monkeypatch.setattr(transport, "resolve_outbound_http_url", resolve)
@@ -575,3 +608,172 @@ async def test_extraction_timeout_cancellation_queue_and_event_loop(web_server, 
     monkeypatch.setattr(synchronous, "extract_page", slow_sync)
     assert json.loads(sync_fetch.execute(web_server.base + "/ok"))["code"] == "timeout"
     assert sync_fetch._snapshots._items == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not JS_AVAILABLE, reason="需要安装 web-js 可选依赖")
+async def test_lightweight_js_cookie_roundtrip_scope_and_snapshot(web_server):
+    """真实 HTTP 加 V8 子进程完成验证, 同步异步均保留 Cookie 隔离与续读语义"""
+    for tool in (FetchPageTool(js_challenge=True), AsyncFetchPageTool(js_challenge=True)):
+        tool.policy = WebPolicy(interval=0.04)
+        url = web_server.base + "/js/success"
+        value = tool.execute(url, max_length=5)
+        first = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert first["title"] == "验证后的正文" and first["has_more"]
+        calls = list(web_server.calls)
+        assert "acw_sc__v2" not in calls[-2][1].get("Cookie", "")
+        assert "acw_sc__v2=" + "a" * 40 in calls[-1][1].get("Cookie", "")
+        assert calls[-1][2] - calls[-2][2] >= 0.03
+        value = tool.execute(url, page_id=first["page_id"], offset=first["next_offset"])
+        rest = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert "真实正文" in rest["content"] and web_server.calls == calls
+        value = tool.execute(url)
+        again = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert again["page_id"] != first["page_id"] and len(web_server.calls) == len(calls) + 2
+        assert "acw_sc__v2" not in web_server.calls[-2][1].get("Cookie", "")
+        value = tool.execute(web_server.base + "/js/cross")
+        cross = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert cross["content"] == "no-cookie"
+        value = tool.execute(web_server.base + "/js/private")
+        unsafe = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert unsafe["code"] == "unsafe_url"
+        assert all("169.254" not in call[0] for call in web_server.calls)
+
+
+@pytest.mark.asyncio
+async def test_lightweight_js_opt_in_dependency_template_and_http_guards(web_server, monkeypatch):
+    """默认关闭不启进程, 缺依赖或不支持模板明确失败, HTTP 拒绝不进入 JS 重试"""
+    from satrap.expend.tools.search import js_runtime
+    opened = []
+    def forbidden_spawn(*args, **kwargs):
+        opened.append(True)
+        raise AssertionError("本场景不能启动 JS worker")
+    monkeypatch.setattr(js_runtime.subprocess, "Popen", forbidden_spawn)
+    for asynchronous in (False, True):
+        cls = AsyncFetchPageTool if asynchronous else FetchPageTool
+        tool = cls()
+        tool.policy = WebPolicy(interval=0)
+        value = tool.execute(web_server.base + "/js/off")
+        result = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert result["code"] == "verification_required" and result["status_code"] == 200
+        assert result["retry_after"] == 60
+        tool = cls(js_challenge=True)
+        tool.policy = WebPolicy(interval=0)
+        with monkeypatch.context() as scoped:
+            def missing(name):
+                raise PackageNotFoundError(name)
+            scoped.setattr(js_runtime, "version", missing)
+            value = tool.execute(web_server.base + "/js/missing")
+            result = json.loads(await value if asyncio.iscoroutine(value) else value)
+            assert result["code"] == "js_runtime_unavailable"
+        for path in ("/denied", "/limited"):
+            tool.policy = WebPolicy(interval=0)
+            value = tool.execute(web_server.base + path)
+            result = json.loads(await value if asyncio.iscoroutine(value) else value)
+            assert result["code"] in {"access_denied", "rate_limited"}
+        external = inline_challenge(GOOD_JS).replace(b'<script name="aliyunwaf_test">', b'<script src="http://169.254.169.254/script">')
+        web_server.pages["/external-js"] = (external, {})
+        tool.policy = WebPolicy(interval=0)
+        value = tool.execute(web_server.base + "/external-js")
+        result = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert result["code"] == "js_challenge_unsupported"
+        web_server.pages["/huge-js"] = (inline_challenge("x" * (256 * 1024 + 1)), {})
+        value = tool.execute(web_server.base + "/huge-js")
+        result = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert result["code"] == "js_challenge_limit"
+        web_server.pages["/normal-js"] = (b"<article><p>ordinary page</p></article><script>throw Error('must not execute')</script>", {})
+        value = tool.execute(web_server.base + "/normal-js")
+        result = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert result["content"] == "ordinary page"
+        article = b"<article><p>verification code example</p></article>" + inline_challenge(GOOD_JS)
+        web_server.pages["/example-js"] = (article, {})
+        value = tool.execute(web_server.base + "/example-js")
+        result = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert "verification code example" in result["content"]
+    assert opened == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not JS_AVAILABLE, reason="需要安装 web-js 可选依赖")
+async def test_lightweight_js_execution_failures_retry_limits_and_cookie_validation(web_server):
+    """实际 V8 覆盖不支持接口, 时间与堆预算, 恶意 Cookie/跳转和一次重取限制"""
+    cases = {
+        "api": ("document.createElement('canvas');", "js_challenge_unsupported"),
+        "loop": ("while(true){}", "js_execution_timeout"),
+        "heap": ("var a=[];while(true){a.push(new Array(100000).fill(42));}", "js_memory_limit"),
+        "domain": ('document.cookie="acw_sc__v2=abc; Domain=evil.example; Path=/";location.reload();', "js_execution_failed"),
+        "name": ('document.cookie="other_cookie=abc; Path=/";location.reload();', "js_execution_failed"),
+        "url": (GOOD_JS + 'location.href="http://169.254.169.254/";', "js_challenge_unsupported"),
+    }
+    for tool in (FetchPageTool(js_challenge=True), AsyncFetchPageTool(js_challenge=True)):
+        tool.policy = WebPolicy(interval=0)
+        for suffix, (script, code) in cases.items():
+            web_server.js_scripts["/js/" + suffix] = script
+            before = len(web_server.calls)
+            value = tool.execute(web_server.base + "/js/" + suffix)
+            result = json.loads(await value if asyncio.iscoroutine(value) else value)
+            assert result["code"] == code and result["status_code"] == 200
+            assert len(web_server.calls) == before + 1 and "content" not in result
+        before = len(web_server.calls)
+        value = tool.execute(web_server.base + "/js/repeat")
+        result = json.loads(await value if asyncio.iscoroutine(value) else value)
+        assert result["code"] == "verification_required" and result["retry_after"] == 60
+        assert len(web_server.calls) == before + 2
+        value = tool.execute(web_server.base + "/js/repeat")
+        assert json.loads(await value if asyncio.iscoroutine(value) else value)["code"] == "verification_required"
+        assert len(web_server.calls) == before + 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not JS_AVAILABLE, reason="需要安装 web-js 可选依赖")
+async def test_lightweight_js_cancellation_busy_deadline_and_protocol_reap(web_server, monkeypatch):
+    """取消和总时限都回收真实进程, 并发名额不早释放, 无效协议拒绝且可以恢复"""
+    from satrap.expend.tools.search import js_runtime
+    from satrap.expend.tools.search.challenge import inspect_challenge
+    from satrap.core.utils.outbound import OutboundHTTPResponse
+    original = js_runtime.subprocess.Popen
+    spawned = threading.Event()
+    processes = []
+    def track(*args, **kwargs):
+        process = original(*args, **kwargs)
+        processes.append(process)
+        spawned.set()
+        return process
+    monkeypatch.setattr(js_runtime.subprocess, "Popen", track)
+    tool = AsyncFetchPageTool(js_challenge=True)
+    tool.policy = WebPolicy(interval=0)
+    web_server.js_scripts["/js/loop"] = "while(true){}"
+    pending = asyncio.create_task(tool.execute(web_server.base + "/js/loop"))
+    assert await asyncio.to_thread(spawned.wait, 2)
+    second = json.loads(await tool.execute(web_server.base + "/js/success"))
+    assert second["code"] == "busy"
+    pending.cancel()
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert all(process.poll() is not None for process in processes)
+    assert "content" in json.loads(await tool.execute(web_server.base + "/js/success"))
+    tool.timeout = 0.1
+    assert json.loads(await tool.execute(web_server.base + "/js/loop"))["code"] in {"timeout", "js_execution_timeout"}
+    assert all(process.poll() is not None for process in processes)
+    command = js_runtime._command()
+    monkeypatch.setattr(js_runtime, "_command", lambda: [command[0], "-I", "-B", "-X", "utf8", "-c", "import sys;sys.stdin.buffer.read();print('x'*9000)"])
+    tool.timeout = 5
+    assert json.loads(await tool.execute(web_server.base + "/js/success"))["code"] == "js_execution_failed"
+    assert all(process.poll() is not None for process in processes)
+    monkeypatch.setattr(js_runtime, "_command", lambda: command)
+    challenge = inspect_challenge(OutboundHTTPResponse(web_server.base, 200, {}, inline_challenge("while(true){}")))
+    assert challenge is not None
+    with pytest.raises(WebRequestError) as error:
+        await asyncio.to_thread(js_runtime.run, challenge, Deadline(0.1))
+    assert error.value.code == "js_execution_timeout"
+    assert all(process.poll() is not None for process in processes)
+    monkeypatch.setattr(js_runtime, "_command", lambda: [command[0], "-I", "-B", "-X", "utf8", "-c", "import time;time.sleep(30)"])
+    blocked_input = inspect_challenge(OutboundHTTPResponse(web_server.base, 200, {}, inline_challenge("/*" + "x" * (200 * 1024) + "*/")))
+    assert blocked_input is not None
+    started = time.monotonic()
+    with pytest.raises(WebRequestError) as error:
+        await asyncio.to_thread(js_runtime.run, blocked_input, Deadline(0.15))
+    assert error.value.code == "js_execution_timeout" and time.monotonic() - started < 2
+    assert all(process.poll() is not None for process in processes)

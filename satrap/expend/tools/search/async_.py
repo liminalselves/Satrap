@@ -74,7 +74,7 @@ class AsyncFetchPageTool(_FetchCore, AsyncTool):
             cached = self._continue_page(url, max_length, offset, page_id)
             if cached is not None:
                 return cached
-            async with AsyncBrowserTransport(deadline, self.policy) as client:
+            async with AsyncBrowserTransport(deadline, self.policy, js_challenge=self.js_challenge) as client:
                 response = await client.get(url)
                 deadline.remaining()
                 page = await extract_async(response, deadline)

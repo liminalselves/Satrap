@@ -10,12 +10,13 @@ from curl_cffi.requests.exceptions import RequestException
 from concurrent.futures import Future, ThreadPoolExecutor
 from curl_cffi.requests import Response
 from collections.abc import Mapping
+from http.cookiejar import Cookie, CookieJar
 from curl_cffi.curl import CURL_WRITEFUNC_ERROR
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from curl_cffi import AsyncSession, Session, CurlOpt, CurlECode
 import threading
 import asyncio
-from typing import Self, cast
+from typing import Self, Protocol, cast
 from types import TracebackType
 
 from satrap.core.utils.outbound.utils import _merge_query_params
@@ -24,10 +25,18 @@ from satrap.core.utils.outbound import (
     ResolvedOutboundTarget, resolve_outbound_http_url,
 )
 from .utils import Deadline, WebPolicy, WebRequestError, WEB_POLICY, retry_delay, site_key
+from .challenge import ScriptChallenge, inspect_challenge
+from . import js_runtime
 
 
 _DNS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="satrap-web-dns")
 _DNS_SLOTS = threading.BoundedSemaphore(16)
+
+
+class _CookieStore(Protocol):
+    """为 curl_cffi 动态 CookieJar 边界提供明确类型"""
+
+    jar: CookieJar
 
 
 def _resolve(url: str) -> Future[ResolvedOutboundTarget]:
@@ -153,11 +162,52 @@ def _request_error(error: RequestException, body: _Body) -> Exception:
     return WebRequestError("connection_error", "网页连接失败", retryable=True)
 
 
+def _challenge(response: OutboundHTTPResponse, enabled: bool, attempted: bool, policy: WebPolicy) -> ScriptChallenge | None:
+    """
+    仅为开启功能的当前请求识别模板, 二次验证页不再次执行
+
+    参数:
+    - response: 公网请求返回的最终响应
+    - enabled: 是否启用可选脚本执行
+    - attempted: 本次 get 是否已经执行过验证
+    - policy: 当前站点限流策略
+
+    返回:
+    - 首次已支持模板或 None; 重取仍被验证时冷却并明确报错
+    """
+    if not enabled:
+        return None
+    challenge = inspect_challenge(response)
+    if challenge is not None and attempted:
+        policy.cool_down(site_key(response.url), "verification_required")
+        raise WebRequestError("verification_required", "执行验证后仍未取得正文, 不再重试", status=200, retry_after=60)
+    return challenge
+
+
+def _install_cookie(session: Session | AsyncSession, url: str, name: str, value: str) -> None:
+    """
+    写入仅限原主机的临时 Cookie, 不扩展到其子域
+
+    参数:
+    - session: 当前单次 HTTP 会话
+    - url: 已通过公网检查的验证页地址
+    - name: 父进程已校验的模板 Cookie 名
+    - value: 父进程已校验的 Cookie 值
+    """
+    target = urlsplit(url)
+    cookie = Cookie(version=0, name=name, value=value, port=None, port_specified=False,
+                    domain=target.hostname or "", domain_specified=False, domain_initial_dot=False,
+                    path="/", path_specified=True, secure=target.scheme == "https", expires=None,
+                    discard=True, comment=None, comment_url=None, rest={}, rfc2109=False)
+    store = cast(_CookieStore, session.cookies)
+    store.jar.set_cookie(cookie)
+
+
 class BrowserTransport:
     """单次同步工具调用的浏览器会话, 调用结束即丢弃 Cookie"""
 
     def __init__(self, deadline: Deadline, policy: WebPolicy = WEB_POLICY,
-                 *, max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES) -> None:
+                 *, max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES, js_challenge: bool = False) -> None:
         """
         创建独立同步会话
 
@@ -165,8 +215,10 @@ class BrowserTransport:
         - deadline: 包括排队和重定向的工具总时限
         - policy: 默认使用跨会话共享策略
         - max_bytes: 单次解压响应上限, 默认 8 MiB
+        - js_challenge: 默认关闭, 仅识别已支持模板并进行一次 Cookie 重取
         """
         self.deadline, self.policy, self.max_bytes = deadline, policy, max_bytes
+        self.js_challenge = js_challenge
         self.session = Session(impersonate="chrome", trust_env=False)
 
     def __enter__(self) -> Self:
@@ -202,7 +254,8 @@ class BrowserTransport:
         - 最终受限响应, 最多跟随五次重定向
         """
         current = _merge_query_params(url, params)
-        for hop in range(6):
+        redirects, attempted = 0, False
+        while True:
             key = site_key(current)
             self.policy.acquire(key, self.deadline)
             try:
@@ -222,18 +275,24 @@ class BrowserTransport:
                 self.policy.release(key)
             self.deadline.remaining()
             if not response.is_redirect:
+                challenge = _challenge(response, self.js_challenge, attempted, self.policy)
+                if challenge is not None:
+                    name, value = js_runtime.run(challenge, self.deadline)
+                    _install_cookie(self.session, response.url, name, value)
+                    attempted = True
+                    continue
                 return response
-            if hop == 5:
+            if redirects == 5:
                 raise WebRequestError("redirect_limit", "重定向次数超过限制")
+            redirects += 1
             current = urljoin(target.url, response.headers["Location"])
-        raise AssertionError("重定向循环未返回")
 
 
 class AsyncBrowserTransport:
     """单次异步工具调用的浏览器会话, 取消时释放网络资源"""
 
     def __init__(self, deadline: Deadline, policy: WebPolicy = WEB_POLICY,
-                 *, max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES) -> None:
+                 *, max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES, js_challenge: bool = False) -> None:
         """
         创建独立异步会话
 
@@ -241,8 +300,10 @@ class AsyncBrowserTransport:
         - deadline: 包括排队和重定向的工具总时限
         - policy: 默认使用跨会话共享策略
         - max_bytes: 单次解压响应上限, 默认 8 MiB
+        - js_challenge: 默认关闭, 不加载通用浏览器环境
         """
         self.deadline, self.policy, self.max_bytes = deadline, policy, max_bytes
+        self.js_challenge = js_challenge
         self.session = AsyncSession(impersonate="chrome", trust_env=False, max_clients=1)
 
     async def __aenter__(self) -> Self:
@@ -278,7 +339,8 @@ class AsyncBrowserTransport:
         - 最终受限响应, 最多跟随五次重定向; 取消保留 CancelledError
         """
         current = _merge_query_params(url, params)
-        for hop in range(6):
+        redirects, attempted = 0, False
+        while True:
             key = site_key(current)
             await self.policy.acquire_async(key, self.deadline)
             try:
@@ -302,8 +364,14 @@ class AsyncBrowserTransport:
                 self.policy.release(key)
             self.deadline.remaining()
             if not response.is_redirect:
+                challenge = _challenge(response, self.js_challenge, attempted, self.policy)
+                if challenge is not None:
+                    name, value = await js_runtime.run_async(challenge, self.deadline)
+                    _install_cookie(self.session, response.url, name, value)
+                    attempted = True
+                    continue
                 return response
-            if hop == 5:
+            if redirects == 5:
                 raise WebRequestError("redirect_limit", "重定向次数超过限制")
+            redirects += 1
             current = urljoin(target.url, response.headers["Location"])
-        raise AssertionError("重定向循环未返回")

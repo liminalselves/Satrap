@@ -45,6 +45,7 @@ install_requires = [
 ]
 
 extras_require = {
+    "web-js": ["mini-racer>=0.14.1,<0.15"],
     "vector": [
         "faiss-cpu>=1.7.4",
     ],

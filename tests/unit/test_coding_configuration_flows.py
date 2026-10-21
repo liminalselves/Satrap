@@ -710,6 +710,13 @@ def test_config_schema_on_plugin(_base_take_plugin_session: SimpleSession):
     plugin = _base_take_plugin_session.list_plugins()[0]
     assert plugin.config_schema["sandbox_root"]["type"] == "path"
     assert plugin.config_schema["search_timeout"]["default"] == 10
+    assert plugin.config_schema["search_js_challenge"]["type"] == "bool"
+    assert plugin.config_schema["search_js_challenge"]["default"] is False
+    from satrap.expend.plugins.base_take.tools import get_tools
+    from satrap.expend.tools.search import FetchPageTool
+    for enabled in (False, True):
+        fetch = next(tool for tool in get_tools(_base_take_plugin_session, {"search_js_challenge": enabled}) if isinstance(tool, FetchPageTool))
+        assert fetch.js_challenge is enabled
     assert "memory_scope" not in plugin.config_schema
     assert "memory_mode" not in plugin.config_schema
 

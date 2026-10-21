@@ -49,7 +49,7 @@ jobs:
           [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pip install '.[sandbox,vector,video]' pytest pytest-asyncio
+          python -m pip install '.[sandbox,vector,video,web-js]' pytest pytest-asyncio
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise real worker and guards
         run: |

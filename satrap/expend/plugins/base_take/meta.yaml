@@ -25,7 +25,11 @@ config_schema:
   search_timeout:
     type: number
     default: 10
-    description: "整次搜索/网页抓取的总时限秒数, 包括排队, DNS, 备用入口和重定向"
+    description: "整次搜索/网页抓取的总时限秒数, 包括排队, DNS, 备用入口, 重定向及可选验证脚本"
+  search_js_challenge:
+    type: boolean
+    default: false
+    description: "轻量网页验证脚本 (需安装 web-js 可选依赖, 只支持有限模板, 不提供浏览器渲染)"
 # 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
 tools:
   search: 联网搜索

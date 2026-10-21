@@ -36,6 +36,7 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | sandbox_root | path | 空 | 独立调用的兜底值; 平台运行时始终使用会话私有 sandbox |
 | workspace_root | path | 项目根 | read_document 免审批工作区根, 外部单文件按宿主模式审批 |
 | search_timeout | number | 10 | 整次搜索/网页读取的总时限秒数, 包括排队, DNS, 备用入口和重定向 |
+| search_js_challenge | boolean | false | 可选轻量验证脚本, 仅支持带 renderData 的 Aliyun acw_sc__v2 内联模板; 需安装 web-js 可选依赖 |
 | allowed_env_vars | string | 空 | 代码子进程显式放行的环境变量名, 多个名称用逗号分隔 |
 
 安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/base_take.json`。
@@ -52,7 +53,29 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 
 搜索成功仍返回 `title/url/snippet` 列表, 明确无结果返回空列表. 网页成功保留 `url/title/content/status_code`, 并附带正文来源及分页信息. 失败保留 `error` 和 `url`, 追加 `code`, 有 HTTP 响应或冷却信息时附带 `status_code` 和 `retry_after`. 常见类别包括 `access_denied`, `rate_limited`, `verification_required`, `parse_error`, `timeout`, `connection_error`, `unsafe_url`, `response_too_large` 和 `redirect_limit`. 未识别的搜索页面不能证明无结果; 明确验证页也不会作为正文返回
 
-浏览器请求配置只能改善部分客户端特征导致的拦截, 不保证解决出口 IP 限制, 登录要求或 JavaScript 验证. 本实现不执行网页脚本, 失败时应换用其它公开来源, 不把搜索摘要冒充已读取的全文
+浏览器请求配置只能改善部分客户端特征导致的拦截, 不保证解决出口 IP 限制, 登录要求或 JavaScript 验证. 默认不执行网页脚本, 开启下述可选能力后也只执行已支持的验证模板, 不提供通用浏览器渲染. 失败时应换用其它公开来源, 不把搜索摘要冒充已读取的全文
+
+### 可选轻量验证脚本
+
+在运行服务的同一个 Python 环境安装可选依赖:
+
+```sh
+python -m pip install ".[web-js]"
+```
+
+然后在 base_take 插件配置中开启 `search_js_challenge`, 或独立创建 `FetchPageTool(js_challenge=True)` / `AsyncFetchPageTool(js_challenge=True)`. 模型工具参数不变, 模型不能通过 tool call 自行开启该选项. 仅安装依赖不会启用功能
+
+当前使用 `mini-racer>=0.14.1,<0.15`, 仅在独立 Python 子进程中加载 V8. 宿主只读取依赖版本, 不导入 V8 到服务进程, 不启动 Chromium, WebView 或 Playwright. 未开启或读取普通网页时不创建该子进程. 可选依赖缺失时返回 `js_runtime_unavailable`, 不自动安装或静默降级为成功
+
+`fetch_page` 开启后只识别带 `meta[name=aliyun_waf_aa]` 与 `textarea#renderData` 的已支持内联验证模板, 页面中有可读文章内容时不启动验证. 外部脚本, 其它模板和通用前端应用不在本轮范围内. 现有 403/429 仍直接失败并冷却, 不借脚本层解除拒绝
+
+处理流程是: 公网 HTTP 响应 → 识别模板 → 运行少量 DOM 数据/Cookie 接口 → 校验 Cookie 与重载意图 → 使用同一临时 HTTP 会话对原地址重取一次 → 正文提取和快照续读. 重取继续检查 DNS 和实际目标, 遵守限流, 重定向上限及同一个 `search_timeout`. 重取仍是验证页时返回 `verification_required`, 冷却 60 秒, 不继续循环
+
+JS 不持有 Python 网络, 文件或 Shell 回调, 不接管网络请求, 不导入个人浏览器或登录资料. 父进程只接受一个 `acw_sc__v2` Cookie, 限原主机而不扩大到子域, Cookie 仅在本次调用中保留. 页面提出的其它跳转不执行. 验证数据和混淆片段不会作为 fallback 正文返回, 关闭选项时该验证页也会明确报错
+
+每进程最多一个 JS worker, 不排入无界任务队列. 原始源码合计最多 256 KiB, 最多三段内联脚本, renderData 最多 4 KiB, JSON 输入最多 512 KiB, 结果协议最多 8 KiB. JS 执行共享 2 秒预算, 子进程最多 5 秒且不超过工具剩余时间, 超时或取消后先终止并回收真实进程, 再释放名额. V8 堆预算为 64 MiB, 不等同子进程的总内存硬上限; 子进程用于故障隔离, 不宣称是操作系统级沙箱
+
+其它失败包括 `js_challenge_unsupported`, `js_challenge_limit`, `js_execution_timeout`, `js_memory_limit`, `js_execution_failed` 和执行器繁忙的 `busy`. 不以“生成 Cookie”宣称已经读取文章, 只有重取并通过现有内容检查后才返回成功
 
 ### 正文提取与快照续读
 
