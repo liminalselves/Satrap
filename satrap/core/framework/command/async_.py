@@ -72,6 +72,7 @@ class AsyncCommandHandler(_CommandRegistry):
         except PluginPermissionDenied as error:
             return str(error)
         except Exception as e:
+            self._execution_failed = True
             logger.error(f"命令执行错误: {cmd}, {e}")
             return None
 
@@ -101,6 +102,7 @@ class AsyncCommandHandler(_CommandRegistry):
         - (Any) 命令执行结果, 或 None 如果不是命令消息
         - (bool) 是否有命令
         """
+        self._execution_failed = False
         try:
             exist = self._is_cmd(message)  # 断言是否是命令消息
             if not exist:

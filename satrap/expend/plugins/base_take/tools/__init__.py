@@ -32,6 +32,7 @@ from satrap.core.type import safe_getattr_callable
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 from .async_ import (
     AsyncReadDocumentTool,
+    AsyncReadMediaTool,
 )
 from .utils import (
     SessionType,
@@ -40,6 +41,7 @@ from .utils import (
 )
 from .sync import (
     ReadDocumentTool,
+    ReadMediaTool,
 )
 
 
@@ -59,7 +61,8 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
     """
     # Step.1 合并插件配置与宿主绑定的业务目录
     cfg = config or {}
-    timeout = int(cfg.get("search_timeout") or 10)
+    timeout = float(cfg.get("search_timeout", 10))
+    js_challenge = cfg.get("search_js_challenge") is True
     environment = plugin_host.environment_snapshot() if plugin_host is not None else environment_snapshot(session)
     ws_override, sb_override = environment.workspace_root, environment.sandbox_root
     # 项目会话的宿主绑定路径优先, 仅独立调用者使用插件配置或默认目录
@@ -79,16 +82,18 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
     if isinstance(session, AsyncSimpleSession):
         tools: list[Any] = [
             AsyncSearchTool(timeout=timeout),
-            AsyncFetchPageTool(timeout=timeout),
+            AsyncFetchPageTool(timeout=timeout, js_challenge=js_challenge),
             AsyncCodeSandboxTool(sandbox),
             AsyncReadDocumentTool(workspace_root),
+            AsyncReadMediaTool(),
         ]
     else:
         tools = [
             SearchTool(timeout=timeout),
-            FetchPageTool(timeout=timeout),
+            FetchPageTool(timeout=timeout, js_challenge=js_challenge),
             CodeSandboxTool(sandbox),
             ReadDocumentTool(workspace_root),
+            ReadMediaTool(),
         ]
     # Step.4 绑定会话, 供文档工具在调用时解析当前可见目录
     for tool in tools:

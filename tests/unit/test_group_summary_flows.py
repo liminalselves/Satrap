@@ -191,13 +191,16 @@ async def test_main_summary_write_is_independent_of_reply_tool_and_subagents_can
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_real_session_first_turn_summary_tools_and_reply_disabled(tmp_path, asynchronous):
     adapter, event, _ = _group_chat_summary_service_setup(tmp_path)
-    script = Script([LLMCallResponse("tools_call", "", tool_calls=[{"id": "summary-1", "name": "group_chat_prepare_summary", "arguments": {
+    script = Script([LLMCallResponse("tools_call", "", tool_calls=[{"id": "skill-1", "name": "load_skill", "arguments": {"skill": "group_chat"}}]),
+        LLMCallResponse("tools_call", "", tool_calls=[{"id": "summary-1", "name": "group_chat_prepare_summary", "arguments": {
         "start_time": "2020-01-01T00:00:00", "end_time": datetime.now(timezone.utc).isoformat()}}]), LLMCallResponse("message", "已读取指定时段")])
     instance = await session(tmp_path, script, asynchronous, False)
     instance._wf.tools_manager.disable_tool("group_chat_reply")
     await PipelineScheduler(Invoker(instance, asynchronous)).execute(event)
-    assert "总结一段讨论" in str(script.requests[0][0])
-    result = json.loads(script.requests[1][0][-1]["content"])
+    assert "总结一段讨论" not in str(script.requests[0][0])
+    assert "总结一段讨论" in script.requests[1][0][-1]["content"]
+    assert script.requests[1][0][-1]["role"] == "tool"
+    result = json.loads(script.requests[2][0][-1]["content"])
     assert result["ok"] and result["items"][0]["message_id"] == "77"
     assert result["archive_coverage"]["platform_history_complete"] is False
 

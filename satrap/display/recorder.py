@@ -930,6 +930,26 @@ class DisplayRecorder:
         turns = self.list_turns()
         return turns[-1] if turns else None
 
+    def has_context_deltas_before(self, up_to_index: int) -> bool:
+        """
+        区分明确保存的空上下文增量与没有增量记录的旧数据
+
+        参数:
+        - up_to_index: 不包含的结束轮次索引
+
+        返回:
+        - 至少存在一轮且所有已选版本都明确保存过增量时为 True
+        """
+        with self._lock:
+            row = self._get_conn().execute(
+                "SELECT COUNT(*), SUM(CASE WHEN v.context_messages IS NULL THEN 1 ELSE 0 END)"
+                " FROM display_turns t LEFT JOIN display_turn_variants v"
+                " ON v.turn_id=t.id AND v.variant_index=t.active_variant"
+                " WHERE t.conversation_id=? AND t.turn_index<?",
+                (self.conversation_id, up_to_index),
+            ).fetchone()
+        return bool(row and row[0] > 0 and row[1] == 0)
+
     def active_context_before(self, up_to_index: int) -> list[dict[str, Any]]:
         """
         拼接指定轮次之前所有已选回复的模型上下文增量

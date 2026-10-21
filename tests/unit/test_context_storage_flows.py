@@ -704,3 +704,53 @@ def test_one_time_request_cleanup_preserves_ambiguous_text_and_rejects_online_ap
     monkeypatch.setattr(request_cleanup, "recognizable_writers", lambda: [{"pid": 123, "name": "python.exe"}])
     assert request_cleanup.main(["--database", str(database), "--apply", "--offline-confirmed", "--backup-dir", str(tmp_path / "external-backup")]) == 2
     assert request_cleanup.preview_database(database).changes
+
+
+def test_one_time_skill_cleanup_preserves_user_quotes_and_restore_copies(tmp_path, monkeypatch):
+    """旧技能块仅在系统尾部完整匹配时移除, 检查点和备份不会恢复常驻说明"""
+    from satrap.core.utils.skills import Skill
+    folder = tmp_path / "known-skills" / "weekly"
+    folder.mkdir(parents=True)
+    source = folder / "SKILL.md"
+    source.write_text("---\nname: weekly\ndescription: 周报整理\n---\n唯一旧正文", encoding="utf-8")
+    block = Skill.from_file(str(source)).to_text()
+    database = tmp_path / "platform" / "platform.db"
+    database.parent.mkdir()
+    context = ContextManager("skill_main", db_path=str(database), enable_checkpoint=True, auto_checkpoint=False)
+    context.reset_system_prompt("保留基础指令\n\n" + block)
+    context.add_user_message(block)
+    assert context.state_store is not None
+    checkpoint = context.state_store.create_checkpoint(StateScope("conversation", "skill_main"), materialize=True)
+    original = copy.deepcopy(context.get_context())
+    context.close()
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE conversation_data_backups (id TEXT,conversation_id TEXT,layer TEXT,payload TEXT)")
+        db.execute("INSERT INTO conversation_data_backups VALUES ('old','skill_main','context',?)", (json.dumps(original),))
+        db.execute("CREATE TABLE display_turns (id INTEGER, conversation_id TEXT)")
+        db.execute("CREATE TABLE display_turn_variants (id INTEGER,turn_id INTEGER,context_messages TEXT)")
+        db.execute("INSERT INTO display_turns VALUES (1,'skill_main')")
+        db.execute("INSERT INTO display_turn_variants VALUES (1,1,?)", (json.dumps(original),))
+        records = {table: [dict(zip([column[0] for column in cursor.description], row)) for row in cursor.fetchall()]
+                   for table in ("chat_history", "state_snapshots", "conversation_data_backups", "display_turns", "display_turn_variants")
+                   for cursor in [db.execute(f"SELECT * FROM {table}")]}
+    archive = database.parent / "trash" / "sessions" / "old-skills"
+    archive.mkdir(parents=True)
+    raw = json.dumps(records).encode("utf-8")
+    (archive / "records.json").write_bytes(raw)
+    (archive / "manifest.json").write_text(json.dumps({"archive_version": 2, "records_sha256": request_cleanup.digest(raw)}), encoding="utf-8")
+    monkeypatch.setattr(request_cleanup, "recognizable_writers", lambda: [])
+    monkeypatch.setattr(request_cleanup, "SKILL_BLOCKS", None)
+    flags = ["--database", str(database), "--skills", "--skill-root", str(folder.parent)]
+    assert request_cleanup.main(flags) == 0
+    plan = request_cleanup.preview_database(database)
+    assert {change.table for change in plan.changes} == {"chat_history", "state_snapshots", "conversation_data_backups", "display_turn_variants"}
+    assert request_cleanup.preview_archive(archive / "records.json").changed
+    assert request_cleanup.main([*flags, "--apply", "--offline-confirmed", "--backup-dir", str(tmp_path / "backup")]) == 0
+    restored = ContextManager("skill_main", db_path=str(database), enable_checkpoint=True, auto_checkpoint=False)
+    assert restored.get_context()[0]["content"] == "保留基础指令"
+    assert restored.get_context()[1]["content"] == block
+    restored.rollback(checkpoint.checkpoint_id)
+    assert restored.get_context()[0]["content"] == "保留基础指令"
+    restored.close()
+    assert not request_cleanup.preview_database(database).changes
+    assert not request_cleanup.preview_archive(archive / "records.json").changed

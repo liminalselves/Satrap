@@ -1,11 +1,17 @@
+"""
+技能发现, 有效目录和可信资源生命周期
+
+启用状态只决定技能是否可被发现, 正文由任务通过只读工具加载,
+外部 Markdown 导入由 skills 插件提供, 不改写持久系统提示词
+"""
 from __future__ import annotations
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, cast
 import os
-import re
 from satrap.core.log import logger
-from satrap.core.type import safe_getattr, safe_getattr_callable, safe_getattr_dict
+from satrap.core.type import safe_getattr, safe_getattr_dict
+from satrap.core.type import RequestContextBlock
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, ToolsManager, AsyncToolsManager
 from .utils import (
     _yaml_loader,
@@ -29,14 +35,15 @@ class SkillsManager:
     ):
         """
         参数:
-        - skills_dir: 用户技能扫描目录, 默认 ".satrap/skills" (None 时使用默认值)
+        - skills_dir: 显式 SDK 扫描目录, None 时不自动扫描外部用户技能
         - include_preset: 是否同时扫描官方预设目录 (satrap/expend/skills), 默认 True
         - trusted_code_roots: 允许执行 tools.py 的额外可信代码根
 
-        扫描时官方预设目录在前, 用户目录在后; 同名技能无 satrap-skill-id 时官方优先,
+        显式扫描时官方预设目录在前, 用户目录在后; 同名技能无 satrap-skill-id 时官方优先,
         携带不同 id 的同名技能共存不冲突
         """
         self.skills_dir = skills_dir or DEFAULT_USER_SKILLS_DIR
+        self._explicit_user_directory = skills_dir is not None
         self.include_preset = include_preset
         roots = [Path(SKILLS_PRESET_DIR).resolve()]
         roots.extend(Path(root).resolve() for root in (trusted_code_roots or ()))
@@ -45,6 +52,130 @@ class SkillsManager:
         self._active: Dict[int, Dict[str, Skill]] = {}   # workflow id -> 独立激活的技能
         self._active_mcp: Dict[int, Dict[str, List[tuple[Any, List[str]]]]] = {}
         self._owned_tools: Dict[int, set[str]] = {}   # 工作流中由技能注册的工具
+        self.availability: Callable[[str], bool] | None = None
+        self.sources: dict[str, Callable[[], None]] = {}
+        self._forced: dict[tuple[str, ...], str] = {}
+
+    def refresh(self) -> None:
+        """在任务开始前刷新插件管理的技能, 不在模型循环中更换正文"""
+        for source in tuple(self.sources.values()):
+            source()
+
+    @staticmethod
+    def caller_key() -> tuple[str, ...]:
+        """
+        获取强制加载待办所属的真实调用者
+
+        返回:
+        - 当前平台账号, 对话与发送者组成的键; 本地调用使用独立键
+        """
+        from satrap.core.call_context import current_call_origin
+        origin = current_call_origin()
+        return (origin.adapter_id, origin.self_id, origin.conversation_kind or origin.chat_type, origin.chat_id, origin.actor_id) if origin else ("local",)
+
+    def force_next(self, name: str, workflow: SkillWorkflowProtocol) -> None:
+        """
+        为当前调用者的下一次任务登记技能
+
+        参数:
+        - name: 当前可用技能标识
+        - workflow: 当前工作流
+        """
+        self.read_skill(name, workflow)
+        self._forced[self.caller_key()] = name
+
+    def take_forced(self, workflow: SkillWorkflowProtocol) -> tuple[RequestContextBlock, ...]:
+        """
+        消费本人待办并在执行时重新检查可用性
+
+        参数:
+        - workflow: 接收任务的工作流
+
+        返回:
+        - 本轮技能资料块, 没有待办时为空
+        """
+        name = self._forced.pop(self.caller_key(), None)
+        return (RequestContextBlock("forced_skill", "skills", self.read_skill(name, workflow)),) if name else ()
+
+    def attach(self, workflow: SkillWorkflowProtocol) -> None:
+        """
+        将目录和只读加载工具绑定到工作流, 不注入技能正文
+
+        参数:
+        - workflow: 技能所属工作流
+        """
+        from .tool import SkillTool, SyncSkillTool
+        setattr(workflow, "skill_runtime", self)
+        manager = workflow.tools_manager
+        existing = manager.tools.get("load_skill") if manager is not None else None
+        if existing is not None and getattr(existing, "skills_manager", None) is not self:
+            raise ValueError("load_skill 是技能加载器保留名称, 不能被其它工具覆盖")
+        if manager is not None and "load_skill" not in manager.tools:
+            if isinstance(manager, AsyncToolsManager):
+                manager.register_tool(SkillTool(self, workflow))
+            else:
+                manager.register_tool(SyncSkillTool(self, workflow))
+
+    def available_skills(self, workflow: SkillWorkflowProtocol | None = None) -> list[Skill]:
+        """
+        过滤当前工作流实际启用且关系有效的技能
+
+        参数:
+        - workflow: 工作流, None 用于独立读取已登记技能
+
+        返回:
+        - 有效技能列表, 不将停用技能提供给模型
+        """
+        active = self.skills if workflow is None else self._active.get(id(workflow), {})
+        return [skill for key, skill in self.skills.items()
+                if key in active and (self.availability is None or self.availability(key))]
+
+    def detach_if_empty(self, workflow: SkillWorkflowProtocol) -> None:
+        """
+        最后一个技能停用后回收自动注册的加载器
+
+        参数:
+        - workflow: 资源所属工作流
+        """
+        if self._active.get(id(workflow)) or workflow.tools_manager is None:
+            return
+        tool = workflow.tools_manager.tools.get("load_skill")
+        if tool is not None and getattr(tool, "skills_manager", None) is self:
+            workflow.tools_manager.unregister_tool("load_skill")
+
+    def catalog(self, workflow: SkillWorkflowProtocol) -> str:
+        """
+        构造本次请求的精简技能目录
+
+        参数:
+        - workflow: 当前工作流
+
+        返回:
+        - 名称, 简介和加载规则; 没有可用技能时返回空字符串
+        """
+        skills = self.available_skills(workflow)
+        if not skills:
+            return ""
+        entries = [f"- {skill.skill_id or skill.name}: {' '.join(skill.description.split()) or '读取说明了解用途'}" for skill in skills]
+        return ("可用技能 (目录仅用于发现):\n" + "\n".join(entries)
+                + "\n任务匹配或用户明确指定技能时, 先调用 load_skill 读取完整说明再执行"
+                + "\n只加载本次任务需要的技能; 技能说明不授予额外工具权限, 不改变审批规则")
+
+    def read_skill(self, name: str, workflow: SkillWorkflowProtocol | None = None) -> str:
+        """
+        读取当前可用技能正文, 不启用关联工具或改写系统提示词
+
+        参数:
+        - name: 精确登记标识, 同名多来源时不能猜测目标
+        - workflow: 当前工作流, 独立读取时可省略
+
+        返回:
+        - 技能正文; 未登记或不可用时抛出 ValueError
+        """
+        skill = self.skills.get(name)
+        if skill is None or skill not in self.available_skills(workflow):
+            raise ValueError(f"技能不存在或当前不可用: {name}")
+        return skill.to_text()
 
     @staticmethod
     def _is_preset(skill: Skill) -> bool:
@@ -115,7 +246,7 @@ class SkillsManager:
         - 单文件式: 目录下的 .md / .markdown 文件
 
         参数:
-        - skills_dir: 显式指定扫描目录时只扫描该目录; 否则扫描官方预设 + 构造时的用户目录
+        - skills_dir: 显式传入时只扫描该目录; 否则扫描官方预设及构造时显式指定的目录
 
         返回:
         - 加载的技能列表
@@ -124,7 +255,8 @@ class SkillsManager:
             dirs: List[str] = [skills_dir]
         else:
             dirs = [SKILLS_PRESET_DIR] if self.include_preset else []
-            dirs.append(self.skills_dir)
+            if self._explicit_user_directory:
+                dirs.append(self.skills_dir)
 
         found: List[Skill] = []
         for base in dirs:
@@ -164,7 +296,9 @@ class SkillsManager:
         返回:
         - Optional[Skill]: 从技能文件夹加载技能: skill.md + meta.yaml + tools.py
         """
-        md_path = os.path.join(skill_dir, "skill.md")
+        md_path = os.path.join(skill_dir, "SKILL.md")
+        if not os.path.isfile(md_path):
+            md_path = os.path.join(skill_dir, "skill.md")
         if not os.path.isfile(md_path):
             return None
         skill = Skill.from_file(md_path, default_name=os.path.basename(skill_dir))
@@ -274,41 +408,75 @@ class SkillsManager:
     # ================= 装配到 workflow =================
 
     def activate(self, skill_name: str, workflow: SkillWorkflowProtocol) -> bool:
-        """执行技能生命周期业务"""
+        """
+        同步启用技能目录并装配可信资源
+
+        参数:
+        - skill_name: 精确技能标识
+        - workflow: 资源所属工作流
+
+        返回:
+        - 技能存在且状态更新成功时为 True
+        """
         return activation.activate(self, skill_name, workflow)
 
     async def activate_async(
         self, skill_name: str, workflow: SkillWorkflowProtocol
     ) -> bool:
-        """执行技能生命周期业务"""
+        """
+        异步启用技能目录并装配可信资源
+
+        参数:
+        - skill_name: 精确技能标识
+        - workflow: 资源所属工作流
+
+        返回:
+        - 技能存在且状态更新成功时为 True
+        """
         return await activation.activate_async(self, skill_name, workflow)
 
     def deactivate(self, skill_name: str, workflow: SkillWorkflowProtocol) -> bool:
-        """执行技能生命周期业务"""
+        """
+        同步停用技能并回收其可信资源
+
+        参数:
+        - skill_name: 精确技能标识
+        - workflow: 资源所属工作流
+
+        返回:
+        - 技能存在且状态更新成功时为 True
+        """
         return activation.deactivate(self, skill_name, workflow)
 
     async def deactivate_async(
         self, skill_name: str, workflow: SkillWorkflowProtocol
     ) -> bool:
-        """执行技能生命周期业务"""
+        """
+        异步停用技能并回收其可信资源
+
+        参数:
+        - skill_name: 精确技能标识
+        - workflow: 资源所属工作流
+
+        返回:
+        - 技能存在且状态更新成功时为 True
+        """
         return await activation.deactivate_async(self, skill_name, workflow)
 
     # ================= 内部方法 =================
 
     def compose_system_prompt(self, prompt: str, workflow: SkillWorkflowProtocol) -> str:
         """
-        合成基础提示词和当前已激活技能的指令
+        保留基础提示词兼容入口, 技能目录由模型请求装配层提供
 
         参数:
         - prompt: 新的基础提示词
         - workflow: 指令所属工作流
 
         返回:
-        - str: 按激活顺序包含各技能指令一次的提示词
+        - 原始基础提示词, 不追加技能正文
         """
-        parts = [prompt] if prompt else []
-        parts.extend(skill.to_text() for skill in self._active.get(id(workflow), {}).values())
-        return "\n\n".join(parts)
+        return prompt
 
     def _release_skill_tools(self, skill: Skill, workflow: SkillWorkflowProtocol) -> None:
         """
@@ -330,14 +498,11 @@ class SkillsManager:
             for _, names in clients:
                 needed.update(names)
         owned = self._owned_tools.get(wf_id, set())
-        names = set(skill.tool_names) | {tool.get_tool_name() for tool in skill.tools} | (owned - needed)
+        names = {tool.get_tool_name() for tool in skill.tools} | (owned - needed)
         for name in names - needed:
             if name in owned:
                 manager.unregister_tool(name)
                 owned.discard(name)
-            else:
-                if name in manager.tools:
-                    manager.disable_tool(name)
         if not owned:
             self._owned_tools.pop(wf_id, None)
 
@@ -372,76 +537,3 @@ class SkillsManager:
                 registered += 1
 
         return registered
-
-    def _apply_tools(
-        self, workflow: SkillWorkflowProtocol, tool_names: List[str], enable: bool
-    ) -> int:
-        """
-        启用或禁用关联工具, 返回实际生效的工具数
-
-        参数:
-        - workflow: 工作流实例
-        - tool_names: 工具names
-        - enable: 是否启用
-
-        返回:
-        - int: 实际生效的工具数
-        """
-        tools_manager: Union[ToolsManager, AsyncToolsManager, None] = safe_getattr(
-            workflow, "tools_manager"
-        )
-        if tools_manager is None or not tool_names:
-            return 0
-        applied = 0
-        for name in tool_names:
-            if name not in safe_getattr_dict(tools_manager, "tools"):
-                logger.warning(f"[技能管理] 工具 {name} 未注册, 已跳过")
-                continue
-            if enable:
-                tools_manager.enable_tool(name)
-            else:
-                tools_manager.disable_tool(name)
-            applied += 1
-        return applied
-
-    @staticmethod
-    def _strip_from_system(workflow: SkillWorkflowProtocol, skill_name: str):
-        """
-        从系统提示词中剥离 <skill:name>...</skill:name> 指令块
-
-        参数:
-        - workflow: 工作流实例
-        - skill_name: skill名称
-        """
-        pattern = re.compile(
-            rf"\n*<skill:{re.escape(skill_name)}>.*?</skill:{re.escape(skill_name)}>",
-            re.DOTALL,
-        )
-        for msg in workflow.ctx._messages:
-            content = msg.get("content")
-            if msg.get("role") == "system" and isinstance(content, str):
-                msg["content"] = pattern.sub("", content)
-
-    @staticmethod
-    def _sync_context(workflow: SkillWorkflowProtocol):
-        """
-        触发上下文落库, 返回 _sync() 的结果 (异步管理器返回协程)
-
-        参数:
-        - workflow: 工作流实例
-
-        技能指令直接改写上下文中的系统消息内容, 属于外部编辑,
-        落库前需标记 dirty 以触发全量重写
-
-        返回:
-        -  _sync() 的结果 (异步管理器返回协程)
-        """
-        ctx = safe_getattr(workflow, "ctx")
-        if ctx is not None:
-            mark = safe_getattr_callable(ctx, "_mark_dirty")
-            if mark is not None:
-                mark()
-        sync = safe_getattr_callable(workflow.ctx, "_sync")
-        if sync is not None:
-            return sync()
-        return None

@@ -326,7 +326,8 @@ async def test_skill_lifecycle(tmp_path: Path, asynchronous: bool):
         assert "demo" in session.list_skills()
         await session.run("hi")
         system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
-        assert system_msgs and "Demo" in str(system_msgs[0]["content"])
+        assert system_msgs and "- demo:" in str(system_msgs[0]["content"])
+        assert "Demo" not in str(system_msgs[0]["content"])
         assert await session.enable_skill("demo") is True
         assert await session.disable_skill("demo") is True
         assert await session.remove_skill("demo") is True
@@ -347,7 +348,8 @@ async def test_skill_lifecycle(tmp_path: Path, asynchronous: bool):
         assert "demo" in session.list_skills()
         session.run("hi")
         system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
-        assert system_msgs and "Demo" in str(system_msgs[0]["content"])
+        assert system_msgs and "- demo:" in str(system_msgs[0]["content"])
+        assert "Demo" not in str(system_msgs[0]["content"])
         assert session.disable_skill("demo") is True
         assert session.enable_skill("demo") is True
         assert session.remove_skill("demo") is True
@@ -1085,7 +1087,7 @@ def test_install_plugin_full_package(tmp_path: Path):
     assert plugin.repo == "https://example.com/demo"
     assert session.list_plugins() == [plugin]
 
-    assert session.list_tools() == ["greet"]
+    assert set(session.list_tools()) == {"greet", "load_skill"}
     # 工具已注册
     # 技能已注册 (未激活)
     assert "pskill" in session.list_skills()
@@ -1097,7 +1099,8 @@ def test_install_plugin_full_package(tmp_path: Path):
     assert session.add_skill("pskill") is True
     session.run("再次调用")
     system_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "system"]
-    assert system_msgs and "插件技能" in str(system_msgs[0]["content"])
+    assert system_msgs and "- pskill:" in str(system_msgs[0]["content"])
+    assert "插件自带技能指令" not in str(system_msgs[0]["content"])
 
 
 def test_plugin_commands_install_and_execute(tmp_path: Path):
@@ -1107,7 +1110,10 @@ def test_plugin_commands_install_and_execute(tmp_path: Path):
     plugin = session.install_plugin(str(plugin_dir))
 
     assert "hello" in plugin.commands
-    assert plugin.list_capabilities()["commands"] == [{"name": "hello", "enabled": True, "description": ""}]
+    assert plugin.list_capabilities()["commands"] == [{
+        "name": "hello", "enabled": True, "requested_enabled": True,
+        "exported": False, "reason": "", "replaced_by": "", "description": "",
+    }]
     assert session.list_commands()["hello"] == "打招呼命令"
     result, is_cmd = session.cmd_handler.process_message("/hello world")
     assert is_cmd and result == "hello world"
@@ -1147,7 +1153,10 @@ def test_plugin_commands_independent_and_aggregate_toggle(tmp_path: Path):
     assert session.disable_plugin("demo") is True
     assert session.is_command_enabled("hello") is False
     assert plugin.commands["hello"] is True
-    assert plugin.list_capabilities()["commands"] == [{"name": "hello", "enabled": False, "description": ""}]
+    assert plugin.list_capabilities()["commands"] == [{
+        "name": "hello", "enabled": False, "requested_enabled": True,
+        "exported": False, "reason": "plugin_disabled", "replaced_by": "", "description": "",
+    }]
     assert session.enable_plugin("demo") is True
     assert session.is_command_enabled("hello") is True
 
@@ -1206,7 +1215,7 @@ def test_install_plugin_skips_mcp_sync(tmp_path: Path):
 
     plugin = session.install_plugin(str(plugin_dir))
     assert plugin.mcp == {}
-    assert session.list_tools() == ["greet"]
+    assert set(session.list_tools()) == {"greet", "load_skill"}
     assert session.list_handlers()
 
 
@@ -1376,7 +1385,7 @@ async def test_async_install_plugin_with_mcp(tmp_path: Path):
     plugin = await session.install_plugin(str(plugin_dir))
     assert plugin.name == "ademo"
     assert plugin.mcp == {"fs": True}
-    assert session.list_tools() == ["mcp_greet"]
+    assert set(session.list_tools()) == {"mcp_greet", "load_skill"}
 
     assert await session.uninstall_plugin("ademo") is True
     assert mark.is_file()
@@ -1484,7 +1493,8 @@ def test_plugin_skills_py_declared(tmp_path: Path):
     assert session.add_skill("skpy-skill") is True
     session.run("hi")
     system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
-    assert system_msgs and "声明式技能指令" in str(system_msgs[0]["content"])
+    assert system_msgs and "- skpy-skill:" in str(system_msgs[0]["content"])
+    assert "声明式技能指令" not in str(system_msgs[0]["content"])
 
 
 def test_plugin_skill_independent_ops(tmp_path: Path):
@@ -1497,12 +1507,13 @@ def test_plugin_skill_independent_ops(tmp_path: Path):
     assert plugin.enable_skill("pskill") is True
     session.run("hi")
     system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
-    assert system_msgs and "插件技能" in str(system_msgs[0]["content"])
+    assert system_msgs and "- pskill:" in str(system_msgs[0]["content"])
+    assert "插件自带技能指令" not in str(system_msgs[0]["content"])
 
     assert plugin.disable_skill("pskill") is True
     session.run("hi")
     system_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "system"]
-    assert not any("插件技能" in str(m["content"]) for m in system_msgs)
+    assert not any("- pskill:" in str(m["content"]) for m in system_msgs)
 
     assert plugin.enable_skill("missing") is False
     assert plugin.disable_skill("missing") is False
@@ -1604,12 +1615,13 @@ def test_plugin_skill_ops_while_disabled(tmp_path: Path):
     assert plugin.enable_skill("pskill") is True   # 停用中: 只改状态
     session.run("hi")
     system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
-    assert not any("插件技能" in str(m["content"]) for m in system_msgs)
+    assert not any("- pskill:" in str(m["content"]) for m in system_msgs)
 
     session.enable_plugin("demo")
     session.run("hi")
     system_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "system"]
-    assert system_msgs and "插件技能" in str(system_msgs[0]["content"])
+    assert system_msgs and "- pskill:" in str(system_msgs[0]["content"])
+    assert "插件自带技能指令" not in str(system_msgs[0]["content"])
 
 
 @pytest.mark.asyncio
@@ -1867,32 +1879,70 @@ def test_tool_bypass_closed_when_plugin_disabled(tmp_path: Path):
     assert session.tools_manager.execute_tool("greet", {"name": "x"}) == "hi x"
 
 
-def test_replace_inherits_owner_plugin(tmp_path: Path):
-    """replace=True 覆盖插件 handler: 新 handler 继承 owner_plugin, 插件禁用仍过滤"""
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("initial_enabled", [False, True])
+async def test_replace_inherits_owner_plugin(tmp_path: Path, asynchronous: bool, initial_enabled: bool):
+    """覆盖后名册与执行一致, 同步和异步会话保持处理器独立开关及插件启停约束"""
     plugin_dir = _write_plugin_dir(tmp_path)
-    llm = _FakeLLM()
-    session = _make_session(tmp_path, llm)
-    session.install_plugin(str(plugin_dir))
+    if asynchronous:
+        llm: _FakeLLM | _FakeAsyncLLM = _FakeAsyncLLM()
+        session: SimpleSession | AsyncSimpleSession = AsyncSimpleSession(
+            "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        )
+    else:
+        llm = _FakeLLM()
+        session = _make_session(tmp_path, llm)
+    plugin = await session.install_plugin(str(plugin_dir)) if isinstance(session, AsyncSimpleSession) else session.install_plugin(str(plugin_dir))
 
     def custom(text: str, ctx: HandlerContext) -> str | None:
         return text + " [custom]"
 
+    async def check_input(expected: str) -> None:
+        """
+        核对当前开关状态下实际发给模型的输入
+
+        参数:
+        - expected: 本轮应发送的完整文本
+        """
+        if isinstance(session, AsyncSimpleSession):
+            await session.run("hi")
+        else:
+            session.run("hi")
+        user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+        assert user_msgs[-1]["content"] == expected
+
+    replacement = SessionHandler(name="demo.handler", enabled=initial_enabled, before_user_send=custom)
     assert session.add_handler(
-        SessionHandler(name="demo.handler", before_user_send=custom), replace=True,
+        replacement, replace=True,
     ) is True
-    session.run("hi")
-    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
-    assert user_msgs[-1]["content"] == "hi [custom]"
+    assert replacement.owner_plugin == "demo"
+    assert plugin.handlers["demo.handler"] is initial_enabled
+    caps = plugin.list_capabilities()["handlers"]
+    assert len(caps) == 1 and caps[0]["name"] == "demo.handler"
+    assert caps[0]["enabled"] is initial_enabled
+    assert caps[0]["requested_enabled"] is initial_enabled
+    expected = "hi [custom]" if initial_enabled else "hi"
+    await check_input(expected)
 
-    assert session.disable_plugin("demo") is True
-    session.run("hi")
-    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
-    assert user_msgs[-1]["content"] == "hi"   # 继承归属 -> 插件禁用仍过滤
+    disabled = await session.disable_plugin("demo") if isinstance(session, AsyncSimpleSession) else session.disable_plugin("demo")
+    assert disabled is True
+    assert plugin.handlers["demo.handler"] is initial_enabled
+    assert plugin.list_capabilities()["handlers"][0]["enabled"] is False
+    await check_input("hi")
 
-    assert session.enable_plugin("demo") is True
-    session.run("hi")
-    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
-    assert user_msgs[-1]["content"] == "hi [custom]"
+    enabled = await session.enable_plugin("demo") if isinstance(session, AsyncSimpleSession) else session.enable_plugin("demo")
+    assert enabled is True
+    await check_input(expected)
+
+    assert plugin.enable_handler("demo.handler") is True
+    await check_input("hi [custom]")
+    assert plugin.disable_handler("demo.handler") is True
+    await check_input("hi")
+
+    uninstalled = await session.uninstall_plugin("demo") if isinstance(session, AsyncSimpleSession) else session.uninstall_plugin("demo")
+    assert uninstalled is True
+    assert not session.list_handlers()
 
 
 def test_install_rollback_closes_handlers(tmp_path: Path):
@@ -2231,18 +2281,6 @@ def test_remove_handler_syncs_plugin_roster(tmp_path: Path):
     assert "demo.handler" not in plugin.handlers   # 名册同步
     caps = {c["name"] for c in plugin.list_capabilities()["handlers"]}
     assert "demo.handler" not in caps   # 能力表不再残留
-
-
-def test_replace_handler_syncs_plugin_roster(tmp_path: Path):
-    """replace=True 覆盖插件 handler -> 名册同步"""
-    session = _make_session(tmp_path)
-    plugin = session.install_plugin(str(_write_plugin_dir(tmp_path)))
-    session.add_handler(
-        SessionHandler(name="demo.handler", before_user_send=lambda t, ctx: t),
-        replace=True,
-    )
-    assert "demo.handler" not in plugin.handlers
-    assert session.list_handlers()[0].name == "demo.handler"
 
 
 def test_registry_thread_concurrency(tmp_path: Path):

@@ -456,6 +456,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         options: [{ value: '', label: '默认 (关闭)' }, ...getThinkingOptions(llmConfigs[form.model_name]),
           ...(form.thinking && !getThinkingOptions(llmConfigs[form.model_name]).some((option) => option.value === form.thinking)
             ? [{ value: form.thinking, label: `${form.thinking} (当前模型不支持, 请重新选择)` }] : [])] },
+      { key: 'command_history_enabled', label: '命令写入上下文', type: 'checkbox' as const, placeholder: '让 AI 在后续对话中看到已执行的命令及回复, 不会额外调用模型' },
       { key: 'temperature', label: '温度', type: 'number' as const, min: 0, max: 2, step: 0.01, placeholder: '留空继承绑定模型配置' },
       { key: 'top_p', label: 'top_p', type: 'number' as const, min: 0, max: 1, step: 0.01, placeholder: '留空继承绑定模型配置' },
       { key: 'max_tokens', label: '最大输出 token 数', type: 'number' as const, min: 1, step: 1, placeholder: '留空继承绑定模型配置' },

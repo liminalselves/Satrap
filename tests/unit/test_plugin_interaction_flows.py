@@ -488,10 +488,10 @@ async def test_skill_replacement_restores_resources_and_preserves_user_switch(tm
         original = await _await(session.install_plugin(str(source)))
         workflow = session._wf
         await _await(workflow.ctx.add_user_message("保留已提交的用户消息"))
-        assert "legacy_skill 指令" in workflow.ctx.get_context()[0]["content"]
+        assert "- legacy_skill:" in session._skills_manager.catalog(workflow)
         await _await(session.install_plugin(str(replacement)))
-        assert "legacy_skill 指令" not in workflow.ctx.get_context()[0]["content"]
-        assert "new_skill 指令" in workflow.ctx.get_context()[0]["content"]
+        assert "- legacy_skill:" not in session._skills_manager.catalog(workflow)
+        assert "- new_skill:" in session._skills_manager.catalog(workflow)
         assert "legacy_skill_bundle" not in workflow.tools_manager.tools
         assert "new_skill_bundle" in workflow.tools_manager.tools
         assert original.skills["legacy_skill"] is True
@@ -508,24 +508,24 @@ async def test_skill_replacement_restores_resources_and_preserves_user_switch(tm
             with pytest.raises(RuntimeError, match="技能关系"):
                 await _await(session.disable_plugin("skill_interop_replacement"))
             assert session._plugins["skill_interop_replacement"].enabled
-            assert "new_skill 指令" in workflow.ctx.get_context()[0]["content"]
+            assert "- new_skill:" in session._skills_manager.catalog(workflow)
             assert "legacy_skill_bundle" not in workflow.tools_manager.tools
         assert await _await(session.disable_plugin("skill_interop_replacement"))
-        assert "legacy_skill 指令" in workflow.ctx.get_context()[0]["content"]
-        assert "new_skill 指令" not in workflow.ctx.get_context()[0]["content"]
+        assert "- legacy_skill:" in session._skills_manager.catalog(workflow)
+        assert "- new_skill:" not in session._skills_manager.catalog(workflow)
         assert "legacy_skill_bundle" in workflow.tools_manager.tools
         assert "new_skill_bundle" not in workflow.tools_manager.tools
         assert await _await(original.disable_skill("legacy_skill"))
         assert await _await(session.enable_plugin("skill_interop_replacement"))
         assert await _await(session.disable_plugin("skill_interop_replacement"))
-        assert "legacy_skill 指令" not in workflow.ctx.get_context()[0]["content"]
+        assert "- legacy_skill:" not in session._skills_manager.catalog(workflow)
         assert original.skills["legacy_skill"] is False
         with monkeypatch.context() as failing:
             failing.setattr(manager, "activate_async" if asynchronous else "activate", fail_restore_async if asynchronous else fail_restore)
             with pytest.raises(RuntimeError, match="技能关系"):
                 await _await(original.enable_skill("legacy_skill"))
             assert original.skills["legacy_skill"] is False
-            assert "legacy_skill 指令" not in workflow.ctx.get_context()[0]["content"]
+            assert "- legacy_skill:" not in session._skills_manager.catalog(workflow)
         assert [row["content"] for row in workflow.ctx.get_context() if row["role"] == "user"] == ["保留已提交的用户消息"]
     finally:
         for plugin in reversed(session.list_plugins()):

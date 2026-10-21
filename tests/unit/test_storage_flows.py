@@ -921,6 +921,62 @@ def test_storage_maintenance_scans_orphans_without_modifying_data(tmp_path: Path
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM chat_history").fetchone()[0] == 1
 
+def test_orphan_audit_preserves_workflows_and_rechecks_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """整合验证上下文归属, 去重汇总, 真孤儿清理和扫描后的归属变化保护"""
+    from dataclasses import replace
+    from satrap.core.storage.context_catalog import CATALOG_SCHEMA
+
+    layout = _storage_layout_StorageLayout(tmp_path / "data")
+    owned_directory = layout.ensure_session(StorageScope("chat", session_id="live_main"))
+    orphan_directory = layout.ensure_session(StorageScope("chat", session_id="orphan-files"))
+    (orphan_directory / "sample.txt").write_bytes(b"test")
+    database = layout.platform_db("chat")
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("CREATE TABLE session_configs (session_id TEXT PRIMARY KEY)")
+        connection.executemany("INSERT INTO session_configs VALUES (?)", [("live",), ("shadow_main",)])
+        connection.execute("CREATE TABLE chat_history (conversation_id TEXT, content TEXT)")
+        connection.executemany("INSERT INTO chat_history VALUES (?, 'data')", [
+            ("live_main",), ("live_legacy",), ("custom-context",), ("independent",),
+            ("shadow",), ("orphan-rows",), ("later-activated",),
+        ])
+        connection.execute(CATALOG_SCHEMA)
+        connection.executemany("INSERT INTO context_catalog(context_id,session_id,context_kind) VALUES (?,?,?)", [
+            ("live_main", "live", "main"), ("custom-context", "live", "workflow"),
+            ("independent", None, "standalone"),
+        ])
+    before = database.read_bytes()
+    service = _storage_layout_StorageMaintenanceService(layout)
+    items = service.scan({"chat"})
+    assert database.read_bytes() == before and owned_directory.exists()
+    records = {item.session_id: item for item in items if item.category == "orphan_database_rows"}
+    assert set(records) == {"orphan-rows", "later-activated"}
+    assert all(item.size_bytes is None for item in records.values())
+    summary = service.audit_summary(items)
+    files = next(item for item in items if item.session_id == "orphan-files")
+    assert summary == {"count": len(items), "size_bytes": files.size_bytes, "unmeasured_count": 2}
+    parent = replace(files, path=str(layout.platform_root("chat")), size_bytes=service._directory_size(layout.platform_root("chat")))
+    assert service.audit_summary([*items, files, parent])["size_bytes"] == parent.size_bytes
+
+    stale = service._audit_item(category="orphan_database_rows", platform_id="chat", session_id="live_main",
+        path=database, reason="旧扫描结果", recommended_action="delete_database_rows", auto_safe=True)
+    assert service.cleanup([stale.item_id])[0]["ok"] is False
+    assert service.cleanup([records["orphan-rows"].item_id])[0]["ok"] is True
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT 1 FROM chat_history WHERE conversation_id='orphan-rows'").fetchone() is None
+        assert connection.execute("SELECT COUNT(*) FROM chat_history").fetchone()[0] == 6
+
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("INSERT INTO session_configs VALUES ('later-activated')")
+    monkeypatch.setattr(service, "scan", lambda: [records["later-activated"]])
+    result = service.cleanup([records["later-activated"].item_id])[0]
+    assert result["ok"] is False and "拒绝孤儿清理" in result["error"]
+    with pytest.raises(ValueError, match="拒绝孤儿清理"):
+        delete_session_domain_rows(database, "shadow", orphan_only=True)
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM chat_history").fetchone()[0] == 6
+        assert connection.execute("SELECT COUNT(*) FROM session_configs").fetchone()[0] == 3
+
+
 def test_recoverable_session_archive_roundtrip(tmp_path: Path):
     """完整回收包应恢复会话配置、上下文和私有文件"""
     layout = _storage_layout_StorageLayout(tmp_path / "data")

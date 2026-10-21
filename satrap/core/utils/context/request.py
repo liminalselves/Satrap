@@ -6,6 +6,28 @@ from typing import Any, Iterable, cast
 from satrap.core.type import RequestContextBlock
 
 
+def attach_system_suffix(messages: list[dict[str, Any]], suffix: str) -> list[dict[str, Any]]:
+    """
+    在模型请求副本的系统消息中追加本次技能目录, 不改写存档
+
+    参数:
+    - messages: 已准备的请求消息
+    - suffix: 当前有效目录, 空字符串不追加
+
+    返回:
+    - 包含目录的独立请求副本
+    """
+    if not suffix:
+        return messages
+    result = copy.deepcopy(messages)
+    for message in result:
+        if message.get("role") == "system" and isinstance(message.get("content"), str):
+            message["content"] += "\n\n" + suffix
+            return result
+    result.insert(0, {"role": "system", "content": suffix})
+    return result
+
+
 def freeze_request_blocks(blocks: Iterable[RequestContextBlock]) -> tuple[RequestContextBlock, ...]:
     """固定本轮资料, 拒绝同一生产者重复命名或未声明的对象"""
     result = tuple(blocks)

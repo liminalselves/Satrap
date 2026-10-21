@@ -638,7 +638,7 @@ def _is_control_api_path(path: str) -> bool:
     返回:
     - 路径属于控制 API 时返回 True
     """
-    return path.startswith((
+    return path == "/api/skills" or path.startswith((
         "/status",
         "/start",
         "/stop",
@@ -650,6 +650,7 @@ def _is_control_api_path(path: str) -> bool:
         "/platforms",
         "/api/platforms/",
         "/api/group-chat/",
+        "/api/skills/",
     ))
 
 
@@ -1997,6 +1998,19 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.path.startswith("/config/models/"):
         parts = ctx.path.removeprefix("/config/models/").split("/", 1)
+        if len(parts) == 2 and parts[1].endswith("/api-key"):
+            if ctx.method != "POST":
+                return 404, {"error": "not found"}
+            model_type = urllib.parse.unquote(parts[0])
+            name = urllib.parse.unquote(parts[1][:-len("/api-key")])
+            try:
+                return 200, {"api_key": _model_config_service().reveal_api_key(model_type, name)}
+            except KeyError:
+                logger.warning(f"[模型配置] 查看密钥失败, 配置不存在: {model_type}/{name}")
+                return 404, {"error": "模型配置不存在"}
+            except (OSError, ValueError) as error:
+                logger.warning(f"[模型配置] 查看密钥失败: {model_type}/{name}, {error}")
+                return 400, {"error": str(error)}
         if len(parts) == 2 and parts[0] == "asr" and parts[1].endswith("/test"):
             # ASR 转录测试: POST /config/models/asr/{name}/test, 请求体 {filename, audio_base64}
             if ctx.method != "POST":
@@ -2117,10 +2131,7 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
             )
             return 200, {
                 "items": [item.to_dict() for item in items],
-                "summary": {
-                    "count": len(items),
-                    "size_bytes": sum(item.size_bytes for item in items),
-                },
+                "summary": StorageMaintenanceService.audit_summary(items),
             }
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
@@ -2457,6 +2468,35 @@ async def _route_reminders(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": "提醒数据暂不可用", "code": "unavailable"}
 
 
+async def _route_skills(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    经已认证控制入口调用技能插件的统一管理逻辑
+
+    参数:
+    - ctx: 当前管理请求
+
+    返回:
+    - 操作结果, 未匹配时返回 None
+    """
+    if ctx.path != "/api/skills" and not ctx.path.startswith("/api/skills/"):
+        return None
+    from satrap.expend.plugins.skills.management import skill_management
+    from satrap.expend.plugins.skills.store import SkillConflict
+    from satrap.core.utils.outbound import OutboundHTTPError
+    try:
+        payload = await _read_json_body(ctx.reader, ctx.raw_request) if ctx.method != "GET" else {}
+        if not isinstance(payload, dict):
+            raise ValueError("技能管理请求必须是对象")
+        name = urllib.parse.unquote(ctx.path.removeprefix("/api/skills").lstrip("/"))
+        return 200, await RAG_WORKERS.run(skill_management, ctx.method, name, payload)
+    except SkillConflict as error:
+        return 409, {"error": str(error)}
+    except (OSError, ValueError, TypeError) as error:
+        return 400, {"error": str(error)}
+    except OutboundHTTPError as error:
+        return 502, {"error": str(error)}
+
+
 async def _route_group_chat_media(ctx: _RouteContext) -> ControlResponse | None:
     """
     在已认证控制入口管理表情, 上传与逐群授权
@@ -2575,6 +2615,9 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
             items.sort(key=lambda item: (-(item["last_activity_at"] or 0), item["platform_id"], item["conversation_id"]))
             filters = {key.removeprefix("filter."): values[0] for key, values in query.items() if key.startswith("filter.")}
             matched = filter_records(items, query.get("q", [""])[0], filters)
+            identity = query.get("conversation_id", [""])[0]
+            if identity:
+                matched = [item for item in matched if item["conversation_id"] == identity or identity in item["context_ids"]]
             offset = max(0, int(query.get("offset", ["0"])[0]))
             limit = min(100, max(1, int(query.get("limit", ["40"])[0])))
             return 200, {"items": matched[offset:offset + limit], "total": len(matched), "facets": record_facets(items), "facet_names": {key: label for item in items for key, label in item["facet_names"].items()}, "warnings": warnings}
@@ -3533,6 +3576,7 @@ async def _handle_request(
             _route_memories,
             _route_reminders,
             _route_group_chat_media,
+            _route_skills,
             _route_conversation_data,
             _route_plugin_install,
             _route_plugin_application,

@@ -9,6 +9,37 @@ from satrap.core.storage.database import snapshot_session_domain, delete_session
 from satrap.core.config.conversation_data import ConversationDataService
 from satrap.core.storage.context_catalog import bind_context
 from satrap.core.utils.context import ContextManager
+
+
+def test_managed_media_archive_restore_and_shared_blob_reclamation(tmp_path):
+    """回收包携带原媒体, 释放会话不破坏其它持有者, 恢复后引用可读"""
+    from satrap.core.storage.maintenance import StorageMaintenanceService
+    from satrap.core.utils.media_store import media_scope, current_store, store_for, release_session_media
+
+    layout = StorageLayout(tmp_path / "data")
+    database = str(layout.platform_db("chat"))
+    context = ContextManager("first_main", db_path=database)
+    with media_scope(database, "first_main"):
+        reference = current_store().put(b"owned-video", "video/mp4")
+        context.add_turn_messages([{"role": "user", "content": [{"type": "video_url", "video_url": {"url": reference}}]}])
+        first = current_store()
+    second = store_for(database, "second_main")
+    first.copy_to(second, set())
+    with pytest.raises(ValueError):
+        second.read(reference)
+    first.copy_to(second, {reference.split("://")[1]})
+    context.close()
+    maintenance = StorageMaintenanceService(layout)
+    archived = maintenance.archive_session("chat", "first")
+    with pytest.raises(ValueError):
+        first.read(reference)
+    assert second.read(reference)[0] == b"owned-video"
+    assert maintenance.restore_archive("chat", archived["archive_id"])["ok"] is True
+    assert first.read(reference)[0] == b"owned-video"
+    release_session_media(database, "second")
+    assert first.read(reference)[0] == b"owned-video"
+    release_session_media(database, "first")
+    assert list((first.root / "blobs").iterdir()) == []
 from satrap.core.storage.layout import StorageLayout
 from satrap.core.platform import registry
 import asyncio
@@ -142,6 +173,7 @@ def test_empty_shared_context_does_not_hide_main_workflow_messages(tmp_path):
     assert row["context_ids"][0] == "root_main"
     assert row["contexts"][0]["kind"] == "main"
     assert next(context for context in row["contexts"] if context["id"] == "root")["kind"] == "shared"
+    assert ConversationDataService(workflow.db_path).read("root", "context")["total"] == 0
     workflow.close()
     session.session_ctx.close()
 
@@ -303,9 +335,20 @@ async def test_live_async_context_is_updated_and_busy_round_is_rejected(saved):
     assert service.read("conversation_main", "context")["items"][-2]["content"] == "活动实例修改"
     entry.active_calls = 1
     before = service.read("conversation_main", "context")
+    busy_snapshot = await manage_platform_data(str(database), manager, "conversation_main", "context", {})
+    assert busy_snapshot["source"] == "storage" and busy_snapshot["read_notice"]
+    assert busy_snapshot["items"] == before["items"]
     with pytest.raises(ConversationDataConflict):
         await manage_platform_data(str(database), manager, "conversation_main", "context", {"action": "clear", "expected_revision": before["revision"]})
     assert service.read("conversation_main", "context")["revision"] == before["revision"]
+
+    cold = ContextManager("conversation_old", db_path=str(database))
+    cold.add_user_message("旧工作流消息")
+    cold.close()
+    historical = await manage_platform_data(str(database), manager, "conversation_old", "context", {})
+    assert historical["source"] == "storage" and historical["items"][0]["content"] == "旧工作流消息"
+    with pytest.raises(ConversationDataConflict):
+        await manage_platform_data(str(database), manager, "conversation_old", "context", {"action": "clear", "expected_revision": historical["revision"]})
 
 @pytest.mark.asyncio
 async def test_cancelled_edit_finishes_disk_and_memory_before_releasing_instance(saved, monkeypatch):

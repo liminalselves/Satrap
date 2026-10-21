@@ -242,7 +242,8 @@ class LLM(_LLMBase[OpenAI]):
 
         processed_messages = prepare_call_messages(
             messages, self.thinking_field_name, img_urls,
-            video_urls=video_urls, supports_visual_input=self.supports_visual_input
+            video_urls=video_urls, supports_visual_input=self.supports_visual_input,
+            supports_native_video_input=getattr(self, "supports_native_video_input", False), video_frame_interval=getattr(self, "video_frame_interval", 2.0)
         )
 
         try:
@@ -334,7 +335,8 @@ class LLM(_LLMBase[OpenAI]):
 
         processed_messages = prepare_call_messages(
             messages, self.thinking_field_name, img_urls,
-            video_urls=video_urls, supports_visual_input=self.supports_visual_input
+            video_urls=video_urls, supports_visual_input=self.supports_visual_input,
+            supports_native_video_input=getattr(self, "supports_native_video_input", False), video_frame_interval=getattr(self, "video_frame_interval", 2.0)
         )
         request_params = self._build_request(
             parameters,

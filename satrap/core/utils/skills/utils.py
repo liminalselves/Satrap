@@ -1,59 +1,9 @@
 """
-技能 (Skill) 扩展
+技能元数据解析及可信资源收集
 
-Skill = 一段指令文本 (instructions) + 一组关联工具 + 可选自带工具 / MCP 客户端,
-装配到 workflow 时:
-1. 指令注入系统提示词 (ContextManager / AsyncContextManager)
-2. 关联工具注册并启用 (ToolsManager / AsyncToolsManager)
-3. 自带的 MCP 客户端 (若有) 自动连接并将远端工具注册进工具管理器
-
-技能以文件夹为单位组织, 每个技能一个目录, 位于技能扫描目录下:
-
-``` text
-skills/
-+-- coding-agent/        # 技能文件夹, 文件夹名即技能名 (若 skill.md 未声明 name)
-    |-- skill.md           # 技能指令 (Markdown, 支持 YAML front matter)
-    |-- tools.py           # 可选: 自带工具与 MCP 客户端 (约定见下)
-    +-- meta.yaml          # 可选: 作者, 版本, satrap-skill-id 等
-```
-
-扫描目录区分两层:
-- 官方预设目录 `satrap/expend/skills` (只读基线)
-- 用户技能目录 `skills_dir` (默认 `.satrap/skills`, 用户自添加, 同名无 id 时官方优先)
-
-`meta.yaml` 的 `satrap-skill-id` 是技能身份识别符 (小写字母/数字/连字符):
-同名技能携带不同 id 时共存不冲突; 无 id 的旧式技能同名时官方优先
-
-`skill.md` 的 front matter:
-``` markdown
----
-name: coding-agent
-description: 代码生成与调试助手
-tools:
-  - code_sandbox
-  - search
----
-<技能指令正文...>
-```
-
-`tools.py` (可选) 仅在官方预设目录或显式传入的可信代码根中执行, 约定:
-- `get_tools()`: 返回工具实例列表 (构造函数需要参数的场景)
-- `get_mcp_clients()`: 返回 MCPClient 实例列表 (激活时自动连接并注册)
-- 未定义 get_tools 时, 模块内定义的 Tool / AsyncTool 子类会被自动实例化并收集
-- 自带工具名会自动加入技能工具列表, 无需在 front matter 中重复声明
-
-也兼容旧式单文件技能: 直接把 .md 文件放在扫描目录下即可
-
-用法示例:
-``` python
-from satrap import SkillsManager   # 或 from satrap.core.utils.skills import SkillsManager
-
-skills = SkillsManager()           # 用户技能目录默认 .satrap/skills
-skills.scan()                      # 扫描官方预设 + 用户目录 (同名无 id 时官方优先)
-skills.activate("coding-agent", workflow)          # 同步 workflow
-await skills.activate_async("coding-agent", workflow)   # 异步 workflow (含 MCP 连接)
-skills.deactivate("coding-agent", workflow)        # 取消激活
-```
+启用技能只登记目录和装配可信代码资源, 不改写持久系统提示词;
+模型通过 load_skill 读取正文, 外部 Markdown 导入统一交给 skills 插件,
+显式 SDK 扫描仍支持旧 skill.md, meta.yaml 和可信 tools.py
 """
 
 from __future__ import annotations

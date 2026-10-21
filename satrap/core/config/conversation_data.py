@@ -148,7 +148,7 @@ class ConversationDataService:
         if live_messages is not None:
             return
         tables = ConversationDataService._tables(connection)
-        for table, column in (("chat_history", "conversation_id"), ("conversation_meta", "conversation_id"), ("session_configs", "session_id"), ("display_turns", "conversation_id"), ("conversation_data_backups", "conversation_id")):
+        for table, column in (("chat_history", "conversation_id"), ("context_catalog", "context_id"), ("conversation_meta", "conversation_id"), ("session_configs", "session_id"), ("display_turns", "conversation_id"), ("conversation_data_backups", "conversation_id")):
             if table in tables and connection.execute(f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (conversation,)).fetchone():
                 return
         raise KeyError("对话或上下文不存在")

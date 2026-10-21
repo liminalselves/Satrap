@@ -180,7 +180,7 @@ async def test_memory_commands_through_platform_session(tmp_path, asynchronous, 
     # Step.1 检查命令简介和空记忆提示, 覆盖真实注册与分发路径
     adapter, event, script, invoke = await _platform_memory_command_session(tmp_path, asynchronous, private)
     help_text = await invoke("/help")
-    assert "/memory: 管理长期记忆" in help_text
+    assert "/memory: 管理当前范围内的长期记忆" in help_text
     assert "/memory: None" not in help_text
     initial = await invoke("/memory")
     assert initial == ("当前没有长期记忆" if private else "当前没有可查看的长期记忆")
@@ -583,7 +583,7 @@ def test_split_preserves_closed_capabilities_and_is_idempotent(catalog):
     base, memory = specs
     assert base.name == "base_take" and memory.name == "memory"
     assert base.config == {"search_timeout": 12}
-    assert set(base.capabilities["tools"]) == {"search", "fetch_page", "code_sandbox", "read_document"}
+    assert set(base.capabilities["tools"]) == {"search", "fetch_page", "code_sandbox", "read_document", "read_media"}
     assert memory.config == {"memory_mode": "base"}
     assert memory.capabilities["tools"]["add_memory"] is False
     assert memory.capabilities["tools"]["get_memory"] is False

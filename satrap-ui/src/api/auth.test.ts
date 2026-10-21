@@ -93,12 +93,20 @@ describe('每服务认证', () => {
       : response(String(url).startsWith('http://control') ? 403 : 200));
     const bootstrap = auth.establishApiSessions();
     await vi.advanceTimersByTimeAsync(0);
-    expect(sessionStore.getState().sessions).toMatchObject({ 'http://backend': { state: 'ready' }, 'http://control': { state: 'error' }, 'http://chat': { state: 'checking' } });
+    expect(sessionStore.getState().sessions).toMatchObject({ 'http://backend': { state: 'ready' }, 'http://control': { state: 'error', errorKind: 'http', status: 403 }, 'http://chat': { state: 'checking' } });
     await auth.ensureApiSession('http://backend');
     await vi.advanceTimersByTimeAsync(auth.API_SESSION_TIMEOUT_MS);
     await bootstrap;
-    expect(sessionStore.getState().sessions['http://chat']).toMatchObject({ state: 'error', error: expect.stringContaining('8 秒') });
+    expect(sessionStore.getState().sessions['http://chat']).toMatchObject({ state: 'error', errorKind: 'timeout', error: expect.stringContaining('8 秒') });
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('连接失败有独立类别, 重试成功后清除旧错误资料', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(auth.establishApiSession('http://backend')).rejects.toThrow('无法连接服务');
+    expect(sessionStore.getState().sessions['http://backend']).toMatchObject({ state: 'error', errorKind: 'network' });
+    await auth.establishApiSession('http://backend');
+    expect(sessionStore.getState().sessions['http://backend']).toEqual({ state: 'ready' });
   });
 
   it('超时释放在途请求, 重试成功不被旧请求迟到覆盖', async () => {

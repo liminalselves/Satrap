@@ -167,13 +167,16 @@ async function shared_llm_editor(runtime) {
     await runtime.listen(server);
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     const context = await runtime.browser.newContext({ viewport: { width: 1280, height: 900 } });
-    const models = { default: { name: 'default', model: 'offline', api_key: '****masked', context_window: 4096,
+    const secretKey = 'sk-' + 'x'.repeat(193) + 'last';
+    const models = { default: { name: 'default', model: 'offline', api_key: '*'.repeat(secretKey.length - 4) + 'last', context_window: 4096,
       history_ratio: 0.6, context_strategy: 'summarize', context_threshold: 0.9, truncation_floor: 0.3,
       summary_keep_recent_turns: 3, thinking_fields: ['reasoning_effort'], thinking_levels: ['low', 'high'],
       supports_visual_input: false, lock_api_key: true } };
     const writes = [];
     const fixture = createBenchmarkFixture(1);
     let reloads = 0;
+    let revealCalls = 0;
+    let failReveal = false;
     let failNext = false;
     await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
       backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
@@ -183,6 +186,12 @@ async function shared_llm_editor(runtime) {
       const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
         'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+      if (pathname === '/config/models/llm/default/api-key') {
+        assert.equal(request.method(), 'POST');
+        revealCalls++;
+        return route.fulfill({ status: failReveal ? 503 : 200, headers,
+          json: failReveal ? { error: '模拟密钥读取失败' } : { api_key: secretKey } });
+      }
       if (['POST', 'PATCH', 'PUT'].includes(request.method()) && (pathname.startsWith('/config/models/llm/') || pathname.startsWith('/api/chat/models'))) {
         if (failNext) {
           failNext = false;
@@ -211,6 +220,36 @@ async function shared_llm_editor(runtime) {
     await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:1987[02]\//, () => {});
     await mockConfigVersions(page, origin, () => JSON.stringify(models));
     await page.goto(`${origin}/models`);
+    const keyField = page.getByRole('textbox', { name: 'API Key default', exact: true });
+    await keyField.waitFor();
+    assert.equal(await keyField.inputValue(), '•'.repeat(secretKey.length));
+    assert.equal(revealCalls, 0);
+    await page.getByRole('button', { name: '显示 API Key default', exact: true }).click();
+    await page.waitForFunction((expected) => document.querySelector('input[aria-label="API Key default"]')?.value === expected, secretKey);
+    assert.equal(revealCalls, 1);
+    for (const width of [1280, 375]) {
+      await page.setViewportSize({ width, height: 900 });
+      const bounds = await keyField.evaluate((element) => {
+        const card = element.closest('.glass-card').getBoundingClientRect();
+        const eye = element.parentElement.querySelector('button').getBoundingClientRect();
+        return { cardRight: card.right, eyeRight: eye.right, width: document.documentElement.clientWidth,
+          pageWidth: document.documentElement.scrollWidth };
+      });
+      assert.ok(bounds.eyeRight <= bounds.cardRight && bounds.pageWidth <= bounds.width + 1);
+    }
+    await page.getByRole('button', { name: '隐藏 API Key default', exact: true }).click();
+    assert.equal(await keyField.inputValue(), '•'.repeat(secretKey.length));
+    failReveal = true;
+    await page.getByRole('button', { name: '显示 API Key default', exact: true }).click();
+    await page.getByText('读取 API Key 失败，请重试', { exact: true }).waitFor();
+    assert.equal(await keyField.inputValue(), '•'.repeat(secretKey.length));
+    failReveal = false;
+    await page.getByRole('button', { name: '显示 API Key default', exact: true }).click();
+    await page.waitForFunction((expected) => document.querySelector('input[aria-label="API Key default"]')?.value === expected, secretKey);
+    await page.getByRole('button', { name: 'Embedding 配置', exact: true }).click();
+    await page.getByRole('button', { name: 'LLM 配置', exact: true }).click();
+    assert.equal(await keyField.inputValue(), '•'.repeat(secretKey.length));
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByRole('button', { name: '编辑', exact: true }).click();
     let dialog = page.getByRole('dialog', { name: '编辑模型: default', exact: true });
     assert.equal(await dialog.getByLabel('API Key').inputValue(), '');

@@ -581,16 +581,20 @@ async def install_all_plugins_async(session: AsyncSimpleSession, plugins_dir: st
     return installed
 
 
-def collect_skills(plugin_dir: Path, module_name: str) -> list[Skill]:
+def collect_skills(plugin_dir: Path, module_name: str, session: SessionType | None = None,
+                   config: dict[str, Any] | None = None, *, plugin_host: PluginHost | None = None) -> list[Skill]:
     """
-    收集 skills/ 子目录 (skill.md 文件夹式) 与 skills.py 导出的 skills 列表
+    收集技能 Markdown, 静态列表或接受宿主接口的技能工厂
 
     参数:
     - plugin_dir: 插件目录
     - module_name: module名称
+    - session: 当前会话, 默认 None 保留静态列表的独立用法
+    - config: 当前插件有效配置, 默认 None
+    - plugin_host: 显式注入的插件宿主接口, 默认 None
 
     返回:
-    - list[Skill]: 收集 skills/ 子目录 (skill.md 文件夹式) 与 skills.py 导出的 skills 列表
+    - 本次安装独立创建的技能列表, 同时兼容 SKILL.md 和旧 skill.md
     """
     found: list[Skill] = []
     skills_dir = plugin_dir / "skills"
@@ -598,13 +602,14 @@ def collect_skills(plugin_dir: Path, module_name: str) -> list[Skill]:
         for entry in sorted(skills_dir.iterdir()):
             if not entry.is_dir():
                 continue
-            md = entry / "skill.md"
+            md = entry / "SKILL.md" if (entry / "SKILL.md").is_file() else entry / "skill.md"
             if md.is_file():
                 found.append(Skill.from_file(str(md), default_name=entry.name))
     mod = _load_module(plugin_dir / "skills.py", f"{module_name}.skills", fresh=True)
     # 技能含工具和连接实例, 每次安装独立创建, 避免旧会话清理新会话的资源
     if mod is not None:
-        declared = safe_getattr_list(mod, "skills")
+        factory = safe_getattr_callable(mod, "get_skills")
+        declared = _invoke_factory(factory, session, config, None, plugin_host=plugin_host) if factory else safe_getattr_list(mod, "skills")
         if declared:
             found.extend(declared)
     return found

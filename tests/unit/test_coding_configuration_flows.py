@@ -507,7 +507,7 @@ def test_plugin_install_full_capabilities(_satrap_coding_plugin_session: SimpleS
     assert set(plugin.commands) == {"goal", "plan"}
     assert set(plugin.skills) == {"goal", "plan"}
     assert set(plugin.handlers) == {"satrap_coding.inject"}
-    assert len(_satrap_coding_plugin_session.list_tools()) == 11
+    assert set(_satrap_coding_plugin_session.list_tools()) == set(plugin.tools) | {"load_skill"}
     assert set(_satrap_coding_plugin_session.list_commands()) >= {"goal", "plan"}
     assert "approve" not in _satrap_coding_plugin_session.list_commands()
     assert "goal" in _satrap_coding_plugin_session.list_skills()
@@ -695,21 +695,28 @@ def _base_take_plugin_session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
     return s
 
 def test_plugin_install_capabilities(_base_take_plugin_session: SimpleSession):
-    """安装: 4 工具, 无记忆处理器和命令"""
+    """安装: 5 工具, 无记忆处理器和命令"""
     plugin = _base_take_plugin_session.list_plugins()[0]
     assert plugin.name == "base_take"
     assert set(plugin.tools) == {
-        "search", "fetch_page", "code_sandbox", "read_document",
+        "search", "fetch_page", "code_sandbox", "read_document", "read_media",
     }
     assert not plugin.handlers
     assert not plugin.commands
-    assert len(_base_take_plugin_session.list_tools()) == 4
+    assert len(_base_take_plugin_session.list_tools()) == 5
 
 def test_config_schema_on_plugin(_base_take_plugin_session: SimpleSession):
     """config_schema 随插件返回 (供前端渲染表单)"""
     plugin = _base_take_plugin_session.list_plugins()[0]
     assert plugin.config_schema["sandbox_root"]["type"] == "path"
     assert plugin.config_schema["search_timeout"]["default"] == 10
+    assert plugin.config_schema["search_js_challenge"]["type"] == "bool"
+    assert plugin.config_schema["search_js_challenge"]["default"] is False
+    from satrap.expend.plugins.base_take.tools import get_tools
+    from satrap.expend.tools.search import FetchPageTool
+    for enabled in (False, True):
+        fetch = next(tool for tool in get_tools(_base_take_plugin_session, {"search_js_challenge": enabled}) if isinstance(tool, FetchPageTool))
+        assert fetch.js_challenge is enabled
     assert "memory_scope" not in plugin.config_schema
     assert "memory_mode" not in plugin.config_schema
 

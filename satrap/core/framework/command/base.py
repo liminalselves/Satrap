@@ -14,6 +14,7 @@ DEFAULT_COMMAND_PARAM_SPLIT = " "
 
 
 class _CommandRegistry:
+    _execution_failed: bool = False
     commands: Dict[str, Any]
     intros: Dict[str, str]
     prefix: str

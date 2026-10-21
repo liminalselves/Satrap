@@ -30,6 +30,7 @@ export function DataMaintenancePanel({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [scanned, setScanned] = useState(false);
+  const [summary, setSummary] = useState({ size_bytes: 0, unmeasured_count: 0 });
   const [retentionDays, setRetentionDays] = useState(30);
 
   const scan = useCallback(async () => {
@@ -41,6 +42,7 @@ export function DataMaintenancePanel({
     try {
       const result = await storageApi.audit(backendRunning);
       setItems(result.items);
+      setSummary(result.summary);
       setSelected(new Set());
       setScanned(true);
       toast('success', '扫描完成, 发现 ' + result.summary.count + ' 项');
@@ -53,10 +55,6 @@ export function DataMaintenancePanel({
 
   const safeItems = useMemo(
     () => items.filter((item) => item.auto_safe),
-    [items],
-  );
-  const totalSize = useMemo(
-    () => items.reduce((total, item) => total + item.size_bytes, 0),
     [items],
   );
   const selectedTrash = useMemo(
@@ -228,7 +226,9 @@ export function DataMaintenancePanel({
         <div className="flex flex-wrap gap-2">
           <Badge variant={items.length > 0 ? 'warning' : 'success'}>项目 {items.length}</Badge>
           <Badge variant="default">可安全清理 {safeItems.length}</Badge>
-          <Badge variant="default">占用 {formatBytes(totalSize)}</Badge>
+          <Badge variant="default">已统计文件 {formatBytes(summary.size_bytes)}</Badge>
+          {summary.unmeasured_count > 0 && <Badge variant="default">记录大小未单独统计 {summary.unmeasured_count} 项</Badge>}
+          <span className="text-xs text-text-tertiary">文件大小不代表可释放空间, 数据库记录不按整库大小计入</span>
         </div>
       )}
 
@@ -278,7 +278,7 @@ export function DataMaintenancePanel({
                       {item.path}
                     </div>
                   </td>
-                  <td className="px-3 py-3 text-text-secondary">{formatBytes(item.size_bytes)}</td>
+                  <td className="whitespace-nowrap px-3 py-3 text-text-secondary">{item.size_bytes === null ? '未单独统计' : formatBytes(item.size_bytes)}</td>
                   <td className="px-3 py-3">
                     {item.category === 'trash_entry' && item.details.archive_id && (
                       <div className="flex gap-2">

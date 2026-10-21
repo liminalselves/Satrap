@@ -337,6 +337,7 @@ class BackendHTTPServer(MiniHTTPServer):
             self._route_groups,
             self._route_edictum_runtime_plugins,
             self._route_storage,
+            self._route_skills,
             self._route_shutdown,
             self._route_session_class_collection,
             self._route_edictum_config,
@@ -1095,6 +1096,37 @@ class BackendHTTPServer(MiniHTTPServer):
 
         return None
 
+    async def _route_skills(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        经已认证后端入口管理外部技能
+
+        参数:
+        - method: 请求方法
+        - path: 管理资源路径
+        - body: JSON 管理参数
+
+        返回:
+        - 操作结果, 未匹配时返回 None
+        """
+        from satrap.expend.plugins.skills.management import skill_management
+        from satrap.expend.plugins.skills.store import SkillConflict
+        from satrap.core.utils.outbound import OutboundHTTPError
+        resource = urlsplit(path).path
+        if resource != "/api/skills" and not resource.startswith("/api/skills/"):
+            return None
+        try:
+            payload = json.loads(body.decode("utf-8")) if body else {}
+            if not isinstance(payload, dict):
+                raise ValueError("技能管理请求必须是对象")
+            name = unquote(resource.removeprefix("/api/skills").lstrip("/"))
+            return 200, await asyncio.to_thread(skill_management, method, name, payload)
+        except SkillConflict as error:
+            return 409, {"error": str(error)}
+        except (OSError, ValueError, TypeError) as error:
+            return 400, {"error": str(error)}
+        except OutboundHTTPError as error:
+            return 502, {"error": str(error)}
+
     async def _route_storage(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """存储审计 / 清理 / 回收站恢复与清除 (urlsplit 解析路径)"""
         backend = self.backend
@@ -1114,10 +1146,7 @@ class BackendHTTPServer(MiniHTTPServer):
             items = await asyncio.to_thread(service.scan, configured_platforms)
             return 200, {
                 "items": [item.to_dict() for item in items],
-                "summary": {
-                    "count": len(items),
-                    "size_bytes": sum(item.size_bytes for item in items),
-                },
+                "summary": service.audit_summary(items),
             }
         # 接口: GET /api/storage/audit
 

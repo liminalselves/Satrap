@@ -31,6 +31,8 @@ install_requires = [
     "msgpack>=1.0.5",
     "aiosqlite>=0.19.0",
     "beautifulsoup4>=4.12.0",
+    "curl_cffi>=0.16.3,<0.17",
+    "trafilatura>=2.3.1,<2.4",
     "requests>=2.31.0",
     "aiohttp>=3.9.0",
     "websockets>=12.0",
@@ -43,9 +45,11 @@ install_requires = [
 ]
 
 extras_require = {
+    "web-js": ["mini-racer>=0.14.1,<0.15"],
     "vector": [
         "faiss-cpu>=1.7.4",
     ],
+    "video": ["av>=15,<19"],
     "audio": [
         "av>=15,<19",
     ],

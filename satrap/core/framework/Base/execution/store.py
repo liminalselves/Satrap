@@ -350,6 +350,8 @@ class RunStore:
         - key: 任务内稳定的步骤标识
         - request: 完整模型请求, 包含消息及调用参数
         """
+        from satrap.core.utils.media import persist_request_media
+        request = {**request, "messages": persist_request_media(request["messages"], str(self.database), self.scope)}
         position = codec.model_position(key)
         with self.connect() as db:
             prior = db.execute("SELECT s.step_key FROM agent_steps s JOIN agent_runs r ON r.id=s.run_id WHERE s.run_id=? AND s.kind='model' AND r.scope=? AND CAST(substr(s.step_key,7) AS INTEGER) < ? ORDER BY CAST(substr(s.step_key,7) AS INTEGER) DESC LIMIT 1", (run_id, self.scope, position)).fetchone()

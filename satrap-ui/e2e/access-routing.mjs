@@ -686,7 +686,77 @@ async function backend_platform_status(runtime) {
 
 }
 
+async function backend_availability(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const artifacts = path.join(root, 'test-results', 'backend-availability');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  try {
+    await fs.mkdir(artifacts, { recursive: true });
+    await runtime.listen(server);
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const context = await (await runtime.browser).newContext({ viewport: { width: 1440, height: 960 } });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    const state = { running: false, denied: false, controlDown: false, chatDown: false };
+    await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
+    await context.route('**/*', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.origin === origin && url.pathname !== '/ui-config.json') return route.continue();
+      const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+        'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
+      const reply = (json, status = 200) => route.fulfill({ status, json, headers });
+      if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+      if (url.pathname === '/ui-config.json') return reply({ backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' });
+      if (url.port === '19871' && state.controlDown) return route.abort('connectionfailed');
+      if (url.pathname === '/auth/session') {
+        if (url.port === '19870' && state.denied) return reply({ error: 'unauthorized' }, 403);
+        if ((url.port === '19870' && !state.running) || (url.port === '19872' && state.chatDown)) return route.abort('connectionfailed');
+        return reply({ ok: true });
+      }
+      if (url.pathname === '/status') return reply({ running: state.running, managed: state.running });
+      if (url.pathname === '/api/health') return state.running ? reply({ running: true, adapters: {} }) : route.abort('connectionfailed');
+      if (url.pathname === '/start') { state.running = true; return reply({ ok: true }); }
+      if (url.pathname === '/config/versions') return reply({ ok: true, resources: Object.fromEntries(
+        (url.searchParams.get('resources') || '').split(',').filter(Boolean).map((name) => [name, { state: 'available', change_token: 'fixed' }]),
+      ) });
+      if (url.pathname === '/config') return reply({ ok: true, exists: true, config: { platforms: [], api: { host: '127.0.0.1', port: 19870 } } });
+      return reply({});
+    });
+    const failedAuth = page.waitForEvent('requestfailed', { predicate: (request) => request.url() === 'http://127.0.0.1:19870/auth/session' });
+    await page.goto(`${origin}/`);
+    await failedAuth;
+    await page.locator('header').getByText('后端未运行', { exact: true }).waitFor();
+    assert.equal(await page.getByText('Failed to fetch', { exact: false }).count(), 0);
+    assert.equal(await page.getByText('后端认证失败', { exact: false }).count(), 0);
+    await page.screenshot({ animations: 'disabled', path: path.join(artifacts, 'stopped.png'), fullPage: true });
+    await page.getByRole('button', { name: '启动后端', exact: true }).click();
+    await page.locator('header').getByText('后端运行中', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '停止后端', exact: true }).waitFor();
+    state.running = false; state.denied = true;
+    await page.reload();
+    await page.locator('header').getByText('后端未运行', { exact: true }).waitFor();
+    await page.getByRole('alert').filter({ hasText: '后端认证失败' }).waitFor();
+    state.denied = false; state.controlDown = true;
+    await page.reload();
+    await page.locator('header').getByText('后端状态未知', { exact: true }).waitFor();
+    await page.getByRole('alert').filter({ hasText: '控制服务连接失败' }).waitFor();
+    await page.getByText('暂时无法确认后端状态', { exact: true }).waitFor();
+    state.controlDown = false; state.chatDown = true;
+    await page.reload();
+    await page.locator('header').getByText('后端未运行', { exact: true }).waitFor();
+    await page.getByRole('alert').filter({ hasText: 'Chat连接失败' }).waitFor();
+    assert.deepEqual(errors, []);
+    console.log('PASS: 后端停机显示正常状态, 启动后恢复连接, HTTP 拒绝及控制/Chat 失联仍明确提示');
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
+  ["backend-availability", backend_availability],
   ["administrators", administrators],
   ["agent-routing", agent_routing],
   ["backend-platform-status", backend_platform_status]

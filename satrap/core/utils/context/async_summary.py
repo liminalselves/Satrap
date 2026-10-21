@@ -5,9 +5,10 @@
 """
 from __future__ import annotations
 from satrap.core.type import RequestContextBlock
-from satrap.core.utils.context.request import freeze_request_blocks, attach_request_blocks
+from satrap.core.utils.context.request import freeze_request_blocks, attach_request_blocks, attach_system_suffix
 from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING
 import copy
+import asyncio
 from satrap.core.type import TokenUsage
 from satrap.core.log import logger
 from .utils import (
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 from .async_checkpoints import _AsyncCheckpoints
 from .base import _ContextCore
 
-from satrap.core.utils.media import project_messages, visual_enabled
+from satrap.core.utils.media import project_context_media, limit_history_media
 
 
 class _AsyncSummary(_AsyncCheckpoints):
@@ -146,8 +147,25 @@ class _AsyncSummary(_AsyncCheckpoints):
         strategy: Optional[ContextStrategy] = None,
         keep_recent_turns: Optional[int] = None,
         request_blocks: tuple[RequestContextBlock, ...] = (),
+        system_suffix: str = "",
     ) -> PreparedModelContext:
-        """为一次真实模型请求准备非破坏性上下文"""
+        """
+        为一次真实模型请求异步准备非破坏性上下文
+
+        参数:
+        - llm: 总结策略使用的模型, 默认 None
+        - pending_messages: 本轮尚未提交的消息, 默认 None
+        - tools: 本次请求的工具定义, 默认 None
+        - img_urls: 附加图片, 默认 None
+        - method: Token 估算方式, 默认 tokenizer
+        - strategy: 压缩策略覆盖值, 默认使用上下文配置
+        - keep_recent_turns: 总结保留轮数覆盖值, 默认使用配置
+        - request_blocks: 本轮用户任务前的资料, 默认空元组
+        - system_suffix: 本次请求的系统目录, 默认空字符串
+
+        返回:
+        - 请求副本及预算统计, 固定资料超出预算时明确报错
+        """
         selected_strategy = strategy or cast(ContextStrategy, self.exceed_process)
         if selected_strategy == "summary":
             selected_strategy = "summarize"
@@ -160,14 +178,17 @@ class _AsyncSummary(_AsyncCheckpoints):
             raise ValueError("keep_recent_turns 不能小于 0")
         model = _llm_model_name(llm)
         request_blocks = freeze_request_blocks(request_blocks)
-        history = project_messages(copy.deepcopy(self._messages), visual_enabled(llm))
-        pending = project_messages(copy.deepcopy(pending_messages or []), visual_enabled(llm))
+        history = await asyncio.to_thread(project_context_media, copy.deepcopy(self._messages), llm, self.db_path, self.conversation_id)
+        pending = await asyncio.to_thread(project_context_media, copy.deepcopy(pending_messages or []), llm, self.db_path, self.conversation_id)
+        history, pending = limit_history_media(history, pending)
         messages = history + pending
-        source = history if request_blocks else messages
+        protected = bool(request_blocks or system_suffix)
+        source = history if protected else messages
 
         def request_view(view: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             """在压缩后的历史副本后保留本轮消息, 资料只注入一次"""
-            return attach_request_blocks(view + pending, request_blocks, len(view)) if request_blocks else view
+            visible = attach_request_blocks(view + pending, request_blocks, len(view)) if request_blocks else (view + pending if protected else view)
+            return attach_system_suffix(visible, system_suffix)
 
         original_request = request_view(source)
         original_turns = len(self._conversation_turns(messages))
@@ -179,7 +200,7 @@ class _AsyncSummary(_AsyncCheckpoints):
         prepared_messages = original_request
 
         if original_effective > self.trigger_tokens:
-            fixed_tokens = self.estimate_request_tokens(request_view([]), method, tools, img_urls) if request_blocks else 0
+            fixed_tokens = self.estimate_request_tokens(request_view([]), method, tools, img_urls) if protected else 0
             local_floor = max(0, int(self.floor_tokens / factor) - fixed_tokens)
             if selected_strategy == "summarize":
                 if llm is None:
@@ -192,7 +213,7 @@ class _AsyncSummary(_AsyncCheckpoints):
                 ))
             elif selected_strategy == "mid_truncate":
                 prepared_messages = request_view(self._prepare_mid_truncation(
-                    source, local_floor, method, min_turns=0 if request_blocks else 2
+                    source, local_floor, method, min_turns=0 if protected else 2
                 ))
             else:
                 raise ValueError(f"未知上下文处理策略: {selected_strategy}")

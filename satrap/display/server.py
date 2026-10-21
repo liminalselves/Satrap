@@ -176,6 +176,8 @@ class ChatHTTPServer(MiniHTTPServer):
         返回:
         - 当前路由的请求体字节上限
         """
+        if method == "POST" and urlsplit(path).path == "/api/chat/upload":
+            return 32 * 1024 * 1024 * 4 // 3 + 65536
         if method == "POST" and urlsplit(path).path == "/api/chat/rag/upload":
             return DEFAULT_MAX_FILE_SIZE
         return super()._request_body_limit(method, path)
@@ -219,6 +221,22 @@ class ChatHTTPServer(MiniHTTPServer):
             except Exception as error:
                 logger.error(f"[对话数据] Chat/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
                 return 500, {"error": "对话数据操作失败, 请查看 Chat 日志"}
+
+        if clean == "/api/chat/command-history" and method in {"GET", "PUT"}:
+            conversation_id = self._query_param(path, "conversation")
+            try:
+                if not conversation_id:
+                    raise ValueError("缺少 conversation")
+                if method == "GET":
+                    return 200, await svc.get_command_history(conversation_id)
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or set(payload) != {"command_history_enabled"}:
+                    raise ValueError("命令历史设置参数无效")
+                result = await svc.set_command_history(conversation_id, payload["command_history_enabled"])
+                return (200 if result.get("ok") else 409), result
+            except (OSError, TypeError, ValueError) as error:
+                logger.warning(f"[命令历史] 设置读取或更新失败: {error}")
+                return 400, {"error": str(error)}
 
         if clean == "/api/chat/approval" and method in {"GET", "PUT"}:
             conversation_id = self._query_param(path, "conversation")
@@ -467,7 +485,7 @@ class ChatHTTPServer(MiniHTTPServer):
             think = str(think) if think is not None else None
             preload_settings = {
                 key: payload[key]
-                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode")
+                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled")
                 if key in payload
             }
             result = await svc.send(
@@ -511,7 +529,11 @@ class ChatHTTPServer(MiniHTTPServer):
                 file_data = base64.b64decode(file_data_b64)
             except Exception:
                 return 400, {"error": "file_data base64 解码失败"}
-            return 200, svc.save_upload(conv, file_name, file_data)
+            try:
+                return 200, await asyncio.to_thread(svc.save_upload, conv, file_name, file_data)
+            except (OSError, ValueError) as error:
+                logger.warning(f"[媒体上传] 无法保存: {error}")
+                return 400, {"error": str(error)}
         # 文件上传
 
         if method == "GET" and clean == "/api/chat/runs":

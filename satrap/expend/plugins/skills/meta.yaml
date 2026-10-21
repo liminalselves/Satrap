@@ -1,0 +1,29 @@
+name: skills
+version: 0.1.0
+author: Satrap Team
+description: 导入和管理 Markdown 技能, 按任务加载说明或通过 /skill 强制使用
+permission_schema_version: 1
+management_permissions:
+  skill_manage:
+    description: 导入供机器人使用的外部技能
+    system_admin: true
+    requirements: [导入不会增加工具权限或改变审批模式]
+command_permissions:
+  skill:
+    subcommands:
+      import: [skill_manage]
+config_schema:
+  allowed_skills:
+    type: textarea
+    default: ""
+    description: 当前会话可使用的外部技能名称, 每行一个, 留空允许全部已启用技能
+commands:
+  skill: "查看或使用技能: /skill list; /skill show <标识>; /skill use <标识> [任务]"
+tools: {}
+skills: {}
+services: {}
+handlers: {}
+mcp: {}
+applicability:
+  session_types: [chat, platform, embedded]
+  platforms: "*"

@@ -75,7 +75,6 @@ export function Models() {
   const [activeTab, setActiveTab] = useState<ModelType>('llm');
   const [showModal, setShowModal] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
-  const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [formData, setFormData] = useState<ModelFormData>({ name: '' });
   const [asrTestName, setAsrTestName] = useState<string | null>(null);
 
@@ -135,10 +134,6 @@ export function Models() {
     }
   }, [formData, editingName, activeTab, updateModel, createModel]);
 
-  const toggleApiKeyVisibility = useCallback((name: string) => {
-    setShowApiKey((prev) => ({ ...prev, [name]: !prev[name] }));
-  }, []);
-
   const handleFieldChange = useCallback((key: string, value: unknown) => {
     setFormData((prev) => ({ ...prev, [key]: key === 'dimensions' && value === undefined ? null : value }));   // 显式传 null 清除旧维度, 省略字段会保留后端原值
   }, []);
@@ -193,12 +188,11 @@ export function Models() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {Object.entries(configs).map(([name, config]) => (
                   <ModelCard
-                    key={name}
+                    key={`${t.value}:${name}`}
                     name={name}
                     config={config}
                     typeLabel={t.label}
-                    showApiKey={showApiKey[name]}
-                    onToggleApiKey={() => toggleApiKeyVisibility(name)}
+                    modelType={t.value}
                     onEdit={() => handleEdit(name, config)}
                     onDelete={() => handleDelete(name)}
                     onTest={t.value === 'asr' ? () => setAsrTestName(name) : undefined}
@@ -236,8 +230,7 @@ interface ModelCardProps {
   name: string;
   config: ModelConfig;
   typeLabel: string;
-  showApiKey: boolean;
-  onToggleApiKey: () => void;
+  modelType: ModelType;
   onEdit: () => void;
   onDelete: () => void;
   onTest?: () => void;
@@ -247,18 +240,38 @@ function ModelCard({
   name,
   config,
   typeLabel,
-  showApiKey,
-  onToggleApiKey,
+  modelType,
   onEdit,
   onDelete,
   onTest,
 }: ModelCardProps) {
+  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [readingKey, setReadingKey] = useState(false);
+  const keyRequest = useRef(0);
+  useEffect(() => {
+    keyRequest.current += 1;
+    setApiKey(null); setReadingKey(false);
+    return () => { keyRequest.current += 1; };
+  }, [modelType, name, config]);   // 配置刷新或卡片卸载后清除明文, 不进入全局配置缓存
+  const toggleApiKey = async () => {
+    if (apiKey !== null) { keyRequest.current += 1; setApiKey(null); return; }
+    const request = ++keyRequest.current;
+    setReadingKey(true);
+    try {
+      const value = await controlApi.revealModelApiKey(modelType, name);
+      if (request === keyRequest.current) setApiKey(value);
+    } catch {
+      if (request === keyRequest.current) toast('error', '读取 API Key 失败，请重试');
+    } finally {
+      if (request === keyRequest.current) setReadingKey(false);
+    }
+  };
   return (
-    <Card className="relative">
+    <Card className="relative min-w-0">
       <div className="flex items-start justify-between mb-3">
-        <div>
-          <h3 className="font-semibold text-text-primary">{name}</h3>
-          <p className="text-sm text-text-secondary mt-1">
+        <div className="min-w-0">
+          <h3 className="break-all font-semibold text-text-primary">{name}</h3>
+          <p className="break-all text-sm text-text-secondary mt-1">
             {config.model || config.base_url || '-'}
           </p>
         </div>
@@ -266,16 +279,19 @@ function ModelCard({
       </div>
 
       {config.api_key && (
-        <div className="flex items-center gap-2 mb-3 text-sm">
-          <span className="text-text-tertiary">API Key:</span>
-          <code className="flex-1 px-2 py-1 rounded bg-glass text-text-secondary">
-            {showApiKey ? config.api_key : '••••••••'}
-          </code>
+        <div className="flex min-w-0 items-center gap-2 mb-3 text-sm">
+          <span className="shrink-0 whitespace-nowrap text-text-tertiary">API Key:</span>
+          <input readOnly aria-label={`API Key ${name}`} autoComplete="off" spellCheck={false}
+            className="w-0 min-w-0 flex-1 px-2 py-1 rounded bg-glass font-mono text-text-secondary"
+            value={apiKey ?? '•'.repeat(config.api_key.length)} />
           <button
-            onClick={onToggleApiKey}
-            className="text-text-tertiary hover:text-text-primary"
+            onClick={() => void toggleApiKey()}
+            disabled={readingKey}
+            aria-label={`${apiKey !== null ? '隐藏' : '显示'} API Key ${name}`}
+            aria-busy={readingKey}
+            className="shrink-0 text-text-tertiary hover:text-text-primary disabled:opacity-50"
           >
-            {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            {apiKey !== null ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
       )}

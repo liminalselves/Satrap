@@ -524,14 +524,16 @@ describe("utils/edictumParams", () => {
       const form = readEdictumParams({ system_prompt: '助手', custom: { a: 1 } }, true);
       expect(form.system_prompt).toBe('助手');
       expect(form.system_prompt_enabled).toBe(true);
+      expect(readEdictumParams({ command_history_enabled: true }, true).command_history_enabled).toBe(true);
+      expect(writeEdictumParams({ ...form, command_history_enabled: true }, true).command_history_enabled).toBe(true);
       expect(JSON.parse(form.params)).toEqual({ custom: { a: 1 } });
-      expect(writeEdictumParams(form, true)).toEqual({ system_prompt: '助手', custom: { a: 1 } });
+      expect(writeEdictumParams(form, true)).toEqual({ system_prompt: '助手', command_history_enabled: false, custom: { a: 1 } });
     });
 
     it('区分主动清空与未配置, 拒绝重复入口', () => {
       const form = { params: '{}', system_prompt: '', system_prompt_enabled: true };
-      expect(writeEdictumParams(form, true)).toEqual({ system_prompt: '' });
-      expect(writeEdictumParams({ ...form, system_prompt_enabled: false }, true)).toEqual({});
+      expect(writeEdictumParams(form, true)).toEqual({ system_prompt: '', command_history_enabled: false });
+      expect(writeEdictumParams({ ...form, system_prompt_enabled: false }, true)).toEqual({ command_history_enabled: false });
       expect(() => writeEdictumParams({ ...form, params: '{"system_prompt":"重复"}' }, true)).toThrow('输入框');
     });
 
@@ -542,8 +544,8 @@ describe("utils/edictumParams", () => {
 
     it('迁移旧生成参数, 保留零温度并支持恢复继承', () => {
       const form = readEdictumParams({ thinking: 'high', temperature: 0, model_params: { top_p: 0.8, max_tokens: 2048 }, custom: 1 }, true);
-      expect(writeEdictumParams(form, true)).toEqual({ thinking: 'high', model_params: { temperature: 0, top_p: 0.8, max_tokens: 2048 }, custom: 1 });
-      expect(writeEdictumParams({ ...form, thinking: '', temperature: undefined, top_p: undefined, max_tokens: undefined }, true)).toEqual({ custom: 1 });
+      expect(writeEdictumParams(form, true)).toEqual({ thinking: 'high', command_history_enabled: false, model_params: { temperature: 0, top_p: 0.8, max_tokens: 2048 }, custom: 1 });
+      expect(writeEdictumParams({ ...form, thinking: '', temperature: undefined, top_p: undefined, max_tokens: undefined }, true)).toEqual({ command_history_enabled: false, custom: 1 });
       expect(() => writeEdictumParams({ ...form, top_p: 0 }, true)).toThrow('top_p');
       expect(() => writeEdictumParams({ ...form, max_tokens: 1.5 }, true)).toThrow('正整数');
     });

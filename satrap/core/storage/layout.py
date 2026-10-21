@@ -315,6 +315,8 @@ class StorageLayout:
         返回:
         - bool: 是否删除了目录
         """
+        from satrap.core.utils.media_store import release_session_media
+        release_session_media(str(self.platform_db(platform_id)), session_id)
         target = self.session_root(platform_id, session_id)
         if not target.exists() and not target.is_symlink():
             return False

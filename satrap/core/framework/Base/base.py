@@ -15,6 +15,7 @@ from satrap.core.log import logger
 from .utils import _build_context_request_stats
 
 if TYPE_CHECKING:
+    from satrap.core.utils.skills import SkillsManager
     from satrap.core.config.session_overrides import SessionOverrideStore
     from satrap.core.framework.BackGroundManager import ModelConfigManager
     from satrap.core.storage.layout import StorageLayout
@@ -26,6 +27,7 @@ from typing import Generic
 
 class _WorkflowCore:
     _context_turn_stats: ModelContextTurnStats
+    skill_runtime: SkillsManager | None = None
 
     def reset_context_stats(self) -> None:
         """清空当前轮次的模型上下文统计"""

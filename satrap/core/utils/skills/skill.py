@@ -23,8 +23,8 @@ class Skill:
         """
         参数:
         - name: 技能名称
-        - instructions: 技能指令文本, 激活时注入系统提示词
-        - tool_names: 关联工具名列表, 激活时在 ToolsManager 中启用
+        - instructions: 技能说明正文, 按任务读取后作为工具结果或本轮资料提供
+        - tool_names: 所需工具名称说明, 不改变 ToolsManager 开关
         - description: 技能简介
         - source: 技能来源路径 (md 文件或文件夹, 可选)
         - meta: 元信息 (作者, 版本等, 来自 meta.yaml)
@@ -76,22 +76,24 @@ class Skill:
 
     def to_text(self) -> str:
         """
-        生成可注入系统提示词的指令块 (带技能标记, 便于反激活时剥离)
+        生成工具结果或本轮资料使用的技能正文
 
         标记使用注册 key (satrap-skill-id or name), 同名不同 id 的技能注入标记互不相同,
-        反激活时按 key 剥离不会误伤同名的其他技能
+        不同来源使用独立标识, 不将说明永久附加到系统提示词
 
         返回:
-        - str: 生成可注入系统提示词的指令块 (带技能标记, 便于反激活时剥离)
+        - 带精确技能标识和可选版本的说明正文
         """
         key = self.skill_id or self.name
         lines = [f"<skill:{key}>"]
         if self.description:
             lines.append(f"描述: {self.description}")
+        if self.meta.get("revision") is not None:
+            lines.append(f"版本: {self.meta['revision']}")
         if self.instructions:
             lines.append(self.instructions)
         if self.tool_names:
-            lines.append(f"可用工具: {', '.join(self.tool_names)}")
+            lines.append(f"所需工具 (仍受原权限限制): {', '.join(self.tool_names)}")
         lines.append(f"</skill:{key}>")
         return "\n".join(lines)
 

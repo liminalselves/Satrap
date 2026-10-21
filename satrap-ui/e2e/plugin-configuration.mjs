@@ -758,7 +758,105 @@ async function main_merge(runtime) {
 
 }
 
+async function skill_library(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  try {
+    await runtime.listen(server);
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const page = await runtime.browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    page.setDefaultTimeout(10000);
+    const errors = [], writes = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS' };
+    let items = [], conflict = false;
+    await page.route(origin + '/ui-config.json', (route) => route.fulfill({ json: {
+      backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
+    } }));
+    await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, async (route) => {
+      const request = route.request(), url = new URL(request.url());
+      if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/config/plugins') return route.fulfill({ json: { plugins: [{
+        name: 'skills', description: '按任务加载技能', source: 'builtin', usage_count: 0, config_schema: {}, capabilities: {},
+      }] }, headers: cors });
+      if (url.pathname === '/api/skills/plugin-catalog') return route.fulfill({ json: { items: [
+        { plugin: 'memory', name: 'memory', description: '长期记忆操作说明', source: 'skills/memory/skill.md', instructions: '# 来自插件的说明\n按授权保存记忆', tools: ['list_memories'] },
+        { plugin: 'sample', name: 'dynamic', description: '运行时技能', source: '插件能力声明', instructions: null, tools: [] },
+      ], notices: ['sample 还可通过代码提供技能'] }, headers: cors });
+      if (url.pathname.startsWith('/api/skills')) {
+        if (request.method() === 'GET') return route.fulfill({ json: { items }, headers: cors });
+        const payload = request.postDataJSON();
+        writes.push({ method: request.method(), payload });
+        if (conflict) return route.fulfill({ status: 409, json: { error: '版本已变化，请刷新后再保存' }, headers: cors });
+        if (request.method() === 'DELETE') { items = []; return route.fulfill({ json: { ok: true }, headers: cors }); }
+        if (request.method() === 'PUT') assert.equal(payload.expected_revision, items[0].revision);
+        const item = { name: payload.name || 'weekly', description: payload.description || '整理工作记录', markdown: payload.markdown || '# 远程技能',
+          source: payload.filename || payload.url || 'upload', revision: request.method() === 'POST' ? 1 : items[0].revision + 1,
+          enabled: payload.enabled, scopes: payload.scopes };
+        items = [item];
+        return route.fulfill({ json: { ok: true, item }, headers: cors });
+      }
+      return route.fulfill({ json: url.pathname === '/status' || url.pathname === '/api/health' ? { running: false, adapters: {} } : {}, headers: cors });
+    });
+    await mockConfigVersions(page, origin, () => JSON.stringify({ revision: 1 }));
+    await page.goto(`${origin}/plugins/skills?tab=skills`);
+    await page.getByRole('region', { name: '技能库' }).getByText('尚未导入外部技能').waitFor();
+    await page.getByRole('button', { name: '导入技能', exact: true }).click();
+    await page.getByLabel('Markdown 文件', { exact: true }).setInputFiles({ name: 'weekly.md', mimeType: 'text/markdown', buffer: Buffer.from('---\nname: weekly\ndescription: 整理工作记录\n---\n# 周报步骤') });
+    await page.getByLabel('Markdown 正文', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('textarea')?.value.includes('# 周报步骤'));
+    await page.getByRole('button', { name: '保存技能', exact: true }).click();
+    await page.getByText('weekly', { exact: true }).waitFor();
+    assert.equal(writes[0].payload.filename, 'weekly.md');
+    await page.getByRole('button', { name: '查看和编辑', exact: true }).click();
+    await page.getByLabel('用途简介', { exact: true }).fill('新版用途');
+    await page.getByLabel('允许使用此技能').uncheck();
+    conflict = true;
+    await page.getByRole('button', { name: '保存技能', exact: true }).click();
+    await page.getByText('版本已变化，请刷新后再保存', { exact: false }).waitFor();
+    assert.equal(await page.getByLabel('用途简介', { exact: true }).inputValue(), '新版用途');
+    conflict = false;
+    await page.getByRole('button', { name: '保存技能', exact: true }).click();
+    await page.getByText('已停用', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '删除', exact: true }).click();
+    await page.getByRole('button', { name: '确认', exact: true }).click();
+    await page.getByText('尚未导入外部技能', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '导入技能', exact: true }).click();
+    await page.getByLabel('导入方式', { exact: true }).selectOption('url');
+    await page.getByLabel('Markdown 地址', { exact: true }).fill('https://example.com/SKILL.md');
+    await page.getByRole('button', { name: '保存技能', exact: true }).click();
+    await page.getByText('weekly', { exact: true }).waitFor();
+    assert.equal(writes.at(-1).payload.url, 'https://example.com/SKILL.md');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mkdir(path.join(root, 'test-results', 'skill-library'), { recursive: true });
+    await page.screenshot({ path: path.join(root, 'test-results', 'skill-library', 'narrow.png'), fullPage: true });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      const writesBeforePreview = writes.length;
+      await page.getByRole('button', { name: '插件技能', exact: true }).click();
+      await page.getByText('来自 memory · 只读', { exact: true }).waitFor();
+      assert.equal(await page.getByRole('button', { name: '删除', exact: true }).count(), 0);
+      assert.equal(await page.getByRole('button', { name: '查看和编辑', exact: true }).count(), 0);
+      await page.getByRole('button', { name: '查看说明', exact: true }).first().click();
+      await page.getByText('按授权保存记忆', { exact: false }).waitFor();
+      await page.screenshot({ path: path.join(root, 'test-results', 'skill-library', 'plugin-preview.png'), fullPage: true, animations: 'disabled' });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      await page.getByRole('button', { name: '关闭', exact: true }).click();
+      await page.getByRole('button', { name: '查看说明', exact: true }).nth(1).click();
+      await page.getByText('该能力由插件声明', { exact: false }).waitFor();
+      await page.getByRole('button', { name: '关闭', exact: true }).click();
+      assert.equal(writes.length, writesBeforePreview);
+    assert.deepEqual(errors, []);
+    console.log('PASS: 技能文件与 URL 导入, 版本冲突保留草稿, 编辑停用, 删除和窄屏布局');
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
+  ["skill-library", skill_library],
   ["plugins", plugins],
   ["plugin-loading", plugin_loading],
   ["edictum-settings", edictum_settings],

@@ -727,9 +727,14 @@ async def test_conversation_cold_data_routes_auth_and_timeout_never_falls_back(t
     monkeypatch.setattr(control_server, "_conversation_data_request", lambda url, payload: None)
     try:
         assert b"401" in (await _request("/config/conversations", authorized=False)).split(b"\r\n", 1)[0]
+        assert b"401" in (await _request("/config/models/llm/default/api-key", "POST", authorized=False)).split(b"\r\n", 1)[0]
         platforms = _json_body(await _request("/config/conversations/platforms"))
         assert "test-platform" in platforms["platforms"]
         catalog = _json_body(await _request("/config/conversations?platform_id=test-platform"))
+        exact = _json_body(await _request("/config/conversations?platform_id=test-platform&conversation_id=test-conversation"))
+        assert [item["conversation_id"] for item in exact["items"]] == ["test-conversation"]
+        absent = _json_body(await _request("/config/conversations?platform_id=test-platform&conversation_id=missing"))
+        assert absent["items"] == []
         assert catalog["items"][0]["conversation_id"] == "test-conversation"
         request = {"platform_id": "test-platform", "conversation_id": "test-conversation", "layer": "context"}
         current = _json_body(await _request("/config/conversations/data", "POST", json.dumps(request).encode("utf-8")))

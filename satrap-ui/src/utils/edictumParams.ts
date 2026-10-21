@@ -5,12 +5,14 @@ export function readEdictumParams(params: Record<string, unknown>, managePrompt:
   if (managePrompt) {
     delete advanced.system_prompt;
     delete advanced.thinking;
+    delete advanced.command_history_enabled;
     delete advanced.model_params;
     for (const key of ['temperature', 'top_p', 'max_tokens']) delete advanced[key];
   }
   return {
     system_prompt_enabled: managePrompt && typeof params.system_prompt === 'string',
     system_prompt: typeof params.system_prompt === 'string' ? params.system_prompt : '',
+    command_history_enabled: params.command_history_enabled === true,
     thinking: typeof params.thinking === 'string' ? params.thinking : '',
     temperature: (modelParams.temperature ?? params.temperature) as number | undefined,
     top_p: (modelParams.top_p ?? params.top_p) as number | undefined,
@@ -24,6 +26,7 @@ export function writeEdictumParams(form: {
   system_prompt_enabled: boolean;
   system_prompt: string;
   thinking?: string;
+  command_history_enabled?: boolean;
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
@@ -34,11 +37,12 @@ export function writeEdictumParams(form: {
   }
   const params = parsed as Record<string, unknown>;
   if (managePrompt) {
-    if (['system_prompt', 'thinking', 'model_params', 'temperature', 'top_p', 'max_tokens'].some((key) => key in params)) {
+    if (['system_prompt', 'thinking', 'command_history_enabled', 'model_params', 'temperature', 'top_p', 'max_tokens'].some((key) => key in params)) {
       throw new Error('请在系统提示词和模型参数输入框中配置这些字段');
     }
     if (form.system_prompt_enabled) params.system_prompt = form.system_prompt;
     if (form.thinking) params.thinking = form.thinking;
+    params.command_history_enabled = form.command_history_enabled ?? false;
     const modelParams: Record<string, number> = {};
     for (const key of ['temperature', 'top_p', 'max_tokens'] as const) {
       const value = form[key];

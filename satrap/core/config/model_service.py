@@ -54,6 +54,25 @@ class ModelConfigService:
             return self.manager.list_asr_configs(mask_api_key=True)
         return self.manager.list_rerank_configs(mask_api_key=True)
 
+    def reveal_api_key(self, target: str, name: str) -> str:
+        """
+        按明确操作读取单个模型的真实密钥, 不改变列表脱敏规则
+
+        参数:
+        - target: 模型配置类型
+        - name: 已保存的配置名称
+
+        返回:
+        - 真实密钥, 未配置时为空字符串; 配置不存在时抛出 KeyError
+        """
+        normalized = self._validate_target(target)
+        config_name = self._validate_name(name)
+        config = self.manager.get_runtime_configs()[normalized].get(config_name)
+        if config is None:
+            raise KeyError("模型配置不存在")
+        value = config.get("api_key")
+        return value if isinstance(value, str) else ""
+
     def create(self, target: str, name: str, payload: object) -> None:
         """
         创建或覆盖模型配置

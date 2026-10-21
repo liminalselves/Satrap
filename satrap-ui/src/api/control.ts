@@ -271,7 +271,7 @@ export const controlApi = {
   platformArchiveData: async (record: PlatformArchiveIdentity, query: Record<string, unknown> = {}): Promise<PlatformArchiveSnapshot> => (await controlClient.post<PlatformArchiveSnapshot>('/config/conversations/archive/data', { platform_id: record.platform_id, self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id, action: 'read', ...query }, { timeout: 20000 })).data,
   platformArchiveMessage: async (record: PlatformArchiveIdentity, messageId: string): Promise<{ ok: boolean; item: PlatformArchiveMessage }> => (await controlClient.post<{ ok: boolean; item: PlatformArchiveMessage }>('/config/conversations/archive/data', { platform_id: record.platform_id, self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id, action: 'message', message_id: messageId }, { timeout: 20000 })).data,
   mutatePlatformArchive: async (record: PlatformArchiveIdentity, action: 'delete' | 'clear' | 'restore', revision: number, options: { message_ids?: string[]; backup_id?: string; delete_memories?: boolean; cancel_reminders?: boolean } = {}): Promise<PlatformArchiveMutation> => (await controlClient.post<PlatformArchiveMutation>('/config/conversations/archive/data', { platform_id: record.platform_id, self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id, action, expected_revision: revision, ...options }, { timeout: 20000 })).data,
-  listConversationRecords: async (platformId: string, query = '', offset = 0, options: { type?: string; filters?: Record<string, string> } = {}): Promise<ConversationCatalog> => (await controlClient.get<ConversationCatalog>('/config/conversations', { params: { platform_id: platformId || undefined, scope: platformId ? undefined : 'all', platform_type: options.type || undefined, q: query, offset, limit: 40, ...Object.fromEntries(Object.entries(options.filters || {}).map(([key, value]) => [`filter.${key}`, value])) } })).data,
+  listConversationRecords: async (platformId: string, query = '', offset = 0, options: { type?: string; filters?: Record<string, string>; conversation?: string } = {}): Promise<ConversationCatalog> => (await controlClient.get<ConversationCatalog>('/config/conversations', { params: { platform_id: platformId || undefined, scope: platformId ? undefined : 'all', platform_type: options.type || undefined, conversation_id: options.conversation, q: query, offset, limit: 40, ...Object.fromEntries(Object.entries(options.filters || {}).map(([key, value]) => [`filter.${key}`, value])) } })).data,
   conversationData: async (platformId: string, conversationId: string, layer: 'context' | 'history', data: Record<string, unknown> = {}): Promise<ConversationDataSnapshot> => (await controlClient.post<ConversationDataSnapshot>('/config/conversations/data', { platform_id: platformId, conversation_id: conversationId, layer, ...data }, { timeout: 20000 })).data,
   refreshChatHistoryStorage: async () => (await controlClient.post<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('/chat/history/storage', {}, { timeout: 300000 })).data,
   ragList: async (platformId: string, sessionId: string, kbId: string, signal?: AbortSignal) => (await controlClient.get<RagResult>('/config/rag', { params: { platform_id: platformId, session_id: sessionId, kb_id: kbId }, signal })).data,
@@ -370,6 +370,10 @@ export const controlApi = {
     });
     return parseModelConfigs(response.data);
   },
+
+  revealModelApiKey: async (type: ModelType, name: string): Promise<string> => (
+    await controlClient.post<{ api_key: string }>(`/config/models/${type}/${encodeURIComponent(name)}/api-key`)
+  ).data.api_key,
 
   createModel: async (type: ModelType, name: string, config: Partial<ModelConfig>): Promise<ControlResult> => {
     const response = await controlClient.post<ControlResult>(

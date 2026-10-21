@@ -320,7 +320,65 @@ async function log_stream(runtime) {
 
 }
 
+async function storage_audit(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  try {
+    await runtime.listen(server);
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const page = await runtime.browser.newPage({ viewport: { width: 1280, height: 1100 } });
+    page.setDefaultTimeout(10000);
+    const errors = [];
+    const writes = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
+    const items = ['old-main', 'old-workflow', 'old-files'].map((id, index) => ({
+      item_id: id, category: index < 2 ? 'orphan_database_rows' : 'orphan_session_directory',
+      platform_id: 'chat', session_id: id, path: index < 2 ? 'F:/data/platform.db' : 'F:/data/sessions/old-files',
+      size_bytes: index < 2 ? null : 4096, modified_at: 0, reason: '会话已不存在',
+      recommended_action: 'cleanup', auto_safe: true, details: {},
+    }));
+    await page.route('**/*', async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.origin === origin && url.pathname !== '/ui-config.json') return route.continue();
+      if (url.pathname === '/ui-config.json') return route.fulfill({ json: {
+        backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
+      } });
+      if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (request.method() !== 'GET' && url.pathname !== '/auth/session') writes.push(url.pathname);
+      if (url.pathname === '/config') return route.fulfill({ json: {
+        ok: true, exists: true, config: { api: { host: '127.0.0.1', port: 19870 } },
+      }, headers: cors });
+      if (url.pathname === '/storage/audit') return route.fulfill({ json: {
+        items, summary: { count: 3, size_bytes: 4096, unmeasured_count: 2 },
+      }, headers: cors });
+      return route.fulfill({ json: url.pathname === '/status' || url.pathname === '/api/health'
+        ? { running: false, adapters: {} } : {}, headers: cors });
+    });
+    await mockConfigVersions(page, origin, () => JSON.stringify({ revision: 1 }));
+    await page.goto(`${origin}/settings`);
+    await page.getByRole('button', { name: '数据维护', exact: true }).click();
+    await page.getByRole('button', { name: '扫描', exact: true }).click();
+    await page.getByText('已统计文件 4.0 KiB', { exact: true }).waitFor();
+    await page.getByText('记录大小未单独统计 2 项', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('cell', { name: '未单独统计', exact: true }).count(), 2);
+    assert.equal(await page.getByText(/GiB/).count(), 0);
+    assert.deepEqual(writes, []);
+    assert.deepEqual(errors, []);
+    await mkdir(path.join(root, 'test-results', 'storage-audit'), { recursive: true });
+    await page.screenshot({ path: path.join(root, 'test-results', 'storage-audit', 'settings.png'), fullPage: true });
+    console.log('PASS: 数据库记录不重复计入整库大小, 文件汇总及未知大小正常显示, 扫描不触发清理');
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
+  ["storage-audit", storage_audit],
   ["log-retention", log_retention],
   ["log-stream", log_stream]
 ];

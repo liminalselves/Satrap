@@ -25,6 +25,20 @@ describe('后端状态同步', () => {
     expect(useBackendStore.getState()).toMatchObject({ isRunning: false, runState: 'stopped', health: { adapters: {} } });
   });
 
+  it('确认停机后清除连接错误并跳过后续 health, 启动状态恢复正常探测', async () => {
+    useBackendStore.setState({ health: { running: false, error: 'Failed to fetch' }, healthAvailable: false });
+    vi.mocked(controlApi.status).mockResolvedValue({ running: false, managed: false });
+    await useBackendStore.getState().refreshControlStatus();
+    await useBackendStore.getState().refreshAll();
+    expect(backendApi.health).not.toHaveBeenCalled();
+    expect(useBackendStore.getState()).toMatchObject({ runState: 'stopped', healthAvailable: false });
+    expect(useBackendStore.getState().health?.error).toBeUndefined();
+    vi.mocked(controlApi.status).mockResolvedValue({ running: true, managed: true });
+    vi.mocked(backendApi.health).mockResolvedValue({ running: true });
+    await useBackendStore.getState().refreshAll();
+    expect(useBackendStore.getState()).toMatchObject({ runState: 'running', healthAvailable: true });
+  });
+
   it('WebSocket 部分快照保留完整 health 的配置应用结果', () => {
     useBackendStore.getState().setHealth({ running: true, runtime_id: 'r1',
       platform_config: [{ id: 'bot', status: 'failed', saved_revision: 'new', active_revision: 'old' }] });

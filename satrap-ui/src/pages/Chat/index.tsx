@@ -112,6 +112,7 @@ interface ChatSettings {
   model: string;   // 模型配置名
   think: string;   // 思考强度 (off/low/medium/high)
   temperature: number;   // 采样温度
+  commandHistoryEnabled: boolean;   // 是否将已执行命令及回复写入模型上下文
   systemPrompt: string;   // 系统提示词
 }
 
@@ -119,6 +120,7 @@ const DEFAULT_SETTINGS: ChatSettings = {
   model: 'default',
   think: 'off',
   temperature: 0.7,
+  commandHistoryEnabled: false,
   systemPrompt: '',
 };
 
@@ -822,18 +824,35 @@ export function Chat() {
 
   // 更新单项设置
   const updateSettings = useCallback(<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
+    if (key === 'commandHistoryEnabled' && activeId && activeId !== '__draft__') {
+      void chatApi.setCommandHistory(activeId, value === true).then((result) => {
+        if (!result.ok) throw new Error(result.error || '保存失败');
+        if (activeIdRef.current === activeId) setSettings((prev) => ({ ...prev, commandHistoryEnabled: result.command_history_enabled }));
+      }).catch((error: unknown) => toast('error', String(error)));
+      return;
+    }
     setSettings((prev) => ({ ...prev, [key]: value }));
-  }, []);
+  }, [activeId]);
+
+  useEffect(() => {
+    if (!activeId || activeId === '__draft__') return;
+    let cancelled = false;
+    void chatApi.getCommandHistory(activeId).then((result) => {
+      if (!cancelled) setSettings((prev) => ({ ...prev, commandHistoryEnabled: result.command_history_enabled }));
+    }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
+    return () => { cancelled = true; };
+  }, [activeId]);
 
   // 生成会影响 Session, 模型或插件安装结果的前端设置键
   const preloadBaseKey = useMemo(() => JSON.stringify({
     model: settings.model,
     temperature: settings.temperature,
+    commandHistoryEnabled: settings.commandHistoryEnabled,
     systemPrompt: settings.systemPrompt,
     modelConfig: modelsDetail[settings.model] ?? null,
     plugins,
     pluginConfigRevision,
-  }), [settings.model, settings.temperature, settings.systemPrompt, modelsDetail, plugins, pluginConfigRevision]);
+  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, modelsDetail, plugins, pluginConfigRevision]);
 
   const preloadKeyFor = useCallback(
     (projectId: string | null | undefined) => `${preloadBaseKey}:${projectId ?? ''}`,
@@ -845,10 +864,11 @@ export function Chat() {
       model: settings.model,
       think: settings.think,
       temperature: settings.temperature,
+      commandHistoryEnabled: settings.commandHistoryEnabled,
       systemPrompt: settings.systemPrompt,
       projectId: projectId ?? null,
     }),
-    [settings.model, settings.think, settings.temperature, settings.systemPrompt]
+    [settings.model, settings.think, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled]
   );
 
   // 启动或复用当前设置对应的预加载请求
@@ -1079,8 +1099,7 @@ export function Chat() {
   const handleSend = useCallback(async () => {
     const content = input.trim();
     if ((!content && pendingAttachments.length === 0) || generating) return;
-    if (pendingAttachments.some((attachment) => /^(image|video)\//.test(attachment.type ?? ''))
-      && !modelsDetail[settings.model]?.supports_visual_input) {
+    if (pendingAttachments.some((attachment) => ((attachment.type ?? '').startsWith('image/') && !modelsDetail[settings.model]?.supports_visual_input) || ((attachment.type ?? '').startsWith('video/') && !modelsDetail[settings.model]?.supports_visual_input && !modelsDetail[settings.model]?.supports_native_video_input))) {
       alert('当前模型未启用图像与视频输入, 请切换模型或移除媒体附件');
       return;
     }
@@ -1244,12 +1263,13 @@ export function Chat() {
     }
 
     for (const file of Array.from(files)) {
-      if ((file.type.startsWith('image/') || file.type.startsWith('video/')) && !modelsDetail[settings.model]?.supports_visual_input) {
+      if ((file.type.startsWith('image/') && !modelsDetail[settings.model]?.supports_visual_input) || (file.type.startsWith('video/') && !modelsDetail[settings.model]?.supports_native_video_input && !modelsDetail[settings.model]?.supports_visual_input)) {
         alert('当前模型未启用图像与视频输入');
         continue;
       }
-      if (file.size > 10 * 1024 * 1024) {
-        alert(`文件 ${file.name} 超过 10MB 限制`);
+      const limitMiB = /^(image|video)\//.test(file.type) ? 32 : 10;
+      if (file.size > limitMiB * 1024 * 1024) {
+        alert(`文件 ${file.name} 超过 ${limitMiB} MiB 限制`);
         continue;
       }
       try {
@@ -1794,7 +1814,7 @@ export function Chat() {
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  accept={modelsDetail[settings.model]?.supports_visual_input ? "image/*,video/*,.txt,.md,.pdf" : ".txt,.md,.pdf"}
+                  accept={(modelsDetail[settings.model]?.supports_visual_input ? 'image/*,video/*,' : modelsDetail[settings.model]?.supports_native_video_input ? 'video/*,' : '') + '.txt,.md,.pdf'}
                   onChange={handleFileSelect}
                   className="hidden"
                 />
@@ -2334,6 +2354,15 @@ function ChatSettingsModal({
                     options={thinkingOptions}
                   />
                 </div>
+
+                <label className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-text-primary">命令写入上下文</div>
+                    <div className="text-xs text-text-tertiary">让 AI 在后续对话中看到已执行的命令及回复, 不会额外调用模型</div>
+                  </div>
+                  <input type="checkbox" checked={settings.commandHistoryEnabled}
+                    onChange={(e) => onChange('commandHistoryEnabled', e.target.checked)} />
+                </label>
 
                 {/* 温度 */}
                 <div>

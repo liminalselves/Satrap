@@ -508,16 +508,16 @@ async def test_first_install_independent_skills_and_reconciliation(tmp_path, asy
     wf = session._wf
     alpha, beta = mgr.get_skill("alpha"), mgr.get_skill("beta")
     assert alpha is not None and beta is not None
-    text = wf.ctx.get_context()[0]["content"]
-    assert text.count("<skill:alpha>") == 1
-    assert text.count("<skill:beta>") == int(initial_beta)
+    text = mgr.catalog(wf)
+    assert text.count("- alpha:") == 1
+    assert text.count("- beta:") == int(initial_beta)
     assert alpha.mcp_clients[0].connections == 1
     assert beta.mcp_clients[0].connections == int(initial_beta)
     assert "alpha_bundle" in wf.tools_manager.tools and "alpha_mcp" in wf.tools_manager.tools
     assert ("beta_bundle" in wf.tools_manager.tools) == initial_beta
     assert (await reconcile(spec))["ok"]
     assert alpha.mcp_clients[0].connections == 1
-    assert wf.ctx.get_context()[0]["content"].count("<skill:alpha>") == 1
+    assert mgr.catalog(wf).count("- alpha:") == 1
     with pytest.raises(ValueError, match="已安装"):
         if asynchronous:
             await session.install_plugin(str(plugin_dir))
@@ -527,11 +527,11 @@ async def test_first_install_independent_skills_and_reconciliation(tmp_path, asy
     enabled = PluginSpec(name="skill_probe", path=str(plugin_dir), capabilities={"skills": {"alpha": True, "beta": True}})
     beta.mcp_clients[0].fail = False
     assert (await reconcile(enabled))["ok"]
-    assert wf.ctx.get_context()[0]["content"].count("<skill:beta>") == 1
+    assert mgr.catalog(wf).count("- beta:") == 1
     changed = PluginSpec(name="skill_probe", path=str(plugin_dir), capabilities={"skills": {"alpha": False, "beta": True}})
     assert (await reconcile(changed))["ok"]
-    assert "<skill:alpha>" not in wf.ctx.get_context()[0]["content"]
-    assert wf.ctx.get_context()[0]["content"].count("<skill:beta>") == 1
+    assert "- alpha:" not in mgr.catalog(wf)
+    assert mgr.catalog(wf).count("- beta:") == 1
     assert alpha.mcp_clients[0].closed and not beta.mcp_clients[0].closed
     assert "alpha_bundle" not in wf.tools_manager.tools and "alpha_mcp" not in wf.tools_manager.tools
     assert wf.tools_manager.is_tool_enabled("shared")
@@ -542,10 +542,10 @@ async def test_first_install_independent_skills_and_reconciliation(tmp_path, asy
     else:
         wf.ctx.reset_system_prompt(prompt)
     assert wf.ctx.get_context()[0]["content"].startswith("新的基础提示词")
-    assert wf.ctx.get_context()[0]["content"].count("<skill:beta>") == 1
+    assert mgr.catalog(wf).count("- beta:") == 1
     assert (await reconcile(enabled))["ok"]
     assert alpha.mcp_clients[0].connections == 2
-    assert wf.ctx.get_context()[0]["content"].count("<skill:alpha>") == 1
+    assert mgr.catalog(wf).count("- alpha:") == 1
     if asynchronous:
         await session.uninstall_plugin("skill_probe")
     else:
@@ -611,8 +611,9 @@ async def test_restart_deduplicates_persisted_skill_instructions(tmp_path, async
         await new.install_plugin(str(plugin_dir))
     else:
         new.install_plugin(str(plugin_dir))
-    text = new._wf.ctx.get_context()[0]["content"]
-    assert text.count("<skill:alpha>") == text.count("<skill:beta>") == 1
+    text = new._skills_manager.catalog(new._wf)
+    assert text.count("- alpha:") == text.count("- beta:") == 1
+    assert all("<skill:" not in str(row.get("content", "")) for row in new.ctx.get_context())
     assert old._skills_manager.get_skill("alpha") is not new._skills_manager.get_skill("alpha")
     if asynchronous:
         await old.uninstall_plugin("skill_probe")
@@ -649,7 +650,7 @@ async def test_platform_prompt_override_preserves_active_skills_and_history(tmp_
         await manager._apply_group_session_overrides(cfg, session, UserCall(group_session_overrides={"prompt": prompt}), None)
         messages = session._wf.ctx.get_context()
         text = messages[0]["content"]
-        assert text.count("<skill:alpha>") == text.count("<skill:beta>") == 1
+        assert "<skill:" not in text
         assert "基础提示词" not in text
         assert "群提示词" in text if prompt else "群提示词" not in text
         assert any(message.get("content") == "保留历史消息" for message in messages)
@@ -703,12 +704,12 @@ async def test_hot_restart_persists_new_prompt_and_reactivated_skills(tmp_path, 
     for messages in [memory, persisted.get_context()]:
         text = messages[0]["content"]
         assert text.startswith("新提示词")
-        assert text.count("<skill:alpha>") == text.count("<skill:beta>") == 1
+        assert "<skill:" not in text
         assert any(message.get("content") == "保留历史" for message in messages)
     installer_module = _plugin_skill_activation_importlib.import_module("satrap.edictum.simple_session.async_plugins" if asynchronous else "satrap.edictum.simple_session.sync_plugins")
     collect = installer_module.collect_skills
-    def failing_skills(*args):
-        skills = collect(*args)
+    def failing_skills(*args, **kwargs):
+        skills = collect(*args, **kwargs)
         for skill in skills:
             if skill.name == "beta":
                 skill.mcp_clients[0].fail = True
@@ -727,5 +728,5 @@ async def test_hot_restart_persists_new_prompt_and_reactivated_skills(tmp_path, 
         restored = ContextManager(context_id, db_path=str(db_path))
     text = restored.get_context()[0]["content"]
     assert text.startswith("新提示词")
-    assert text.count("<skill:alpha>") == text.count("<skill:beta>") == 1
+    assert "<skill:" not in text
     await manager.unload_session_async("hot-restart")

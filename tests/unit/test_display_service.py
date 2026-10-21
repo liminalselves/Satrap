@@ -126,6 +126,8 @@ async def test_chat_data_edit_updates_live_context_without_rewriting_display(tmp
         await service.send(cid, "后续输入")
         status, refused = await server._route("POST", "/api/chat/conversation-data", json.dumps({**request, "action": "clear", "expected_revision": saved["revision"]}).encode("utf-8"))
         assert status == 409 and "进行" in refused["error"]
+        status, busy_snapshot = await server._route("POST", "/api/chat/conversation-data", json.dumps(request).encode("utf-8"))
+        assert status == 200 and busy_snapshot["source"] == "storage" and busy_snapshot["read_notice"]
         await _wait_conversation_task(service, cid)
         assert conversation.session.ctx.get_context()[edited_index]["content"] == "模型上下文输入"
     finally:
@@ -239,6 +241,39 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         display_db_path=str(tmp_path / "display.db"),
         storage_layout=StorageLayout(tmp_path / "data"),
     )
+
+
+@pytest.mark.asyncio
+async def test_command_history_setting_survives_preload_restart_and_fork(tmp_path, monkeypatch):
+    """Chat 初始开关在首条命令前生效, 重启和分支继承, HTTP 拒绝非布尔值"""
+    service = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(service)
+    cid = await service.preload_conversation()
+    result = await service.send(cid, "/help", preload_settings={"command_history_enabled": True})
+    assert result["ok"] is True
+    await _wait_conversation_task(service, cid)
+    session = _must_conversation(service, cid).session
+    assert session.ctx.get_context()[0] == {"role": "user", "content": "/help"}
+    fork = await service.fork(cid, 1)
+    assert fork["ok"] is True
+    assert (await service.get_command_history(fork["conversation_id"]))["command_history_enabled"] is True
+    status, _ = await server._route("PUT", f"/api/chat/command-history?conversation={cid}", b'{"command_history_enabled":"false"}')
+    assert status == 400
+    await service.close()
+    resumed = _make_service(tmp_path, monkeypatch)
+    try:
+        assert (await resumed.get_command_history(cid))["command_history_enabled"] is True
+        assert (await resumed.set_command_history(cid, False))["ok"] is True
+        assert (await resumed.get_command_history(cid))["command_history_enabled"] is False
+        excluded = await resumed.create_conversation()
+        for text in ("/help", "/help", "分支之后的问题一", "分支之后的问题二"):
+            assert (await resumed.send(excluded, text))["ok"] is True
+            await _wait_conversation_task(resumed, excluded)
+        empty_fork = await resumed.fork(excluded, 1)
+        assert empty_fork["ok"] is True
+        assert _must_conversation(resumed, empty_fork["conversation_id"]).session.ctx.get_context() == []
+    finally:
+        await resumed.close()
 
 
 @pytest.mark.asyncio
@@ -1694,5 +1729,17 @@ async def test_visual_attachments_rejected_before_turn_creation(tmp_path, monkey
         assert service._attachment_media(conv, [{"url": video["file_url"], "type": "video/mp4"}]) == (
             [], [str(Path(video["file_url"]).resolve())],
         )
+        conv.session.llm.supports_visual_input = False
+        conv.session.llm.supports_native_video_input = True
+        assert service._attachment_media(conv, [{"url": video["file_url"], "type": "video/mp4"}])[1]
+        with pytest.raises(ValueError, match="未启用"):
+            service._attachment_media(conv, [attachment])
+        from satrap.core.utils.media_store import store_for
+        import hashlib
+        store = store_for(conv.session.ctx.db_path, conv.session.ctx.conversation_id)
+        blob = store.root / "blobs" / hashlib.sha256(b"video").hexdigest()
+        assert blob.read_bytes() == Path(video["file_url"]).read_bytes() == b"video"
+        assert blob.samefile(video["file_url"])
+        assert server._request_body_limit("POST", "/api/chat/upload") > 32 * 1024 * 1024 * 4 // 3
     finally:
         await service.close()

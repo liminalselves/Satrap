@@ -92,7 +92,7 @@ MSG_ERROR = "error"
 
 from satrap.edictum.simple_session.recovery import store_for_session, prepare_session_recovery
 from satrap.core.framework.Base.execution.engine import configuration
-from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS
+from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS, MAX_MEDIA_BYTES
 from satrap.core.config.conversation_data import ConversationDataConflict
 from satrap.core.config.conversation_runtime import perform_data_operation
 
@@ -468,6 +468,47 @@ class ChatService:
             return {"ok": True, "available": True, "mode": engine.mode,
                     "revision": engine.revision, "plan_mode": engine.plan_mode}
 
+    async def get_command_history(self, conversation_id: str) -> dict[str, object]:
+        """
+        读取会话命令历史设置
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+
+        返回:
+        - 命令记录开关; 会话不存在时抛出 ValueError
+        """
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        return {"ok": True, "command_history_enabled": conv.session.command_history_enabled}
+
+    @_exclusive_conversation_operation
+    async def set_command_history(self, conversation_id: str, enabled: object) -> dict[str, object]:
+        """
+        保存命令历史设置, 与当前轮次互斥
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+        - enabled: 是否记录命令及回复, 必须为布尔值
+
+        返回:
+        - 已保存的开关状态
+        """
+        if type(enabled) is not bool:
+            raise ValueError("command_history_enabled 必须是布尔值")
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            store = conv.session.plugin_override_store
+            if store is None:
+                raise ValueError("会话覆盖存储尚未就绪")
+            current = store.read(conversation_id, "session.commands")
+            store.replace(conversation_id, "session.commands", {"command_history_enabled": enabled}, expected_revision=current["revision"])
+            conv.session.command_history_enabled = enabled
+        return {"ok": True, "command_history_enabled": enabled}
+
     async def _request_approval(self, conv: _Conversation, request: ApprovalRequest) -> ApprovalResult:
         """
         展示精确动作并把明确点击结果绑定到原始审批请求
@@ -661,6 +702,8 @@ class ChatService:
                 thinking_field_name=config.get("thinking_field_name"),
                 thinking_fields=config.get("thinking_fields"),
                 supports_visual_input=config.get("supports_visual_input", False),
+                supports_native_video_input=config.get("supports_native_video_input", False),
+                video_frame_interval=config.get("video_frame_interval", 2.0),
                 thinking_levels=thinking_levels,
                 omit_none_thinking_fields=bool(config.get("omit_none_thinking_fields")),
             )
@@ -703,7 +746,7 @@ class ChatService:
             "allow_insecure_base_url",
             "thinking_field_name",
             "thinking_fields",
-            "supports_visual_input",
+            "supports_visual_input", "supports_native_video_input", "video_frame_interval",
             "thinking_levels",
             "omit_none_thinking_fields",
         }
@@ -1594,6 +1637,17 @@ class ChatService:
                     self._storage.purge_session(self._platform_id, conv.conversation_id)
                     raise
 
+            if "command_history_enabled" in settings:
+                enabled = settings["command_history_enabled"]
+                if type(enabled) is not bool:
+                    raise ValueError("command_history_enabled 必须是布尔值")
+                store = conv.session.plugin_override_store
+                if store is None:
+                    raise ValueError("会话覆盖存储尚未就绪")
+                current = store.read(conv.conversation_id, "session.commands")
+                store.replace(conv.conversation_id, "session.commands", {"command_history_enabled": enabled}, expected_revision=current["revision"])
+                conv.session.command_history_enabled = enabled
+
             if approval_mode is not None:
                 from satrap.core.approval.state import session_approval
                 async with conv.plugin_lock:
@@ -2063,13 +2117,16 @@ class ChatService:
             try:
                 new_conv = self._conversations[new_cid]
                 await RAG_WORKERS.run(fork_session_settings, self._storage, self._platform_id, conversation_id, new_cid)
+                new_conv.session.command_history_enabled = src.session.command_history_enabled
                 async with new_conv.plugin_lock:
                     await self._refresh_session_plugins(new_conv)
                 context_messages = src.recorder.active_context_before(turn_index)
                 copied = src.recorder.copy_turns_to(new_conv.recorder, turn_index)
-                if copied > 0 and not context_messages:
+                if copied > 0 and not context_messages and not src.recorder.has_context_deltas_before(turn_index):
                     context_messages = self._legacy_fork_context(src, turn_index)
                 if context_messages:
+                    from satrap.core.utils.media_store import referenced_media, store_for
+                    store_for(src.session.ctx.db_path, src.session.ctx.conversation_id).copy_to(store_for(new_conv.session.ctx.db_path, new_conv.session.ctx.conversation_id), referenced_media(context_messages))
                     await new_conv.session.ctx.add_turn_messages(context_messages)
             except BaseException:
                 await self.delete_conversation(new_cid)
@@ -2091,6 +2148,7 @@ class ChatService:
         有项目时只共享外部工作区, sandbox 与 uploads 仍保持会话隔离
         """
         session.plugin_override_store = SessionOverrideStore(self._storage.platform_db(self._platform_id))
+        session.command_history_enabled = session.plugin_override_store.read(session.session_id, "session.commands")["overrides"].get("command_history_enabled", False)
         session.plugin_model_manager = self._model_cfg
         session.storage_layout = self._storage
         session.storage_platform_id = self._platform_id
@@ -2342,12 +2400,16 @@ class ChatService:
                 if declared.startswith(("image/", "video/")):
                     raise ValueError("附件媒体类型与文件格式不符")
                 continue
-            if not visual_enabled(conv.session.llm):
-                raise ValueError("当前模型未启用图像与视频输入")
             root = self._storage.session_uploads(self._platform_id, conv.conversation_id).resolve()
             path = Path(source).resolve()
             if not path.is_relative_to(root) or not path.is_file():
                 raise ValueError("媒体附件必须是当前会话已上传的文件")
+            from satrap.core.utils.media import sniff_media_mime
+            with path.open("rb") as stream:
+                actual = sniff_media_mime(stream.read(32), detected)
+            kind = actual.split("/", 1)[0]
+            if not visual_enabled(conv.session.llm) and not (kind == "video" and getattr(conv.session.llm, "supports_native_video_input", False) is True):
+                raise ValueError("当前模型未启用相应的图片或视频输入能力")
             (images if kind == "image" else videos).append(str(path))
             if len(images) + len(videos) > MAX_MEDIA_ITEMS:
                 raise ValueError("单次媒体输入不能超过 16 项")
@@ -2373,9 +2435,11 @@ class ChatService:
         if not mime.startswith(("image/", "video/")):
             raise ValueError("仅支持预览图像和视频")
         with path.open("rb") as file:
-            data = file.read(10 * 1024 * 1024 + 1)
-        if len(data) > 10 * 1024 * 1024:
-            raise ValueError("预览文件超过 10 MiB 限制")
+            data = file.read(MAX_MEDIA_BYTES + 1)
+        if len(data) > MAX_MEDIA_BYTES:
+            raise ValueError("预览文件超过 32 MiB 限制")
+        from satrap.core.utils.media import sniff_media_mime
+        mime = sniff_media_mime(data[:32], mime)
         return {"data_url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}
 
     def save_upload(self, conversation_id: str, file_name: str, file_data: bytes) -> dict[str, Any]:
@@ -2396,16 +2460,28 @@ class ChatService:
         safe_name = Path(file_name).name   # 防路径穿越
         if not safe_name:
             return {"ok": False, "error": "文件名非法"}
-        # 限制 10MB
-        if len(file_data) > 10 * 1024 * 1024:
-            return {"ok": False, "error": "文件超过 10MB 限制"}
+        from satrap.core.utils.media import inspect_media, sniff_media_mime
+        from satrap.core.utils.media_store import store_for
+        file_type = sniff_media_mime(file_data[:32], mimetypes.guess_type(safe_name)[0] or "application/octet-stream")
+        is_media = file_type.startswith(("image/", "video/"))
+        limit = MAX_MEDIA_BYTES if is_media else 10 * 1024 * 1024
+        if len(file_data) > limit:
+            return {"ok": False, "error": f"文件超过 {limit // (1024 * 1024)} MiB 限制"}
         upload_dir = self._storage.session_uploads(self._platform_id, conversation_id)
         upload_dir.mkdir(parents=True, exist_ok=True)
         unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
         fpath = upload_dir / unique_name
-        fpath.write_bytes(file_data)
+        animated = False
+        kind = ""
+        if is_media:
+            file_type, kind, animated = inspect_media(file_data, file_type)
+        if animated or kind == "video":
+            conv = self._conversations.get(conversation_id)
+            scope = conv.session.ctx.conversation_id if conv is not None else conversation_id + "_main"
+            store_for(self._chat_db_path, scope).write_upload(file_data, file_type, fpath)
+        else:
+            fpath.write_bytes(file_data)
 
-        file_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
         return {
             "ok": True,
             "file_name": safe_name,
@@ -2576,13 +2652,28 @@ class ChatService:
         layer = str(payload.get("layer", "context"))
         if not isinstance(conversation, str) or not conversation:
             raise ValueError("缺少对话 ID")
+
+        async def read_saved() -> dict[str, Any]:
+            """
+            只读展示已保存快照, 不占用或绕过正在运行的会话写操作
+
+            返回:
+            - 带已保存数据来源提示的快照
+            """
+            database = self._chat_db_path if layer == "context" else self._display_db_path
+            result = await RAG_WORKERS.run(perform_data_operation, database, conversation, layer, payload)
+            return {**result, "read_notice": "此对话正在处理消息或激活实例, 当前显示已保存的数据, 可稍后重新读取"}
+
         if any(conversation == identity or conversation.startswith(identity + "_") for identity in {*self._creation_tasks, *self._resume_tasks}):
+            if not payload.get("action"):
+                return await read_saved()
             raise ConversationDataConflict("此对话正在激活, 请等待完成后重新读取")
         owner = next((conv.conversation_id for conv in self._conversations.values()
                       if conv.conversation_id == conversation or conversation.startswith(conv.conversation_id + "_") or any(context.conversation_id == conversation for context in conv.session._all_contexts().values())), None)
-        if owner is None:
-            return await self._manage_conversation_data_reserved(conversation, conversation, layer, payload)
-        return await self._manage_conversation_data_reserved(owner, conversation, layer, payload)
+        result = await self._manage_conversation_data_reserved(owner or conversation, conversation, layer, payload)
+        if not payload.get("action") and not result.get("ok"):
+            return await read_saved()
+        return result
 
     @_exclusive_conversation_operation
     async def _manage_conversation_data_reserved(self, owner: str, conversation: str, layer: str, payload: dict[str, Any]) -> dict[str, Any]:

@@ -14,7 +14,7 @@ import time
 import traceback
 
 from satrap.core.storage.file_lock import session_storage_lock
-from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain
+from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain, preserved_session_scope, preserved_session_ids
 from satrap.core.storage.layout import StorageLayout
 from satrap.core.log import logger
 
@@ -28,7 +28,7 @@ class StorageAuditItem:
     platform_id: str
     session_id: str
     path: str
-    size_bytes: int
+    size_bytes: int | None
     modified_at: float
     reason: str
     recommended_action: str
@@ -257,7 +257,7 @@ class StorageMaintenanceService:
             platform_id=platform_id,
             session_id=session_id,
             path=str(path),
-            size_bytes=self._directory_size(path),
+            size_bytes=None if category in {"orphan_database_rows", "broken_user_reference"} else self._directory_size(path),
             modified_at=modified_at,
             reason=reason,
             recommended_action=recommended_action,
@@ -270,7 +270,7 @@ class StorageMaintenanceService:
         """读取平台数据库中的持久化会话 ID"""
         if not database.exists():
             return set()
-        with sqlite3.connect(str(database)) as connection:
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
             tables = {
                 str(row[0])
                 for row in connection.execute(
@@ -284,12 +284,31 @@ class StorageMaintenanceService:
             return result
 
     @staticmethod
+    def _preserved_scope(database: Path, identity: str) -> bool:
+        """
+        只读复核目录所属范围, 不把现存工作流或独立上下文移入回收区
+
+        参数:
+        - database: 平台数据库路径
+        - identity: 目录清单登记的标识
+
+        返回:
+        - 数据库确认该范围仍需保留时为 True
+        """
+        if not database.is_file():
+            return False
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            return preserved_session_scope(connection, identity)
+
+    @staticmethod
     def _orphan_database_refs(database: Path, valid_ids: set[str]) -> dict[str, list[str]]:
         """返回不存在会话配置的领域记录引用"""
         if not database.exists():
             return {}
         refs: dict[str, set[str]] = {}
-        with sqlite3.connect(str(database)) as connection:
+        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            connection.execute("BEGIN")
+            protected = preserved_session_ids(connection) | valid_ids
             tables = {
                 str(row[0])
                 for row in connection.execute(
@@ -317,7 +336,7 @@ class StorageMaintenanceService:
                     continue
                 for row in connection.execute(query).fetchall():
                     session_id = str(row[0])
-                    if session_id and session_id not in valid_ids:
+                    if session_id and not preserved_session_scope(connection, session_id, protected):
                         refs.setdefault(session_id, set()).add(table)
             if "memories" in tables:
                 for row in connection.execute(
@@ -325,7 +344,7 @@ class StorageMaintenanceService:
                 ).fetchall():
                     scope = str(row[0])
                     session_id = scope.removeprefix("session:")
-                    if session_id and session_id not in valid_ids:
+                    if session_id and not preserved_session_scope(connection, session_id, protected):
                         refs.setdefault(session_id, set()).add("memories")
             if "user_info" in tables:
                 for row in connection.execute("SELECT user_session FROM user_info").fetchall():
@@ -337,9 +356,31 @@ class StorageMaintenanceService:
                         continue
                     for raw_session_id in cast(list[object], sessions):
                         session_id = str(raw_session_id)
-                        if session_id and session_id not in valid_ids:
+                        if session_id and not preserved_session_scope(connection, session_id, protected):
                             refs.setdefault(session_id, set()).add("user_info")
         return {session_id: sorted(tables) for session_id, tables in refs.items()}
+
+    @staticmethod
+    def audit_summary(items: Iterable[StorageAuditItem]) -> dict[str, int]:
+        """
+        汇总已统计的文件大小, 同一路径和已被父目录覆盖的路径只计一次
+
+        参数:
+        - items: 同一次扫描得到的审计项目
+
+        返回:
+        - 项目数, 已知文件字节数及未单独统计大小的记录数, 不表示可释放空间
+        """
+        entries = list(items)
+        paths = {Path(item.path).absolute(): item.size_bytes for item in entries if item.size_bytes is not None}
+        counted: list[Path] = []
+        size = 0
+        for path in sorted(paths, key=lambda value: len(value.parts)):
+            if any(path.is_relative_to(parent) for parent in counted):
+                continue
+            counted.append(path)
+            size += paths[path]
+        return {"count": len(entries), "size_bytes": size, "unmeasured_count": sum(item.size_bytes is None for item in entries)}
 
     def scan(
         self,
@@ -424,7 +465,7 @@ class StorageMaintenanceService:
                             recommended_action="manual_review",
                             auto_safe=False,
                         ))
-                    elif session_id not in valid_ids:
+                    elif session_id not in valid_ids and not self._preserved_scope(database, session_id):
                         results.append(self._audit_item(
                             category="orphan_session_directory",
                             platform_id=platform_id,
@@ -515,6 +556,8 @@ class StorageMaintenanceService:
                         raise ValueError("拒绝回收符号链接会话目录")
                     shutil.move(str(source), str(files_root))
                     moved_files = True
+                from satrap.core.utils.media_store import archive_session_media, release_session_media
+                archive_session_media(str(database), session_id, archive / "media")
                 delete_session_domain_rows(database, session_id)
                 manifest: dict[str, Any] = {
                     "layout_version": self.layout.layout_version,
@@ -531,11 +574,15 @@ class StorageMaintenanceService:
                     json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
+                release_session_media(str(database), session_id)
                 return manifest
             except Exception:
                 if moved_files and files_root.exists() and not source.exists():
                     source.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(files_root), str(source))
+                if (archive / "media").exists():
+                    from satrap.core.utils.media_store import restore_session_media
+                    restore_session_media(str(database), archive / "media")
                 if records:
                     try:
                         restore_session_domain(database, session_id, records)
@@ -756,6 +803,8 @@ class StorageMaintenanceService:
                 raise ValueError("回收包文件目录缺失或无效")
         elif files_root.exists():
             raise ValueError("回收包文件与清单不匹配")
+        from satrap.core.utils.media_store import restore_session_media
+        restore_session_media(str(database), self._resolve_archive_member(archive, "media"))
         restore_session_domain(
             database, session_id, records, restore_id=archive_id,
             restore_metadata=json.dumps(manifest, ensure_ascii=False, sort_keys=True),
@@ -890,14 +939,18 @@ class StorageMaintenanceService:
                 continue
             try:
                 if item.category == "orphan_session_directory":
-                    archived = self.layout.trash_session(item.platform_id, item.session_id)
-                    ok = archived is not None
+                    with session_storage_lock(self.layout, item.platform_id, item.session_id):
+                        if self._preserved_scope(self.layout.platform_db(item.platform_id), item.session_id):
+                            raise ValueError("目录仍属于现存会话或独立上下文, 请重新扫描")
+                        archived = self.layout.trash_session(item.platform_id, item.session_id)
+                        ok = archived is not None
                 elif item.category in {"orphan_database_rows", "broken_user_reference"}:
                     key = (item.platform_id, item.session_id)
                     if key not in handled_database_sessions:
                         delete_session_domain_rows(
                             self.layout.platform_db(item.platform_id),
                             item.session_id,
+                            orphan_only=True,
                         )
                         handled_database_sessions.add(key)
                     ok = True
@@ -905,5 +958,6 @@ class StorageMaintenanceService:
                     ok = False
                 results.append({"item_id": item_id, "ok": ok})
             except Exception as error:
+                logger.warning(f"[数据清理] 孤儿项目处理失败: {item.platform_id}/{item.session_id}, {error}")
                 results.append({"item_id": item_id, "ok": False, "error": str(error)})
         return results

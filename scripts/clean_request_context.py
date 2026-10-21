@@ -29,6 +29,69 @@ GOAL_END = "目标未完成前, 每次回复都应围绕该目标推进, 不得�
 BOT_LINE = re.compile(r"\[你当前的平台机器人身份: 账号 ID (?P<id>\d+), 账号昵称 [^\r\n\[\]]+\]\n")
 MARKERS = (GROUP_HEADER, "[你当前的平台机器人身份:", PRIVATE_NOTICE)
 JsonObject = dict[str, object]
+SKILL_BLOCKS: dict[str, str] | None = None
+
+
+def configure_skill_cleanup(roots: list[Path]) -> None:
+    """
+    为离线迁移收集可完整核对的技能正文, 不导入 tools.py 或插件实现
+
+    参数:
+    - roots: 仅用于匹配旧指令块的 Markdown 根目录
+    """
+    from satrap.core.utils.skills import Skill
+    import yaml
+    global SKILL_BLOCKS
+    blocks: dict[str, str] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink() or path.suffix.lower() not in {".md", ".markdown"}:
+                continue
+            if any(parent.is_symlink() for parent in path.parents) or not path.is_file():
+                continue
+            skill = Skill.from_file(str(path), default_name=path.parent.name if path.name.lower() == "skill.md" else path.stem)
+            metadata_path = path.parent / "meta.yaml"
+            if path.name.lower() == "skill.md" and metadata_path.is_file():
+                metadata: object = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+                if isinstance(metadata, dict) and isinstance(metadata.get("satrap-skill-id"), str):
+                    skill.skill_id = metadata["satrap-skill-id"]
+            blocks[skill.to_text()] = skill.skill_id or skill.name
+            blocks[skill.to_text().replace("所需工具 (仍受原权限限制): ", "可用工具: ")] = skill.skill_id or skill.name
+    SKILL_BLOCKS = blocks
+
+
+def clean_skill_message(row: JsonObject, findings: Findings, scope: str, location: str) -> JsonObject:
+    """
+    只移除系统提示词尾部能与登记正文逐字匹配的技能块
+
+    参数:
+    - row: 原消息副本
+    - findings: 当前迁移报告
+    - scope: 所属上下文
+    - location: 报告位置
+
+    返回:
+    - 清理后的系统消息; 普通用户消息与无法确认的格式保持原样
+    """
+    content = row.get("content")
+    if row.get("role") != "system" or not isinstance(content, str):
+        return row
+    while True:
+        match = next((block for block in SKILL_BLOCKS or {} if content.endswith(block)), None)
+        if match is None:
+            break
+        content = content[:-len(match)]
+        if content.endswith("\n\n"):
+            content = content[:-2]
+        findings.counts["skill_body"] = findings.counts.get("skill_body", 0) + 1
+        findings.touched.add(scope)
+    if "<skill:" in content:
+        findings.issue(scope, location, "系统技能块无法与已登记正文完整核对, 保留并拒绝自动应用")
+    if content != row.get("content"):
+        row["content"] = content
+    return row
 
 
 def object_value(value: object) -> JsonObject:
@@ -218,6 +281,8 @@ def clean_content(content: object, findings: Findings, scope: str, location: str
 def clean_message(value: object, findings: Findings, scope: str, location: str) -> JsonObject:
     """同时更新消息完整内容与文本投影, 不改变消息身份和顺序"""
     row = copy.deepcopy(object_value(value))
+    if SKILL_BLOCKS is not None:
+        return clean_skill_message(row, findings, scope, location)
     if row.get("role") != "user":
         return row
     content_json = row.get("content_json")
@@ -488,6 +553,8 @@ def apply_archive(plan: ArchivePlan, backup: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """默认只读预览, 应用必须显式声明停服并指定外部备份目录"""
+    global SKILL_BLOCKS
+    SKILL_BLOCKS = None
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, action="append", required=True)
     parser.add_argument("--archive-root", type=Path, action="append", default=[])
@@ -495,7 +562,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--offline-confirmed", action="store_true")
     parser.add_argument("--backup-dir", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--skills", action="store_true", help="只清理系统提示词中可完整核对的旧技能块")
+    parser.add_argument("--skill-root", type=Path, action="append", default=[], help="额外的旧技能 Markdown 根目录")
     args = parser.parse_args(argv)
+    if args.skills:
+        project = Path(__file__).resolve().parents[1]
+        if str(project) not in sys.path:
+            sys.path.insert(0, str(project))
+        configure_skill_cleanup([project / "satrap" / "expend" / "plugins", project / "satrap" / "expend" / "skills", *args.skill_root])
     databases = sorted({path.resolve(strict=True) for path in cast(list[Path], args.database)})
     roots = sorted({path.resolve() for path in cast(list[Path], args.archive_root)} | {path.parent / "trash" / "sessions" for path in databases})
     db_plans = [preview_database(path) for path in databases]

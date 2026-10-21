@@ -57,7 +57,21 @@ class _SessionFeatures(_HandlerRegistryMixin):
         """
         if self._skills_manager is None:
             self._skills_manager = SkillsManager()
+            self._skills_manager.availability = self._skill_available
         return self._skills_manager
+
+    def _skill_available(self, name: str) -> bool:
+        """
+        核验技能的插件开关与依赖关系, 独立技能由工作流启用状态约束
+
+        参数:
+        - name: 精确技能标识
+
+        返回:
+        - 技能当前是否允许提供给模型
+        """
+        owner = self._capability_plugin("skills", name)
+        return owner is None or self._plugin_interop.capability_available(owner.name, "skills", name)
 
     def list_skills(self) -> list[str]:
         """
@@ -91,14 +105,14 @@ class _SessionFeatures(_HandlerRegistryMixin):
 
     def compose_system_prompt(self, prompt: str, context: ContextManager | AsyncContextManager) -> str:
         """
-        更新基础提示词时保留当前工作流已激活的技能指令
+        更新基础提示词, 技能目录在请求副本中独立装配
 
         参数:
         - prompt: 新的基础提示词
         - context: 正在更新的上下文
 
         返回:
-        - str: 主工作流合成提示词, 其他上下文直接使用基础提示词
+        - 原始基础提示词, 不追加技能正文
         """
         workflow = getattr(self, "_wf", None)
         if self._skills_manager is not None and workflow is not None and workflow.ctx is context:

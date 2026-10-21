@@ -14,11 +14,12 @@ import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { PluginCapabilities, PluginInteractions, PLUGIN_CAPABILITY_LABELS as capabilityLabels } from '@/components/common/PluginCapabilities';
 import { PluginUsages } from './PluginUsages';
 import { StickerLibrary } from './StickerLibrary';
+import { SkillLibrary } from './SkillLibrary';
 
 const sourceLabels = { builtin: '内置', user: '用户' };
 const sessionLabels: Record<string, string> = { chat: 'Chat', platform: '平台会话', embedded: '嵌入会话' };
 // URL 中的 tab 参数归一化: 未知取值回落到概览
-const normalizeTab = (value: string | null) => value === 'stickers' || value === 'config' || value === 'usages' ? value : 'overview';
+const normalizeTab = (value: string | null) => value === 'skills' || value === 'stickers' || value === 'config' || value === 'usages' ? value : 'overview';
 
 function usePluginCatalog() {
   const [plugins, setPlugins] = useState<ManagedPlugin[]>([]);
@@ -126,8 +127,9 @@ export function PluginDetail() {
         <TabsTrigger value="config">全局参数</TabsTrigger>
         <TabsTrigger value="usages">使用位置</TabsTrigger>
         {plugin.name === 'group_chat' && <TabsTrigger value="stickers">表情库</TabsTrigger>}
+        {plugin.name === 'skills' && <TabsTrigger value="skills">技能库</TabsTrigger>}
       </TabsList>
     </Tabs>}
-    {plugin ? tab === 'stickers' && plugin.name === 'group_chat' ? <StickerLibrary onDirty={setDirty} /> : tab === 'overview' ? <PluginOverview plugin={plugin} /> : tab === 'config' ? <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} /> : <PluginUsages key={plugin.name} plugin={plugin} onDirty={setDirty} onSaved={refresh} /> : loading ? <p role="status">正在读取插件…</p> : !error && <p role="alert">插件不存在或元数据无效</p>}
+    {plugin ? tab === 'skills' && plugin.name === 'skills' ? <SkillLibrary onDirty={setDirty} /> : tab === 'stickers' && plugin.name === 'group_chat' ? <StickerLibrary onDirty={setDirty} /> : tab === 'overview' ? <PluginOverview plugin={plugin} /> : tab === 'config' ? <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} /> : <PluginUsages key={plugin.name} plugin={plugin} onDirty={setDirty} onSaved={refresh} /> : loading ? <p role="status">正在读取插件…</p> : !error && <p role="alert">插件不存在或元数据无效</p>}
   </div>;
 }

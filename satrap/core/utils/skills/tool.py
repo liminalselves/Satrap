@@ -1,68 +1,99 @@
+"""
+同步与异步工作流的按需技能读取工具
+
+以普通工具结果提供有效技能正文, 在当前任务内去重,
+不激活工具权限, 不修改审批策略或持久化系统指令
+"""
 from __future__ import annotations
-from typing import Any, Dict
-from satrap.core.utils.TCBuilder import AsyncTool, create_tool_defined
+
+from typing import cast
+
+from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.call_context import current_tool_messages
 from .manager import SkillsManager
+from .utils import SkillWorkflowProtocol
 
 
-class SkillTool(AsyncTool):
-    """
-    技能加载工具; 模型可按需调用以获取技能指令 (动态技能加载路线)
-
-    注册进 AsyncToolsManager 后, 模型在需要特定专业能力时会调用 `load_skill` 获取指令
-    """
+class _SkillReader:
+    """同步与异步加载器共用的只读技能访问"""
 
     tool_name = "load_skill"
-    recovery_policy = "retry"  # 只返回技能文本, 不执行技能中的指令
-    description = (
-        "加载指定技能, 返回技能指令与可用工具列表; 当任务需要特定专业能力时调用"
-    )
-    params_dict = {
-        "skill": ("string", "技能名称"),
-        "task": ("string", "要执行的任务描述, 可选"),
-    }
+    recovery_policy = "retry"
+    description = "读取可用技能的完整说明; 任务匹配或用户指定技能时先调用, 不改变工具权限"
+    params_dict = {"skill": ("string", "技能目录中的精确标识")}
 
-    def __init__(self, skills_manager: SkillsManager):
+    def __init__(self, skills_manager: SkillsManager, workflow: SkillWorkflowProtocol | None = None):
         """
-        初始化 SkillTool
+        绑定技能注册表及实际调用工作流
 
         参数:
-        - skills_manager: 技能列表管理器
+        - skills_manager: 技能注册表
+        - workflow: 所属工作流, 独立读取时可省略
         """
         self.skills_manager = skills_manager
+        self.workflow = workflow
         super().__init__()
 
-    def get_tool_defined(self) -> Dict[str, Any]:
+    def read(self, skill: str) -> str:
         """
-        动态生成工具定义, 描述中包含当前可用技能列表
-
-        返回:
-        - Dict[str, Any]: 动态生成工具定义, 描述中包含当前可用技能列表
-        """
-        if not self.assert_tool():
-            return {}
-        available = ", ".join(self.skills_manager.list_skills()) or "无"
-        return create_tool_defined(
-            self.tool_name,
-            f"加载指定技能, 返回技能指令与可用工具列表; 当任务需要特定专业能力时调用。可用技能: {available}",
-            self.params_dict,
-        )
-
-    async def execute(self, skill: str, task: str = "") -> str:
-        """
-        返回指定技能的指令文本
+        核验技能状态后返回正文
 
         参数:
-        - skill: 技能实例
-        - task: 任务描述
+        - skill: 精确技能标识
 
         返回:
-        - str: 指定技能的指令文本
+        - 技能全文或明确的不可用提示
         """
-        s = self.skills_manager.get_skill(skill)
-        if s is None:
-            available = ", ".join(self.skills_manager.list_skills()) or "无"
-            return f"技能 {skill} 不存在, 可用技能: {available}"
-        text = s.to_text()
-        if task:
-            text = f"{text}\n\n任务: {task}"
+        try:
+            text = self.skills_manager.read_skill(skill, self.workflow)
+        except ValueError as error:
+            return str(error)
+        messages = current_tool_messages(self.workflow) if self.workflow is not None else []
+        loads: set[str] = set()
+        for row in messages:
+            if row.get("role") == "assistant":
+                calls = row.get("tool_calls")
+                for value in calls if isinstance(calls, list) else []:
+                    if not isinstance(value, dict):
+                        continue
+                    call = cast(dict[str, object], value)
+                    function = call.get("function")
+                    if isinstance(function, dict) and function.get("name") == "load_skill":
+                        loads.add(str(call.get("id", "")))
+            elif row.get("role") == "tool" and str(row.get("tool_call_id")) in loads:
+                content = row.get("content")
+                if isinstance(content, str) and content.startswith(f"<skill:{skill}>") and content.endswith(f"</skill:{skill}>"):
+                    return f"本次任务已加载技能 {skill}, 请沿用前面的完整说明"
         return text
+
+
+class SkillTool(_SkillReader, AsyncTool):
+    """异步工作流的按需技能加载工具"""
+
+    async def execute(self, skill: str) -> str:
+        """
+        异步返回技能说明
+
+        参数:
+        - skill: 精确技能标识
+
+        返回:
+        - 技能全文或不可用提示
+        """
+        return self.read(skill)
+
+
+class SyncSkillTool(_SkillReader, Tool):
+    """同步工作流的按需技能加载工具"""
+
+    def execute(self, skill: str) -> str:
+        """
+        同步返回技能说明
+
+        参数:
+        - skill: 精确技能标识
+
+        返回:
+        - 技能全文或不可用提示
+        """
+        return self.read(skill)
