@@ -27,10 +27,11 @@ def load_run_config(args: argparse.Namespace):
     返回:
     - 加载 run 命令配置并应用命令行覆盖
     """
-    config = ConfigLoader.autodetect()
     if args.config:
         p = Path(args.config)
-        config = ConfigLoader.from_yaml(p) if p.suffix in (".yaml", ".yml") else ConfigLoader.from_json(p)
+        config = ConfigLoader.from_yaml(p) if p.suffix.lower() in (".yaml", ".yml") else ConfigLoader.from_json(p)
+    else:
+        config = ConfigLoader.autodetect()
     config = ConfigLoader.merge_env(config)
     if safe_getattr(args, "api_host"):
         config.api_host = args.api_host

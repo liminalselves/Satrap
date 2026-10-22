@@ -39,6 +39,7 @@ import zipfile
 
 from satrap.core.config.session_instance_service import SessionInstanceConfigService
 from satrap.core.log import logger
+from satrap.core.config.loader import ConfigLoader, ConfigLoadError
 from satrap.core.log.policy import LoggingPolicyStore, LoggingPolicyConflict
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_class_service import SessionClassConfigService
@@ -482,6 +483,7 @@ def _get_backend_cmd(host: str = "127.0.0.1", port: int = 19870) -> list[str]:
         "satrap.main",
         "--api-host", host,
         "--api-port", str(port),
+        "--config", str(CONFIG_PATH.resolve()),
         "run",
     ]
 
@@ -1048,18 +1050,20 @@ def _configured_session_scan_paths(
     - config_data: 已加载的配置, 未提供时读取当前配置文件
 
     返回:
-    - list[str]: 非空且保持配置顺序的扫描目录
+    - list[str]: 保持配置顺序的扫描目录, 显式空列表表示不扫描
     """
     document = config_data if config_data is not None else load_config_document(CONFIG_PATH)
-    raw_paths: object = document.get("session_scan_paths", [".satrap/session"])
-    if not isinstance(raw_paths, list):
+    raw_paths: object = document.get("session_scan_paths")
+    if raw_paths is None:
         return [".satrap/session"]
+    if not isinstance(raw_paths, list) or any(not isinstance(item, str) for item in cast(list[object], raw_paths)):
+        raise ValueError("session_scan_paths 必须是字符串列表或 null")
     paths: list[str] = []
     for item in cast(list[object], raw_paths):
         text = str(item).strip()
         if text:
             paths.append(text)
-    return paths or [".satrap/session"]
+    return paths
 
 
 def _resolve_session_scan_paths(paths: list[str]) -> list[str]:
@@ -1468,6 +1472,12 @@ async def _route_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
         return None
     # 检查进程状态到写入 _backend_process 之间有多处让出, 生命周期操作必须串行, 否则并发启动会拉起两个后端
     async with _LIFECYCLE_LOCK:
+        if ctx.path in {"/start", "/restart"}:
+            try:
+                loader = ConfigLoader.from_yaml if CONFIG_PATH.suffix.lower() in {".yaml", ".yml"} else ConfigLoader.from_json
+                await asyncio.to_thread(loader, CONFIG_PATH)
+            except ConfigLoadError as error:
+                return 400, {"ok": False, "code": "config_invalid", "config_path": error.path, "error": str(error)}
         return await _run_lifecycle(ctx)
 
 
@@ -1532,6 +1542,9 @@ async def _run_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
 
             for _ in range(30):   # 最多等待 15 秒
                 await asyncio.sleep(0.5)
+                if _backend_process.poll() is not None:
+                    return 500, {"ok": False, "code": "backend_start_failed", "config_path": str(CONFIG_PATH.resolve()),
+                                 "error": "后端进程已退出, 请检查后端日志中的配置或启动错误"}
                 health = await asyncio.to_thread(_check_backend_health)
                 if health.get("running"):
                     return 200, {"ok": True, "message": "后端已启动"}

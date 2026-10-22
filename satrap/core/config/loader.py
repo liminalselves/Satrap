@@ -17,6 +17,22 @@ from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
 from satrap.core.log import logger
 
 
+class ConfigLoadError(ValueError):
+    """实际配置文件加载失败, 不允许以默认配置冒充成功"""
+
+    def __init__(self, path: str | Path, reason: str) -> None:
+        """
+        保存可供 CLI 与 Control 展示的配置错误
+
+        参数:
+        - path: 实际尝试加载的文件
+        - reason: 解析或字段校验的错误说明
+        """
+        self.path = str(Path(path).resolve())
+        self.reason = reason
+        super().__init__(f"配置加载失败 ({self.path}): {reason}")
+
+
 class ConfigLoader:
     """
     配置加载器
@@ -135,27 +151,9 @@ class ConfigLoader:
         - path: 路径
 
         返回:
-        - BackendConfig: 从 YAML 文件加载配置; 需要 PyYAML 库
+        - 带实际 source_path 的配置; 文件或字段无效时抛出 ConfigLoadError
         """
-        path = Path(path)
-        if not path.exists():
-            logger.warning(f"[ConfigLoader] YAML 文件不存在: {path}, 返回默认配置")
-            return BackendConfig()
-
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data: object = safe_yaml_load(f)
-            if not isinstance(data, dict):
-                raise ValueError("YAML 根节点必须是字典")
-            config = BackendConfig.from_dict(cast(dict[str, Any], data))
-            config.source_path = str(path.resolve())
-            return config
-        except ImportError:
-            logger.error("[ConfigLoader] 需要 PyYAML 库: pip install pyyaml, 回退到 JSON")
-            return ConfigLoader.from_json(path.with_suffix(".json"))
-        except Exception as e:
-            logger.error(f"[ConfigLoader] YAML 加载失败: {e}")
-            return BackendConfig()
+        return ConfigLoader._load_file(Path(path), yaml=True)
 
     @staticmethod
     def from_json(path: str | Path) -> BackendConfig:
@@ -166,24 +164,36 @@ class ConfigLoader:
         - path: 路径
 
         返回:
-        - BackendConfig: 从 JSON 文件加载配置
+        - 带实际 source_path 的配置; 文件或字段无效时抛出 ConfigLoadError
         """
-        path = Path(path)
-        if not path.exists():
-            logger.warning(f"[ConfigLoader] JSON 文件不存在: {path}, 返回默认配置")
-            return BackendConfig()
+        return ConfigLoader._load_file(Path(path), yaml=False)
 
+    @staticmethod
+    def _load_file(path: Path, *, yaml: bool) -> BackendConfig:
+        """
+        共享实际文件加载边界, 失败时保留路径并阻止默认配置回退
+
+        参数:
+        - path: 明确选择的配置文件
+        - yaml: 是否使用 YAML 解析器, False 时使用 JSON
+
+        返回:
+        - 带实际 source_path 的配置; 读取、解析或校验失败抛出 ConfigLoadError
+        """
         try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
+            text = path.read_text(encoding="utf-8")
+            data: object = safe_yaml_load(text) if yaml else json.loads(text)
+            if data is None and yaml:
+                data = {}
             if not isinstance(data, dict):
-                raise ValueError("JSON 根节点必须是字典")
+                raise ValueError("配置根节点必须是对象")
             config = BackendConfig.from_dict(cast(dict[str, Any], data))
             config.source_path = str(path.resolve())
             return config
-        except Exception as e:
-            logger.error(f"[ConfigLoader] JSON 加载失败: {e}")
-            return BackendConfig()
+        except Exception as error:
+            failure = ConfigLoadError(path, str(error))
+            logger.error(f"[ConfigLoader] {failure}")
+            raise failure from error
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> BackendConfig:

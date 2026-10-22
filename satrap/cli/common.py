@@ -37,11 +37,12 @@ def load_cli_config(args: Namespace) -> BackendConfig:
     返回:
     - BackendConfig: 加载 CLI 配置并应用 API 覆盖
     """
-    config = ConfigLoader.autodetect()
     config_path = safe_getattr(args, "config")
     if config_path:
         path = Path(str(config_path))
         config = ConfigLoader.from_yaml(path) if path.suffix.lower() in (".yaml", ".yml") else ConfigLoader.from_json(path)
+    else:
+        config = ConfigLoader.autodetect()
     config = ConfigLoader.merge_env(config)
     if safe_getattr(args, "api_host"):
         config.api_host = args.api_host

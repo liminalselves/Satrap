@@ -22,6 +22,10 @@ Satrap 的配置分为三层:
 
 找不到配置时会创建 `.satrap/config.yaml`。
 
+显式 `--config <路径>` 优先于自动探测。已存在或显式指定的配置加载失败时停止启动, 错误包含文件路径和原因, 不再静默使用默认配置。Control 在启动或重启前进行同样的预检; 预检失败不会先停止仍在运行的后端。
+
+`session_classes` 和 `platforms` 的注释空节点或 `null` 分别按 `{}` 和 `[]` 处理, `api: null` 使用默认 API 配置。`session_scan_paths` 缺省或 `null` 使用默认扫描目录, 显式 `[]` 关闭外部目录扫描, 内置会话类型不受影响。其它错误类型会明确拒绝, 不隐式把字符串拆成列表。
+
 JSON 配置统一保存在 `.satrap/config/`:
 
 ```text

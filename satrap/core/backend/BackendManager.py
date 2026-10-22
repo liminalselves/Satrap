@@ -196,11 +196,32 @@ class BackendConfig:
             )
         from satrap.core.approval.migration import migrate_approval_admin_config
         data = migrate_approval_admin_config(data)
+        classes = data.get("session_classes")
+        if classes is None:
+            classes = {}
+        if not isinstance(classes, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in cast(dict[object, object], classes).items()
+        ):
+            raise ValueError("session_classes 必须是名称到类路径的对象或 null")
+        classes = cast(dict[str, str], classes)
+        platforms = data.get("platforms")
+        if platforms is None:
+            platforms = []
+        if not isinstance(platforms, list):
+            raise ValueError("platforms 必须是列表或 null")
+        platforms = cast(list[dict[str, Any]], platforms)
+        api = data.get("api")
+        if api is None:
+            api = {}
+        if not isinstance(api, dict):
+            raise ValueError("api 必须是对象或 null")
+        api = cast(dict[str, Any], api)
         media_roots = data.get("media_allowed_roots")
         from satrap.core.config.administrator_groups import (normalize_administrator_overrides, migrate_legacy_scope_exclusions,
                                                              normalize_administrator_groups)
-        administrators = normalize_administrator_groups(data.get("administrator_groups"), data.get("platforms", []))
-        exceptions = normalize_administrator_overrides(data.get("administrator_overrides"), data.get("platforms", []))
+        administrators = normalize_administrator_groups(data.get("administrator_groups"), platforms)
+        exceptions = normalize_administrator_overrides(data.get("administrator_overrides"), platforms)
         administrators, exceptions, _pending = migrate_legacy_scope_exclusions(administrators, exceptions)
         if media_roots is not None and (
             not isinstance(media_roots, list)
@@ -220,16 +241,36 @@ class BackendConfig:
             rate_burst=int(data.get("rate_burst", 5)),
             llm_timeout=float(data.get("llm_timeout", 120.0)),
             error_feedback=cls._as_bool(data.get("error_feedback", True)),
-            session_classes=dict(data.get("session_classes", {})),
-            session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
-            workspace_roots=list(data.get("workspace_roots") or []),
+            session_classes=dict(classes),
+            session_scan_paths=cls._path_list(data, "session_scan_paths", [".satrap/session"]),
+            workspace_roots=cls._path_list(data, "workspace_roots", []),
             media_allowed_roots=list(media_roots) if media_roots else None,
-            api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
-            api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
-            platforms=list(data.get("platforms", [])),
+            api_host=str(api.get("host", data.get("api_host", "127.0.0.1"))),
+            api_port=int(api.get("port", data.get("api_port", 19870))),
+            platforms=list(platforms),
             administrator_groups=administrators,
             administrator_overrides=exceptions,
         )
+
+    @staticmethod
+    def _path_list(data: dict[str, Any], name: str, default: list[str]) -> list[str]:
+        """
+        读取路径列表, 区分 null 默认值与显式空列表
+
+        参数:
+        - data: 配置文档
+        - name: 路径列表字段名
+        - default: 缺省或 null 时复制的默认值
+
+        返回:
+        - 独立字符串列表, 非列表或非字符串项明确报错
+        """
+        value: object = data.get(name)
+        if value is None:
+            return list(default)
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in cast(list[object], value)):
+            raise ValueError(f"{name} 必须是字符串列表或 null")
+        return list(cast(list[str], value))
 
 
 class BackendManager:

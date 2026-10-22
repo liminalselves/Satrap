@@ -487,6 +487,22 @@ async def test_control_lifecycle_start_stop_restart_side_effects(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["/start", "/restart"])
+async def test_control_bad_config_does_not_spawn_or_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, endpoint: str):
+    """配置预检失败返回具体路径, 重启前也不停止尚在运行的实例"""
+    path = tmp_path / "invalid.yaml"
+    path.write_text("platforms: wrong\n", encoding="utf-8")
+    monkeypatch.setattr(control_server, "CONFIG_PATH", path)
+    monkeypatch.setattr(control_server.subprocess, "Popen", lambda *a, **k: pytest.fail("坏配置不得启动"))
+    monkeypatch.setattr(control_server, "_cleanup_backend", lambda: pytest.fail("坏配置不得停止现有后端"))
+    response = await _request(endpoint, "POST")
+    body = _json_body(response)
+    assert response.startswith(b"HTTP/1.1 400")
+    assert body["code"] == "config_invalid" and body["config_path"] == str(path.resolve())
+    assert "platforms" in body["error"]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_start_spawns_single_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
