@@ -244,6 +244,106 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
 
 
 @pytest.mark.asyncio
+async def test_generated_file_chat_download_retry_fork_and_cross_conversation_rejection(tmp_path: Path, monkeypatch: Any):
+    """真实沙箱与插件产物贯通 Chat、鉴权 HTTP、回复版本、分支及租约"""
+    import aiohttp
+    from satrap.core.server_auth import ServerAuth
+    from satrap.core.utils.minihttp import MiniHTTPServer
+    from satrap.core.storage.file_lock import FileLock
+    from satrap.core.file_access.artifacts import artifact_lease
+    from support.group_models import Script, AsyncModel
+    configs = PluginConfigManager(tmp_path / "plugin-config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: configs)
+    from satrap.edictum import simple_session as ss_mod
+    monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: configs)
+    service = _make_service(tmp_path, monkeypatch)
+    script = Script([
+        LLMCallResponse("tools_call", "", tool_calls=[{"id": "write", "name": "code_sandbox", "arguments": {
+            "operation": "run", "code": "with open('report.csv', 'w', encoding='utf-8') as f:\n    f.write('项目,数量\\n中文,42\\n')"}}]),
+        LLMCallResponse("tools_call", "", tool_calls=[{"id": "file", "name": "send_file", "arguments": {"path": "report.csv", "name": "报告.csv"}}]),
+        LLMCallResponse("message", "文件已准备好"), LLMCallResponse("message", "重试版本没有文件"),
+    ])
+    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: AsyncModel(script))
+    assert (await service.set_plugin_enabled("base_take", True))["ok"]
+    cid = await service.create_conversation()
+    token = "file-download-test-token-with-at-least-32-characters"
+    server = ChatHTTPServer.__new__(ChatHTTPServer)
+    MiniHTTPServer.__init__(server, host="127.0.0.1", port=0, auth=ServerAuth.create("127.0.0.1", 0, token=token))
+    server.service = service
+    await server.start()
+    port = cast(Any, server._server).sockets[0].getsockname()[1]
+    try:
+        assert (await service.send(cid, "生成报告并发送"))["ok"]
+        await _wait_conversation_task(service, cid)
+        turns = service.list_turns(cid)
+        assert turns[0]["answer"] == "文件已准备好"
+        assert len(turns[0]["output_files"]) == 1, script.requests[-1][0]
+        file = turns[0]["output_files"][0]
+        root = service._storage.session_artifacts(service._platform_id, cid)
+        original = _must_conversation(service, cid).session
+        from satrap.core.plugin_interop.environment import environment_snapshot
+        generated = cast(Path, environment_snapshot(original).sandbox_root) / "report.csv"
+        expected = generated.read_bytes()
+        generated.unlink()
+        url = f"http://127.0.0.1:{port}/api/chat/files/{cid}/{file['file_id']}"
+        async with aiohttp.ClientSession() as anonymous:
+            async with anonymous.get(url) as response:
+                assert response.status == 401
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as browser:
+            async with browser.post(f"http://127.0.0.1:{port}/auth/session", headers={"Authorization": f"Bearer {token}"}) as response:
+                assert response.status == 200
+                await response.read()
+            async with browser.get(url) as response:
+                assert response.status == 200 and await response.read() == expected
+        async with aiohttp.ClientSession(headers={"Authorization": f"Bearer {token}"}) as client:
+            async with client.get(url) as response:
+                assert response.status == 200 and await response.read() == expected
+                assert response.headers["Content-Type"] == "application/octet-stream"
+                assert response.headers["Content-Disposition"].startswith("attachment;")
+            async with client.get(url.replace(cid, "other-conversation")) as response:
+                assert response.status == 404
+            with artifact_lease(root):
+                with pytest.raises(TimeoutError):
+                    with FileLock(root.parent.parent.parent / "locks" / (root.parent.name + ".lock"), timeout=.02):
+                        pass
+            assert (await service.retry(cid))["ok"]
+            await _wait_conversation_task(service, cid)
+            turns = service.list_turns(cid)
+            assert turns[0]["output_files"] == []
+            assert turns[0]["variants"][0]["output_files"] == [file]
+            assert (await service.select_variant(cid, 0, 0))["ok"]
+            forked = await service.fork(cid, 1)
+            assert forked["ok"]
+            fork_id = forked["conversation_id"]
+            assert service.list_turns(fork_id)[0]["output_files"] == [file]
+            deleted = await service.delete_conversation(cid)
+            fork_url = f"http://127.0.0.1:{port}/api/chat/files/{fork_id}/{file['file_id']}"
+            async with client.get(fork_url) as response:
+                assert response.status == 200 and await response.read() == expected
+            async with client.get(url) as response:
+                assert response.status == 404
+            from satrap.core.storage.maintenance import StorageMaintenanceService
+            restored = StorageMaintenanceService(service._storage).restore_archive(service._platform_id, deleted["archive_id"], database_path=service._display_db_path)
+            assert restored["ok"]
+            await service.close()
+            resumed = _make_service(tmp_path, monkeypatch)
+            server.service = resumed
+            try:
+                async with client.get(url) as response:
+                    assert response.status == 200 and await response.read() == expected
+                assert resumed.list_turns(cid)[0]["output_files"] == [file]
+                cached = resumed._storage.session_artifacts(resumed._platform_id, cid) / file["file_id"]
+                cached.write_bytes(b"tampered")
+                async with client.get(url) as response:
+                    assert response.status == 404
+            finally:
+                await resumed.close()
+    finally:
+        await server.stop()
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_command_history_setting_survives_preload_restart_and_fork(tmp_path, monkeypatch):
     """Chat 初始开关在首条命令前生效, 重启和分支继承, HTTP 拒绝非布尔值"""
     service = _make_service(tmp_path, monkeypatch)

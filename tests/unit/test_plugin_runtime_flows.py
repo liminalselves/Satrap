@@ -221,7 +221,8 @@ async def test_cancel_keeps_session_until_sync_worker_finishes():
     entry = SimpleNamespace(session=SimpleNamespace(run=run), async_operation_lock=asyncio.Lock(), sync_operation_lock=threading.RLock())
     manager = SessionManager.__new__(SessionManager)
     manager.pool = Mock(list_entries=lambda: {"audit": entry}, release=lambda value: released.append(value))
-    manager._resolve_or_create_session_config = Mock(return_value=SimpleNamespace(session_id="audit"))
+    from satrap.core.type import SessionConfig
+    manager._resolve_or_create_session_config = Mock(return_value=SessionConfig(session_id="audit", session_type_name="test", history_started_at=1.0))
     manager._acquire_or_create_entry_async = AsyncMock(return_value=entry)
     manager._prepare_session_async = AsyncMock()
     manager._sync_runtime_to_store = Mock(return_value=None)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, AsyncMock
 import asyncio
 import inspect
@@ -40,19 +41,113 @@ async def file_host(request, tmp_path, monkeypatch):
         root.mkdir(parents=True)
         (root / "inside.txt").write_text("trusted content", encoding="utf-8")
     bind_environment(session, replace(environment_snapshot(session), workspace_root=workspace,
-                                     upload_root=uploads, sandbox_root=sandbox, session_root=session_root))
+                                     upload_root=uploads, sandbox_root=sandbox, session_root=session_root, artifacts_root=session_root / "artifacts"))
     presets = Path(__file__).resolve().parents[2] / "satrap/expend/plugins"
     try:
         for name in ("base_take", "satrap_coding"):
             await _await(session.install_plugin(str(presets / name)))
-        async def execute(name, **arguments):
+        async def execute(tool_name, **arguments):
             if asynchronous:
-                return await session.tools_manager.execute_tool(name, arguments)
-            return await asyncio.to_thread(session.tools_manager.execute_tool, name, arguments)
+                return await session.tools_manager.execute_tool(tool_name, arguments)
+            return await asyncio.to_thread(session.tools_manager.execute_tool, tool_name, arguments)
         yield session, execute, tmp_path, (workspace, uploads, sandbox), asynchronous
     finally:
         for plugin in reversed(session.list_plugins()):
             await _await(session.uninstall_plugin(plugin.name))
+
+
+async def test_send_file_uses_single_file_approval_and_immutable_current_host_artifact(file_host):
+    """同步异步均经真实插件宿主交付, 文件修改和工作区外审批不扩散授权"""
+    from satrap.core.file_access.artifacts import bind_file_receiver, MAX_FILE_BYTES
+    session, execute, root, trusted, _ = file_host
+    assert session.tools_manager.tools["send_file"].get_tool_defined()["function"]["parameters"]["required"] == ["path"]
+    engine = session_approval(session)
+    engine.set_mode("user", persist=False)
+    requests, received = [], []
+    def approve(request):
+        requests.append(request)
+        return ApprovalResult.for_request(request, "allow", "同意本次文件读取", "user")
+    session.approval_provider = approve
+    payload = b"PK\x03\x04" + bytes(range(256)) * 1200
+    source = trusted[2] / "book.xlsx"
+    source.write_bytes(payload)
+    async def receive(artifact):
+        received.append(artifact)
+        source.write_bytes(b"changed")
+        with artifact.open() as stream:
+            assert stream.read() == payload
+        return {"ok": True, "status": "available", "file": artifact.public()}
+    with bind_file_receiver(receive):
+        result = await execute("send_file", path="book.xlsx", name="统计.xlsx")
+    assert result["ok"] and result["file"]["name"] == "统计.xlsx"
+    assert "path" not in result["file"] and not requests
+    with received[0].open() as stream:
+        assert stream.read() == payload
+    external = root / "outside.bin"
+    external.write_bytes(payload)
+    with bind_file_receiver(receive):
+        assert (await execute("send_file", path=str(external)))["ok"]
+        assert (await execute("send_file", path=str(external)))["ok"]
+    assert len(requests) == 2
+    assert requests[0].payload()["action"]["parameters"]["operation"] == "send_file"
+    assert not (await execute("send_file", path=str(external), name="../x"))["ok"]
+    assert not (await execute("send_file", path=str(trusted[0])))["ok"]
+    oversized = trusted[0] / "large.zip"
+    with oversized.open("wb") as stream:
+        stream.truncate(MAX_FILE_BYTES + 1)
+    with bind_file_receiver(receive):
+        assert not (await execute("send_file", path=str(oversized)))["ok"]
+    assert len(received) == 3
+    engine.set_mode("full-access", persist=False)
+    generated = trusted[0] / "from-coding.txt"
+    await execute("write_file", path=str(generated), content="coding-output")
+    payload = b"coding-output"
+    with bind_file_receiver(receive):
+        assert (await execute("send_file", path=str(generated)))["ok"]
+    assert len(received) == 4
+    engine.set_plan_mode(True)
+    with bind_file_receiver(receive):
+        assert "plan_mode" in (await execute("send_file", path=str(external)))["reason"]
+    assert len(received) == 4
+
+
+@pytest.mark.parametrize("file_host", [True], indirect=True, ids=["async"])
+async def test_cancelled_file_copy_finishes_before_artifact_and_lease_cleanup(file_host, monkeypatch):
+    """取消有界复制后先等待线程退出, 不留下晚到产物或继续发出文件"""
+    import importlib
+    from satrap.core.file_access.artifacts import bind_file_receiver
+    from satrap.core.storage.file_lock import FileLock
+    session, execute, _, trusted, _ = file_host
+    source = trusted[0] / "cancel.bin"
+    source.write_bytes(b"cancel me")
+    tool = session.tools_manager.tools["send_file"]
+    module = importlib.import_module(type(tool).__module__)
+    original = module.freeze_file
+    entered, release = threading.Event(), threading.Event()
+    def blocked(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(module, "freeze_file", blocked)
+    received = []
+    async def receive(artifact):
+        received.append(artifact)
+        return {"ok": True, "status": "available"}
+    with bind_file_receiver(receive):
+        task = asyncio.create_task(execute("send_file", path=str(source)))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    root = cast(Path, environment_snapshot(session).artifacts_root)
+    assert not received and list(root.glob("sf_*")) == []
+    with FileLock(root.parent.parent.parent / "locks" / (root.parent.name + ".lock"), timeout=.02):
+        pass
 
 
 @pytest.mark.parametrize("tool", ["read_document", "read_file"])

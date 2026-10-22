@@ -34,6 +34,14 @@ export interface Attachment {
   type: string;
 }
 
+export interface OutputFile {
+  file_id: string;
+  name: string;
+  size: number;
+  sha256: string;
+  mime: string;
+}
+
 // 消息段 (按时间顺序)
 export interface MessageSegment {
   type: 'thinking' | 'tool' | 'content';
@@ -42,6 +50,7 @@ export interface MessageSegment {
 }
 
 export interface ChatTurnVariant {
+  output_files?: OutputFile[];
   variant_index: number;
   thinking: string | null;
   answer: string;
@@ -81,6 +90,7 @@ export interface ContextTurnStats {
 
 // 对话轮次 (对齐 display_turns)
 export interface ChatTurn {
+  output_files?: OutputFile[];
   generating?: boolean;
   interrupted?: boolean;
   id: number;
@@ -272,9 +282,9 @@ export type ChatEvent = (
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
   | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[]; approval?: ApprovalPresentation | null }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
-  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null }
+  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }
-  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null }
+  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
 ) & { seq?: number; stream_id?: string };
 
 // ==================== HTTP 请求 ====================
@@ -313,6 +323,24 @@ function historyQueryString(query: ChatHistoryQuery = {}): string {
 }
 
 export const chatApi = {
+  downloadFile: async (conversationId: string, file: OutputFile) => {
+    const baseUrl = getChatApiUrl();
+    await ensureApiSession(baseUrl);
+    const send = () => fetch(`${baseUrl}/api/chat/files/${encodeURIComponent(conversationId)}/${encodeURIComponent(file.file_id)}`, { credentials: 'include' });
+    let response = await send();
+    if (response.status === 401) {
+      await establishApiSession(baseUrl);
+      response = await send();
+    }
+    if (!response.ok) throw new Error('文件不存在、已回收或暂时无法下载');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = file.name;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
   getApproval: (conversationId: string, signal?: AbortSignal) =>
     request<ApprovalState>('GET', '/api/chat/approval?' + new URLSearchParams({ conversation: conversationId }), undefined, signal),
   setApproval: (conversationId: string, mode: ApprovalMode, revision: number) =>

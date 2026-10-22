@@ -20,6 +20,15 @@ on:
       - 'tests/unit/test_wake_pipeline_flows.py'
       - 'tests/unit/test_wake_policy_flows.py'
       - 'satrap/core/group_chat/**'
+      - 'satrap/core/file_access/**'
+      - 'satrap/core/plugin_interop/artifacts.py'
+      - 'satrap/core/platform/**'
+      - 'satrap/display/**'
+      - 'tests/unit/test_file_access_flows.py'
+      - 'tests/unit/test_display_service.py'
+      - 'tests/unit/test_chat_stream_flows.py'
+      - 'tests/unit/test_platform_reply_flows.py'
+      - 'tests/unit/test_platform_misskey_flows.py'
       - 'satrap/expend/tools/sandbox_tools/**'
       - 'satrap/expend/tools/search/**'
       - 'tests/unit/test_web_research_flows.py'
@@ -98,4 +107,11 @@ jobs:
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           python -m pytest tests/unit/test_web_research_flows.py -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise file delivery and authenticated downloads
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          python -m pytest tests/unit/test_file_access_flows.py tests/unit/test_display_service.py tests/unit/test_chat_stream_flows.py tests/unit/test_platform_reply_flows.py tests/unit/test_platform_misskey_flows.py tests/unit/test_conversation_storage_flows.py tests/unit/test_minihttp.py -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

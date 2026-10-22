@@ -12,6 +12,76 @@ from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.components import BaseMessageComponent, Plain, Image, At
 from satrap.core.platform.event import MessageChain
 from satrap.core.platform import PlatformConfig
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [False, True], ids=["private", "group"])
+async def test_onebot_file_stream_transfers_real_bytes_then_uploads_only_remote_path(tmp_path, group):
+    """真实 OneBot HTTP 客户端分块传字节, 不要求实现端能读 Satrap 本地路径"""
+    import base64
+    import hashlib
+    from aiocqhttp import CQHttp
+    from aiohttp import web
+    from satrap.core.call_context import CallOrigin
+    from satrap.core.file_access.artifacts import freeze_file
+    chunks, uploads = {}, []
+    mode = ["success"]
+    async def rpc(request):
+        data = await request.json()
+        action = request.match_info["action"]
+        if action == "upload_file_stream":
+            if mode[0] == "unsupported":
+                return web.json_response({"status": "failed", "retcode": 1404, "data": None, "wording": "API not supported"})
+            if "chunk_data" in data:
+                chunk = base64.b64decode(data["chunk_data"])
+                assert len(chunk) <= 256 * 1024
+                chunks[data["chunk_index"]] = chunk
+                result = {"status": "chunk_received", "received_chunks": len(chunks)}
+            else:
+                payload = b"".join(chunks[index] for index in sorted(chunks))
+                result = {"status": "file_complete", "file_path": "/napcat-temp/report.bin", "file_size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+        else:
+            uploads.append((action, data))
+            assert action == ("upload_group_file" if group else "upload_private_file")
+            assert data["file"] == "/napcat-temp/report.bin"
+            result = {"file_id": "platform-file"} if mode[0] == "success" else {}
+        return web.json_response({"status": "ok", "retcode": 0, "data": result})
+    app = web.Application()
+    app.router.add_post("/{action}", rpc)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = cast(Any, site._server).sockets[0].getsockname()[1]
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}))
+    adapter._bot = CQHttp(api_root=f"http://127.0.0.1:{port}")
+    adapter.bot_self_id = adapter.client_self_id = "10000"
+    adapter._running = True
+    source = tmp_path / "report.bin"
+    source.write_bytes(bytes(range(256)) * 3000)
+    artifact = freeze_file(source, tmp_path / "artifacts")
+    origin = CallOrigin("ob", "10000", "GroupMessage" if group else "FriendMessage", "456", "123", "77", "files")
+    try:
+        result = await adapter.deliver_file(origin, artifact, lambda: None)
+        assert result["ok"] and result["status"] == "uploaded", result
+        assert b"".join(chunks[index] for index in sorted(chunks)) == source.read_bytes()
+        assert len(uploads) == 1 and uploads[0][1]["name"] == "report.bin"
+        mode[0] = "unknown"
+        chunks.clear()
+        result = await adapter.deliver_file(origin, artifact, lambda: None)
+        assert result["status"] == "unknown" and len(uploads) == 2
+        mode[0] = "unsupported"
+        result = await adapter.deliver_file(origin, artifact, lambda: None)
+        assert not result["ok"] and len(uploads) == 2
+        mode[0] = "success"
+        chunks.clear()
+        source.write_bytes(b"")
+        empty = freeze_file(source, tmp_path / "artifacts")
+        result = await adapter.deliver_file(origin, empty, lambda: None)
+        delivered = cast(dict[str, object], result["file"])
+        assert result["ok"] and delivered["size"] == 0 and chunks == {0: b""}
+    finally:
+        await runner.cleanup()
 from collections.abc import Iterator
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

@@ -408,6 +408,52 @@ async function chat_fork_projects(runtime) {
 }
 
 export const scenarios = [
+  ['chat-output-files', async (runtime) => {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const server = await runtime.preview({ root, preview: { host: '127.0.0.1', port: 0 } });
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const context = await runtime.browser.newContext({ acceptDownloads: true });
+    const fixture = createBenchmarkFixture(2);
+    const file = { file_id: 'sf_' + 'a'.repeat(32), name: '报告.zip', size: 3, sha256: 'hash', mime: 'application/zip' };
+    fixture.turns[0].output_files = [file];
+    await installHttpMocks(context, origin, fixture);
+    let reads = 0, fail = false;
+    await context.route('http://127.0.0.1:19872/api/chat/files/**', (route) => {
+      reads++;
+      assert.equal(new URL(route.request().url()).pathname, `/api/chat/files/benchmark-active/${file.file_id}`);
+      return route.fulfill({ status: fail ? 404 : 200, contentType: 'application/octet-stream', body: Buffer.from([0, 255, 65]),
+        headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+          'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}` } });
+    });
+    const page = await context.newPage(), errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.routeWebSocket('ws://127.0.0.1:19872/ws/chat**', () => {});
+    await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
+    await mockConfigVersions(page, origin, () => '{}');
+    try {
+      await page.goto(`${origin}/chat`);
+      await page.getByText('继续最近对话', { exact: true }).click();
+      const button = page.getByRole('button', { name: `下载 ${file.name}`, exact: true });
+      await button.waitFor();
+      const download = page.waitForEvent('download');
+      await button.click();
+      const received = await download;
+      assert.equal(received.suggestedFilename(), file.name);
+      const chunks = [];
+      for await (const chunk of await received.createReadStream()) chunks.push(chunk);
+      assert.deepEqual(Buffer.concat(chunks), Buffer.from([0, 255, 65]));
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('[aria-label="下载 报告.zip"]') || document.body.innerText.includes('继续最近对话'));
+      const recent = page.getByText('继续最近对话', { exact: true });
+      if (await recent.isVisible()) await recent.click();
+      await button.waitFor();
+      fail = true;
+      await button.click();
+      await page.getByRole('alert').filter({ hasText: '文件不存在' }).waitFor();
+      assert.equal(reads, 2);
+      assert.deepEqual(errors, []);
+    } finally { await context.close(); }
+  }],
   ["chat-history-media", chat_history_media],
   ["chat-media", chat_media],
   ["chat-fork-projects", chat_fork_projects]

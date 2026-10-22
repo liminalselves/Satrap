@@ -156,7 +156,13 @@ class FileRead:
                                                  f"读取工作区外文件: {self.path}", action=json.loads(self.action_json), tool_name=self.tool_name)
             if not allowed:
                 raise PermissionError(reason)
-        return await asyncio.to_thread(self._read, reader)
+        task = asyncio.create_task(asyncio.to_thread(self._read, reader))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        # 等待已开始的有界文件操作结束, 再让调用方回收产物及租约
 
 
 def prepare_file_read(

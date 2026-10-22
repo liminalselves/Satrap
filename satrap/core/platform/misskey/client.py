@@ -9,7 +9,7 @@ import aiohttp
 import asyncio
 import logging
 import random
-from typing import Any, NoReturn, ParamSpec, TypeVar, cast
+from typing import Any, BinaryIO, NoReturn, ParamSpec, TypeVar, cast
 from types import TracebackType
 import json
 import uuid
@@ -501,6 +501,19 @@ class MisskeyAPI:
         返回:
         - Any: 向 Misskey API 发起 POST 请求
         """
+        return await self.request_once(endpoint, data)
+
+    async def request_once(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
+        """
+        单次执行有副作用的发布请求, 连接结果未知时不自动重试
+
+        参数:
+        - endpoint: 原生 API 路径
+        - data: 可选请求字段
+
+        返回:
+        - 原生响应, 平台或连接异常交给调用方区分
+        """
         url = f"{self.instance_url}/api/{endpoint}"
         payload = {"i": self.access_token}
         if data:
@@ -654,6 +667,28 @@ class MisskeyAPI:
         except FileNotFoundError as e:
             raise APIError(f"File not found: {file_path}") from e
         return await self._upload_bytes(data, filename, folder_id)
+
+    async def upload_stream(self, stream: BinaryIO, filename: str, folder_id: str | None = None) -> dict[str, Any]:
+        """
+        单次流式上传已核验文件, 不整文件编码或重试
+
+        参数:
+        - stream: 持有租约且定位到开头的二进制文件
+        - filename: 已验证的显示名称
+        - folder_id: 可选 Drive 文件夹
+
+        返回:
+        - Drive 文件 ID 和原始响应, 失败抛出异常
+        """
+        form = aiohttp.FormData()
+        form.add_field("i", self.access_token)
+        form.add_field("name", filename)
+        if folder_id:
+            form.add_field("folderId", folder_id)
+        form.add_field("file", stream, filename=filename, content_type=mimetypes.guess_type(filename)[0] or "application/octet-stream")
+        async with self.session.post(f"{self.instance_url}/api/drive/files/create", data=form) as response:
+            result = await self._process_response(response, "drive/files/create")
+        return {"id": FileIDExtractor.extract_file_id(result), "raw": result}
 
     async def _upload_bytes(self, data: bytes, filename: str, folder_id: str | None) -> dict[str, Any]:
         """

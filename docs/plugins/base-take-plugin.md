@@ -1,6 +1,6 @@
 # base_take 插件: 基础能力集
 
-`base_take` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 提供通用基础能力: 网页搜索、网页抓取、代码沙箱、文档与图片读取。与 `satrap_coding` 插件互补, 可独立或组合使用。
+`base_take` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 提供网页搜索、网页抓取、代码沙箱、文档与媒体读取, 以及文件交付。与 `satrap_coding` 插件互补, 可独立或组合使用。
 
 ## 安装
 
@@ -12,7 +12,7 @@ session.install_plugin("./satrap/expend/plugins/base_take")
 
 plugin = session.list_plugins()[0]
 plugin.name          # "base_take"
-plugin.tools         # 4 个工具
+plugin.tools         # 6 个工具
 plugin.handlers      # 无记忆处理器
 plugin.commands      # 无记忆命令
 ```
@@ -26,6 +26,36 @@ plugin.commands      # 无记忆命令
 | 搜索 | search / fetch_page | 网页搜索与抓取 (复用 expend.tools.search) |
 | 沙箱 | code_sandbox | 在隔离目录中执行 Python 代码 |
 | 文档 | read_document | 读取本地图片, 提取文档文本及分页查看 PDF 图像 |
+| 媒体 | read_media | 分段查看本会话已收到的动画或视频 |
+| 文件 | send_file | 把本地普通文件交付给当前 Chat、私聊、群或讨论 |
+
+## 普通文件交付
+
+模型调用 `send_file(path="reports/result.xlsx", name="统计.xlsx")`, `name` 可省略, 不接受群号、用户 ID 或其它发送目标
+相对路径优先当前工作区, 文件不存在时查当前沙箱, 单文件名仍兼容当前会话上传目录; 也可显式提供绝对路径
+工作区、沙箱与上传目录内沿用文件读取规则, 目录外单文件按 user/auto/full-access 审批, 保护路径始终拒绝; 本次批准不授予父目录权限, 计划模式不交付文件
+
+工具按块复制文件到会话 artifacts, 保存字节数与 SHA-256, 原文件后续变化或删除不影响交付
+单文件最多 32 MiB, 支持空文件, Misskey 首版采用既有 10 MiB 保守限制, 平台拒绝的更小限制照实返回
+每个 Chat 回复最多 16 个文件, 每会话最多保留 128 个或 512 MiB, 达到上限后明确拒绝, 不静默删除已有下载
+产物随会话归档和恢复; 在途发送与下载持有同一会话维护锁, 租约结束后才允许回收或移动目录
+
+| status | 含义 |
+| --- | --- |
+| available | Chat 已登记可下载附件, 前端显示名称、大小和下载按钮 |
+| uploaded | OneBot 实现端已确认群或私聊文件上传 |
+| published | Misskey 已上传 Drive 并发布到当前原生对话 |
+| failed | 没有完成文件交付, reason 给出原因 |
+| unknown | 已发出有副作用的请求但无法确认结果, 不自动重发 |
+
+Chat 下载经过原有鉴权, 只接受会话 ID 与不透明 file_id, 始终以 attachment 下载, 不内联执行 HTML 等文件
+附件按回复版本持久化, 刷新和重连可以恢复, retry 不继承旧版本附件, fork 只复制选中版本并建立独立文件所有权
+`plugin_host.artifacts.deliver_file_async` / `deliver_file_sync` 是宿主产物交付接口, 接受已冻结并核验的 FileArtifact, 不公开任意目标发送通道; 自定义宿主尚未接入时返回 file_delivery_unavailable
+
+OneBot 默认使用实现端 upload_file_stream 分块传输, 核对大小和 SHA-256 后再调用 upload_group_file/upload_private_file, 传给正式上传接口的是实现端返回的路径
+因此 Satrap 与实现端不需要共享本机路径; 不支持该扩展时明确失败, 不用普通 file 段冒充确认送达
+接口依据 [NapCat 文件处理指南](https://napneko.github.io/develop/file) 和 [UploadFileStream 实现](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/action/stream/UploadFileStream.ts), 实际平台仍需具备这些接口
+Misskey 使用 multipart 文件流上传并单次发布, 上传失败不发送文字兜底; Drive 上传成功但发布失败时返回 platform_file_id 供核查, 不自动删除或重发
 
 ## 插件配置
 

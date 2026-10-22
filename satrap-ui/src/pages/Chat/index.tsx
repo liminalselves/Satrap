@@ -8,6 +8,7 @@ import { RunRecovery } from "./RunRecovery";
 import { LLMConfigModal } from '@/components/common/LLMConfigModal';
 import { RagManager } from '@/components/common/RagManager';
 import { MediaAttachment } from './MediaAttachment';
+import { OutputFiles } from './OutputFiles';
 import { useChatScroll } from './useChatScroll';
 import { ragApi } from '@/api/rag';
 import type { ConfigOption } from '@/components/common/PluginConfigFields';
@@ -41,6 +42,7 @@ import {
   chatApi,
   subscribeChat,
   type Attachment,
+  type OutputFile,
   type ApprovalMode,
   type CapabilityKind,
   type ChatEvent,
@@ -162,6 +164,7 @@ const COLOR_TEXT_CLASS: Record<GlassColor, string> = {
 type MessageRole = 'user' | 'assistant';
 
 interface LocalResponseVariant {
+  outputFiles?: OutputFile[];
   variantIndex: number;
   content: string;
   thinking?: string;
@@ -172,6 +175,7 @@ interface LocalResponseVariant {
 
 // 单条消息
 interface ChatMessage {
+  outputFiles?: OutputFile[];
   id: string;
   role: MessageRole;
   content: string;
@@ -237,6 +241,7 @@ function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
     toolCalls: variant.tool_calls ?? [],
     segments: convertSegments(variant),
     contextStats: variant.context_stats,
+    outputFiles: variant.output_files,
   };
 }
 
@@ -259,6 +264,7 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
       created_at: turn.created_at,
       tool_calls: turn.tool_calls,
       context_stats: turn.context_stats,
+      output_files: turn.output_files,
     };
     const segments = convertSegments(currentVariant);
     messages.push({
@@ -274,6 +280,7 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
       activeVariant: turn.active_variant ?? 0,
       variantCount: turn.variant_count ?? 1,
       variants: (turn.variants?.length ? turn.variants : [currentVariant]).map(convertVariant),
+      outputFiles: turn.output_files,
       contextStats: turn.context_stats,
     });
   }
@@ -645,6 +652,7 @@ export function Chat() {
               toolCalls: message.toolCalls ?? [],
               segments: message.segments,
               contextStats: event.context_stats,
+              outputFiles: event.output_files,
             };
             const variants = [
               ...(message.variants ?? []).filter(
@@ -660,6 +668,7 @@ export function Chat() {
               activeVariant: event.variant_index,
               variantCount: event.variant_count,
               variants,
+              outputFiles: event.output_files,
               contextStats: event.context_stats,
             };
           }, conversationId);
@@ -679,6 +688,7 @@ export function Chat() {
             activeVariant: event.variant_index ?? m.activeVariant,
             variantCount: event.variant_count ?? m.variantCount,
             contextStats: event.context_stats ?? m.contextStats,
+            outputFiles: event.output_files ?? m.outputFiles,
           }), conversationId);
           setPendingUserInputs((prev) => ({ ...prev, [conversationId]: [] }));
           streamingMsgIdRef.current = null;
@@ -1319,6 +1329,7 @@ export function Chat() {
         toolCalls: previousAssistant.toolCalls ?? [],
         segments: previousAssistant.segments,
         contextStats: previousAssistant.contextStats,
+        outputFiles: previousAssistant.outputFiles,
       }];
     const assistantId = genId();
     const assistantMsg: ChatMessage = {
@@ -1391,6 +1402,7 @@ export function Chat() {
               variantCount: turn.variant_count,
               variants: turn.variants.map(convertVariant),
               contextStats: selected.context_stats,
+              outputFiles: selected.output_files,
             }
             : message
         )),
@@ -3321,6 +3333,8 @@ const MessageBubble = memo(function MessageBubble({
               )}
             </>
           )}
+
+          {!isUser && Boolean(message.outputFiles?.length) && <OutputFiles conversationId={conversationId} files={message.outputFiles ?? []} />}
 
           {!isUser && message.contextStats && (
             <ContextStatsPanel stats={message.contextStats} />

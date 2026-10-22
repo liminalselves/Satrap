@@ -275,6 +275,7 @@ class DisplayRecorder:
                 " ON display_turn_variants (turn_id, variant_index)"
             )
             _ensure_column_locked(conn, "display_turn_variants", "context_stats", "TEXT")
+            _ensure_column_locked(conn, "display_turn_variants", "output_files", "TEXT NOT NULL DEFAULT '[]'")
             # 既有展示轮次按第 0 个回复版本登记
             conn.execute(
                 """
@@ -379,6 +380,49 @@ class DisplayRecorder:
         with self._lock:
             return {"turn_id": self._turn_id, "variant_index": self._variant_index} if self._turn_id is not None else {}
 
+    def add_output_file(self, metadata: dict[str, object], expected: dict[str, int]) -> None:
+        """
+        立即持久化本轮文件, 不绑定后来的重试版本
+
+        参数:
+        - metadata: 不包含服务器路径的受控文件资料
+        - expected: 宿主冻结的轮次与回复版本
+        """
+        with self._lock:
+            if not expected or expected != self.recovery_origin():
+                raise ValueError("文件所属回复已经结束或切换")
+            conn = self._get_conn()
+            row = conn.execute("SELECT output_files FROM display_turn_variants WHERE turn_id=? AND variant_index=?",
+                               (self._turn_id, self._variant_index)).fetchone()
+            files = json.loads(row[0]) if row else []
+            if len(files) >= 16:
+                raise ValueError("单次回复最多交付 16 个文件")
+            files.append(metadata)
+            conn.execute("INSERT INTO display_turn_variants(turn_id, variant_index, created_at, output_files) VALUES(?, ?, ?, ?) "
+                         "ON CONFLICT(turn_id, variant_index) DO UPDATE SET output_files=excluded.output_files",
+                         (self._turn_id, self._variant_index, time.time(), json.dumps(files, ensure_ascii=False)))
+            conn.commit()
+
+    def find_output_file(self, file_id: str) -> dict[str, object] | None:
+        """
+        仅从当前会话的真实回复版本解析可下载附件
+
+        参数:
+        - file_id: 不透明文件 ID, 不接受路径
+
+        返回:
+        - 已登记文件资料或 None, 不跨会话查找
+        """
+        with self._lock:
+            row = self._get_conn().execute("SELECT item.value FROM display_turn_variants v JOIN display_turns t ON t.id=v.turn_id "
+                                          "JOIN json_each(v.output_files) item WHERE t.conversation_id=? AND json_extract(item.value, '$.file_id')=? LIMIT 1",
+                                          (self.conversation_id, file_id)).fetchone()
+            if row is not None:
+                item: object = json.loads(row[0])
+                if isinstance(item, dict):
+                    return cast(dict[str, object], item)
+        return None
+
     def resume_turn(self, turn_id: int, variant_index: int) -> dict[str, Any]:
         """恢复原轮次的记录通道, 不创建新回复版本"""
         with self._lock:
@@ -472,6 +516,8 @@ class DisplayRecorder:
                 "turn_index": int(turn_row[0]) if turn_row else -1,
                 "variant_index": self._variant_index,
                 "variant_count": int(count_row[0]) if count_row else 0,
+                "output_files": json.loads(conn.execute("SELECT output_files FROM display_turn_variants WHERE turn_id=? AND variant_index=?",
+                                                         (turn_id, self._variant_index)).fetchone()[0]),
             }
             self._turn_id = None
             self._segments = []
@@ -671,6 +717,8 @@ class DisplayRecorder:
                     tool_calls=self._list_tool_calls_locked(self._get_conn(), active_turn_id, self._variant_index),
                 )
                 active = {key: turn[key] for key in ("answer", "thinking", "segments", "tool_calls", "created_at", "context_stats")}
+                active["output_files"] = next((item.get("output_files", []) for item in turn["variants"] if item["variant_index"] == self._variant_index), [])
+                turn["output_files"] = active["output_files"]
                 active["variant_index"] = self._variant_index
                 turn["variants"] = [item for item in turn["variants"] if item["variant_index"] != self._variant_index] + [active]
                 turn["variant_count"] = len(turn["variants"])
@@ -702,7 +750,7 @@ class DisplayRecorder:
                     f" WHERE id IN ({selection}) ORDER BY turn_index ASC", params,
                 ).fetchall()
                 variant_rows = conn.execute(
-                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at"
+                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at, output_files"
                     f" FROM display_turn_variants WHERE turn_id IN ({selection}) ORDER BY variant_index ASC", params,
                 ).fetchall()
                 tool_rows = conn.execute(
@@ -725,6 +773,7 @@ class DisplayRecorder:
                     "segments": json.loads(row[4]) if row[4] else None,
                     "context_stats": json.loads(row[5]) if row[5] else None,
                     "created_at": row[6], "tool_calls": tools.get((row[0], int(row[1])), []),
+                    "output_files": json.loads(row[7]),
                 })
             turns: list[dict[str, Any]] = [
                 {
@@ -741,6 +790,7 @@ class DisplayRecorder:
                     "variant_count": len(variants.get(r[0], [])),
                     "tool_calls": tools.get((r[0], int(r[9] or 0)), []),
                     "variants": variants.get(r[0], []),
+                    "output_files": next((item["output_files"] for item in variants.get(r[0], []) if item["variant_index"] == int(r[9] or 0)), []),
                 }
                 for r in rows
             ]
@@ -798,7 +848,7 @@ class DisplayRecorder:
         - list[dict[str, Any]]: 按版本索引排序的回复版本
         """
         rows = conn.execute(
-            "SELECT variant_index, thinking, answer, segments, context_stats, created_at"
+            "SELECT variant_index, thinking, answer, segments, context_stats, created_at, output_files"
             " FROM display_turn_variants WHERE turn_id = ? ORDER BY variant_index ASC",
             (turn_id,),
         ).fetchall()
@@ -810,6 +860,7 @@ class DisplayRecorder:
                 "segments": json.loads(row[3]) if row[3] else None,
                 "context_stats": json.loads(row[4]) if row[4] else None,
                 "created_at": row[5],
+                "output_files": json.loads(row[6]),
                 "tool_calls": cls._list_tool_calls_locked(conn, turn_id, int(row[0])),
             }
             for row in rows
@@ -1031,7 +1082,7 @@ class DisplayRecorder:
             conn = self._get_conn()
             rows = conn.execute(
                 "SELECT t.id, t.turn_index, t.user_input, t.thinking, t.answer, t.attachments,"
-                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages"
+                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages, v.output_files"
                 " FROM display_turns t LEFT JOIN display_turn_variants v"
                 " ON v.turn_id = t.id AND v.variant_index = t.active_variant"
                 " WHERE t.conversation_id = ? AND t.turn_index < ? ORDER BY t.turn_index ASC",
@@ -1072,8 +1123,8 @@ class DisplayRecorder:
                 new_turn_id = int(cur.lastrowid or 0)
                 tconn.execute(
                     "INSERT INTO display_turn_variants"
-                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at)"
-                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
+                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at, output_files)"
+                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         new_turn_id,
                         row[3],
@@ -1082,6 +1133,7 @@ class DisplayRecorder:
                         row[10],
                         row[7],
                         row[8],
+                        row[11] or "[]",
                     ),
                 )
                 for tool in tools:

@@ -1,10 +1,23 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { AskUserPanel } from "@/pages/Chat/AskUserPanel";
+import { OutputFiles } from "@/pages/Chat/OutputFiles";
 import { type ConversationItem } from "@/api/chat";
 import { restoreConversation } from "@/pages/Chat/conversations";
 import { applyStreamingDeltas, enqueueStreamingDelta, type StreamingDelta } from "@/pages/Chat/streaming";
 import { REJECTION_STAGE_FILTER, RequestDiagnosticsPanel, attachmentLabel, reasonLabel } from "@/components/diagnostics/RequestDiagnosticsPanel";
+
+describe('Chat 文件交付', () => {
+  it('显示下载按钮、名称和大小, HTML 文件不以内联内容渲染', () => {
+    const markup = renderToStaticMarkup(<OutputFiles conversationId="chat" files={[{
+      file_id: 'sf_123', name: '报告<script>.html', size: 1024, sha256: 'hash', mime: 'text/html',
+    }]} />);
+    expect(markup).toContain('下载 报告&lt;script&gt;.html');
+    expect(markup).toContain('1.0 KiB');
+    expect(markup).not.toContain('<iframe');
+    expect(markup).not.toContain('<script>');
+  });
+});
 
 describe("pages/Chat/AskUserPanel", () => {
   describe('AskUserPanel', () => {

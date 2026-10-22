@@ -38,6 +38,7 @@
     "test:e2e:administrators": "node e2e/access-routing.mjs --case administrators",
     "test:e2e": "node e2e/chat-recovery-flows.mjs --case chat-reconnect",
     "test:e2e:chat-history-media": "node e2e/chat-media-flows.mjs --case chat-history-media",
+    "test:e2e:chat-files": "node e2e/chat-media-flows.mjs --case chat-output-files",
     "preview": "vite preview",
     "benchmark": "npm run build && node benchmarks/run.mjs",
     "benchmark:baseline": "npm run build && node benchmarks/run.mjs --baseline",

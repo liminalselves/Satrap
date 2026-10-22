@@ -2,11 +2,12 @@
 迷你 asyncio HTTP + WebSocket 服务器基类
 
 零外部依赖, 基于 asyncio.start_server 实现. 供后端管理 API (http_api) 与
-聊天展示层 (display.server) 等服务复用; 子类只需实现三个钩子:
+聊天展示层 (display.server) 等服务复用; 子类按需实现以下钩子:
 
 - async _route(method, path, body) -> (status, dict): 普通 API 路由
 - async _ws_dispatch(path, reader, writer): WebSocket 端点分发 (未知端点自行关闭)
 - async _serve_static(writer, path, headers) -> bool: 非 API 静态路径钩子, 返回 True 表示已处理
+- async _stream_response(writer, method, path, headers) -> bool: 鉴权后的二进制流响应
 
 共享基础设施: 请求解析, CORS 预检, JSON 响应, WebSocket 握手与帧收发
 """
@@ -401,6 +402,9 @@ class MiniHTTPServer:
                 self._send_json(writer, 401, {"error": "unauthorized"}, origin)
                 return
 
+            if await self._stream_response(writer, method, path, headers):
+                return
+
             body = await read_request_body(
                 reader,
                 raw_request,
@@ -437,6 +441,21 @@ class MiniHTTPServer:
         return self._max_body_bytes
 
     # ---------- 响应 ----------
+
+    async def _stream_response(self, writer: asyncio.StreamWriter, method: str, path: str, headers: dict[str, str]) -> bool:
+        """
+        鉴权后处理二进制流, 默认交给 JSON 路由
+
+        参数:
+        - writer: 当前连接
+        - method: HTTP 方法
+        - path: 原始请求路径
+        - headers: 已解析请求头
+
+        返回:
+        - 已处理时为 True
+        """
+        return False
 
     def _send_cors_preflight(self, writer: asyncio.StreamWriter, origin: str | None = None) -> None:
         """

@@ -375,7 +375,7 @@ class PluginHost:
         取得当前执行范围的宿主产物接口
 
         返回:
-        - 不包含群发送权限的产物读取入口
+        - 产物读取和本轮文件交付接口, 不授予跨对话发送权限
         """
         from satrap.core.plugin_interop.artifacts import ArtifactAccess
 

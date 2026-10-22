@@ -14,6 +14,9 @@
 """
 from __future__ import annotations
 from satrap.core.plugin_interop.environment import EnvironmentSnapshot, bind_environment
+from satrap.core.file_access.artifacts import FileArtifact, artifact_lease, artifact_from_metadata, bind_file_receiver, copy_artifact
+from satrap.core.storage.file_lock import FileLease
+from typing import BinaryIO
 import mimetypes, base64
 
 from satrap.edictum.plugin_compatibility import PluginEnvironment
@@ -1238,6 +1241,34 @@ class ChatService:
         finally:
             rec.close()
 
+    def open_output_file(self, conversation_id: str, file_id: str) -> tuple[BinaryIO, FileArtifact, FileLease]:
+        """
+        为鉴权下载打开当前会话已登记附件, 租约保护下载期间的目录
+
+        参数:
+        - conversation_id: 下载目标会话
+        - file_id: 本会话回复版本中的不透明文件 ID
+
+        返回:
+        - 已校验二进制流, 文件资料和必须释放的维护租约; 未登记时拒绝
+        """
+        root = self._storage.session_artifacts(self._platform_id, conversation_id)
+        lease = artifact_lease(root)
+        recorder: DisplayRecorder | None = None
+        try:
+            recorder = DisplayRecorder(db_path=self._display_db_path, conversation_id=conversation_id)
+            metadata = recorder.find_output_file(file_id)
+            if metadata is None:
+                raise FileNotFoundError("文件不存在或不属于当前会话")
+            artifact = artifact_from_metadata(root, metadata)
+            return artifact.open(), artifact, lease
+        except BaseException:
+            lease.close()
+            raise
+        finally:
+            if recorder is not None:
+                recorder.close()
+
     def query_history(
         self,
         *,
@@ -1786,8 +1817,24 @@ class ChatService:
             try:
                 await self._refresh_session_plugins(conv)
                 conv.session.recovery_origin = conv.recorder.recovery_origin()
-                result = (await conv.session.resume_run(resume_run_id) if resume_run_id is not None
-                          else await conv.session.run(text, img_urls=img_urls, video_urls=video_urls, thinking=think))
+                file_owner = conv.recorder.recovery_origin()
+
+                async def receive_file(artifact: FileArtifact) -> dict[str, object]:
+                    """
+                    将受控附件登记到原始回复版本
+
+                    参数:
+                    - artifact: 已冻结文件
+
+                    返回:
+                    - available 表示可以通过鉴权接口下载
+                    """
+                    conv.recorder.add_output_file(artifact.public(), file_owner)
+                    return {"ok": True, "status": "available", "file": artifact.public()}
+
+                with bind_file_receiver(receive_file):
+                    result = (await conv.session.resume_run(resume_run_id) if resume_run_id is not None
+                              else await conv.session.run(text, img_urls=img_urls, video_urls=video_urls, thinking=think))
                 answer = result.message if isinstance(result, CommandAction) else result
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
                 context_stats = conv.session.get_context_stats()
@@ -2122,6 +2169,16 @@ class ChatService:
                     await self._refresh_session_plugins(new_conv)
                 context_messages = src.recorder.active_context_before(turn_index)
                 copied = src.recorder.copy_turns_to(new_conv.recorder, turn_index)
+                source_root = self._storage.session_artifacts(self._platform_id, conversation_id)
+                target_root = self._storage.session_artifacts(self._platform_id, new_cid)
+
+                def copy_files() -> None:
+                    """在两个会话维护租约内复制实际选中版本的附件"""
+                    with artifact_lease(source_root), artifact_lease(target_root):
+                        for turn in new_conv.recorder.list_turns():
+                            for metadata in turn.get("output_files", []):
+                                copy_artifact(artifact_from_metadata(source_root, metadata), target_root)
+                await asyncio.to_thread(copy_files)
                 if copied > 0 and not context_messages and not src.recorder.has_context_deltas_before(turn_index):
                     context_messages = self._legacy_fork_context(src, turn_index)
                 if context_messages:

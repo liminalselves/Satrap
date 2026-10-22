@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
     from satrap.core.platform.scheduled import ScheduledTarget, ScheduledRecorder
     from satrap.core.platform.receipt import SendReceipt
+    from satrap.core.file_access.artifacts import FileArtifact
 
 
 EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
@@ -419,6 +420,43 @@ class PlatformAdapter(ABC):
             revision = state[1] if state else 0
         if revision != origin.agent_route_generation:
             raise GroupChatError("stale_call", changed_message)
+
+    async def file_delivery_scope(self, origin: CallOrigin) -> MessageScope:
+        """
+        核验文件交付的当前原生对话, 不允许模型改变目标
+
+        参数:
+        - origin: 宿主冻结的真实来源
+
+        返回:
+        - 当前仍有效的群, 私聊或讨论身份
+        """
+        kind = origin.conversation_kind or {"GroupMessage": "group", "FriendMessage": "private"}.get(origin.chat_type, "")
+        if kind == "group":
+            return await self.group_chat_scope(origin)
+        if kind == "private":
+            return await self.group_chat_private_scope(origin)
+        if (kind != "discussion" or kind not in self.conversation_kinds or not self.config.enable
+                or origin.adapter_id != self.config.id or origin.self_id != self.client_self_id):
+            raise PermissionError("当前来源不支持文件交付或已经失效")
+        scope = MessageScope(self.config.id, origin.self_id, kind, origin.conversation_id or origin.chat_id)
+        await self._verify_group_chat_agent_route(origin, scope)
+        return scope
+
+    async def deliver_file(self, origin: CallOrigin, artifact: FileArtifact, check: Callable[[], None]) -> dict[str, object]:
+        """
+        交付受控文件, 未实现的平台明确返回不支持
+
+        参数:
+        - origin: 真实当前对话
+        - artifact: 当前会话复制的文件
+        - check: 每次外部副作用前的宿主复核
+
+        返回:
+        - 明确失败, 不使用未经验证的普通文件消息段兜底
+        """
+        check()
+        return {"ok": False, "status": "failed", "reason": "file_delivery_unsupported"}
 
     async def group_chat_scope(self, origin: CallOrigin) -> MessageScope:
         """

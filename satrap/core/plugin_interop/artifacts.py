@@ -1,8 +1,8 @@
 """
-宿主沙箱产物的有界读取
+宿主产物的有界读取和当前会话文件交付
 
 只读取当前宿主绑定目录内的相对路径, 冻结内容并保留本次执行来源;
-不登记群资产, 不发送消息, 不开放任意服务器文件
+图片读取不登记群资产; 普通文件交付只接受已核验产物, 不开放任意目标或服务器路径
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import os
 
 from satrap.core.plugin_interop.contracts import ImageArtifact, PluginInteractionError
 from satrap.core.call_context import current_call_origin, current_tool_workflow
+from satrap.core.file_access.artifacts import FileArtifact, artifact_lease, current_file_receiver, file_receiver_loop, open_artifact
 
 if TYPE_CHECKING:
     from satrap.core.plugin_interop.capabilities import PluginHost
@@ -88,9 +89,91 @@ def read_sandbox_image(root: Path, path: str) -> bytes:
 
 @dataclass(frozen=True)
 class ArtifactAccess:
-    """当前插件的沙箱图片读取入口"""
+    """当前插件的受控产物读取和文件交付入口"""
 
     _host: PluginHost
+
+    async def deliver_file_async(self, artifact: FileArtifact) -> dict[str, object]:
+        """
+        将已冻结文件交付当前宿主, 不接受模型指定发送对象
+
+        参数:
+        - artifact: 通过宿主文件权限读取并复制的本会话产物
+
+        返回:
+        - Chat 登记或平台实际执行状态, 无交付能力时明确失败
+        """
+        from satrap.core.platform import current_adapter_manager
+        from satrap.core.file_access.reads import source_check
+        from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
+        from satrap.core.approval.state import session_approval
+
+        runtime = self._host._runtime()
+        invocation = runtime.require_execution(self._host)
+        environment = self._host.environment_snapshot()
+        origin, workflow = current_call_origin(), current_tool_workflow()
+        source = source_check(origin)
+
+        def check() -> None:
+            """等待后复核原始执行、来源和产物目录, 不复用失效宿主"""
+            if (runtime.require_execution(self._host) is not invocation or current_call_origin() is not origin
+                    or current_tool_workflow() is not workflow or self._host.environment_snapshot() != environment
+                    or environment.artifacts_root is None or artifact.root != environment.artifacts_root):
+                raise PluginInteractionError("capability_stale", "文件交付来源或目录已经变化")
+            if session_approval(runtime.session()).plan_mode:
+                raise PermissionError("计划模式已开启, 停止文件交付")
+            scope = invocation
+            while scope is not None:
+                entry: object = None
+                if scope.kind == "tools":
+                    entry_workflow = scope.runtime.session()._wf
+                    entry = entry_workflow.tools_manager.tools.get(scope.name) if entry_workflow is not None else None
+                elif scope.kind == "services":
+                    entry = (scope.runtime.bindings[scope.plugin].services or {}).get(scope.name)
+                if scope.kind in {"tools", "services"}:
+                    authorization: object = getattr(entry, "_plugin_entry_binding", None)
+                    if not isinstance(authorization, PluginEntryBinding):
+                        raise PermissionError("文件交付入口缺少有效权限绑定")
+                    require_plugin_entry_permission(authorization, refresh=True)
+                scope = scope.parent
+            source()
+
+        check()
+        with artifact_lease(artifact.root):
+            receiver = current_file_receiver()
+            if receiver is not None:
+                stream = await open_artifact(artifact)
+                stream.close()
+                check()
+                if current_file_receiver() is not receiver:
+                    raise PluginInteractionError("capability_stale", "文件接收宿主已经失效")
+                return await receiver(artifact)
+            manager = current_adapter_manager()
+            adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
+            if adapter is None or origin is None:
+                return {"ok": False, "status": "failed", "reason": "file_delivery_unavailable"}
+            return await adapter.deliver_file(origin, artifact, check)
+
+    def deliver_file_sync(self, artifact: FileArtifact) -> dict[str, object]:
+        """
+        在真实平台事件循环上同步交付文件, 不另建网络客户端
+
+        参数:
+        - artifact: 已冻结的当前会话产物
+
+        返回:
+        - 平台执行状态; 没有受支持宿主时明确失败
+        """
+        from satrap.core.platform import current_adapter_manager
+        from satrap.core.platform.loop_bridge import run_on_platform_loop
+
+        origin = current_call_origin()
+        manager = current_adapter_manager()
+        adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
+        loop = file_receiver_loop() or getattr(adapter, "_loop", None)
+        if loop is None:
+            return {"ok": False, "status": "failed", "reason": "file_delivery_unavailable"}
+        return run_on_platform_loop(self.deliver_file_async(artifact), loop, 180)
 
     def read_sandbox_image(self, path: str) -> ImageArtifact:
         """

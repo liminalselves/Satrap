@@ -39,7 +39,7 @@ WebSocket:
 """
 from __future__ import annotations
 
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlsplit, quote
 import argparse
 import asyncio
 import base64
@@ -65,6 +65,7 @@ from satrap.core.storage import StorageMaintenanceService
 from satrap.core.rag import RagService
 
 from satrap.core.log import logger
+from satrap.core.file_access.artifacts import CHUNK_BYTES
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 19872
@@ -181,6 +182,58 @@ class ChatHTTPServer(MiniHTTPServer):
         if method == "POST" and urlsplit(path).path == "/api/chat/rag/upload":
             return DEFAULT_MAX_FILE_SIZE
         return super()._request_body_limit(method, path)
+
+    async def _stream_response(self, writer: asyncio.StreamWriter, method: str, path: str, headers: dict[str, str]) -> bool:
+        """
+        经统一鉴权后下载当前会话附件, 路径只接受会话和不透明 ID
+
+        参数:
+        - writer: 当前 HTTP 连接
+        - method: HTTP 方法
+        - path: 请求路径
+        - headers: 已验证来源的请求头
+
+        返回:
+        - 下载路由已处理时为 True, 其它请求返回 False
+        """
+        clean = urlsplit(path).path
+        prefix = "/api/chat/files/"
+        if method != "GET" or not clean.startswith(prefix):
+            return False
+        parts = clean[len(prefix):].split("/")
+        origin = headers.get("origin")
+        if len(parts) != 2 or not all(parts):
+            self._send_json(writer, 404, {"error": "文件不存在"}, origin)
+            return True
+        task = asyncio.create_task(asyncio.to_thread(self.service.open_output_file, unquote(parts[0]), unquote(parts[1])))
+        try:
+            opened = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            result = await asyncio.gather(task, return_exceptions=True)
+            if result and isinstance(result[0], tuple):
+                result[0][0].close()
+                result[0][2].close()
+            raise
+        except (OSError, ValueError):
+            self._send_json(writer, 404, {"error": "文件不存在、正在维护或已不可用"}, origin)
+            return True
+        stream, artifact, lease = opened
+        try:
+            cors = {**self._cors, **self.auth.cors_headers(origin)}
+            response = {**cors, "Content-Type": "application/octet-stream", "Content-Length": str(artifact.size),
+                        "Content-Disposition": "attachment; filename=download; filename*=UTF-8''" + quote(artifact.name, safe=""),
+                        "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "Connection": "close"}
+            writer.write(("HTTP/1.1 200 OK\r\n" + "".join(f"{key}: {value}\r\n" for key, value in response.items()) + "\r\n").encode("ascii"))
+            async with asyncio.timeout(60):
+                while chunk := await asyncio.to_thread(stream.read, CHUNK_BYTES):
+                    writer.write(chunk)
+                    await asyncio.wait_for(writer.drain(), timeout=5)
+        except (OSError, TimeoutError):
+            writer.transport.abort()
+        finally:
+            stream.close()
+            lease.close()
+        return True
 
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service

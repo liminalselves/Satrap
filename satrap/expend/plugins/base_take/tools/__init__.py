@@ -43,6 +43,7 @@ from .sync import (
     ReadDocumentTool,
     ReadMediaTool,
 )
+from .files import SendFileTool, AsyncSendFileTool
 
 
 def get_tools(session: SessionType, config: dict[str, Any] | None = None,
@@ -86,6 +87,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
             AsyncCodeSandboxTool(sandbox),
             AsyncReadDocumentTool(workspace_root),
             AsyncReadMediaTool(),
+            AsyncSendFileTool(workspace_root),
         ]
     else:
         tools = [
@@ -94,6 +96,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None,
             CodeSandboxTool(sandbox),
             ReadDocumentTool(workspace_root),
             ReadMediaTool(),
+            SendFileTool(workspace_root),
         ]
     # Step.4 绑定会话, 供文档工具在调用时解析当前可见目录
     for tool in tools:

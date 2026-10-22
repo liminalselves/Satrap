@@ -37,6 +37,7 @@ tools:
   code_sandbox: 免审批的一次性 Python 与文件操作, 白名单库, 拦截联网/外部程序, 产物不自动发送
   read_document: 读取文档, 图片及视频, 动画和兼容视频可按秒分段采样, PDF 可分页查看
   read_media: 按 media_id 和时间区间查看当前会话已收到的动画或视频
+  send_file: 交付本地普通文件给当前会话, Chat 提供下载, 平台等待真实上传或发布回执
 
 compatibility:
   satrap: ">=0.1,<0.2"

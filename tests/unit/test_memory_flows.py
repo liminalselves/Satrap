@@ -583,7 +583,7 @@ def test_split_preserves_closed_capabilities_and_is_idempotent(catalog):
     base, memory = specs
     assert base.name == "base_take" and memory.name == "memory"
     assert base.config == {"search_timeout": 12}
-    assert set(base.capabilities["tools"]) == {"search", "fetch_page", "code_sandbox", "read_document", "read_media"}
+    assert set(base.capabilities["tools"]) == {"search", "fetch_page", "code_sandbox", "read_document", "read_media", "send_file"}
     assert memory.config == {"memory_mode": "base"}
     assert memory.capabilities["tools"]["add_memory"] is False
     assert memory.capabilities["tools"]["get_memory"] is False
