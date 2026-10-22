@@ -101,7 +101,7 @@ from satrap.core.utils.minihttp import (
     read_request_body,
     read_request_headers,
 )
-from satrap.core.server_auth import ServerAuth
+from satrap.core.server_auth import ServerAuth, is_loopback_host
 from satrap.core.runtime_paths import get_runtime_path
 from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
@@ -1312,10 +1312,19 @@ async def _route_ui_config_status(ctx: _RouteContext) -> ControlResponse | None:
             raw_port = api_config.get("port", 19870)
             backend_host = raw_host if isinstance(raw_host, str) else "127.0.0.1"
             backend_port = int(raw_port) if isinstance(raw_port, (int, str)) else 19870
+            origin = _request_origin(ctx.raw_request)
+            origin_host = urllib.parse.urlsplit(origin).hostname
+            if origin_host and not is_loopback_host(origin_host):
+                # 非回环来源按访问主机下发后端与聊天地址, 公网/局域网访问可用
+                backend_host = origin_host
+                chat_host = origin_host
+            else:
+                chat_host = "127.0.0.1"
             return 200, build_ui_config(
                 backend_host=backend_host,
                 backend_port=backend_port,
-                control_api=_request_origin(ctx.raw_request),
+                control_api=origin,
+                chat_host=chat_host,
             )
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
