@@ -5,6 +5,17 @@ let bootstrapToken: string | null | undefined;
 const pendingSessions = new Map<string, Promise<void>>();
 export const API_SESSION_TIMEOUT_MS = 8000;
 
+export class PasswordRequiredError extends Error {
+  constructor() {
+    super('需要访问密码');
+    this.name = 'PasswordRequiredError';
+  }
+}
+
+export function isPasswordRequiredError(error: unknown): boolean {
+  return error instanceof PasswordRequiredError;
+}
+
 function consumeBootstrapToken(): string | null {
   if (bootstrapToken !== undefined) return bootstrapToken;
   const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''));
@@ -51,11 +62,11 @@ export async function establishApiSession(baseUrl: string): Promise<void> {
               if (data.password_required === true) {
                 passwordRequired = true;
                 setApiSessionState(normalized, { state: 'password_required' });
-                throw new Error('需要访问密码');
+                throw new PasswordRequiredError();
               }
             }
           } catch (error) {
-            if (error instanceof Error && error.message === '需要访问密码') throw error;
+            if (isPasswordRequiredError(error)) throw error;
             // 状态探测失败按普通认证错误处理
           }
         }
@@ -86,7 +97,9 @@ export function ensureApiSession(baseUrl: string): Promise<void> {
   const normalized = baseUrl.replace(/\/$/, '');
   const pending = pendingSessions.get(normalized);
   if (pending) return pending;
-  if (useApiSessionStore.getState().sessions[normalized]?.state === 'ready') return Promise.resolve();
+  const state = useApiSessionStore.getState().sessions[normalized]?.state;
+  if (state === 'ready') return Promise.resolve();
+  if (state === 'password_required') return Promise.reject(new PasswordRequiredError());
   return establishApiSession(normalized);
 }
 
