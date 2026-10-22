@@ -148,6 +148,8 @@ class BackendConfig:
     api_host: str = "127.0.0.1"
     # HTTP API 配置
     api_port: int = 19870
+    dashboard_password: str | None = None
+    # 前端访问密码的 PBKDF2 自描述哈希, None 表示免密进入
 
     platforms: List[Dict[str, Any]] = field(default_factory=list[Dict[str, Any]])
     # 平台适配器配置
@@ -247,10 +249,31 @@ class BackendConfig:
             media_allowed_roots=list(media_roots) if media_roots else None,
             api_host=str(api.get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(api.get("port", data.get("api_port", 19870))),
+            dashboard_password=cls._dashboard_password(api),
             platforms=list(platforms),
             administrator_groups=administrators,
             administrator_overrides=exceptions,
         )
+
+    @staticmethod
+    def _dashboard_password(api: dict[str, Any]) -> str | None:
+        """
+        解析前端访问密码的 PBKDF2 哈希, 空值表示免密
+
+        参数:
+        - api: 已校验的 api 配置段
+
+        返回:
+        - 哈希字符串或 None; 非字符串非空值明确报错
+        """
+        value: object = api.get("dashboard_password")
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str):
+            raise ValueError("api.dashboard_password 必须是字符串或 null")
+        if not value.startswith("pbkdf2_sha256$"):
+            raise ValueError("api.dashboard_password 必须是 pbkdf2_sha256 格式哈希")
+        return value
 
     @staticmethod
     def _path_list(data: dict[str, Any], name: str, default: list[str]) -> list[str]:

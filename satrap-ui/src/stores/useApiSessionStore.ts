@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 export interface ApiSessionState {
-  state: 'checking' | 'ready' | 'error';
+  state: 'checking' | 'ready' | 'error' | 'password_required';
   error?: string;
   errorKind?: 'network' | 'timeout' | 'http' | 'unknown';
   status?: number;

@@ -102,6 +102,7 @@ Copy-Item config.example.yaml config.yaml
 | `error_feedback` | `true` | 出错或限流时是否向用户反馈 |
 | `api.host` | `127.0.0.1` | 后端 HTTP API 监听地址 |
 | `api.port` | `19870` | 后端 HTTP API 监听端口 |
+| `api.dashboard_password` | `null` | 前端访问密码的 PBKDF2-SHA256 哈希 (格式 `pbkdf2_sha256$迭代$盐$摘要`), 由系统设置"访问密码"写入; 未设置时前端免密进入, api-token 与 Bearer 访问不受其影响 |
 | `session_classes` | `{}` | 启动时静态注册的 Session 类 |
 | `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录; 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入 |
 | `workspace_roots` | `[]` | Chat 项目可浏览和绑定的目录根; 空列表默认使用本机磁盘 (Linux/macOS 为 `/`), 旧自动配置 `["."]` 同样使用此默认值; 显式填写其它路径时限制在这些目录内 |

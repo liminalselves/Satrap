@@ -402,6 +402,10 @@ class ServerAuth:
         """
         if self.bearer_authorized(headers):
             return True
+        from satrap.core.auth_password import dashboard_password_required
+        # 已设置访问密码时关闭回环免密通道, 密码登录与 Bearer 仍可用
+        if dashboard_password_required():
+            return False
         return (
             self.loopback_bootstrap
             and self.loopback_binding

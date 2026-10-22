@@ -75,6 +75,7 @@ class ConfigLoader:
             "api": {
                 "host": cfg.api_host,
                 "port": cfg.api_port,
+                **({"dashboard_password": cfg.dashboard_password} if cfg.dashboard_password else {}),
             },
             "platforms": list(cfg.platforms),
             "approval_plugin_migration": 1,

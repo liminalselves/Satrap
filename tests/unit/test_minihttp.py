@@ -139,6 +139,97 @@ async def _raw_request(port: int, request: bytes) -> bytes:
     return data
 
 
+# ==================== 访问密码门禁 ====================
+
+
+def _request_bytes(method: str, path: str, *, origin: str = "http://127.0.0.1:5173", body: bytes = b"", extra: str = "") -> bytes:
+    """构造最小 HTTP 请求字节"""
+    head = (f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: {origin}\r\n"
+            f"Content-Length: {len(body)}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra}\r\n")
+    return head.encode() + body
+
+
+def _status_code(response: bytes) -> int:
+    """提取响应状态码"""
+    return int(response.split(b" ", 2)[1])
+
+
+async def test_dashboard_password_gate_covers_bootstrap_login_change_and_clear(tmp_path, monkeypatch):
+    """免密回环引导, 设密码后按密码或 Bearer 进入, 改密即时生效, 清除后恢复, 非法存储报 500"""
+    from satrap.core.auth_password import update_dashboard_password
+    config = tmp_path / "config.yaml"
+    monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: config)
+    server = _EchoServer()
+    port = await _start_server(server)
+    try:
+        echo = "/api/echo?x=1"
+        bootstrap = await _raw_request(port, _request_bytes("POST", "/auth/session"))
+        assert _status_code(bootstrap) == 200
+        free_cookie = "Cookie: " + bootstrap.split(b"Set-Cookie: ", 1)[1].split(b";", 1)[0].decode() + "\r\n"
+        assert _status_code(await _raw_request(port, _request_bytes("GET", echo, extra=free_cookie))) == 200
+        status_response = await _raw_request(port, _request_bytes("GET", "/auth/password/status"))
+        assert _status_code(status_response) == 200 and b'"password_required": false' in status_response
+
+        update_dashboard_password("Secret-123")
+        status_response = await _raw_request(port, _request_bytes("GET", "/auth/password/status"))
+        assert b'"password_required": true' in status_response
+        assert _status_code(await _raw_request(port, _request_bytes("POST", "/auth/session"))) == 401
+        assert _status_code(await _raw_request(port, _request_bytes("GET", echo))) == 401
+        assert _status_code(await _raw_request(
+            port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"wrong-123"}'))) == 401
+        login = await _raw_request(
+            port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"Secret-123"}'))
+        assert _status_code(login) == 200
+        cookie = b"Cookie: " + login.split(b"Set-Cookie: ", 1)[1].split(b";", 1)[0] + b"\r\n"
+        assert _status_code(await _raw_request(port, _request_bytes("GET", echo, extra=cookie.decode()))) == 200
+        assert _status_code(await _raw_request(
+            port, _request_bytes("PUT", "/auth/password", extra=cookie.decode(),
+                                 body=b'{"current_password":"Secret-123","new_password":"Newer-456"}'))) == 200
+        assert _status_code(await _raw_request(
+            port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"Newer-456"}'))) == 200
+        assert _status_code(await _raw_request(
+            port, _request_bytes("PUT", "/auth/password", extra=cookie.decode(),
+                                 body=b'{"current_password":"Secret-123","new_password":"Again-789"}'))) == 403
+        assert _status_code(await _raw_request(
+            port, _request_bytes("PUT", "/auth/password", extra=cookie.decode(),
+                                 body=b'{"current_password":"Newer-456","new_password":null}'))) == 200
+        assert b'"password_required": false' in await _raw_request(port, _request_bytes("GET", "/auth/password/status"))
+        assert _status_code(await _raw_request(port, _request_bytes("POST", "/auth/session"))) == 200
+
+        update_dashboard_password("Secret-123")
+        for _ in range(5):
+            await _raw_request(port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"nope-000"}'))
+        assert _status_code(await _raw_request(
+            port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"Secret-123"}'))) == 429
+
+        config.write_text("api:\n  dashboard_password: not-a-pbkdf2-hash\n", encoding="utf-8")
+        assert _status_code(await _raw_request(port, _request_bytes("GET", "/auth/password/status"))) == 500
+        assert _status_code(await _raw_request(port, _request_bytes("POST", "/auth/session"))) == 401
+    finally:
+        await server.stop()
+
+
+async def test_password_login_without_origin_and_bearer_still_works(tmp_path, monkeypatch):
+    """登录端点拒绝无来源请求, Bearer token 通道不受访问密码影响"""
+    from satrap.core.auth_password import update_dashboard_password
+    config = tmp_path / "config.yaml"
+    monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: config)
+    server = _EchoServer()
+    port = await _start_server(server)
+    try:
+        update_dashboard_password("Secret-123")
+        bearer = b"Authorization: Bearer test-token-that-is-at-least-thirty-two-characters\r\n"
+        no_origin = (b"POST /auth/password/login HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                     b"Content-Length: 24\r\nConnection: close\r\n\r\n{\"password\":\"Secret-123\"}")
+        assert _status_code(await _raw_request(port, no_origin)) == 403
+        assert _status_code(await _raw_request(
+            port, _request_bytes("GET", "/api/echo", extra=bearer.decode()))) == 200
+        assert _status_code(await _raw_request(
+            port, _request_bytes("POST", "/auth/session", extra=bearer.decode()))) == 200
+    finally:
+        await server.stop()
+
+
 def _websocket_request(path: str = "/ws/test", key: str = "dGhlIHNhbXBsZSBub25jZQ==") -> bytes:
     """构造带鉴权的 WebSocket 升级请求"""
     return (

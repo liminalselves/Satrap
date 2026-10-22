@@ -3,6 +3,7 @@ import { RouterProvider } from 'react-router-dom';
 import { router } from './router';
 import { useBackendStatusSync } from './hooks/useBackendStatusSync';
 import { ApiSessionNotice } from '@/components/common/ApiSessionNotice';
+import { PasswordGate } from '@/components/common/PasswordGate';
 import { ConfirmProvider } from '@/components/common/ConfirmProvider';
 
 function App() {
@@ -35,6 +36,7 @@ function App() {
       
       <ConfirmProvider><RouterProvider router={router} /></ConfirmProvider>
       <ApiSessionNotice />
+      <PasswordGate />
     </>
   );
 }

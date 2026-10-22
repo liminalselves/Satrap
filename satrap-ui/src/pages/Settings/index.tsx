@@ -14,6 +14,7 @@ import * as yaml from 'js-yaml';
 import { DataMaintenancePanel } from './DataMaintenancePanel';
 import { LogRetentionPanel } from './LogRetentionPanel';
 import { AdministratorsPanel } from './AdministratorsPanel';
+import { AccessPasswordPanel } from './AccessPasswordPanel';
 import { administratorError } from '@/api/administrators';
 
 interface ConfigData {
@@ -236,6 +237,7 @@ export function Settings() {
           <TabsList>
             <TabsTrigger value="general">常用配置</TabsTrigger>
             <TabsTrigger value="administrators">管理员</TabsTrigger>
+            <TabsTrigger value="access">访问密码</TabsTrigger>
             <TabsTrigger value="raw">原始配置</TabsTrigger>
             <TabsTrigger value="data">数据维护</TabsTrigger>
             <TabsTrigger value="logging">日志保留</TabsTrigger>
@@ -255,6 +257,10 @@ export function Settings() {
                 } catch { return current; }
               });
             }} />
+          </TabsContent>
+
+          <TabsContent value="access" forceMount>
+            <AccessPasswordPanel active={settingsTab === 'access'} />
           </TabsContent>
 
           <TabsContent value="logging" forceMount>

@@ -21,6 +21,8 @@ error_feedback: true                  # 出错或限流时是否通知用户
 # --- HTTP API ---
 # 回环监听会自动生成 .satrap/api-token, CLI 和管理前端会自动使用
 # 绑定非回环地址时必须显式设置至少 32 字符的 SATRAP_API_TOKEN
+# dashboard_password: 前端访问密码的 PBKDF2 哈希, 不设置表示免密进入
+# 由管理界面"访问密码"设置写入, 不建议手工生成
 api:
   host: 127.0.0.1
   port: 19870
