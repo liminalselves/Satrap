@@ -3,7 +3,7 @@ import { KeyRound, RefreshCw } from 'lucide-react';
 import { getPasswordStatus, setDashboardPassword } from '@/api/auth';
 import { getControlApiUrl } from '@/utils/constants';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
+import { PasswordInput } from '@/components/ui/PasswordInput';
 import { toast } from '@/components/ui/Toast';
 
 export function AccessPasswordPanel({ active }: { active: boolean }) {
@@ -70,19 +70,19 @@ export function AccessPasswordPanel({ active }: { active: boolean }) {
       {required && (
         <div>
           <label htmlFor="access-current" className="block mb-1 text-sm text-text-secondary">当前密码</label>
-          <Input id="access-current" type="password" autoComplete="current-password" value={currentPassword}
+          <PasswordInput id="access-current" autoComplete="current-password" value={currentPassword}
             onChange={(event) => setCurrentPassword(event.target.value)} disabled={busy} />
         </div>
       )}
       <div className="grid gap-5 sm:grid-cols-2">
         <div>
           <label htmlFor="access-new" className="block mb-1 text-sm text-text-secondary">{required ? '新密码' : '设置密码'}</label>
-          <Input id="access-new" type="password" autoComplete="new-password" value={newPassword}
+          <PasswordInput id="access-new" autoComplete="new-password" value={newPassword}
             onChange={(event) => setNewPassword(event.target.value)} disabled={busy} placeholder="至少 8 个字符" />
         </div>
         <div>
           <label htmlFor="access-confirm" className="block mb-1 text-sm text-text-secondary">确认新密码</label>
-          <Input id="access-confirm" type="password" autoComplete="new-password" value={confirmPassword}
+          <PasswordInput id="access-confirm" autoComplete="new-password" value={confirmPassword}
             onChange={(event) => setConfirmPassword(event.target.value)} disabled={busy} />
         </div>
       </div>
