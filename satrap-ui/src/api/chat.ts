@@ -210,6 +210,7 @@ export type ModelConfigItem = LLMConfig;
 // 预加载及首次发送使用的会话构建设置
 export interface ChatPreloadSettings {
   commandHistoryEnabled?: boolean;
+  maxIterations?: number;   // 最大工具迭代次数, 缺省沿用会话定义默认
   approvalMode?: ApprovalMode;   // 草稿首次发送时应用, 不改变已有会话的审批策略
   model: string;
   think: string;
@@ -384,6 +385,12 @@ export const chatApi = {
   setCommandHistory: (conversation: string, enabled: boolean) =>
     request<{ ok: boolean; command_history_enabled: boolean; error?: string }>('PUT', `/api/chat/command-history?conversation=${encodeURIComponent(conversation)}`, { command_history_enabled: enabled }),
 
+  getMaxIterations: (conversation: string) =>
+    request<{ ok: boolean; max_iterations: number }>('GET', `/api/chat/max-iterations?conversation=${encodeURIComponent(conversation)}`),
+
+  setMaxIterations: (conversation: string, value: number | null) =>
+    request<{ ok: boolean; max_iterations: number; error?: string }>('PUT', `/api/chat/max-iterations?conversation=${encodeURIComponent(conversation)}`, { max_iterations: value }),
+
   // 项目管理
   listProjects: () => request<{ projects: ProjectItem[] }>('GET', '/api/projects'),
 
@@ -454,6 +461,7 @@ export const chatApi = {
         project_id: preloadSettings.projectId,
         approval_mode: preloadSettings.approvalMode,
         command_history_enabled: preloadSettings.commandHistoryEnabled,
+        max_iterations: preloadSettings.maxIterations,
       } : {}),
     }),
 

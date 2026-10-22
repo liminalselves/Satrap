@@ -512,6 +512,47 @@ class ChatService:
             conv.session.command_history_enabled = enabled
         return {"ok": True, "command_history_enabled": enabled}
 
+    async def get_max_iterations(self, conversation_id: str) -> dict[str, object]:
+        """
+        返回当前 Chat 会话的最大工具迭代次数
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+
+        返回:
+        - 会话当前生效的最大迭代次数
+        """
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        return {"ok": True, "max_iterations": conv.session.default_max_iterations}
+
+    @_exclusive_conversation_operation
+    async def set_max_iterations(self, conversation_id: str, value: object) -> dict[str, object]:
+        """
+        保存或清除最大工具迭代次数, 与当前轮次互斥
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+        - value: 正整数上限, None 清除覆盖还原会话定义默认
+
+        返回:
+        - 已保存或还原后的最大迭代次数
+        """
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+            raise ValueError("max_iterations 必须是正整数或 null")
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            store = conv.session.plugin_override_store
+            if store is None:
+                raise ValueError("会话覆盖存储尚未就绪")
+            current = store.read(conversation_id, "session.engine")
+            store.replace(conversation_id, "session.engine", {} if value is None else {"max_iterations": value}, expected_revision=current["revision"])
+            conv.session.default_max_iterations = conv.session.configured_max_iterations if value is None else value
+        return {"ok": True, "max_iterations": conv.session.default_max_iterations}
+
     async def _request_approval(self, conv: _Conversation, request: ApprovalRequest) -> ApprovalResult:
         """
         展示精确动作并把明确点击结果绑定到原始审批请求
@@ -1679,6 +1720,17 @@ class ChatService:
                 store.replace(conv.conversation_id, "session.commands", {"command_history_enabled": enabled}, expected_revision=current["revision"])
                 conv.session.command_history_enabled = enabled
 
+            if "max_iterations" in settings:
+                value = settings["max_iterations"]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ValueError("max_iterations 必须是正整数")
+                store = conv.session.plugin_override_store
+                if store is None:
+                    raise ValueError("会话覆盖存储尚未就绪")
+                current = store.read(conv.conversation_id, "session.engine")
+                store.replace(conv.conversation_id, "session.engine", {"max_iterations": value}, expected_revision=current["revision"])
+                conv.session.default_max_iterations = value
+
             if approval_mode is not None:
                 from satrap.core.approval.state import session_approval
                 async with conv.plugin_lock:
@@ -2165,6 +2217,7 @@ class ChatService:
                 new_conv = self._conversations[new_cid]
                 await RAG_WORKERS.run(fork_session_settings, self._storage, self._platform_id, conversation_id, new_cid)
                 new_conv.session.command_history_enabled = src.session.command_history_enabled
+                new_conv.session.default_max_iterations = src.session.default_max_iterations
                 async with new_conv.plugin_lock:
                     await self._refresh_session_plugins(new_conv)
                 context_messages = src.recorder.active_context_before(turn_index)
@@ -2206,6 +2259,9 @@ class ChatService:
         """
         session.plugin_override_store = SessionOverrideStore(self._storage.platform_db(self._platform_id))
         session.command_history_enabled = session.plugin_override_store.read(session.session_id, "session.commands")["overrides"].get("command_history_enabled", False)
+        engine_overrides = session.plugin_override_store.read(session.session_id, "session.engine")["overrides"]
+        if type(engine_overrides.get("max_iterations")) is int and engine_overrides["max_iterations"] >= 1:
+            session.default_max_iterations = engine_overrides["max_iterations"]
         session.plugin_model_manager = self._model_cfg
         session.storage_layout = self._storage
         session.storage_platform_id = self._platform_id

@@ -377,6 +377,35 @@ async def test_command_history_setting_survives_preload_restart_and_fork(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_max_iterations_setting_survives_preload_restart_fork_and_clear(tmp_path, monkeypatch):
+    """Chat 最大迭代在首条消息前生效, 持久化/重启/分支继承, null 还原定义默认, HTTP 拒绝非法值"""
+    service = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(service)
+    cid = await service.preload_conversation()
+    result = await service.send(cid, "hi", preload_settings={"max_iterations": 3})
+    assert result["ok"] is True
+    await _wait_conversation_task(service, cid)
+    session = _must_conversation(service, cid).session
+    assert session.default_max_iterations == 3 and session.configured_max_iterations == 10
+    assert (await service.get_max_iterations(cid))["max_iterations"] == 3
+    assert (await service.set_max_iterations(cid, 5))["max_iterations"] == 5
+    fork = await service.fork(cid, 1)
+    assert fork["ok"] is True
+    assert (await service.get_max_iterations(fork["conversation_id"]))["max_iterations"] == 5
+    status, _ = await server._route("PUT", f"/api/chat/max-iterations?conversation={cid}", b'{"max_iterations":"5"}')
+    assert status == 400
+    await service.close()
+    resumed = _make_service(tmp_path, monkeypatch)
+    try:
+        assert (await resumed.get_max_iterations(cid))["max_iterations"] == 5
+        assert (await resumed.get_max_iterations(fork["conversation_id"]))["max_iterations"] == 5
+        assert (await resumed.set_max_iterations(cid, None))["ok"] is True
+        assert (await resumed.get_max_iterations(cid))["max_iterations"] == 10
+    finally:
+        await resumed.close()
+
+
+@pytest.mark.asyncio
 async def test_chat_run_pagination_preserves_python_all_results(tmp_path, monkeypatch):
     """HTTP 使用分页, Python 无参接口仍返回全部摘要"""
     from satrap.edictum.simple_session.recovery import store_for_session

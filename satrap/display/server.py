@@ -291,6 +291,22 @@ class ChatHTTPServer(MiniHTTPServer):
                 logger.warning(f"[命令历史] 设置读取或更新失败: {error}")
                 return 400, {"error": str(error)}
 
+        if clean == "/api/chat/max-iterations" and method in {"GET", "PUT"}:
+            conversation_id = self._query_param(path, "conversation")
+            try:
+                if not conversation_id:
+                    raise ValueError("缺少 conversation")
+                if method == "GET":
+                    return 200, await svc.get_max_iterations(conversation_id)
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or set(payload) != {"max_iterations"}:
+                    raise ValueError("最大迭代设置参数无效")
+                result = await svc.set_max_iterations(conversation_id, payload["max_iterations"])
+                return (200 if result.get("ok") else 409), result
+            except (OSError, TypeError, ValueError) as error:
+                logger.warning(f"[最大迭代] 设置读取或更新失败: {error}")
+                return 400, {"error": str(error)}
+
         if clean == "/api/chat/approval" and method in {"GET", "PUT"}:
             conversation_id = self._query_param(path, "conversation")
             try:
@@ -538,7 +554,7 @@ class ChatHTTPServer(MiniHTTPServer):
             think = str(think) if think is not None else None
             preload_settings = {
                 key: payload[key]
-                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled")
+                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled", "max_iterations")
                 if key in payload
             }
             result = await svc.send(

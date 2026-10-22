@@ -23,6 +23,10 @@ def normalize_session_settings(params: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(params)
     if type(normalized.get("command_history_enabled", False)) is not bool:
         raise ValueError("command_history_enabled 必须是布尔值")
+    if "max_iterations" in normalized:
+        value = normalized["max_iterations"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("max_iterations 必须是正整数")
     thinking = normalized.get("thinking", "off")
     if not isinstance(thinking, str) or thinking not in THINKING_LEVELS:
         raise ValueError("thinking 必须是 off/low/medium/high/xhigh/max/ultra")

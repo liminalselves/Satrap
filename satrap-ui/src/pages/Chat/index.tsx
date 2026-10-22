@@ -115,6 +115,7 @@ interface ChatSettings {
   think: string;   // 思考强度 (off/low/medium/high)
   temperature: number;   // 采样温度
   commandHistoryEnabled: boolean;   // 是否将已执行命令及回复写入模型上下文
+  maxIterations?: number;   // 最大工具迭代次数, undefined 沿用会话定义默认
   systemPrompt: string;   // 系统提示词
 }
 
@@ -123,6 +124,7 @@ const DEFAULT_SETTINGS: ChatSettings = {
   think: 'off',
   temperature: 0.7,
   commandHistoryEnabled: false,
+  maxIterations: undefined,
   systemPrompt: '',
 };
 
@@ -841,6 +843,13 @@ export function Chat() {
       }).catch((error: unknown) => toast('error', String(error)));
       return;
     }
+    if (key === 'maxIterations' && activeId && activeId !== '__draft__') {
+      void chatApi.setMaxIterations(activeId, typeof value === 'number' ? value : null).then((result) => {
+        if (!result.ok) throw new Error(result.error || '保存失败');
+        if (activeIdRef.current === activeId) setSettings((prev) => ({ ...prev, maxIterations: result.max_iterations }));
+      }).catch((error: unknown) => toast('error', String(error)));
+      return;
+    }
     setSettings((prev) => ({ ...prev, [key]: value }));
   }, [activeId]);
 
@@ -850,6 +859,9 @@ export function Chat() {
     void chatApi.getCommandHistory(activeId).then((result) => {
       if (!cancelled) setSettings((prev) => ({ ...prev, commandHistoryEnabled: result.command_history_enabled }));
     }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
+    void chatApi.getMaxIterations(activeId).then((result) => {
+      if (!cancelled) setSettings((prev) => ({ ...prev, maxIterations: result.max_iterations }));
+    }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     return () => { cancelled = true; };
   }, [activeId]);
 
@@ -858,11 +870,12 @@ export function Chat() {
     model: settings.model,
     temperature: settings.temperature,
     commandHistoryEnabled: settings.commandHistoryEnabled,
+    maxIterations: settings.maxIterations,
     systemPrompt: settings.systemPrompt,
     modelConfig: modelsDetail[settings.model] ?? null,
     plugins,
     pluginConfigRevision,
-  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, modelsDetail, plugins, pluginConfigRevision]);
+  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.maxIterations, modelsDetail, plugins, pluginConfigRevision]);
 
   const preloadKeyFor = useCallback(
     (projectId: string | null | undefined) => `${preloadBaseKey}:${projectId ?? ''}`,
@@ -875,10 +888,11 @@ export function Chat() {
       think: settings.think,
       temperature: settings.temperature,
       commandHistoryEnabled: settings.commandHistoryEnabled,
+      maxIterations: settings.maxIterations,
       systemPrompt: settings.systemPrompt,
       projectId: projectId ?? null,
     }),
-    [settings.model, settings.think, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled]
+    [settings.model, settings.think, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.maxIterations]
   );
 
   // 启动或复用当前设置对应的预加载请求
@@ -2375,6 +2389,22 @@ function ChatSettingsModal({
                   <input type="checkbox" checked={settings.commandHistoryEnabled}
                     onChange={(e) => onChange('commandHistoryEnabled', e.target.checked)} />
                 </label>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-text-primary">最大工具迭代</div>
+                    <div className="text-xs text-text-tertiary">单轮对话中模型最多调用工具的次数, 留空沿用会话配置默认</div>
+                  </div>
+                  <input type="number" min={1} step={1} placeholder="默认"
+                    value={settings.maxIterations ?? ''}
+                    onChange={(e) => {
+                      const raw = e.target.value.trim();
+                      const parsed = raw === '' ? undefined : Number(raw);
+                      if (parsed !== undefined && (!Number.isInteger(parsed) || parsed < 1)) return;
+                      onChange('maxIterations', parsed);
+                    }}
+                    className="w-20 rounded-md border border-border bg-transparent px-2 py-1 text-right text-sm" />
+                </div>
 
                 {/* 温度 */}
                 <div>

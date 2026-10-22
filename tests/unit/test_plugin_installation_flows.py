@@ -686,12 +686,13 @@ async def test_hot_restart_persists_new_prompt_and_reactivated_skills(tmp_path, 
         await old._wf.ctx.add_user_message("保留历史")
     else:
         old._wf.ctx.add_user_message("保留历史")
-    configs.update("assistant", {"params": {"system_prompt": "新提示词", "thinking": "high", "model_params": {"temperature": 0.2}}})
+    configs.update("assistant", {"params": {"system_prompt": "新提示词", "thinking": "high", "max_iterations": 3, "model_params": {"temperature": 0.2}}})
     result = await manager.reconcile_edictum_runtime_async(config_name="assistant")
     assert result[0]["ok"]
     new: Any = entry.session
     assert new is not old
     assert new.default_thinking == "high" and new._wf.llm.temperature == 0.2
+    assert new.default_max_iterations == 3
     assert {"alpha_bundle", "alpha_mcp", "beta_bundle", "beta_mcp"} <= new._wf.tools_manager.tools.keys()
     assert not new._skills_manager.get_skill("alpha").mcp_clients[0].closed
     memory = new._wf.ctx.get_context()

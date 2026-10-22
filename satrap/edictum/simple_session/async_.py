@@ -56,6 +56,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         thinking: str = "off",
         command_history_enabled: bool = False,
         model_params: dict[str, Any] | None = None,
+        max_iterations: int = 10,
         tools: Iterable[AsyncTool] | None = None,
         content_callback: Callable[[str], Any] | None = None,
         db_path: str = get_db_path(),
@@ -76,6 +77,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         - thinking: 默认思考强度, 默认 off; run 可逐次覆盖
         - command_history_enabled: 是否记录命令及回复到模型上下文, 默认 False
         - model_params: temperature/top_p/max_tokens 的会话覆盖, 默认 None 继承模型配置
+        - max_iterations: 默认最大工具迭代次数, 默认 10; run 可逐次覆盖
         - tools: 初始工具列表, 默认 None 表示不预注册工具
         - content_callback: 内容回调, 用于模型与命令输出, 默认 None 表示不回调
         - db_path: 上下文, 检查点与执行记录数据库路径, 默认使用 get_db_path() 返回的路径
@@ -109,8 +111,11 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         self._init_thinking_callback = thinking_callback
         self._init_tools: list[AsyncTool] = list(tools or [])
         self._init_skills: list[str] = []
-        settings = normalize_session_settings({"thinking": thinking, "model_params": {} if model_params is None else model_params})
+        settings = normalize_session_settings({"thinking": thinking, "max_iterations": max_iterations,
+                                               "model_params": {} if model_params is None else model_params})
         self.default_thinking: str = thinking
+        self.default_max_iterations: int = settings["max_iterations"]
+        self.configured_max_iterations: int = settings["max_iterations"]
         self._init_model_params: dict[str, Any] = settings["model_params"]
         self._db_path = db_path
         self._wf: AsyncModelWorkflowFramework | None = None
@@ -236,7 +241,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         img_urls: list[str] | None = None,
         *,
         thinking: str | None = None,
-        max_iterations: int = 10,
+        max_iterations: int | None = None,
         video_urls: list[str] | None = None,
         request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str | CommandAction:
@@ -247,7 +252,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         - user_input: 用户输入
         - img_urls: 图片 URL 列表 (多模态)
         - thinking: 模型思考强度, 默认 None 使用会话配置, 流式和非流式均支持
-        - max_iterations: 最大工具调用迭代次数
+        - max_iterations: 最大工具调用迭代次数, 默认 None 使用会话配置
         - video_urls: 视频来源列表, 默认 None
 
         处理器语义 (与同步版一致): 短路/改写/隔离/超时/finally, 见 SimpleSession.run
@@ -279,6 +284,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                 return "" if command_result is None else str(command_result)
 
             thinking = self.default_thinking if thinking is None else thinking
+            max_iterations = self.default_max_iterations if max_iterations is None else max_iterations
             wf = self._require_wf()
             if self._plugin_interop_runtime is not None:
                 await self._plugin_interop_runtime.synchronize_skills_async()
