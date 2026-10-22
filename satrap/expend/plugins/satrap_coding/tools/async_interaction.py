@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 
 from satrap.core.approval.policy import PermissionEngine
@@ -82,7 +83,7 @@ class AsyncShellTool(AsyncTool):
         "command": ("string", "要执行的命令"),
         "cwd": ("string", "工作目录, 默认当前会话工作区"),
         "timeout": ("number", "超时秒数, 范围 1-3600, 默认 120"),
-        "shell": ("string", "shell 类型: powershell / cmd, 默认 powershell"),
+        "shell": ("string", "shell 类型: auto / powershell / cmd / bash / sh, 默认 auto"),
     }
 
     def __init__(
@@ -118,7 +119,7 @@ class AsyncShellTool(AsyncTool):
         command: str,
         cwd: str = "",
         timeout: int | float | str | None = None,
-        shell: str = "powershell",
+        shell: str = "auto",
     ) -> str:
         """
         异步审批并执行 Shell 命令
@@ -127,7 +128,7 @@ class AsyncShellTool(AsyncTool):
         - command: 待审批的 Shell 命令
         - cwd: 工作目录, 默认空字符串表示工作区根目录
         - timeout: 超时秒数, None 表示使用实例配置, 范围 1-3600
-        - shell: Shell 类型, 默认 powershell
+        - shell: Shell 类型, 默认 auto 按系统选择
 
         返回:
         - 执行结果, 参数错误或审批拒绝说明; 未绑定会话时抛出 RuntimeError
@@ -163,15 +164,27 @@ class AsyncShellTool(AsyncTool):
         if not allowed:
             return message
         # Step.3 在实际执行线程内核验来源与权限后运行固定参数
+        cancelled = threading.Event()
+
         def run() -> str:
             """紧邻启动本机进程执行最终复核"""
             try:
                 check()
-                return _run_shell(args, workdir_path, timeout_value, allow=allowed_env)
+                return _run_shell(args, workdir_path, timeout_value, allow=allowed_env, cancelled=cancelled)
             except (OSError, ValueError) as error:
                 logger.warning(f"[satrap_coding] Shell 执行取消: {error}")
                 return f"执行已取消: {error}"
-        return await asyncio.to_thread(run)
+        task = asyncio.create_task(asyncio.to_thread(run))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled.set()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled.set()
+            raise
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """

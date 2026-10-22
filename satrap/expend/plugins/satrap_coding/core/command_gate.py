@@ -96,12 +96,13 @@ _GIT_WRITE = {"add", "commit", "init", "mv", "rm", "stash", "checkout", "merge",
 _GIT_HIGH = {"push", "clean", "reset", "revert"}
 
 
-def _split_segments(command: str) -> list[str]:
+def _split_segments(command: str, *, posix: bool = False) -> list[str]:
     """
     按命令分隔符切分 (跳过引号内), 返回各段
 
     参数:
     - command: 命令内容
+    - posix: 是否按 POSIX 规则处理反斜杠转义
 
     返回:
     - list[str]: 各段
@@ -112,6 +113,10 @@ def _split_segments(command: str) -> list[str]:
     i = 0
     while i < len(command):
         ch = command[i]
+        if posix and ch == "\\" and quote != "'" and i + 1 < len(command):
+            buf.extend((ch, command[i + 1]))
+            i += 2
+            continue
         if quote is not None:
             buf.append(ch)
             if ch == quote:
@@ -119,7 +124,7 @@ def _split_segments(command: str) -> list[str]:
         elif ch in ('"', "'"):
             quote = ch
             buf.append(ch)
-        elif ch in ("&", "|", ";"):
+        elif ch in ("&", "|", ";", "\n", "\r"):
             segments.append("".join(buf))
             buf = []
             if i + 1 < len(command) and command[i + 1] == ch:
@@ -153,12 +158,13 @@ def _has_redirect(text: str) -> bool:
     return False
 
 
-def classify_command(command: str) -> tuple[RiskLevel, bool]:
+def classify_command(command: str, *, posix: bool = False) -> tuple[RiskLevel, bool]:
     """
     分类 shell 命令 (整串逐段分类, 取最高风险级)
 
     参数:
     - command: 命令内容
+    - posix: 使用 POSIX 参数与嵌套 Shell 语义, 默认兼容 Windows
 
     返回:
     - (风险级, 是否环境修改): 环境修改类命令需审批
@@ -168,23 +174,24 @@ def classify_command(command: str) -> tuple[RiskLevel, bool]:
         return RiskLevel.READ, False
     max_risk = RiskLevel.READ
     escape = False
-    for segment in _split_segments(text):
+    for segment in _split_segments(text, posix=posix):
         seg = segment.strip()
         if not seg:
             continue
-        risk, esc = _classify_segment(seg)
+        risk, esc = _classify_segment(seg, posix=posix)
         if risk > max_risk:
             max_risk = risk
         escape = escape or esc
     return max_risk, escape
 
 
-def _classify_segment(segment: str) -> tuple[RiskLevel, bool]:
+def _classify_segment(segment: str, *, posix: bool = False) -> tuple[RiskLevel, bool]:
     """
     分类单段命令 (不含分隔符)
 
     参数:
     - segment: 分段
+    - posix: 是否使用 POSIX 引号与命令名解析
 
     返回:
     - tuple[RiskLevel, bool]: 分类单段命令 (不含分隔符)
@@ -196,10 +203,18 @@ def _classify_segment(segment: str) -> tuple[RiskLevel, bool]:
         if pattern.search(text):
             return RiskLevel.FORBIDDEN, False
 
-    tokens = _tokenize_segment(text)
+    tokens = _tokenize_segment(text, posix=posix)
     if not tokens:
         return RiskLevel.READ, False
     head = _normalize_token(tokens[0]).lower()
+    if posix:
+        head = head.rsplit("/", 1)[-1]
+        if head == "rm" and any(argument.startswith("/") for argument in tokens[1:]):
+            return RiskLevel.FORBIDDEN, False
+        if head in {"sudo", "su", "doas", "eval", "exec", "env"}:
+            return RiskLevel.HIGH, False
+        if "$(" in text or "`" in text or "<(" in text or ">(" in text:
+            return RiskLevel.HIGH, False   # 动态展开无法可靠静态解析, 不按只读命令降级
 
     nested = _classify_nested_shell(head, tokens)
     if nested is not None:
@@ -234,18 +249,19 @@ def _classify_segment(segment: str) -> tuple[RiskLevel, bool]:
     return RiskLevel.WRITE, False
 
 
-def _tokenize_segment(text: str) -> list[str]:
+def _tokenize_segment(text: str, *, posix: bool = False) -> list[str]:
     """
     将单段 shell 文本拆分为近似参数列表
 
     参数:
     - text: 不含顶层命令分隔符的 shell 文本
+    - posix: 是否移除 POSIX 引号并解析转义
 
     返回:
     - 参数列表; 引号不完整或语法无法解析时回退到空白分割结果
     """
     try:
-        return [token for token in shlex.split(text, posix=False) if token]
+        return [token for token in shlex.split(text, posix=posix) if token]
     except ValueError:
         return [token for token in text.split() if token]
 
@@ -299,6 +315,11 @@ def _classify_nested_shell(
     - 内层命令的分类结果; 当前命令不是可解析包装器时返回 None
     """
     normalized = [_normalize_token(token) for token in tokens]
+    if head in {"bash", "sh", "dash", "zsh", "ksh"}:
+        for index, token in enumerate(normalized[1:], start=1):
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and index + 1 < len(normalized):
+                return classify_command(normalized[index + 1], posix=True)
+        return RiskLevel.HIGH, False
     if head in {"cmd", "cmd.exe"}:
         for index, token in enumerate(normalized[1:], start=1):
             if token.lower() in {"/c", "/k"} and index + 1 < len(normalized):

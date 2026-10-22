@@ -38,6 +38,9 @@ def _shell_definition(definition: dict[str, Any], default_timeout: int) -> dict[
         parameters["properties"]["timeout"].update(
             type="integer", minimum=1, maximum=3600, default=default_timeout
         )
+        parameters["properties"]["shell"].update(
+            enum=["auto", "powershell", "cmd", "bash", "sh"], default="auto"
+        )
     return definition
 
 
@@ -92,15 +95,15 @@ class AskUserTool(Tool):
 
 
 class ShellTool(Tool):
-    """执行本机 shell 命令 (PowerShell/cmd), 按 user/auto/full-access 决定审批"""
+    """执行本机 shell 命令, 按 user/auto/full-access 决定审批"""
 
     tool_name = "shell"
-    description = "在本机执行 shell 命令 (PowerShell/cmd), user 人工审批, auto 模型审批, full-access 直接执行, 计划模式禁用; 免审批读取请使用文件工具"
+    description = "在本机执行 shell 命令, 默认按系统选择 Windows PowerShell 或 POSIX bash/sh; user 人工审批, auto 模型审批, full-access 直接执行, 计划模式禁用; 免审批读取请使用文件工具"
     params_dict = {
         "command": ("string", "要执行的命令"),
         "cwd": ("string", "工作目录, 默认当前会话工作区"),
         "timeout": ("number", "超时秒数, 范围 1-3600, 默认 120"),
-        "shell": ("string", "shell 类型: powershell / cmd, 默认 powershell"),
+        "shell": ("string", "shell 类型: auto / powershell / cmd / bash / sh, 默认 auto"),
     }
 
     def __init__(
@@ -136,7 +139,7 @@ class ShellTool(Tool):
         command: str,
         cwd: str = "",
         timeout: int | float | str | None = None,
-        shell: str = "powershell",
+        shell: str = "auto",
     ) -> str:
         """
         同步审批并执行 Shell 命令
@@ -145,7 +148,7 @@ class ShellTool(Tool):
         - command: 待审批的 Shell 命令
         - cwd: 工作目录, 默认空字符串表示工作区根目录
         - timeout: 超时秒数, None 表示使用实例配置, 范围 1-3600
-        - shell: Shell 类型, 默认 powershell
+        - shell: Shell 类型, 默认 auto 按系统选择
 
         返回:
         - 执行结果, 参数错误或审批拒绝说明; 未绑定会话时抛出 RuntimeError

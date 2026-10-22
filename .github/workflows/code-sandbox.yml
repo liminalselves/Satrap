@@ -13,6 +13,15 @@ on:
       - 'satrap/expend/tools/search/**'
       - 'tests/unit/test_web_research_flows.py'
       - 'satrap/expend/plugins/base_take/**'
+      - 'satrap/expend/plugins/satrap_coding/**'
+      - 'satrap/cli/backend_lock.py'
+      - 'satrap/core/config/loader.py'
+      - 'satrap/core/backend/BackendManager.py'
+      - 'satrap/core/backend/control_server.py'
+      - 'satrap/core/framework/session_discovery.py'
+      - 'tests/unit/test_cli_configuration_flows.py'
+      - 'tests/unit/test_control_dispatch.py'
+      - 'tests/unit/test_coding_flows.py'
       - 'satrap/expend/plugins/group_chat/**'
       - 'tests/unit/test_coding_security_flows.py'
       - 'tests/unit/test_coding_configuration_flows.py'
@@ -34,7 +43,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        python: ['3.11', '3.13']
+        python: ['3.11', '3.12', '3.13']
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -64,6 +73,13 @@ jobs:
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           python -m pytest tests/unit/test_visual_input_flows.py tests/unit/test_session_command_flows.py -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise native coding shells and configuration startup
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          python -m pytest tests/unit/test_coding_flows.py tests/unit/test_coding_configuration_flows.py tests/unit/test_coding_security_flows.py tests/unit/test_cli_configuration_flows.py tests/unit/test_control_dispatch.py -q -k 'not sandbox'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise browser requests and outbound boundaries
         run: |

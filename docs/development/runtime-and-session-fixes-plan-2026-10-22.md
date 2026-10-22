@@ -271,4 +271,19 @@ B 体量较大时可分为 B1 查询范围、B2 重置窗口与排队、B3 历�
 - 配置与 Control 场景测试: 81 passed; 同批较大范围此前为 227 passed, 1 skipped, 跳过原因是 Windows 无符号链接权限
 - WSL Ubuntu 原生 fcntl 验证通过: 第二进程被拒绝, 释放后另一进程可取得锁
 - 生产代码静态检查为 0 errors, 既有文件仍有 Unknown 类型警告; 不宣称全仓库零告警
-- 未在远端部署; B、C、D 仍待完成
+- A 已完成本地验证, 未在远端部署; 其余批次见后续执行记录
+
+### C. Linux coding shell
+
+- 已实现 auto 默认选择、Windows PowerShell/cmd 与 POSIX bash/sh, 固定解释器绝对路径及审批 argv
+- Windows cmd 通过隐藏控制台和 UTF-8 后启动的实际解释器解决中文乱码, PowerShell 保留原生命令失败退出码
+- bash/sh 非交互运行, 清理继承的启动脚本变量, 固定 UTF-8 locale, 关闭 stdin
+- stdout/stderr 持续排空, 每路只保留 80,000 字节尾部, 返回正文最多 20,000 字符并附截断说明
+- POSIX 在超时、取消和异常时回收进程组, 异步取消等待真实回收; Shell 先退出但后代持有输出管道也受总超时限制
+- 新增 POSIX 引号、换行、嵌套 Shell 分类, 动态展开按高风险处理; 分类器不是 OS 沙箱
+- Windows coding 回归: 190 passed, 4 skipped, 58 deselected; 跳过为三个 POSIX 专用清理场景及一个无权限的符号链接场景
+- WSL Ubuntu / Python 3.14.4 的 coding、配置与 Control 回归: 275 passed, 58 deselected; 未执行的 58 项为独立沙箱范围, 不是上述 shell 场景
+- 本批四个生产代码文件静态检查: 0 errors, 0 warnings; git diff --check 通过
+- CI 已加入真实 shell 与配置回归, 矩阵为 Windows/Linux/macOS 及 Python 3.11/3.12/3.13; 尚未触发远端 CI
+- macOS 和远端 Python 3.12 容器仍未验收, 未部署或重启远端服务
+- B 群聊会话边界与 D 文件交付仍待完成, 不据此标记完整计划完成

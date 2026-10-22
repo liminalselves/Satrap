@@ -114,6 +114,12 @@ class TestClassifyCommand:
         assert classify_command("powershell -EncodedCommand ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
         assert classify_command("pwsh -enc ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
         assert classify_command("powershell -e ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
+        assert classify_command("/bin/bash -c 'rm -rf /'", posix=True)[0] == RiskLevel.FORBIDDEN
+        assert classify_command("sh -c 'pip install example'", posix=True) == (RiskLevel.HIGH, True)
+        assert classify_command("echo safe\n/bin/rm -rf /", posix=True)[0] == RiskLevel.FORBIDDEN
+        assert classify_command("echo $(touch marker)", posix=True)[0] >= RiskLevel.HIGH
+        assert classify_command("echo 'a;b'", posix=True)[0] == RiskLevel.READ
+        assert classify_command(r"echo a\;b", posix=True)[0] == RiskLevel.READ
 
 @pytest.fixture
 def engine(tmp_path: Path) -> PermissionEngine:

@@ -45,7 +45,7 @@ config_schema:
 # 注: search/fetch_page 由 base_take 提供, memory 由独立记忆插件提供
 tools:
   ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图; 需要宿主通过 session.user_input_provider 特殊适配提问展示和回答回填
-  shell: 在本机执行 shell 命令 (PowerShell/cmd), user 人工审批, auto 模型审批, full-access 直接执行, 计划模式禁用
+  shell: 在本机执行 shell 命令 (Windows PowerShell/cmd, POSIX bash/sh), 默认按系统选择, 按三档模式审批, 计划模式禁用
   subagent: 在独立上下文中运行子代理处理任务, 用于并行调研/独立子任务
   read_file: 分页读取单个文件, 外部文件按宿主三档模式审批
   write_file: 写入或追加内容到工作区内文件 (需批准)

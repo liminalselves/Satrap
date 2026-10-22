@@ -55,7 +55,7 @@ async def test_factory_configuration_isolated_without_host_paths(
     ]
     calls: list[tuple[Path, int]] = []
 
-    def run_shell(args: Any, cwd: Path, timeout: int, allow: Any = ()) -> str:
+    def run_shell(args: Any, cwd: Path, timeout: int, allow: Any = (), **kwargs: Any) -> str:
         calls.append((cwd, timeout))
         return "executed"
 
@@ -81,6 +81,8 @@ async def test_factory_configuration_isolated_without_host_paths(
             assert definition["required"] == ["command"]
             assert definition["properties"]["timeout"]["default"] == (7, 11, 120, 120)[index]
             assert definition["properties"]["timeout"]["type"] == "integer"
+            assert definition["properties"]["shell"]["default"] == "auto"
+            assert set(definition["properties"]["shell"]["enum"]) == {"auto", "powershell", "cmd", "bash", "sh"}
             before = len(calls)
             assert "错误" in await _execute(tool, "test", timeout=0)
             assert len(calls) == before
