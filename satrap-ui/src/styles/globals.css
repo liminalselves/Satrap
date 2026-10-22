@@ -1367,3 +1367,9 @@
   border-radius: 3px;
   font-size: 0.85em;
 }
+
+/* 关闭浏览器原生密码显隐/清除按钮, 统一使用 PasswordInput 的显隐切换 */
+input[type='password']::-ms-reveal,
+input[type='password']::-ms-clear {
+  display: none;
+}
