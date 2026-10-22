@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import pytest
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
+from satrap.core.conversation import HistoryWindow
 from satrap.core.group_chat.summaries import SummaryLimits, SummaryStore, _cursor
 from satrap.core.group_chat.types import GroupChatError
 from types import SimpleNamespace
@@ -47,6 +48,44 @@ def prepare(store: SummaryStore, *, limits=None, owner="request:a"):
 def save(store: SummaryStore, snapshot: dict, *, owner="request:a"):
     return store.save(_group_chat_summaries_SCOPE, owner, snapshot["snapshot_id"], "讨论摘要",
                       [{"text": "大家讨论了项目", "source_message_ids": ["m0", "m4"]}])
+
+
+def test_summary_scope_checks_all_sources_snapshot_and_idempotent_replay(tmp_path: Path) -> None:
+    """新保存的旧来源摘要仍被隔离, 分页及保存重放不能绕过会话边界"""
+    archive, broad, _ = _group_chat_summaries_setup(tmp_path)
+    scope = _group_chat_summaries_SCOPE
+    start = NOW + .5
+    archive.record(scope, ArchiveMessage("current", "member:a", NOW - 1, "新会话讨论", received_at=start))
+    archive.record(scope, ArchiveMessage("lookup", "member:a", NOW - 1, "回源旧讨论", source="adapter_lookup", received_at=start + 1))
+    snapshot = prepare(broad)
+    old_summary = broad.save(scope, "request:a", snapshot["snapshot_id"], "新保存的旧摘要",
+                             [{"text": "旧讨论", "source_message_ids": ["m0", "current"]}])["summary"]
+    scoped = SummaryStore(archive, history_window=HistoryWindow("new", start))
+    assert scoped.list(scope, limit=1)["items"] == []
+    with pytest.raises(GroupChatError) as error:
+        scoped.get(scope, old_summary["summary_id"])
+    assert error.value.code == "history_out_of_scope"
+    with pytest.raises(GroupChatError) as error:
+        scoped.save(scope, "request:a", snapshot["snapshot_id"], "新保存的旧摘要",
+                    [{"text": "旧讨论", "source_message_ids": ["m0", "current"]}])
+    assert error.value.code == "history_out_of_scope"
+    with pytest.raises(GroupChatError) as error:
+        scoped.read_sources(scope, "request:a", snapshot["snapshot_id"], _cursor([1, snapshot["snapshot_id"], 0]))
+    assert error.value.code == "history_out_of_scope"
+    current = prepare(scoped)
+    assert [item["message_id"] for item in current["items"]] == ["current"]
+    assert current["archive_coverage"]["archived_from"] == NOW - 1
+    points = [{"text": "当前讨论", "source_message_ids": ["current"]}]
+    saved = scoped.save(scope, "request:a", current["snapshot_id"], "本轮摘要", points)
+    assert scoped.save(scope, "request:a", current["snapshot_id"], "本轮摘要", points)["replayed"]
+    assert [row["summary_id"] for row in scoped.list(scope, limit=1)["items"]] == [saved["summary"]["summary_id"]]
+    assert not scoped.list(scope, limit=1)["has_more"]
+    switched = SummaryStore(archive, history_window=HistoryWindow("other", start + 1))
+    assert switched.list(scope)["items"] == []
+    with pytest.raises(GroupChatError) as error:
+        switched.save(scope, "request:a", current["snapshot_id"], "本轮摘要", points)
+    assert error.value.code == "history_out_of_scope"
+    assert len(broad.list(scope)["items"]) == 2
 
 def test_frozen_pages_source_validation_and_idempotent_save(tmp_path):
     archive, store, _ = _group_chat_summaries_setup(tmp_path)
@@ -170,18 +209,18 @@ async def test_main_summary_write_is_independent_of_reply_tool_and_subagents_can
         turn.workflow, turn.workflow_manager = workflow, cast(Any, SimpleNamespace(is_tool_enabled=lambda _: True))
         end = datetime.now(timezone.utc)
         args = {"start_time": "2020-01-01T00:00:00", "end_time": end.isoformat()}
-        snapshot = await service.execute("group_chat_prepare_summary", args)
+        snapshot = await service.execute("group_chat_prepare_summary", args, limits=GroupChatLimits(history_scope="group_archive"))
         assert snapshot["ok"] and snapshot["items"][0]["message_id"] == "77"
         save_args = {"snapshot_id": snapshot["snapshot_id"], "title": "讨论摘要",
                      "points": [{"text": "甲提及了乙", "source_message_ids": ["77"]}]}
         with bind_tool_workflow(object()):
-            denied = await service.execute("group_chat_save_summary", save_args)
+            denied = await service.execute("group_chat_save_summary", save_args, limits=GroupChatLimits(history_scope="group_archive"))
         assert denied["error"]["code"] == "wrong_executor"
-        saved = await service.execute("group_chat_save_summary", save_args)
+        saved = await service.execute("group_chat_save_summary", save_args, limits=GroupChatLimits(history_scope="group_archive"))
         assert saved["status"] == "saved"
-        disabled = await service.execute("group_chat_get_summary", {"summary_id": saved["summary"]["summary_id"]}, limits=GroupChatLimits(summary_enabled=False))
+        disabled = await service.execute("group_chat_get_summary", {"summary_id": saved["summary"]["summary_id"]}, limits=GroupChatLimits(summary_enabled=False, history_scope="group_archive"))
         assert disabled["error"]["code"] == "unsupported"
-        no_budget = await service.execute("group_chat_prepare_summary", args, limits=GroupChatLimits(summary_input_budget=0))
+        no_budget = await service.execute("group_chat_prepare_summary", args, limits=GroupChatLimits(summary_input_budget=0, history_scope="group_archive"))
         assert no_budget["error"]["code"] == "quota_exceeded"
     assert not turn.enabled
     assert len(SummaryStore(adapter.message_archive).list(_group_chat_summary_service_SCOPE)["items"]) == 1
@@ -211,11 +250,11 @@ async def test_summary_host_returns_stable_source_error_and_invalid_argument(tmp
     workflow = object()
     with bind_call_origin(event.call_origin), bind_reply_turn(event) as turn, bind_tool_workflow(workflow):
         turn.workflow, turn.workflow_manager = workflow, cast(Any, SimpleNamespace(is_tool_enabled=lambda _: True))
-        result = await service.execute("group_chat_read_summary_sources", {"snapshot_id": "unknown", "cursor": "bad"})
+        result = await service.execute("group_chat_read_summary_sources", {"snapshot_id": "unknown", "cursor": "bad"}, limits=GroupChatLimits(history_scope="group_archive"))
         assert result["error"]["code"] == "invalid_argument"
-        missing = await service.execute("group_chat_prepare_summary", {"start_time": "2026-10-04T09:00:00"})
+        missing = await service.execute("group_chat_prepare_summary", {"start_time": "2026-10-04T09:00:00"}, limits=GroupChatLimits(history_scope="group_archive"))
         assert missing["error"]["code"] == "invalid_argument"
-        assert (await service.execute("group_chat_recent_messages", {}))["ok"]
+        assert (await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive")))["ok"]
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio

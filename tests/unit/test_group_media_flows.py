@@ -166,10 +166,10 @@ async def test_get_assets_downloads_once_refreshes_expired_url_and_preserves_inv
     refresh = AsyncMock(return_value="https://example.com/fresh")
     monkeypatch.setattr(adapter, "group_chat_refresh_image", refresh)
     with bind_call_origin(event.call_origin):
-        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"})
-        repeated = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"})
-        disabled = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(media_reply_enabled=False))
-        foreign = await service.execute("group_chat_get_message_assets", {"message_id": "image:source", "chat_id": "foreign"})
+        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
+        repeated = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
+        disabled = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(media_reply_enabled=False, history_scope="group_archive"))
+        foreign = await service.execute("group_chat_get_message_assets", {"message_id": "image:source", "chat_id": "foreign"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["ok"] and result["items"][0]["available"]
     assert repeated["items"][0]["asset_id"] == result["items"][0]["asset_id"]
     assert result["items"][1]["reason"] == "unsupported_media"
@@ -193,7 +193,7 @@ async def test_resolved_inbound_image_is_copied_before_temporary_cleanup(tmp_pat
     download = AsyncMock()
     monkeypatch.setattr("satrap.core.pipeline.attachments._download", download)
     with owner(event) as turn:
-        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"})
+        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
         assert result["items"][0]["available"]
         temporary.unlink()
         prepared = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": result["items"][0]["asset_id"]}]})
@@ -213,7 +213,7 @@ async def test_recall_during_download_never_exposes_asset_id(tmp_path: Path, mon
         return png()
     monkeypatch.setattr("satrap.core.pipeline.attachments._download", download)
     with bind_call_origin(event.call_origin):
-        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"})
+        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert not result["ok"] and result["error"]["code"] == "asset_unavailable"
     assert not AssetStore(adapter.message_archive).root.exists()
 

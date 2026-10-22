@@ -66,9 +66,9 @@ async def session(tmp_path, script, asynchronous, stream):
     )
     if asynchronous:
         await instance.initialize()
-        await instance.install_plugin(str(PLUGIN))
+        await instance.install_plugin(str(PLUGIN), config={"history_scope": "group_archive"})
     else:
-        instance.install_plugin(str(PLUGIN))
+        instance.install_plugin(str(PLUGIN), config={"history_scope": "group_archive"})
     return instance
 
 class Invoker:

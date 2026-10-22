@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, ParamSpec, TypeVar, cast
 import asyncio
@@ -25,6 +25,7 @@ from pathlib import Path
 
 from satrap.core.utils.validation import is_bounded_text
 from satrap.core.call_context import CallOrigin, current_call_origin, require_call_origin
+from satrap.core.conversation import HistoryWindow, current_history_window
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
 from satrap.core.group_chat.summaries import SummaryStore, SummaryLimits
@@ -57,6 +58,10 @@ _ARGUMENTS = {
     "group_chat_get_message_assets": frozenset({"message_id"}),
     "group_chat_list_stickers": frozenset({"keyword", "limit", "cursor"}),
 }
+
+HISTORY_OPERATIONS = frozenset({"group_chat_get_message", "group_chat_recent_messages", "group_chat_search_messages",
+                                "group_chat_get_message_assets", "group_chat_prepare_summary", "group_chat_read_summary_sources",
+                                "group_chat_save_summary", "group_chat_get_summary", "group_chat_list_summaries"})
 
 from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.pipeline import attachments
@@ -139,6 +144,7 @@ class _ReadContext:
     scope: MessageScope
     store: PlatformMessageStore | None
     authorize: Callable[[str], None] | None = None
+    history_window: HistoryWindow | None = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +216,8 @@ class GroupChatService:
             raise GroupChatError("stale_call", "查询来源已经变化")
         if context.authorize is not None:
             context.authorize(scope.chat_id)
+        if context.history_window is not None and current_history_window() is not context.history_window:
+            raise GroupChatError("stale_call", "等待期间实际会话边界已经变化")
 
     @staticmethod
     def _capability(context: _ReadContext, name: str) -> None:
@@ -305,6 +313,14 @@ class GroupChatService:
             bounds = limits or GroupChatLimits()
             private = operation == "group_chat_list_groups"
             context = await self._resolve(private=private, authorize=authorize)
+            if operation in HISTORY_OPERATIONS:
+                if bounds.history_scope == "disabled":
+                    raise GroupChatError("history_disabled", "当前配置已关闭群记录和摘要查询")
+                if bounds.history_scope == "current_session":
+                    window = current_history_window()
+                    if window is None:
+                        raise GroupChatError("history_scope_unavailable", "宿主尚未提供可核验的会话起点, 无法读取群记录")
+                    context = replace(context, history_window=window)
             if private:
                 if authorize is None:
                     raise GroupChatError("forbidden", "群列表查询必须由当前插件入口授权")
@@ -377,6 +393,7 @@ class GroupChatService:
             params = dict(arguments)
             params["limit"] = _limit(params.get("limit", min(20, bounds.message_limit)), bounds.message_limit)
             params["text_budget"] = bounds.text_budget
+            params["history_window"] = context.history_window
             if operation == "group_chat_search_messages":
                 for key in ("start_time", "end_time"):
                     if key in params:
@@ -542,7 +559,7 @@ class GroupChatService:
                 logger.error(f"[群图片] 读取异常, 平台={context.scope.adapter_id}: {traceback.format_exc()}")
                 entry["reason"] = "asset_unavailable"
         await self._revalidate(context)
-        if (await self._archive(context, self._store(context).get, context.scope, message_id) or {}).get("status") != "active":
+        if (await self._archive(context, self._store(context).get, context.scope, message_id, history_window=context.history_window) or {}).get("status") != "active":
             raise GroupChatError("asset_unavailable", "返回前图片来源已失效")
         return {"ok": True, "message_id": message_id, "items": result}
 
@@ -562,7 +579,7 @@ class GroupChatService:
         """
         if not bounds.summary_enabled:
             raise GroupChatError("unsupported", "当前 Agent 未启用群摘要")
-        store = SummaryStore(self._store(context))
+        store = SummaryStore(self._store(context), history_window=context.history_window)
         if operation == "group_chat_get_summary":
             return await self._archive_errors(context, store.get, context.scope, _id(arguments.get("summary_id")))
         if operation == "group_chat_list_summaries":
@@ -925,9 +942,11 @@ class GroupChatService:
         - 已核验单条消息, 明确区分档案与适配器回源
         """
         store = self._store(context)
-        item = await self._archive(context, store.get, context.scope, message_id)
+        item = await self._archive(context, store.get, context.scope, message_id, history_window=context.history_window)
         source = "local_archive"
         if item is None:
+            if context.history_window is not None:
+                raise GroupChatError("history_scope_unavailable", "本地没有该消息的接收依据, 无法证明它属于当前会话, 未向平台回源")
             allowed = await self._archive(context, store.backfill_allowed, context.scope, message_id)
             if not allowed:
                 raise GroupChatError("message_deleted", "消息已在本地档案删除, 不自动回源恢复")

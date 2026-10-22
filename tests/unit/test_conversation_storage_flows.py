@@ -95,6 +95,10 @@ def test_route_history_archive_restore_and_ownership_survive_restart(tmp_path):
     from contextvars import copy_context
     database = tmp_path / "history.db"
     store = UserInfoStore(database)
+    from satrap.core.framework.SessionManager import SessionConfigStore
+    from satrap.core.type import SessionConfig
+    sessions = SessionConfigStore(database)
+    sessions.upsert(SessionConfig(session_id="old", session_type_name="chat", created_at=100, last_used_at=100, history_started_at=99.5))
     route = ConversationRoute("member", "qq", "chat", provider="edictum", scope="group_member", self_id="bot", group_id="group")
     for sid in ("old", "new"):
         store.upsert_context_session(route.owner, route.platform, route.session_type, sid, route.provider, context_key=route.key)
@@ -105,9 +109,13 @@ def test_route_history_archive_restore_and_ownership_survive_restart(tmp_path):
         assert restarted.list_context_history(other) == []
     records = snapshot_session_domain(database, "old")
     assert records["context_session_history"][0]["session_id"] == "old"
+    assert records["session_configs"][0]["history_started_at"] == 99.5
     delete_session_domain_rows(database, "old")
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("ALTER TABLE session_configs DROP COLUMN history_started_at")
     assert restarted.list_context_history(route) == ["new"]
     restore_session_domain(database, "old", records)
+    assert SessionConfigStore(database).get("old").history_started_at == 99.5
     assert set(restarted.list_context_history(route)) == {"old", "new"}
     assert restarted.get_context_session(route.owner, route.platform, route.session_type, route.provider, context_key=route.key).session_id == "new"
     with bind_conversation_route(route):

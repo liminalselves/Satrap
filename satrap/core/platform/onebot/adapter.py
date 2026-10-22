@@ -1278,6 +1278,7 @@ class OneBotAdapter(PlatformAdapter):
         参数:
         - event: 事件
         """
+        received_at = time()
         incoming_self = str(event.get("self_id") or "")
         if not incoming_self or (self.bot_self_id and incoming_self != self.bot_self_id):
             self._ingress_rejections["account"] += 1
@@ -1291,6 +1292,7 @@ class OneBotAdapter(PlatformAdapter):
             if self.message_archive is not None:
                 try:
                     echo = await self.convert_message(event)
+                    echo.received_at = received_at
                     if echo.group_id:
                         await self.archive_message(echo, direction="outbound")
                 except Exception as exc:
@@ -1314,6 +1316,7 @@ class OneBotAdapter(PlatformAdapter):
         accepted = False
         try:
             message = await self.convert_message(event)
+            message.received_at = received_at
             await self.archive_message(message)
             accepted = self._commit_platform_message(message)
         except Exception as e:

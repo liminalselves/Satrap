@@ -19,7 +19,7 @@ from satrap.core.config.group_action_origin import bind_model_action_authorizati
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, plugin_tool_live, permission_id_list
-from satrap.core.group_chat.service import group_chat_service
+from satrap.core.group_chat.service import group_chat_service, HISTORY_OPERATIONS
 from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.group_chat.types import GroupChatLimits
 from satrap.core.group_chat.types import GroupChatError
@@ -83,7 +83,7 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
     "group_chat_find_members": ("根据账号昵称或本群昵称查找当前群的成员, 返回成员 ID, 账号昵称和本群昵称. 找到多个同名成员时, 先确认目标再操作", {"query": _string("要查找的账号昵称或本群昵称, 可以填写其中一部分"), "limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, ["query"]),
     "group_chat_get_member": ("查看当前群某位成员的 ID, 昵称, 群昵称和角色; 需要确认成员 ID 对应谁时使用. 角色只表示平台资料, 不代表对方有权让机器人执行管理操作", {"user_id": _MEMBER_ID}, ["user_id"]),
     "group_chat_get_message": ("根据消息 ID 查看当前群的一条消息, 返回原文和发送者; 需要确认某句话是谁说的, 或查看引用消息时使用. 本地没有记录时会尝试向平台查询, 已删除的记录不会重新取回", {"message_id": _MESSAGE_ID}, ["message_id"]),
-    "group_chat_recent_messages": ("查看当前群最近保存的聊天记录, 返回消息 ID, 发送者, 时间和正文; 需要了解大家刚才在聊什么, 或补充当前上下文时使用. 结果只涵盖机器人已保存的消息", {"limit": _LIMIT, "before_message_id": {**_MESSAGE_ID, "description": "只查看这条消息之前的记录; 不填则从最新消息开始"}, "cursor": _CURSOR}, []),
+    "group_chat_recent_messages": ("用户明确要求回顾群讨论时查看允许范围内的群记录, 返回消息 ID, 发送者, 时间和正文; 总结上下文优先使用当前模型会话, 问候不主动查询群史. 结果只涵盖机器人已保存的消息", {"limit": _LIMIT, "before_message_id": {**_MESSAGE_ID, "description": "只查看这条消息之前的记录; 不填则从最新消息开始"}, "cursor": _CURSOR}, []),
     "group_chat_search_messages": ("搜索当前群保存的聊天记录, 可按关键词, 发送者和时间筛选; 用户提到之前的讨论, 或需要查找某人的发言时使用. 同时填写多个条件时, 返回符合全部条件的消息", {
         "keyword": _string("要查找的文字, 例如昨天讨论过的项目名; 按普通文本匹配, 不是正则表达式"),
         "sender_id": {**_MEMBER_ID, "description": "只查这位成员发送的消息, 填写成员 ID; 不填则查询所有人的消息"},
@@ -146,6 +146,15 @@ class _GroupChatMixin(_ToolBase):
     _plugin_entry_binding: PluginEntryBinding
     _plugin_host: PluginHost | None = None
     _static_limits: GroupChatLimits | None = None
+
+    def is_enabled(self) -> bool:
+        """
+        按安装开关和档案配置决定稳定工具声明, 不使用调用者身份
+
+        返回:
+        - 工具开关开启且未被禁止查询群记录时为 True
+        """
+        return super().is_enabled() and not (self.tool_name in HISTORY_OPERATIONS and self.config.get("history_scope", "current_session") == "disabled")
 
     def _base_limits(self) -> GroupChatLimits:
         """
@@ -216,6 +225,11 @@ class _GroupChatMixin(_ToolBase):
         """
         name = str(self.tool_name)
         description, properties, required = DEFINITIONS[name]
+        if name in HISTORY_OPERATIONS:
+            scope = self.config.get("history_scope", "current_session")
+            description += (". 当前仅能查询本次会话起点之后的记录及其摘要, 无法确认范围的消息不向平台回源" if scope == "current_session"
+                            else ". 当前允许查询本群全部保留档案, 包括 /new 之前的记录" if scope == "group_archive"
+                            else ". 当前配置已关闭群记录及摘要查询")
         properties = copy.deepcopy(properties)
         if name == "group_chat_reply":
             origin = current_call_origin()
@@ -247,6 +261,8 @@ class _GroupChatMixin(_ToolBase):
         - 宿主成功结果或明确配置失败结果
         """
         try:
+            if self.tool_name in HISTORY_OPERATIONS and self.config.get("history_scope", "current_session") == "disabled":
+                return _failure("history_disabled", "当前配置已关闭群记录和摘要查询")
             if self.tool_name == "group_chat_import_sandbox_image":
                 return await self._import_sandbox_image(kwargs)
             if self.tool_name in REMINDER_ARGUMENTS:
@@ -263,7 +279,8 @@ class _GroupChatMixin(_ToolBase):
                     available = usage.history_upper_tokens - usage.history_tokens - overhead
                     input_budget = max(0, min(1000000, available // 2))
                     # 来源按 UTF-8 字节保守限额, 预留工具定义, 摘要正文与工具结果空间
-            limits = replace(self._base_limits(), summary_input_budget=input_budget)
+            limits = replace(self._base_limits(), summary_input_budget=input_budget,
+                             history_scope=cast(str, self.config.get("history_scope", "current_session")))
 
             def authorize(group_id: str) -> None:
                 """
@@ -275,6 +292,8 @@ class _GroupChatMixin(_ToolBase):
                 self._authorize(group_id)
                 if permission_id_list(self.config.get("allowed_groups")) != limits.allowed_groups:
                     raise GroupChatError("stale_call", "查询期间插件允许群范围已经变化")
+                if self.config.get("history_scope", "current_session") != limits.history_scope:
+                    raise GroupChatError("stale_call", "查询期间群记录范围已经变化, 丢弃旧结果")
             if self.tool_name == "group_chat_set_group_nickname":
                 origin = current_call_origin()
                 if origin is None:
@@ -416,6 +435,8 @@ def _available(tool: _GroupChatMixin) -> bool:
         return (_private_available() and origin is not None
                 and capabilities.get("group_list", {}).get("state") == "supported")
     if not _group_available():
+        return False
+    if name in HISTORY_OPERATIONS and tool.config.get("history_scope", "current_session") == "disabled":
         return False
     allowed = permission_id_list(tool.config.get("allowed_groups"))
     if allowed and (origin is None or origin.chat_id not in allowed):

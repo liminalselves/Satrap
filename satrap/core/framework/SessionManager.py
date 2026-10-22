@@ -52,7 +52,7 @@ from satrap.core.storage import (
 )
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.call_context import bind_call_origin
-from satrap.core.conversation import bind_conversation_route
+from satrap.core.conversation import bind_conversation_route, HistoryWindow
 from satrap.core.group_chat.reply import buffer_session_reply, abort_reply_turn
 
 from satrap.core.log import logger
@@ -242,6 +242,8 @@ class SessionConfigStore:
                     conn.execute(
                         "ALTER TABLE session_configs ADD COLUMN provider_name TEXT NOT NULL DEFAULT 'session_class'"
                     )
+                if "history_started_at" not in columns:
+                    conn.execute("ALTER TABLE session_configs ADD COLUMN history_started_at REAL")
                 conn.commit()
 
     @staticmethod
@@ -273,6 +275,7 @@ class SessionConfigStore:
             last_used_at=float(row["last_used_at"]),
             message_count=int(row["message_count"]),
             session_config=payload,
+            history_started_at=row["history_started_at"],
         )
 
     def upsert(self, config: SessionConfig):
@@ -290,15 +293,16 @@ class SessionConfigStore:
                 conn.execute(
                     """
                     INSERT INTO session_configs
-                    (session_id, session_type_name, provider_name, created_at, last_used_at, message_count, session_config)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (session_id, session_type_name, provider_name, created_at, last_used_at, message_count, session_config, history_started_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET
                         session_type_name=excluded.session_type_name,
                         provider_name=excluded.provider_name,
                         created_at=excluded.created_at,
                         last_used_at=excluded.last_used_at,
                         message_count=excluded.message_count,
-                        session_config=excluded.session_config
+                        session_config=excluded.session_config,
+                        history_started_at=COALESCE(session_configs.history_started_at, excluded.history_started_at)
                     """,
                     (
                         config.session_id,
@@ -308,6 +312,7 @@ class SessionConfigStore:
                         float(config.last_used_at),
                         int(config.message_count),
                         json.dumps(config.session_config or {}, ensure_ascii=False),
+                        config.history_started_at,
                     ),
                 )
                 conn.commit()
@@ -449,6 +454,25 @@ class SessionConfigStore:
                     (int(message_count),),
                 ).fetchall()
                 return [str(row["session_id"]) for row in rows]
+
+    def ensure_history_start(self, session_id: str, started_at: float) -> float:
+        """
+        原子建立一次性的档案起点, 不覆盖其它配置或已绑定的起点
+
+        参数:
+        - session_id: 已存在的实际会话 ID
+        - started_at: 宿主提供的首次会话边界
+
+        返回:
+        - 数据库最终生效的起点
+        """
+        HistoryWindow(session_id, started_at)
+        with self._lock, self._connection() as conn:
+            conn.execute("UPDATE session_configs SET history_started_at=COALESCE(history_started_at, ?) WHERE session_id=?", (started_at, session_id))
+            row = conn.execute("SELECT history_started_at FROM session_configs WHERE session_id=?", (session_id,)).fetchone()
+            if row is None:
+                raise ValueError("会话已不存在, 无法绑定档案起点")
+            return float(row["history_started_at"])
 
     def update_runtime_fields(self, session_id: str, last_used_at: float, message_count: int):
         """
@@ -1370,6 +1394,7 @@ class SessionManager:
         """
         try:
             session_cfg = self._resolve_or_create_session_config(user_call)
+            self._bind_history_window(session_cfg, user_call)
             session_id = session_cfg.session_id or ""
             user_call.session_id = session_id
 
@@ -1413,6 +1438,7 @@ class SessionManager:
         """
         try:
             session_cfg = self._resolve_or_create_session_config(user_call)
+            self._bind_history_window(session_cfg, user_call)
             session_id = session_cfg.session_id or ""
             user_call.session_id = session_id
 
@@ -1462,6 +1488,22 @@ class SessionManager:
             logger.error(f"[SessionManager] handle_call_async 发生异常: {e}, 堆栈={traceback.format_exc()}")
             return ""
 
+    def _bind_history_window(self, config: SessionConfig, user_call: UserCall) -> None:
+        """
+        从会话持久配置建立本轮档案边界, 老会话不按本次重启时间重置
+
+        参数:
+        - config: 宿主已解析的实际会话配置
+        - user_call: 接收时间由平台或本地入口提供的请求
+        """
+        try:
+            if config.history_started_at is None:
+                config.history_started_at = self.store.ensure_history_start(config.session_id or "", min(config.created_at, user_call.received_wall_at))
+            user_call.history_window = HistoryWindow(config.session_id or "", config.history_started_at)
+        except (ValueError, sqlite3.Error):
+            user_call.history_window = None
+            logger.warning("[SessionManager] 无法确认持久化档案边界, 本轮档案读取将明确拒绝")
+
     def _transition_config(self, user_call: UserCall, source: SessionConfig, action: CommandAction) -> SessionConfig:
         """
         验证会话动作的归属, 创建动作与切换动作不互相冒充
@@ -1494,9 +1536,11 @@ class SessionManager:
         if creating:
             if existing is not None:
                 raise ValueError("新会话 ID 已存在")
-            return self._resolve_or_create_session_config(dataclasses.replace(
+            created = self._resolve_or_create_session_config(dataclasses.replace(
                 user_call, session_id=target, session_provider=source.provider_name, session_type=source.session_type_name,
             ))
+            created.history_started_at = self.store.ensure_history_start(target, user_call.received_wall_at)
+            return created
         if existing is None:
             raise ValueError("目标会话不存在")
         if route is not None and (existing.provider_name, existing.session_type_name) != (source.provider_name, source.session_type_name):
@@ -2891,7 +2935,7 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route), buffer_session_reply(session):
+            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), buffer_session_reply(session):
                 return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
             abort_reply_turn()
@@ -2913,7 +2957,7 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route), buffer_session_reply(session):
+            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), buffer_session_reply(session):
                 return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
             abort_reply_turn()

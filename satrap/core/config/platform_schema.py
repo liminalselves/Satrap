@@ -11,7 +11,7 @@ import sqlite3
 from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 
 
-PLATFORM_SCHEMA_VERSION = 10
+PLATFORM_SCHEMA_VERSION = 11
 
 _OVERRIDE_TABLE = SESSION_OVERRIDE_TABLE
 _GROUP_TABLES = frozenset({
@@ -245,3 +245,6 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
         connection.execute("CREATE TABLE reminder_operations (scope_key TEXT NOT NULL, operation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, "
                            "reminder_id TEXT NOT NULL, PRIMARY KEY(scope_key, operation_id))")
         connection.execute("PRAGMA user_version = 10")
+    if version < 11:
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_platform_messages_received ON platform_messages(scope_key, status, received_at, message_time, message_id)")
+        connection.execute("PRAGMA user_version = 11")

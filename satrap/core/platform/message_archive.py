@@ -68,4 +68,5 @@ def archive_snapshot(message: PlatformMessage, *, direction: str = "inbound") ->
         nickname=message.sender.nickname or "", card=message.sender.card or "", direction=direction,
         components=components, reply_to_message_id=quote, mentions=mentions, media=media,
         truncated=len(components) > 128 or len(media) > 128,
+        received_at=message.received_at,
     )

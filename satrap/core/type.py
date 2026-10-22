@@ -11,7 +11,7 @@ from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar
 from enum import Enum
 import time
 
-from satrap.core.conversation import ConversationRoute
+from satrap.core.conversation import ConversationRoute, HistoryWindow
 from satrap.core.call_context import CallOrigin
 from satrap.core.components import BaseMessageComponent
 
@@ -290,8 +290,12 @@ class UserCall:
     """本轮平台资料, 独立于需要保存的正文"""
     received_at: float = field(default_factory=time.monotonic, kw_only=True)
     """宿主接收请求的单调时钟, 平台调用沿用真实入队时刻"""
+    received_wall_at: float = field(default_factory=time.time, kw_only=True)
+    """宿主接收请求的 UTC 时间戳, 用于持久化会话档案起点"""
     context_reset_at: float | None = field(default=None, init=False)
     """仅在绑定成功后发布的命令接收边界, 用于撤销命令之前的窗口资料"""
+    history_window: HistoryWindow | None = field(default=None, init=False)
+    """宿主从真实会话配置冻结的查询下界, 不从模型输入构造"""
 
 @dataclass
 class LLMConfig:
@@ -441,6 +445,8 @@ class SessionConfig:
     """会话消息数量"""
     session_config: Dict[str, Any] = field(default_factory=dict[str, Any])
     """除去会话 ID 以外的会话实例初始化配置"""
+    history_started_at: float | None = None
+    """会话档案的持久起点, 老记录首次加载时按原创建时间建立"""
 
 @dataclass
 class UserInfo:
@@ -529,6 +535,7 @@ class PlatformMessage:
     def __init__(self) -> None:
         """初始化 PlatformMessage"""
         self.timestamp = int(time.time())
+        self.received_at = time.time()
         self.timestamp_source = "local"
         self.group = None
 

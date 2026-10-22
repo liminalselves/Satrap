@@ -132,6 +132,8 @@ export interface EdictumPluginConfig {
 }
 
 export interface EdictumPluginConfigField {
+  label?: string;
+  option_labels?: Record<string, string>;
   type: string;
   default: unknown;
   description: string;

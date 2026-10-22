@@ -554,6 +554,15 @@ describe("utils/edictumParams", () => {
 
 describe("components/common/PluginConfigFields", () => {
   describe('插件选项状态', () => {
+    it('中文标签展示不改变实际配置键及选项值', () => {
+      const schema = { history_scope: { type: 'select', default: 'current_session', description: '', label: '群消息查询范围',
+        options: ['current_session', 'group_archive', 'disabled'],
+        option_labels: { current_session: '仅当前会话', group_archive: '当前群全部保留记录', disabled: '禁止查询群记录' } } };
+      const markup = renderToStaticMarkup(<PluginConfigFields schema={schema} values={{ history_scope: 'group_archive' }} onChange={() => undefined} />);
+      expect(markup).toContain('群消息查询范围');
+      expect(markup).toMatch(/<option[^>]*value="group_archive"[^>]*selected[^>]*>当前群全部保留记录/);
+      expect(markup).toContain('仅当前会话');
+    });
     const schema = { note: { type: 'string', default: '', description: '' }, model: { type: 'llm', default: '', description: '' } };
     it('选项未就绪时保留原值, 不误报引用失效, 普通参数仍可编辑', () => {
       const markup = renderToStaticMarkup(<PluginConfigFields schema={schema} values={{ note: '草稿', model: 'saved' }} modelState="loading" onChange={() => undefined} />);

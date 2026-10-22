@@ -18,6 +18,7 @@ import json
 import uuid
 
 from satrap.core.config.platform_messages import PlatformMessageStore, MessageScope, archive_time
+from satrap.core.conversation import HistoryWindow
 from satrap.core.group_chat.types import GroupChatError
 
 
@@ -140,14 +141,16 @@ class SummaryLimits:
 class SummaryStore:
     """依附平台档案的摘要存储, 所有方法均由工具或管理边界捕获失败"""
 
-    def __init__(self, archive: PlatformMessageStore) -> None:
+    def __init__(self, archive: PlatformMessageStore, *, history_window: HistoryWindow | None = None) -> None:
         """
         使用宿主已核验的平台存储
 
         参数:
         - archive: 当前平台档案, 共用路径, 时钟和生效保留期
+        - history_window: 宿主会话边界, None 用于明确授权的全群档案
         """
         self.archive = archive
+        self.history_window = history_window
 
     @contextmanager
     def _transaction(self, scope: MessageScope) -> Iterator[sqlite3.Connection]:
@@ -207,7 +210,7 @@ class SummaryStore:
         if keyword is not None and (not isinstance(keyword, str) or not 1 <= len(keyword) <= 256):
             raise ValueError("摘要关键词必须是 1 到 256 字符")
         bounds = limits or SummaryLimits()
-        fingerprint = hashlib.sha256(_json([scope.key, start, end, keyword, include_bot,
+        fingerprint = hashlib.sha256(_json([scope.key, start, end, keyword, include_bot, self.history_window.key if self.history_window else None,
                                            {key: value for key, value in bounds.__dict__.items() if key != "input_budget"}]).encode()).hexdigest()
         if not self.archive.database.exists():
             return {"ok": True, "schema_version": 1, "snapshot_id": None, "items": [], "next_cursor": None,
@@ -228,6 +231,9 @@ class SummaryStore:
             now, cutoff = self.archive._clock(), self.archive._clock() - self.archive.retention_days * 86400
             where = "scope_key=? AND status='active' AND verified=1 AND message_time>=? AND message_time>=? AND message_time<=?"
             params: list[object] = [scope.key, cutoff, start, end]
+            boundary, boundary_args = self.history_window.sql() if self.history_window else ("1=1", [])
+            where += " AND " + boundary
+            params.extend(boundary_args)
             if not include_bot:
                 where += " AND direction='inbound' AND sender_id<>?"
                 params.append(scope.self_id)
@@ -264,8 +270,9 @@ class SummaryStore:
             if len(rows) > bounds.message_limit:
                 reasons.append("message_limit")
             coverage = connection.execute("SELECT MIN(message_time), MAX(message_time) FROM platform_messages "
-                                          "WHERE scope_key=? AND status='active' AND message_time>=?", (scope.key, cutoff)).fetchone()
+                                          "WHERE scope_key=? AND status='active' AND message_time>=? AND " + boundary, (scope.key, cutoff, *boundary_args)).fetchone()
             payload = {"items": items, "digests": hashes,
+                       "history_key": self.history_window.key if self.history_window else None,
                        "resolved_range": {"start_time": start_time, "end_time": end_time},
                        "selection": {"selected_count": len(items), "all_local_matches_selected": len(items) == len(rows),
                                      "truncated": bool(reasons), "reasons": sorted(set(reasons))},
@@ -372,9 +379,13 @@ class SummaryStore:
         if snapshot is None:
             raise GroupChatError("snapshot_expired", "摘要快照已过期或不属于当前请求, 请重新读取")
         payload = json.loads(snapshot["payload_json"])
+        if payload.get("history_key") != (self.history_window.key if self.history_window else None):
+            raise GroupChatError("history_out_of_scope", "摘要快照不属于当前会话查询范围, 请重新准备")
         cutoff = self.archive._clock() - self.archive.retention_days * 86400
         for message_id, digest in payload["digests"].items():
             row = connection.execute("SELECT * FROM platform_messages WHERE scope_key=? AND message_id=?", (scope.key, message_id)).fetchone()
+            if row is not None and self.history_window is not None and not self.history_window.contains(dict(row)):
+                raise GroupChatError("history_out_of_scope", "摘要快照包含当前会话范围之外的来源")
             if row is None or row["status"] != "active" or row["message_time"] < cutoff or _digest(self.archive._item(row)) != digest:
                 raise GroupChatError("source_unavailable", "摘要出处已变化或不可用, 请重新读取")
         return snapshot
@@ -417,6 +428,9 @@ class SummaryStore:
             if previous and previous["state"] != "active":
                 raise GroupChatError("source_unavailable", "这份摘要已删除或来源失效, 不重放旧保存结果")
             if previous:
+                self._require_visible_summary(connection, previous)
+                if self.history_window is not None and json.loads(previous["metadata_json"]).get("history_key") != self.history_window.key:
+                    raise GroupChatError("history_out_of_scope", "保存结果不属于当前会话的快照")
                 return {"ok": True, "status": "saved", "summary": self._summary(previous), "replayed": True}
             snapshot = self._snapshot(connection, scope, owner, snapshot_id)
             payload = json.loads(snapshot["payload_json"])
@@ -430,6 +444,7 @@ class SummaryStore:
                               for item in payload["items"] if item["message_id"] in refs))
             summary_id = "gs_" + uuid.uuid4().hex
             metadata = {key: payload[key] for key in ("resolved_range", "selection", "archive_coverage")}
+            metadata["history_key"] = payload.get("history_key")
             connection.execute("INSERT INTO group_chat_summaries(summary_id, scope_key, title, points_json, metadata_json, operation_key, created_at, expires_at) "
                                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)", (summary_id, scope.key, title.strip(), _json(points), _json(metadata), operation, now, expires))
             connection.executemany("INSERT INTO group_chat_summary_refs VALUES(?, ?, ?, ?)",
@@ -450,7 +465,34 @@ class SummaryStore:
         - 带状态, 修订和出处的公开对象
         """
         return {"schema_version": 1, **{key: row[key] for key in ("summary_id", "title", "revision", "state", "created_at", "expires_at")},
-                "points": json.loads(row["points_json"]), **json.loads(row["metadata_json"])}
+                "points": json.loads(row["points_json"]), **{key: value for key, value in json.loads(row["metadata_json"]).items() if key != "history_key"}}
+
+    def _summary_boundary(self) -> tuple[str, list[object]]:
+        """
+        按全部实际出处限制摘要, 不以摘要创建时间代替来源范围
+
+        返回:
+        - 可下推到摘要列表及单条查询的固定 SQL 条件与绑定参数
+        """
+        if self.history_window is None:
+            return "1=1", []
+        boundary, args = self.history_window.sql("m.")
+        refs = "r.summary_id=group_chat_summaries.summary_id"
+        return ("EXISTS(SELECT 1 FROM group_chat_summary_refs r WHERE " + refs + ") AND NOT EXISTS("
+                "SELECT 1 FROM group_chat_summary_refs r LEFT JOIN platform_messages m ON m.scope_key=r.scope_key AND m.message_id=r.message_id "
+                "WHERE " + refs + " AND (m.message_id IS NULL OR r.scope_key<>group_chat_summaries.scope_key OR NOT (" + boundary + ")))", args)
+
+    def _require_visible_summary(self, connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+        """
+        返回摘要正文之前核验全部来源范围
+
+        参数:
+        - connection: 当前短事务
+        - row: 待返回的摘要行
+        """
+        boundary, args = self._summary_boundary()
+        if connection.execute("SELECT 1 FROM group_chat_summaries WHERE summary_id=? AND " + boundary, (row["summary_id"], *args)).fetchone() is None:
+            raise GroupChatError("history_out_of_scope", "摘要包含当前会话范围之外或无法确认的来源")
 
     def get(self, scope: MessageScope, summary_id: str) -> dict[str, Any]:
         """
@@ -468,6 +510,7 @@ class SummaryStore:
             row = connection.execute("SELECT * FROM group_chat_summaries WHERE scope_key=? AND summary_id=?", (scope.key, summary_id)).fetchone()
             if row is None or row["state"] == "deleted":
                 raise GroupChatError("not_found", "摘要不存在或不属于当前群")
+            self._require_visible_summary(connection, row)
             return {"ok": True, "summary": self._summary(row)}
 
     def list(self, scope: MessageScope, *, keyword: str = "", limit: int = 20, cursor: str | None = None) -> dict[str, Any]:
@@ -485,7 +528,7 @@ class SummaryStore:
         """
         if type(limit) is not int or not 1 <= limit <= 100 or not isinstance(keyword, str) or len(keyword) > 256:
             raise ValueError("摘要列表参数无效")
-        fingerprint = hashlib.sha256(_json([scope.key, keyword]).encode()).hexdigest()
+        fingerprint = hashlib.sha256(_json([scope.key, keyword, self.history_window.key if self.history_window else None]).encode()).hexdigest()
         anchor = None
         if cursor is not None:
             parts = _decode(cursor)
@@ -497,7 +540,11 @@ class SummaryStore:
             return {"ok": True, "items": [], "has_more": False, "next_cursor": None}
         with self._transaction(scope) as connection:
             self._maintain(connection)
-            where, args = "scope_key=? AND state<>'deleted'", [scope.key]
+            where = "scope_key=? AND state<>'deleted'"
+            args: list[object] = [scope.key]
+            boundary, boundary_args = self._summary_boundary()
+            where += " AND " + boundary
+            args.extend(boundary_args)
             if keyword:
                 where += " AND (instr(title, ?)>0 OR instr(points_json, ?)>0)"
                 args.extend([keyword, keyword])

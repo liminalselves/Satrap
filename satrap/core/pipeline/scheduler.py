@@ -710,6 +710,7 @@ class PipelineScheduler:
                     group_route_generation=event.group_route_generation if not event.is_private_chat() else None,
                     request_blocks=projected.request_blocks if projected is not None else (),
                     received_at=event.queued_at,
+                    received_wall_at=event.platform_message.received_at,
                 )
                 # Step.6 执行会话并限制等待时间
                 if manual_ticket is not None:

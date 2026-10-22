@@ -429,10 +429,15 @@ async def test_real_edictum_new_history_switch_and_route_isolation(tmp_path, mon
     try:
         old, response = await invoke("旧轮唯一内容")
         assert response == "旧回复"
+        assert old.history_window is not None
+        old_window = old.history_window
         new, response = await invoke("/new")
         assert "已开始新对话" in response and new.session_id != old.session_id
         assert new.context_reset_at is not None
-        _, response = await invoke("新轮唯一内容")
+        new_config = manager.store.get(new.session_id)
+        assert new_config is not None and new_config.history_started_at == new.received_wall_at
+        fresh, response = await invoke("新轮唯一内容")
+        assert fresh.history_window is not None and fresh.history_window.started_at == new.received_wall_at
         assert response == "新回复"
         assert "旧轮唯一内容" not in str(script.requests[-1][0])
         assert "旧回复" not in str(script.requests[-1][0])
@@ -451,7 +456,11 @@ async def test_real_edictum_new_history_switch_and_route_isolation(tmp_path, mon
         switched, response = await invoke(f"/switch {old.session_id}")
         assert "已切换至" in response and switched.session_id == old.session_id
         assert switched.context_reset_at is None
-        await invoke("回到旧轮")
+        restored, _ = await invoke("回到旧轮")
+        assert restored.history_window == old_window
+        from satrap.core.framework.SessionManager import SessionConfigStore
+        persisted = SessionConfigStore(database).get(old.session_id)
+        assert persisted is not None and persisted.history_started_at == old_window.started_at
         assert "旧轮唯一内容" in str(script.requests[-1][0])
         assert "新轮唯一内容" not in str(script.requests[-1][0])
         assert len(script.requests) == 3

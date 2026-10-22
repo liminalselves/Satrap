@@ -265,6 +265,9 @@ def restore_session_domain(
         if "conversation_data_backups" in records:
             connection.execute("CREATE TABLE IF NOT EXISTS conversation_data_backups (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, layer TEXT NOT NULL, payload TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL)")
         tables = _table_names(connection)
+        if "session_configs" in records and "session_configs" in tables and "history_started_at" not in _table_columns(connection, "session_configs"):
+            connection.execute("ALTER TABLE session_configs ADD COLUMN history_started_at REAL")
+            # 恢复可早于 SessionManager 初始化, 保留新版归档中的会话起点
         schemas: dict[str, set[str]] = {}
         for table in records:
             if table not in _RESTORABLE_TABLES:
