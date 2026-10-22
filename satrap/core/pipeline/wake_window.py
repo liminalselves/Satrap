@@ -140,6 +140,7 @@ class WakeWindow:
         返回:
         - tuple[PendingMessage, ...]: 当前路由有效消息, 入窗不触发下载
         """
+        received_at = event.queued_at if now is None else now
         now = monotonic() if now is None else now
         self._sweep(now)
         key = self.key(event)
@@ -171,8 +172,9 @@ class WakeWindow:
         rows = self._pending.setdefault(key, [])
         if not any(item.request_id == origin.request_id or (origin.source_message_id and item.message_id == origin.source_message_id) for item in rows):
             complete = all(item.type in {PlatformComponentType.Plain, PlatformComponentType.Image, PlatformComponentType.At} for item in event.get_messages())
-            rows.append(PendingMessage(origin.request_id, origin.actor_id, origin.source_message_id, text, now,
+            rows.append(PendingMessage(origin.request_id, origin.actor_id, origin.source_message_id, text, received_at,
                                        display_label(event.get_sender_name()), tuple(parts), omitted_images, complete))
+            rows.sort(key=lambda item: item.received_at)
             self._record_activity(key, now, False)
         evicted = 0
         while (len(rows) > self.max_messages or sum(item.text_size for item in rows) > self.max_chars
@@ -333,6 +335,28 @@ class WakeWindow:
             self._pending[key] = retained
         else:
             self._pending.pop(key, None)
+
+    def reset(self, event: MessageEvent, cutoff: float) -> None:
+        """
+        成功开启新会话后撤销边界之前的窗口资料, 保留新收到的消息
+
+        参数:
+        - event: 已成功切换的真实路由事件
+        - cutoff: 宿主确认绑定成功后发布的命令接收时刻
+        """
+        key = self.key(event)
+        retained = [item for item in self._pending.get(key, []) if item.received_at > cutoff]
+        if retained:
+            self._pending[key] = retained
+        else:
+            self._pending.pop(key, None)
+        activity = [item for item in self._activity.get(key, []) if item[0] > cutoff]
+        if activity:
+            self._activity[key] = activity
+        else:
+            self._activity.pop(key, None)
+        if self._submitted.get(key, float("-inf")) <= cutoff:
+            self._submitted.pop(key, None)
 
     def cooldown_remaining(self, event: MessageEvent, now: float | None = None) -> float:
         """

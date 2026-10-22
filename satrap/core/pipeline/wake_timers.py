@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from weakref import WeakKeyDictionary
 from time import monotonic
 from copy import copy, deepcopy
+from collections import OrderedDict
 import asyncio
 
 from satrap.core.pipeline.wake_window import WakeWindow, PendingMessage
@@ -37,6 +38,7 @@ class WakeTimers:
         self.window = window
         self.tasks: dict[tuple[str, ...], asyncio.Task[None]] = {}
         self.tickets: WeakKeyDictionary[MessageEvent, DeadlineTicket] = WeakKeyDictionary()
+        self._sources: OrderedDict[tuple[str, ...], MessageEvent] = OrderedDict()
 
     def schedule(self, event: MessageEvent, *, earliest: float | None = None) -> None:
         """
@@ -52,7 +54,7 @@ class WakeTimers:
         key = self.window.key(event)
         adapter = event.adapter
         snapshot = self.window.peek(event)
-        if not snapshot or key in self.tasks or len(self.tasks) >= self.window.max_routes:
+        if not snapshot:
             return
         message = copy(event.platform_message)
         message.raw_message = {}
@@ -64,6 +66,13 @@ class WakeTimers:
                                    event.adapter, event.session_provider, event.session_type)
         lightweight.policy_settings = deepcopy(event.policy_settings)
         lightweight._call_origin = event.call_origin
+        lightweight.queued_at = event.queued_at
+        self._sources[key] = lightweight
+        self._sources.move_to_end(key)
+        while len(self._sources) > self.window.max_routes:
+            self._sources.popitem(last=False)
+        if key in self.tasks or len(self.tasks) >= self.window.max_routes:
+            return
         ticket = DeadlineTicket()
         self.tickets[lightweight] = ticket
         due = snapshot[0].received_at + wait
@@ -86,6 +95,8 @@ class WakeTimers:
             finally:
                 if self.tasks.get(key) is asyncio.current_task():
                     self.tasks.pop(key, None)
+                if not self.window.peek(lightweight):
+                    self._sources.pop(key, None)
 
         self.tasks[key] = asyncio.create_task(enqueue())
 
@@ -100,6 +111,8 @@ class WakeTimers:
         task = self.tasks.pop(self.window.key(event), None)
         if task is not None:
             task.cancel()
+        if not self.window.peek(event):
+            self._sources.pop(self.window.key(event), None)
         if invalidate_tickets:
             key = self.window.key(event)
             for queued, ticket in list(self.tickets.items()):
@@ -119,11 +132,28 @@ class WakeTimers:
         for event, ticket in list(self.tickets.items()):
             if event.call_origin.adapter_id == adapter_id:
                 ticket.cancelled = True
+        for key in list(self._sources):
+            if key[0] == adapter_id:
+                del self._sources[key]
+
+    def reset_route(self, event: MessageEvent, cutoff: float) -> None:
+        """
+        撤销旧补偿, 仅用边界之后真实消息的来源安排新补偿
+
+        参数:
+        - event: 用于定位范围的重置命令, 不把其操作者当作后续消息发送者
+        - cutoff: 已成功生效的命令接收边界
+        """
+        source = self._sources.pop(self.window.key(event), None)
+        self.cancel_route(event, invalidate_tickets=True)
+        if source is not None and source.queued_at > cutoff:
+            self.schedule(source)
 
     async def close(self) -> None:
         """取消并等待所有剩余计时, 使排队补偿失效"""
         tasks = list(self.tasks.values())
         self.tasks.clear()
+        self._sources.clear()
         for task in tasks:
             task.cancel()
         for ticket in self.tickets.values():

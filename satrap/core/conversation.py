@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from functools import cached_property
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Iterator
 
 
 @dataclass(frozen=True)
@@ -61,7 +64,54 @@ class ConversationRoute:
         key = self.key
         return self.user_id if key is None else "scope_" + hashlib.sha256(key.encode("utf-8")).hexdigest()
 
+    @cached_property
+    def lock_key(self) -> str:
+        """返回会话切换前后保持不变的路由锁键, 包含旧用户范围的完整身份"""
+        return self.key or "legacy:v1:" + json.dumps([self.platform, self.provider, self.session_type, self.user_id], separators=(",", ":"))
+
     @property
     def owner(self) -> str:
         """返回存储归属, 共享群留空而不绑定首位发言者"""
         return "" if self.scope in {"group", "conversation"} else self.user_id
+
+
+@dataclass
+class _RouteScope:
+    """只在真实会话执行期间公开宿主路由, 退出后撤销复制上下文中的绑定"""
+
+    route: ConversationRoute | None
+    active: bool = True
+
+
+_CURRENT_ROUTE: ContextVar[_RouteScope | None] = ContextVar("satrap_conversation_route", default=None)
+
+
+def current_conversation_route() -> ConversationRoute | None:
+    """
+    获取当前宿主执行绑定的真实路由
+
+    返回:
+    - 有效范围内的路由, 未绑定或执行结束返回 None
+    """
+    scope = _CURRENT_ROUTE.get()
+    return scope.route if scope is not None and scope.active else None
+
+
+@contextmanager
+def bind_conversation_route(route: ConversationRoute | None) -> Iterator[None]:
+    """
+    为同步或异步会话命令绑定可信路由
+
+    参数:
+    - route: 由宿主解析的不可变路由, 不从会话 ID 推断
+
+    返回:
+    - 执行结束后撤销的路由上下文
+    """
+    scope = _RouteScope(route)
+    token = _CURRENT_ROUTE.set(scope)
+    try:
+        yield
+    finally:
+        scope.active = False
+        _CURRENT_ROUTE.reset(token)

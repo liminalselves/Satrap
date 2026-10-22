@@ -288,6 +288,10 @@ class UserCall:
     """本轮会话覆盖对应的群路由代次"""
     request_blocks: tuple[RequestContextBlock, ...] = ()
     """本轮平台资料, 独立于需要保存的正文"""
+    received_at: float = field(default_factory=time.monotonic, kw_only=True)
+    """宿主接收请求的单调时钟, 平台调用沿用真实入队时刻"""
+    context_reset_at: float | None = field(default=None, init=False)
+    """仅在绑定成功后发布的命令接收边界, 用于撤销命令之前的窗口资料"""
 
 @dataclass
 class LLMConfig:
@@ -586,6 +590,7 @@ class CommandAction:
     动作类型, 可选值:
         - "switch_session": 切换会话
         - "new_session": 创建新会话
+        - "switch": 创建并切换新会话, 兼容内置 /new 的既有动作名
         - "none": 无动作, 仅返回信息
     """
     target_session_id: Optional[str] = None

@@ -724,12 +724,12 @@ async def test_all_competing_events_claim_once_and_do_not_consume_rich_event() -
     original_turn = scheduler._session_turn
 
     @asynccontextmanager
-    async def delayed_turn(manager, session_id):
+    async def delayed_turn(manager, session_id, **kwargs):
         """确定性让纯文本与语音事件先入窗, 最后事件先持锁认领"""
         if not gate.is_set():
             lock_entered.set()
             await gate.wait()
-        async with original_turn(manager, session_id):
+        async with original_turn(manager, session_id, **kwargs):
             yield
 
     scheduler._session_turn = delayed_turn

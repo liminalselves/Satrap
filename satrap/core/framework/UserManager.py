@@ -106,6 +106,17 @@ class UserInfoStore:
                     "CREATE INDEX IF NOT EXISTS idx_cs_user ON context_sessions "
                     "(user_id, platform, provider_name, session_type)"
                 )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS context_session_history ("
+                    "context_key TEXT NOT NULL, session_id TEXT NOT NULL, "
+                    "first_used_at REAL NOT NULL, last_used_at REAL NOT NULL, "
+                    "PRIMARY KEY(context_key, session_id))"
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO context_session_history "
+                    "SELECT context_key, session_id, created_at, last_used_at FROM context_sessions"
+                )   # 仅迁移已核验的当前映射, 不根据 scope_ 前缀猜测旧归属
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_csh_session ON context_session_history(session_id)")
                 conn.commit()
 
     @staticmethod
@@ -310,6 +321,7 @@ class UserInfoStore:
                     f"DELETE FROM context_sessions WHERE session_id IN ({placeholders})",
                     tuple(sorted(targets)),
                 )
+                conn.execute(f"DELETE FROM context_session_history WHERE session_id IN ({placeholders})", tuple(sorted(targets)))
                 conn.commit()
                 return updated_users, max(cursor.rowcount, 0)
 
@@ -362,6 +374,7 @@ class UserInfoStore:
         session_id: str,
         provider_name: str = SESSION_CLASS_PROVIDER,
         context_key: str | None = None,
+        expected_session_id: str | None = None,
     ) -> str:
         """
         创建或更新上下文会话记录
@@ -373,6 +386,7 @@ class UserInfoStore:
         - session_id: 会话 ID
         - provider_name: Provider 名称
         - context_key: 显式范围键, None 沿用旧用户路由键
+        - expected_session_id: 切换前必须仍绑定的会话, None 表示不做比较交换
 
         返回: context_key (格式: "{session_type}:{platform}:{user_id}")
 
@@ -383,6 +397,11 @@ class UserInfoStore:
         now = time.time()
         with self._lock:
             with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if expected_session_id is not None:
+                    previous = conn.execute("SELECT session_id FROM context_sessions WHERE context_key=?", (context_key,)).fetchone()
+                    if previous is None or previous["session_id"] != expected_session_id:
+                        raise ValueError("会话路由已变化, 本次切换未生效")
                 conn.execute(
                     """
                     INSERT INTO context_sessions
@@ -395,8 +414,32 @@ class UserInfoStore:
                     """,
                     (context_key, user_id, platform, provider_name, session_type, session_id, now, now),
                 )
+                conn.execute(
+                    "INSERT INTO context_session_history(context_key, session_id, first_used_at, last_used_at) "
+                    "VALUES(?, ?, ?, ?) ON CONFLICT(context_key, session_id) "
+                    "DO UPDATE SET last_used_at=excluded.last_used_at",
+                    (context_key, session_id, now, now),
+                )
                 conn.commit()
         return context_key
+
+    def list_context_history(self, route: ConversationRoute) -> list[str]:
+        """
+        查询同一可信路由已经绑定过的会话, 不从会话名称推断归属
+
+        参数:
+        - route: 当前宿主冻结的完整路由
+
+        返回:
+        - 最近使用的会话 ID 在前, 群共享与成员隔离使用各自的范围键
+        """
+        key = route.key or self._context_key(route.owner, route.platform, route.session_type, route.provider)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT session_id FROM context_session_history WHERE context_key=? "
+                "ORDER BY last_used_at DESC, session_id", (key,),
+            ).fetchall()
+            return [str(row["session_id"]) for row in rows]
 
     def get_context_session(
         self,

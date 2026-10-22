@@ -103,6 +103,48 @@ def test_session_config_register_update_and_list(tmp_path: Path):
     assert "echo" in types
     assert "extra" in types
 
+
+@pytest.mark.parametrize("async_entry", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("failure", ["initialization", "route_changed"])
+async def test_new_failure_keeps_original_route_and_never_publishes_reset(tmp_path, monkeypatch, async_entry, failure):
+    """目标初始化失败或并发路由变化时, 不发布成功回执或清窗信号"""
+    from satrap.core.conversation import ConversationRoute
+    from satrap.core.framework.UserManager import UserManager
+    from satrap.core.type import CommandAction, UserCall
+    sm = _make_sm(tmp_path)
+    users = UserManager(sm, db_path=tmp_path / "users.db")
+    sm._user_mgr = users
+    route = ConversationRoute("user", "test", "echo", scope="group", self_id="bot", group_id="group")
+    initial = users.resolve_session("user", "test", "echo", route=route)
+    target = initial + ":new"
+    other = initial + ":concurrent"
+    monkeypatch.setattr(sm, "_invoke_sync_session", lambda *args: CommandAction("new_session", target, "不应出现的成功回执"))
+    prepare_sync, prepare_async = sm._prepare_session_sync, sm._prepare_session_async
+
+    def check(instance):
+        if instance.session_id == target:
+            if failure == "initialization":
+                raise ValueError("模拟初始化失败")
+            sm._resolve_or_create_session_config(UserCall(session_id=other, session_type="echo"))
+            users.store.upsert_context_session(route.owner, route.platform, route.session_type, other, route.provider, context_key=route.key)
+
+    def prepare(instance, **kwargs):
+        check(instance)
+        return prepare_sync(instance, **kwargs)
+
+    async def prepare_later(instance, **kwargs):
+        check(instance)
+        return await prepare_async(instance, **kwargs)
+
+    monkeypatch.setattr(sm, "_prepare_session_sync", prepare)
+    monkeypatch.setattr(sm, "_prepare_session_async", prepare_later)
+    call = UserCall(session_id=initial, session_type="echo", route=route, message="/new")
+    result = await sm.handle_call_async(call) if async_entry else sm.handle_call(call)
+    assert "切换失败" in result and "不应出现" not in result
+    assert call.context_reset_at is None and call.session_id == initial
+    assert users.resolve_session("user", "test", "echo", route=route) == (initial if failure == "initialization" else other)
+    assert target not in users.store.list_context_history(route)
+
 def test_register_session_from_class_config(tmp_path: Path):
     """从类级配置派生实例配置 (extra_params 覆盖)"""
     sm = _make_sm(tmp_path)

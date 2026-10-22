@@ -6,6 +6,7 @@ import string
 from typing import TYPE_CHECKING
 
 from satrap.core.type import CommandAction
+from satrap.core.conversation import current_conversation_route
 if TYPE_CHECKING:
     from satrap.core.framework.Base import Session, AsyncSession
     from satrap.core.framework.command import CommandHandler, AsyncCommandHandler
@@ -65,23 +66,26 @@ def _base_id(session_id: str) -> str:
 
 def _get_user_contexts_list(session: Session | AsyncSession) -> list[str]:
     """
-    获取当前用户的所有会话 ID 列表
+    获取当前可信对话范围内的会话 ID 列表
 
     参数:
     - session: 会话
 
     返回:
-    - list[str]: 当前用户的所有会话 ID 列表
+    - list[str]: 已核验范围中的历史会话, 独立旧式会话保持原用户绑定兼容
     """
     user_manager = session._user_manager
     if user_manager:
+        route = current_conversation_route()
+        if route is not None:
+            return [sid for sid in user_manager.store.list_context_history(route) if user_manager.sm.store.get(sid) is not None]
         user_id = _parse_user_id(session.session_id)
-        if user_id:
+        if user_id and not user_id.startswith("scope_"):
             return user_manager.get_user_session_ids(user_id)
     return []
 
 
-def cmd_new(session: Session) -> CommandAction:
+def cmd_new(session: Session | AsyncSession) -> CommandAction:
     """
     开始新的对话
 
@@ -92,11 +96,6 @@ def cmd_new(session: Session) -> CommandAction:
     - CommandAction: 开始新的对话
     """
     new_id = f"{_base_id(session.session_id)}:{_short_uid()}"
-
-    user_manager = session._user_manager
-    user_id = _parse_user_id(session.session_id)
-    if user_manager and user_id:
-        user_manager.bind_session(user_id, new_id)
 
     return CommandAction(
         action="switch",
@@ -120,7 +119,7 @@ def cmd_history(session: Session) -> CommandAction | str:
         return "暂无其他对话"
 
     current = session.session_id
-    lines = ["当前用户的所有对话:"]
+    lines = ["当前范围的历史对话:"]
     for sid in contexts:
         tag = " ← 当前" if sid == current else ""
         lines.append(f"  {sid}{tag}")
@@ -177,18 +176,7 @@ async def cmd_new_async(session: AsyncSession) -> CommandAction:
     返回:
     - CommandAction: 开始新的对话
     """
-    new_id = f"{_base_id(session.session_id)}:{_short_uid()}"
-
-    user_manager = session._user_manager
-    user_id = _parse_user_id(session.session_id)
-    if user_manager and user_id:
-        user_manager.bind_session(user_id, new_id)
-
-    return CommandAction(
-        action="switch",
-        target_session_id=new_id,
-        message="已开始新对话（旧对话可通过 /history 查看和切换）"
-    )
+    return cmd_new(session)
 
 
 async def cmd_history_async(session: AsyncSession) -> CommandAction | str:
@@ -206,7 +194,7 @@ async def cmd_history_async(session: AsyncSession) -> CommandAction | str:
         return "暂无其他对话"
 
     current = session.session_id
-    lines = ["当前用户的所有对话:"]
+    lines = ["当前范围的历史对话:"]
     for sid in contexts:
         tag = " ← 当前" if sid == current else ""
         lines.append(f"  {sid}{tag}")

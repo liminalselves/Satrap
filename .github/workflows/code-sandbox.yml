@@ -8,6 +8,17 @@ on:
       - 'satrap/core/utils/media*.py'
       - 'tests/unit/test_visual_input_flows.py'
       - 'tests/unit/test_session_command_flows.py'
+      - 'satrap/core/conversation.py'
+      - 'satrap/core/pipeline/**'
+      - 'satrap/core/framework/SessionManager.py'
+      - 'satrap/core/framework/UserManager.py'
+      - 'satrap/core/storage/**'
+      - 'satrap/expend/command/session_commands.py'
+      - 'satrap/expend/plugins/session_commands/**'
+      - 'tests/unit/test_routing_flows.py'
+      - 'tests/unit/test_session_management_flows.py'
+      - 'tests/unit/test_wake_pipeline_flows.py'
+      - 'tests/unit/test_wake_policy_flows.py'
       - 'satrap/core/group_chat/**'
       - 'satrap/expend/tools/sandbox_tools/**'
       - 'satrap/expend/tools/search/**'
@@ -72,7 +83,7 @@ jobs:
           [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pytest tests/unit/test_visual_input_flows.py tests/unit/test_session_command_flows.py -q
+          python -m pytest tests/unit/test_visual_input_flows.py tests/unit/test_session_command_flows.py tests/unit/test_routing_flows.py tests/unit/test_session_management_flows.py tests/unit/test_wake_pipeline_flows.py tests/unit/test_wake_policy_flows.py tests/unit/test_conversation_storage_flows.py tests/unit/test_storage_flows.py -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise native coding shells and configuration startup
         run: |

@@ -933,6 +933,13 @@ async def test_scoped_command_switch_updates_original_route(tmp_path, monkeypatc
     target = um.resolve_session("123", "bot", "dummy", scm)
     monkeypatch.setattr(sm, "_invoke_sync_entry", lambda *args: CommandAction("switch_session", target, "switched"))
     result = await sm.handle_call_async(UserCall(session_id=initial, message="switch", route=route))
+    assert "不属于当前对话范围" in result
+    assert um.resolve_session("123", "bot", "dummy", scm, route=route) == initial
+    target = "dummy:bot:scoped-history:target"
+    sm._resolve_or_create_session_config(UserCall(session_id=target, session_type="dummy"))
+    for session_id in (target, initial):
+        um.store.upsert_context_session(route.owner, route.platform, route.session_type, session_id, route.provider, context_key=route.key)
+    result = await sm.handle_call_async(UserCall(session_id=initial, message="switch", route=route))
     assert result == "switched"
     assert um.resolve_session("123", "bot", "dummy", scm, route=route) == target
     untouched = ConversationRoute("123", "bot", "dummy", scope="group_member", self_id="10000", group_id="789")

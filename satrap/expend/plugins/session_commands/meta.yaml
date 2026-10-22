@@ -11,8 +11,8 @@ config_schema:
 
 commands:
   new: 开始一个新对话
-  history: 查看当前用户的历史对话
-  switch: 按 Session ID 切换对话
+  history: 查看当前对话范围的历史会话
+  switch: 切换到当前范围内的历史会话
   about: 查看 Satrap 平台会话信息
 
 compatibility:

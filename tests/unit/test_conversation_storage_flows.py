@@ -87,6 +87,34 @@ def test_exact_owner_beats_prefix_and_archive_preserves_unrelated_context(tmp_pa
     context.close()
     unrelated.close()
 
+
+def test_route_history_archive_restore_and_ownership_survive_restart(tmp_path):
+    """历史关联持久化、回收及恢复与会话范围一致, 不改写当前会话指针"""
+    from dataclasses import replace
+    from satrap.core.conversation import ConversationRoute, bind_conversation_route, current_conversation_route
+    from contextvars import copy_context
+    database = tmp_path / "history.db"
+    store = UserInfoStore(database)
+    route = ConversationRoute("member", "qq", "chat", provider="edictum", scope="group_member", self_id="bot", group_id="group")
+    for sid in ("old", "new"):
+        store.upsert_context_session(route.owner, route.platform, route.session_type, sid, route.provider, context_key=route.key)
+    restarted = UserInfoStore(database)
+    assert set(restarted.list_context_history(route)) == {"old", "new"}
+    for other in (replace(route, user_id="another"), replace(route, group_id="another"), replace(route, generation=1),
+                  replace(route, session_type="another"), replace(route, self_id="another")):
+        assert restarted.list_context_history(other) == []
+    records = snapshot_session_domain(database, "old")
+    assert records["context_session_history"][0]["session_id"] == "old"
+    delete_session_domain_rows(database, "old")
+    assert restarted.list_context_history(route) == ["new"]
+    restore_session_domain(database, "old", records)
+    assert set(restarted.list_context_history(route)) == {"old", "new"}
+    assert restarted.get_context_session(route.owner, route.platform, route.session_type, route.provider, context_key=route.key).session_id == "new"
+    with bind_conversation_route(route):
+        copied = copy_context()
+        assert current_conversation_route() is route
+    assert copied.run(current_conversation_route) is None
+
 def test_legacy_child_hidden_but_searchable_by_explicit_category(tmp_path):
     database = tmp_path / "catalog.db"
     context = ContextManager("sub_agent_legacy", db_path=str(database))

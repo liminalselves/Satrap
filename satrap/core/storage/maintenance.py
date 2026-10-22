@@ -330,6 +330,7 @@ class StorageMaintenanceService:
                     "WHERE namespace = 'conversation'"
                 ),
                 "context_sessions": "SELECT DISTINCT session_id FROM context_sessions",
+                "context_session_history": "SELECT DISTINCT session_id FROM context_session_history",
             }
             for table, query in selectors.items():
                 if table not in tables:
@@ -479,7 +480,7 @@ class StorageMaintenanceService:
                 results.append(self._audit_item(
                     category=(
                         "broken_user_reference"
-                        if set(tables).issubset({"context_sessions", "user_info"})
+                        if set(tables).issubset({"context_sessions", "context_session_history", "user_info"})
                         else "orphan_database_rows"
                     ),
                     platform_id=platform_id,

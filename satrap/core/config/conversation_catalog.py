@@ -141,6 +141,14 @@ def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any
     routes: dict[str, list[dict[str, Any]]] = {}
     for row in _rows(connection, tables, "context_sessions"):
         routes.setdefault(row["session_id"], []).append(row)
+    if {"context_sessions", "context_session_history"}.issubset(tables):
+        for row in connection.execute(
+            "SELECT c.context_key, c.user_id, c.platform, c.provider_name, c.session_type, "
+            "h.session_id, h.first_used_at AS created_at, h.last_used_at "
+            "FROM context_session_history h JOIN context_sessions c ON c.context_key=h.context_key "
+            "WHERE h.session_id<>c.session_id"
+        ):
+            routes.setdefault(row["session_id"], []).append(dict(row))
     users = {str(row["user_id"]): row for row in _rows(connection, tables, "user_info")}
     turns: dict[str, list[dict[str, Any]]] = {}
     if "display_turns" in tables:

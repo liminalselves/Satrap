@@ -184,9 +184,9 @@ def test_missing_or_corrupt_cache_rebuilds_from_sqlite(tmp_path):
 
 def test_process_exit_after_sql_commit_recovers(tmp_path):
     script = """
-import logging, os, sys
+import io, logging, os, sys
 from unittest.mock import patch
-with patch('logging.FileHandler', lambda *a, **k: logging.NullHandler()):
+with patch('logging.FileHandler._open', lambda self: io.StringIO()):
     from satrap.core.database import DataBase
 db = DataBase(sys.argv[1])
 db._save_index = lambda name: os._exit(77)
@@ -212,9 +212,9 @@ def test_cross_process_writers_and_stale_cache_publish(tmp_path):
     first = DataBase(str(tmp_path))
     first.add_to_collection("a", ["before"], [[1, 0]], None)
     script = """
-import logging, sys
+import io, logging, sys
 from unittest.mock import patch
-with patch('logging.FileHandler', lambda *a, **k: logging.NullHandler()):
+with patch('logging.FileHandler._open', lambda self: io.StringIO()):
     from satrap.core.database import DataBase
 db = DataBase(sys.argv[1])
 db.add_to_collection('a', [sys.argv[2]], [[1, 0]], None)
