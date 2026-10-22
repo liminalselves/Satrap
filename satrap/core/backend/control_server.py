@@ -35,6 +35,7 @@ import json
 import hashlib
 import sys
 import os
+import time
 import zipfile
 
 from satrap.core.config.session_instance_service import SessionInstanceConfigService
@@ -162,6 +163,8 @@ _CONTROL_AUTH = ServerAuth.create("127.0.0.1", 19871, session_namespace="control
 """控制服务共享鉴权策略"""
 _PLUGIN_APPLICATIONS = ApplicationOperations()
 """当前控制进程的有界应用任务, 不保存配置正文或共享工具授权"""
+_PASSWORD_LOGIN_FAILURES: dict[str, list[float]] = {}
+"""访问密码登录失败时间戳, 按客户端地址限速"""
 
 CONTROL_MAX_BODY_BYTES = 1024 * 1024
 """控制服务 JSON 请求体最大字节数"""
@@ -3532,6 +3535,80 @@ async def _handle_request(
                 origin,
                 {"Set-Cookie": _CONTROL_AUTH.expired_session_cookie()},
             )
+            return
+
+        if method == "GET" and path == "/auth/password/status":
+            from satrap.core.auth_password import dashboard_password_hash
+            try:
+                required = dashboard_password_hash() is not None
+            except ValueError as error:
+                await _send_control_json(writer, 500, {"error": str(error)}, origin)
+                return
+            await _send_control_json(writer, 200, {"password_required": required}, origin)
+            return
+
+        if method == "POST" and path == "/auth/password/login":
+            from satrap.core.auth_password import dashboard_password_hash, verify_dashboard_password
+            login_peer = writer.get_extra_info("peername")
+            login_host = str(login_peer[0]) if isinstance(login_peer, tuple) and login_peer else ""
+            now = time.monotonic()
+            failures = [stamp for stamp in _PASSWORD_LOGIN_FAILURES.get(login_host, []) if now - stamp < 60]
+            if len(failures) >= 5:
+                await _send_control_json(writer, 429, {"error": "尝试过于频繁, 请稍后重试"}, origin)
+                return
+            try:
+                login_payload = await _read_json_body(reader, raw_request)
+            except (HTTPRequestError, json.JSONDecodeError, ValueError):
+                await _send_control_json(writer, 400, {"error": "请求格式无效"}, origin)
+                return
+            try:
+                stored = dashboard_password_hash()
+            except ValueError as error:
+                await _send_control_json(writer, 500, {"error": str(error)}, origin)
+                return
+            if stored is not None and not verify_dashboard_password(stored, login_payload.get("password")):
+                failures.append(now)
+                _PASSWORD_LOGIN_FAILURES[login_host] = failures
+                await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
+                return
+            _PASSWORD_LOGIN_FAILURES.pop(login_host, None)
+            await _send_control_json(
+                writer,
+                200,
+                {"ok": True},
+                origin,
+                {"Set-Cookie": _CONTROL_AUTH.session_cookie()},
+            )
+            return
+
+        if method == "PUT" and path == "/auth/password":
+            if not _CONTROL_AUTH.authorized(headers):
+                await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
+                return
+            from satrap.core.auth_password import dashboard_password_hash, update_dashboard_password, verify_dashboard_password
+            try:
+                password_payload = await _read_json_body(reader, raw_request)
+            except (HTTPRequestError, json.JSONDecodeError, ValueError):
+                await _send_control_json(writer, 400, {"error": "请求格式无效"}, origin)
+                return
+            if set(password_payload) != {"new_password", "current_password"}:
+                await _send_control_json(writer, 400, {"error": "参数必须是 current_password 与 new_password"}, origin)
+                return
+            try:
+                stored = dashboard_password_hash()
+            except ValueError as error:
+                await _send_control_json(writer, 500, {"error": str(error)}, origin)
+                return
+            if stored is not None and not verify_dashboard_password(stored, password_payload.get("current_password")):
+                await _send_control_json(writer, 403, {"error": "当前密码不正确"}, origin)
+                return
+            new_password = password_payload.get("new_password")
+            try:
+                hashed = await asyncio.to_thread(update_dashboard_password, new_password if isinstance(new_password, str) else None)
+            except (OSError, ValueError) as error:
+                await _send_control_json(writer, 400, {"error": str(error)}, origin)
+                return
+            await _send_control_json(writer, 200, {"ok": True, "password_required": hashed is not None}, origin)
             return
 
         if method == "GET" and not _is_control_api_path(path) and path != "/ui-config.json" and await CONTROL_STATIC_UI.serve(

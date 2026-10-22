@@ -58,6 +58,10 @@ class _control_static_BufferWriter:
     async def drain(self) -> None:
         """模拟等待响应写出"""
 
+    def get_extra_info(self, name: str) -> tuple[str, int] | None:
+        """提供与真实流写入器一致的回环对端信息"""
+        return ("127.0.0.1", 40000) if name == "peername" else None
+
     def close(self) -> None:
         """记录连接关闭状态"""
         self.closed = True
@@ -1021,3 +1025,46 @@ def test_session_reexport_cannot_escape_its_package(tmp_path: Path, monkeypatch)
     manager = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
     with pytest.raises(ValueError, match="不是模块内声明"):
         manager._load_class("satrap.core.framework.Base.Session")
+
+@pytest.mark.asyncio
+async def test_control_password_endpoints_gate_bootstrap_and_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """控制端访问密码: 免密状态, 设密码关闭回环引导, 登录签发 cookie, 改清密码即时生效, Bearer 不受影响"""
+    from satrap.core.auth_password import update_dashboard_password
+    config = tmp_path / "config.yaml"
+    monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: config)
+    origin = {"Origin": "http://127.0.0.1:5173"}
+
+    status_response = await _request("/auth/password/status", authenticated=False)
+    assert b'"password_required"' in status_response and b"false" in status_response
+    bootstrap = await _request("/auth/session", method="POST", headers=origin, authenticated=False)
+    assert b"200" in bootstrap
+
+    update_dashboard_password("Secret-123")
+    status_response = await _request("/auth/password/status", authenticated=False)
+    assert b"true" in status_response
+    bootstrap = await _request("/auth/session", method="POST", headers=origin, authenticated=False)
+    assert b"401" in bootstrap
+    bearer = await _request("/auth/session", method="POST", headers=origin)
+    assert b"200" in bearer
+
+    bad_login = await _request("/auth/password/login", method="POST", headers=origin,
+                               body=b'{"password":"wrong-123"}', authenticated=False)
+    assert b"401" in bad_login
+    login = await _request("/auth/password/login", method="POST", headers=origin,
+                           body=b'{"password":"Secret-123"}', authenticated=False)
+    assert b"200" in login and b"Set-Cookie" in login
+
+    wrong_current = await _request("/auth/password", method="PUT",
+                                   body=b'{"current_password":"nope","new_password":"Other-456"}')
+    assert b"403" in wrong_current
+    changed = await _request("/auth/password", method="PUT",
+                             body=b'{"current_password":"Secret-123","new_password":"Other-456"}')
+    assert b"200" in changed
+    relogin = await _request("/auth/password/login", method="POST", headers=origin,
+                             body=b'{"password":"Other-456"}', authenticated=False)
+    assert b"200" in relogin
+    cleared = await _request("/auth/password", method="PUT",
+                             body=b'{"current_password":"Other-456","new_password":null}')
+    assert b"200" in cleared
+    status_response = await _request("/auth/password/status", authenticated=False)
+    assert b"false" in status_response
