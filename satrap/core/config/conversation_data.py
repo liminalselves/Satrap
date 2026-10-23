@@ -98,12 +98,13 @@ class ConversationDataService:
         matched = filter_records(items, query)
         return {"items": matched[max(0, offset):max(0, offset) + min(100, max(1, limit))], "total": len(matched)}
 
-    def catalog_records(self, platform: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def catalog_records(self, platform: dict[str, Any] | None = None, requested: str = '') -> list[dict[str, Any]]:
         """
         读取完整分类目录, 不创建平台文件或激活运行时
 
         参数:
         - platform: 动态平台类型和实例描述
+        - requested: 可选精确对话或上下文 ID
 
         返回:
         - 全部对话分类记录, 缺少数据库时返回空列表
@@ -111,7 +112,7 @@ class ConversationDataService:
         if not self.database.is_file():
             return []
         with closing(self._connect()) as connection:
-            return conversation_records(connection, platform)
+            return conversation_records(connection, platform, requested)
 
     def _context(self, connection: sqlite3.Connection, conversation: str) -> list[dict[str, Any]]:
         """

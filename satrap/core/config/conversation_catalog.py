@@ -122,13 +122,14 @@ def _route_metadata(row: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any] | None = None, requested: str = '') -> list[dict[str, Any]]:
     """
     合并已有数据生成对话和工作流目录
 
     参数:
     - connection: 使用 sqlite3.Row 的只读连接
     - platform: 动态平台描述, 未提供时保留存储层兼容入口
+    - requested: 可选精确对话或上下文 ID, 仅构建对应目录标签
 
     返回:
     - 带分类标签和真实活动时间的对话记录, 按最近活动排序
@@ -152,7 +153,7 @@ def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any
     users = {str(row["user_id"]): row for row in _rows(connection, tables, "user_info")}
     turns: dict[str, list[dict[str, Any]]] = {}
     if "display_turns" in tables:
-        for row in connection.execute("SELECT conversation_id, turn_index, user_input, created_at FROM display_turns"):
+        for row in connection.execute('SELECT t.conversation_id, MIN(t.turn_index) AS turn_index, MAX(t.created_at) AS created_at, COUNT(*) AS turn_count, (SELECT SUBSTR(first.user_input, 1, 100) FROM display_turns first WHERE first.conversation_id=t.conversation_id ORDER BY first.turn_index LIMIT 1) AS user_input FROM display_turns t GROUP BY t.conversation_id'):
             turns.setdefault(row["conversation_id"], []).append(dict(row))
     roots = set(configs) | set(chat) | set(turns) | set(routes) | {row["session_id"] for row in catalog.values() if row["session_id"]}
     counts = dict(connection.execute("SELECT conversation_id, COUNT(*) FROM chat_history GROUP BY conversation_id")) if "chat_history" in tables else {}
@@ -170,6 +171,8 @@ def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any
         owners.setdefault(owner, []).append(context)
     items = []
     for identity, contexts in owners.items():
+        if requested and requested != identity and requested not in contexts:
+            continue
         contexts.sort(key=lambda value: (counts.get(value, 0) == 0, value != identity + "_main", catalog.get(value, {}).get("context_kind") != "main", value))
         config = configs.get(identity, {})
         meta = chat.get(identity, {})
@@ -246,7 +249,7 @@ def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any
         if not isinstance(field_names, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in field_names.items()):
             logger.warning(f"[对话目录] 适配器分类字段名称无效: {(platform or {}).get('type')}")
             field_names = {}
-        items.append({"conversation_id": identity, "title": title, "message_count": sum(counts.get(value, 0) for value in contexts), "history_count": len(history), "context_ids": contexts or [identity], "platform_id": (platform or {}).get("id", ""), "platform_type": (platform or {}).get("type", "unknown"), "supports_history": "display_turns" in tables, "facets": facets, "facet_labels": labels, "facet_names": field_names, "tags": tags, "last_activity_at": last_activity, "contexts": [{"id": value, "kind": catalog.get(value, {}).get("context_kind", "unknown"), "name": catalog.get(value, {}).get("workflow_name")} for value in contexts]})
+        items.append({"conversation_id": identity, "title": title, "message_count": sum(counts.get(value, 0) for value in contexts), "history_count": int(history[0]["turn_count"]) if history else 0, "context_ids": contexts or [identity], "platform_id": (platform or {}).get("id", ""), "platform_type": (platform or {}).get("type", "unknown"), "supports_history": "display_turns" in tables, "facets": facets, "facet_labels": labels, "facet_names": field_names, "tags": tags, "last_activity_at": last_activity, "contexts": [{"id": value, "kind": catalog.get(value, {}).get("context_kind", "unknown"), "name": catalog.get(value, {}).get("workflow_name")} for value in contexts]})
     items.sort(key=lambda item: (-(item["last_activity_at"] or 0), item["platform_id"], item["conversation_id"]))
     return items
 

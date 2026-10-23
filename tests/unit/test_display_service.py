@@ -47,6 +47,60 @@ async def _wait_conversation_task(service: ChatService, conversation_id: str) ->
 
 
 @pytest.mark.asyncio
+async def test_chat_paged_history_preserves_variants_tools_and_stable_cursor(tmp_path: Path, monkeypatch: Any) -> None:
+    """生产路由覆盖目录分页, 最新轮次分页, 变体按需读取及全量接口兼容"""
+    import json
+    from urllib.parse import urlencode
+    from satrap.display.recorder import query_conversations
+
+    service = _make_service(tmp_path, monkeypatch)
+    recorder = DisplayRecorder(service._display_db_path, 'paged')
+    recorder.save_meta('default')
+    for index in range(123):
+        recorder.start_turn(f'问题 {index}')
+        recorder.on_tool_start({'name': 'example', 'arguments': {'index': index}, 'call_id': f'call-{index}'})
+        recorder.on_tool_end({'name': 'example', 'success': True, 'call_id': f'call-{index}'})
+        recorder.end_turn(f'回答 {index}')
+    assert recorder.start_retry_variant() is not None
+    recorder.end_turn('最新变体')
+    recorder.close()
+    server = ChatHTTPServer(service)
+    try:
+        status, page = await server._route('GET', '/api/chat/turns/page?conversation=paged&limit=50', b'')
+        assert status == 200 and len(page['turns']) == 50 and page['has_more']
+        indexes = [turn['turn_index'] for turn in page['turns']]
+        last = page['turns'][-1]
+        assert last['variant_count'] == 2 and len(last['variants']) == 1
+        assert last['variant_indices'] == [0, 1] and last['answer'] == '最新变体'
+        snapshot = service.runtime_snapshot('paged', history_limit=50)
+        assert len(snapshot['turns']) == 50 and snapshot['has_more']
+        assert snapshot['next_before'] == page['next_before']
+        assert len(service.runtime_snapshot('paged')['turns']) == 123
+        before = page['next_before']
+        status, older = await server._route('GET', f'/api/chat/turns/page?conversation=paged&limit=50&before={before}', b'')
+        assert status == 200 and max(turn['turn_index'] for turn in older['turns']) < min(indexes)
+        assert older['turns'][0]['tool_calls'][0]['name'] == 'example'
+        full = service.list_turns('paged')
+        assert len(full) == 123 and len(full[-1]['variants']) == 2
+        status, empty = await server._route('GET', '/api/chat/turns/page?conversation=paged&before=0', b'')
+        assert status == 200 and empty['turns'] == [] and empty['has_more'] is False
+        for identity in ('a', 'b', 'c'):
+            item = DisplayRecorder(service._display_db_path, identity)
+            item.save_meta('default')
+            item.close()
+        first = query_conversations(service._display_db_path, page_size=2)
+        cursor = (first['items'][-1]['last_at'], first['items'][-1]['conversation_id'])
+        second = query_conversations(service._display_db_path, page_size=2, before=cursor)
+        assert not {row['conversation_id'] for row in first['items']} & {row['conversation_id'] for row in second['items']}
+        status, exact = await server._route('GET', '/api/chat/conversations/page?' + urlencode({'conversation_id': 'paged'}), b'')
+        assert status == 200 and [row['conversation_id'] for row in exact['conversations']] == ['paged']
+        assert len(list_conversations(service._display_db_path)) == 4
+        status, error = await server._route('GET', '/api/chat/conversations/page?' + urlencode({'cursor': json.dumps([float('nan'), 'a'])}), b'')
+        assert status == 400
+    finally:
+        await service.close()
+
+
 async def test_actual_chat_application_reports_lock_and_partial_failure(tmp_path: Path, monkeypatch: Any) -> None:
     """实际 Chat 会话等待原锁, 来源撤销时任务显示失败并保留原部分失败结果"""
     manager = PluginConfigManager(tmp_path / "plugin_config")

@@ -42,6 +42,7 @@ from __future__ import annotations
 from urllib.parse import unquote, urlsplit, quote
 import argparse
 import asyncio
+import math
 import base64
 import signal
 from typing import Any, cast
@@ -52,13 +53,13 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.config.conversation_data import ConversationDataConflict
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
-from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS
+from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS, BoundedAsyncWorker
 from satrap.edictum.plugin_settings import model_options
 from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.config.loader import ConfigLoader
-from satrap.display.recorder import list_conversations
+from satrap.display.recorder import list_conversations, query_conversations
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
 from satrap.core.storage import StorageMaintenanceService
@@ -69,6 +70,7 @@ from satrap.core.file_access.artifacts import CHUNK_BYTES
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 19872
+CHAT_READ_WORKERS = BoundedAsyncWorker('chat-read', workers=4, capacity=32)
 
 
 class ChatHTTPServer(MiniHTTPServer):
@@ -138,7 +140,9 @@ class ChatHTTPServer(MiniHTTPServer):
 
         queue = self.service.subscribe(conversation_id)
         try:
-            snapshot = self.service.runtime_snapshot(conversation_id)
+            raw_limit = self._query_param(path, 'history_limit')
+            history_limit = min(100, max(1, int(raw_limit))) if raw_limit else None
+            snapshot = self.service.runtime_snapshot(conversation_id, history_limit=history_limit)
             await asyncio.wait_for(self._ws_send(writer, snapshot), timeout=5.0)
             while True:
                 if reader.at_eof():
@@ -422,7 +426,23 @@ class ChatHTTPServer(MiniHTTPServer):
             return 200, {"ok": True, "conversation_id": cid}
 
         if method == "GET" and clean == "/api/chat/conversations":
-            return 200, {"conversations": list_conversations(db_path=svc._display_db_path)}
+            return 200, {"conversations": await CHAT_READ_WORKERS.run(list_conversations, db_path=svc._display_db_path)}
+
+        if method == 'GET' and clean == '/api/chat/conversations/page':
+            try:
+                limit = max(1, min(100, int(self._query_param(path, 'limit') or '50')))
+                raw_cursor = self._query_param(path, 'cursor')
+                cursor = json.loads(raw_cursor) if raw_cursor else None
+                if cursor is not None and (not isinstance(cursor, list) or len(cursor) != 2 or type(cursor[0]) not in (int, float) or not math.isfinite(float(cursor[0])) or not isinstance(cursor[1], str)):
+                    raise ValueError('无效的会话分页游标')
+                before = (float(cursor[0]), cursor[1]) if cursor is not None else None
+                result = await CHAT_READ_WORKERS.run(query_conversations, db_path=svc._display_db_path, search=self._query_param(path, 'search'), project_id=self._query_param(path, 'project_id') or None, page_size=limit + 1, before=before, identity=self._query_param(path, 'conversation_id'))
+                rows = result['items']
+                selected = [{**row, 'title': str(row['title'])[:100]} for row in rows[:limit]]
+                next_cursor = json.dumps([selected[-1]['last_at'], selected[-1]['conversation_id']]) if len(rows) > limit else None
+                return 200, {'conversations': selected, 'has_more': next_cursor is not None, 'next_cursor': next_cursor}
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                return 400, {'error': str(error)}
 
         if method == "GET" and clean == "/api/chat/history":
             raw_days = self._query_param(path, "older_than_days")
@@ -536,11 +556,26 @@ class ChatHTTPServer(MiniHTTPServer):
                 return 409, {"error": str(error)}
         # 接口: DELETE /api/chat/conversations/{id}
 
+        if method == 'GET' and clean == '/api/chat/turns/page':
+            conversation = self._query_param(path, 'conversation')
+            if not conversation:
+                return 400, {'error': '缺少 conversation 参数'}
+            try:
+                limit = max(1, min(100, int(self._query_param(path, 'limit') or '50')))
+                before_text = self._query_param(path, 'before')
+                before = int(before_text) if before_text else None
+                rows = await CHAT_READ_WORKERS.run(svc.list_turns, conversation, limit=limit + 1, before=before, latest=True, all_variants=False)
+                selected = rows[-limit:]
+                return 200, {'turns': selected, 'has_more': len(rows) > limit,
+                             'next_before': selected[0]['turn_index'] if selected else None}
+            except (TypeError, ValueError) as error:
+                return 400, {'error': str(error)}
+
         if method == "GET" and clean == "/api/chat/turns":
             conv = self._query_param(path, "conversation")
             if not conv:
                 return 400, {"error": "缺少 conversation 参数"}
-            return 200, {"turns": svc.list_turns(conv)}
+            return 200, {"turns": await CHAT_READ_WORKERS.run(svc.list_turns, conv)}
 
         if method == "POST" and clean == "/api/chat/send":
             payload = json.loads(body or b"{}")

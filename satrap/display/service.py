@@ -376,10 +376,25 @@ class ChatService:
                 q.invalidate()
                 logger.warning(f"[聊天] 会话 {conv.conversation_id} 慢订阅需要重同步")
 
-    def runtime_snapshot(self, conversation_id: str) -> dict[str, Any]:
-        """在订阅注册后同步取权威快照, 后续事件从快照序号继续"""
+    def runtime_snapshot(self, conversation_id: str, history_limit: int | None = None) -> dict[str, Any]:
+        """
+        同步捕获有界权威快照及事件序号, 避免异步读取越过未包含的事件
+
+        参数:
+        - conversation_id: 订阅会话 ID
+        - history_limit: 可选历史窗口, 旧客户端不指定时保留全量语义
+
+        返回:
+        - 包含生成缓冲, 分页边界和事件序号的快照
+        """
         conv = self._conversations.get(conversation_id)
-        turns = conv.recorder.snapshot_turns() if conv else self.list_turns(conversation_id)
+        limit = history_limit + 1 if history_limit is not None else None
+        turns = conv.recorder.snapshot_turns(limit=limit) if conv else self.list_turns(conversation_id, limit=limit, latest=limit is not None, all_variants=limit is None)
+        pagination = {}
+        if history_limit is not None:
+            has_more = len(turns) > history_limit
+            turns = turns[-history_limit:]
+            pagination = {'has_more': has_more, 'next_before': turns[0]['turn_index'] if turns else None}
         active_turn = next((turn["id"] for turn in turns if turn.get("generating")), None)
         operation = self._operations.get(conversation_id)
         state = operation.state if operation and (active_turn is not None or operation.state != "running") else "idle"
@@ -394,6 +409,7 @@ class ChatService:
             "type": "snapshot", "conversation_id": conversation_id, "stream_id": self._stream_id,
             "seq": self._event_sequences.get(conversation_id, 0), "state": state,
             "active_turn_id": active_turn, "turns": turns,
+            **pagination,
             "pending_user_inputs": [
                 {"request_id": item.request_id, "question": item.question, "options": list(item.options), "approval": item.approval}
                 for item in pending_inputs if not item.future.done()
@@ -1262,23 +1278,27 @@ class ChatService:
         """
         return self._conversations.get(conversation_id)
 
-    def list_turns(self, conversation_id: str) -> list[dict[str, Any]]:
+    def list_turns(self, conversation_id: str, *, limit: int | None = None, before: int | None = None, latest: bool = False, all_variants: bool = True) -> list[dict[str, Any]]:
         """
         列出会话对话轮次 (经 recorder)
 
         参数:
         - conversation_id: 会话 ID
+        - limit: 可选读取数量上限
+        - before: 可选轮次游标
+        - latest: 是否优先读取最新轮次
+        - all_variants: 是否读取全部回答变体
 
         返回:
         - list[dict[str, Any]]: 列出会话对话轮次 (经 recorder)
         """
         conv = self._conversations.get(conversation_id)
         if conv is not None:
-            return conv.recorder.list_turns()
+            return conv.recorder.list_turns(limit=limit, before=before, latest=latest, all_variants=all_variants)
         # 会话不在内存 (如重启后): 用只读 recorder 查库
         rec = DisplayRecorder(db_path=self._display_db_path, conversation_id=conversation_id)
         try:
-            return rec.list_turns()
+            return rec.list_turns(limit=limit, before=before, latest=latest, all_variants=all_variants)
         finally:
             rec.close()
 
