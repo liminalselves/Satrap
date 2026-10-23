@@ -194,6 +194,7 @@ async function runtime_application_progress(runtime) {
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await runtime.browser;
     const page = await browser.newPage();
+    await page.addInitScript(() => { Object.defineProperty(Crypto.prototype, 'randomUUID', { value: undefined, configurable: true }); });
     stopConfirmations = autoAcceptConfirmations(page);
     await page.clock.install();
     const errors = [], applications = [], writes = [], reads = {};
@@ -226,6 +227,7 @@ async function runtime_application_progress(runtime) {
       const request = route.request(), url = new URL(request.url());
       const reply = (json, status = 200) => route.fulfill({ json, status, headers: cors });
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/config/snapshot') return reply({ error: '此夹具使用旧目录接口' }, 404);
       if (request.method() === 'GET') reads[url.pathname] = (reads[url.pathname] || 0) + 1;
       if (url.pathname === '/config/versions') return reply({ ok: true, resources: Object.fromEntries((url.searchParams.get('resources') || '').split(',').map((name) => [name, { state: 'available', change_token: JSON.stringify(configs) }])) });
       if (url.pathname === '/config/edictum/sessions/assistant' && request.method() === 'PATCH') {
@@ -324,6 +326,7 @@ async function scoped_agent_apply(runtime) {
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await runtime.browser;
     const page = await browser.newPage();
+    await page.addInitScript(() => { Object.defineProperty(Crypto.prototype, 'randomUUID', { value: undefined, configurable: true }); });
     stopConfirmations = autoAcceptConfirmations(page);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -343,6 +346,7 @@ async function scoped_agent_apply(runtime) {
       const request = route.request(), url = new URL(request.url());
       const reply = (json, status = 200) => route.fulfill({ json, status, headers: cors });
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/config/snapshot') return reply({ error: '此夹具使用旧目录接口' }, 404);
       if (request.method() === 'GET') reads[url.pathname] = (reads[url.pathname] || 0) + 1;
       if (url.pathname === '/config/versions') {
         const resources = (url.searchParams.get('resources') || '').split(',');
