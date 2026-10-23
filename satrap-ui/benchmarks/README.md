@@ -2,6 +2,34 @@
 
 该基准使用生产构建和固定 HTTP/WebSocket 夹具测量前端本身, 不包含模型、数据库和真实网络延迟
 
+## 信息加载与登录基准
+
+`npm run benchmark:loading` 在内存中构建生产资源并启动独立临时 HTTP 服务, 不覆盖 `dist`, 不启动用户后端, 不访问用户数据库
+
+```powershell
+npm run benchmark:loading -- --baseline
+npm run benchmark:loading
+npm run benchmark:loading -- --baseline --catalog
+npm run benchmark:loading -- --catalog
+npm run benchmark:loading -- --baseline --interaction
+npm run benchmark:loading -- --interaction
+```
+
+- 默认 2 次预热与 10 次正式运行, `BENCHMARK_ITERATIONS` / `BENCHMARK_WARMUPS` 可调
+- `--baseline` 从 `SATRAP_BENCHMARK_BASE` 指定提交读取原始前端源码, 默认当前 HEAD; 不切换工作区, 不覆盖已存在基线
+- 修改后使用当前工作区源码, 记录构建资源摘要, 基于提交和生产差异摘要
+- 普通场景覆盖 0 / 150 / 300ms 模拟 API 等待及长历史, `--catalog` 覆盖模型与插件页面的冷 / 热读取
+- 热缓存场景区分 SPA 数据显示与版本探测, 不通过清空 store 模拟热加载
+- `--interaction` 使用与原交互基准一致的完整 Chromium 和启动参数, 采集滚动及 1,000 增量内容完整性
+- 实际浏览器, Node, OS 或采样数不同会拒绝生成改善比例; 超时样本保留且不计算虚假加速比例
+- 默认写入 `results/frontend-loading-2026-10-23`, 后续运行可用 `SATRAP_BENCHMARK_OUTPUT` 指定新的结果目录
+- `query_loading.py` 在独立内存 SQLite 执行生产查询, 输出 30 次采样; `catalog_loading.py` 比较原提交与当前目录的时间和 Python 峰值内存
+- `auth_loading.py` 使用临时配置与凭据库, 验证旧 Cookie 引导失败与当前持久恢复, 单独统计认证函数开销; 真实浏览器重开和真实 HTTP 由 `test_minihttp.py` 验收
+- `concurrent_loading.py` 在临时数据库执行原提交与当前真实路由, 测量 5,000 会话查询期间健康检查的调度延迟; 不包含 HTTP 传输时间
+- `archived-headless-shell-baseline.json` 是统一交互浏览器参数前保留的排查记录, 不参与正式交互前后比较
+
+这些结果不包含真实公网延迟, 真实模型推理或远端生产数据库耗时
+
 ## 命令
 
 ```powershell

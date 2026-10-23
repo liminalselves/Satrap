@@ -44,6 +44,7 @@
     "benchmark:baseline": "npm run build && node benchmarks/run.mjs --baseline",
     "benchmark:smoke": "npm run build && node benchmarks/run.mjs --smoke",
     "benchmark:test": "node --test benchmarks/*.node-test.mjs",
+    "benchmark:loading": "node benchmarks/loading.mjs",
     "test:e2e:all": "node e2e/run.mjs"
   },
   "dependencies": {

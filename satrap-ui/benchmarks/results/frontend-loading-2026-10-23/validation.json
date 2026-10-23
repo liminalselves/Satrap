@@ -1,0 +1,25 @@
+{
+  "baseline_commit": "b295cc24e2f393f897880399e99a53818cc2ff91",
+  "windows": {
+    "python": "3.13",
+    "passed": 201,
+    "skipped": 1,
+    "skip": "symlink privilege",
+    "final_sql_regression_passed": 84
+  },
+  "linux": {
+    "python": "3.14.4",
+    "passed": 201,
+    "skipped": 1,
+    "skip": "Node or Playwright unavailable",
+    "source": "same working sources copied to native temporary directory"
+  },
+  "frontend": {
+    "files": 18,
+    "passed": 305,
+    "typescript": "passed",
+    "production_build": "passed"
+  },
+  "pyright_changed_production_files": 11,
+  "pyright_errors": 0
+}

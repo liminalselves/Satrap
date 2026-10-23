@@ -1,0 +1,6698 @@
+{
+  "commit": "b295cc24e2f393f897880399e99a53818cc2ff91",
+  "source": "git HEAD via source loader",
+  "patch_sha256": null,
+  "extra_sources": {},
+  "created_at": "2026-10-23T09:37:38.532Z",
+  "node": "v24.18.0",
+  "browser": "151.0.7922.34",
+  "os": "win32 10.0.26200",
+  "iterations": 10,
+  "warmups": 2,
+  "samples": [
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 0,
+      "ready_ms": 380.1863999999987,
+      "list_ready_ms": 380.1843000000008,
+      "api_requests": 20,
+      "config_requests": 15,
+      "bytes": 1081,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1274.354,
+        "average_fps": 4.762,
+        "p95_frame_ms": 233.3,
+        "longest_frame_ms": 233.3,
+        "dropped_frames": 0,
+        "frame_samples": 5,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 8.629,
+        "script_ms": 2.232,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.759
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 51.52969999999914,
+          "end": 54.417600000000675,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 52.286700000000565,
+          "end": 54.862700000001496,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 52.74329999999827,
+          "end": 55.09070000000065,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 116.0541000000012,
+          "end": 119.92079999999987,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 117.98849999999948,
+          "end": 120.57510000000184,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 202.509399999999,
+          "end": 208.83320000000094,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 202.99950000000172,
+          "end": 208.85190000000148,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 204.97169999999824,
+          "end": 209.57800000000134,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 205.43799999999828,
+          "end": 209.61409999999887,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 207.37419999999838,
+          "end": 211.09560000000056,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 212.41279999999824,
+          "end": 219.59530000000086,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 213.76829999999973,
+          "end": 220.60120000000097,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 215.685300000001,
+          "end": 222.49399999999878,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 217.48289999999906,
+          "end": 224.6752000000015,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 218.5067999999992,
+          "end": 224.7452000000012,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 220.88460000000123,
+          "end": 231.24789999999848,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 222.64150000000154,
+          "end": 232.73689999999988,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 225.53039999999964,
+          "end": 232.94290000000183,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 228.4928,
+          "end": 233.27200000000084,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 229.58650000000125,
+          "end": 233.53559999999925,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 1,
+      "ready_ms": 478.84539999999834,
+      "list_ready_ms": 478.84419999999955,
+      "api_requests": 20,
+      "config_requests": 15,
+      "bytes": 1081,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1272.306,
+        "average_fps": 4.412,
+        "p95_frame_ms": 233.4,
+        "longest_frame_ms": 233.4,
+        "dropped_frames": 0,
+        "frame_samples": 5,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 10.104,
+        "script_ms": 3.582,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.815
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 111.33949999999822,
+          "end": 114.28849999999875,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 112.69830000000002,
+          "end": 114.39069999999992,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 113.12740000000122,
+          "end": 114.40439999999944,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 187.3850999999995,
+          "end": 192.17050000000017,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 191.04579999999987,
+          "end": 193.15239999999903,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 289.90899999999965,
+          "end": 296.14080000000104,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 290.4958999999981,
+          "end": 296.84219999999914,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 290.7446999999993,
+          "end": 297.28120000000126,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 294.48679999999877,
+          "end": 299.03540000000066,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 295.0027000000009,
+          "end": 299.0577000000012,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 300.3214000000007,
+          "end": 306.3938999999991,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 302.28029999999853,
+          "end": 310.1706000000013,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 303.34569999999803,
+          "end": 315.95230000000083,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 308.4376000000011,
+          "end": 318.273799999999,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 309.8234999999986,
+          "end": 318.3083000000006,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 313.629399999998,
+          "end": 318.579099999999,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 314.5099000000009,
+          "end": 318.60239999999976,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 316.3113999999987,
+          "end": 320.35210000000006,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 320.4845999999998,
+          "end": 323.42849999999817,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 321.78559999999925,
+          "end": 323.8224999999984,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 2,
+      "ready_ms": 444.88300000000163,
+      "list_ready_ms": 444.8819000000003,
+      "api_requests": 20,
+      "config_requests": 15,
+      "bytes": 1081,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1271.506,
+        "average_fps": 4.839,
+        "p95_frame_ms": 216.7,
+        "longest_frame_ms": 216.7,
+        "dropped_frames": 0,
+        "frame_samples": 5,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 9.65,
+        "script_ms": 2.767,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.927
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 89.22010000000228,
+          "end": 93.50540000000183,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 89.66470000000118,
+          "end": 93.71140000000014,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 91.54620000000068,
+          "end": 94,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 160.9333000000006,
+          "end": 162.70120000000315,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 163.60310000000027,
+          "end": 165.33420000000115,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 261.19500000000335,
+          "end": 268.65430000000197,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 262.720400000002,
+          "end": 269.613400000002,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 263.4125000000022,
+          "end": 269.6323000000011,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 263.7892000000029,
+          "end": 269.70950000000084,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 267.14130000000296,
+          "end": 270.5606000000007,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 271.02030000000013,
+          "end": 273.76350000000093,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 272.46210000000065,
+          "end": 275.84140000000116,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 273.88640000000305,
+          "end": 281.5131000000001,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 274.9796000000024,
+          "end": 282.77250000000276,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 275.9282000000021,
+          "end": 284.38820000000123,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 277.8451000000023,
+          "end": 285.69990000000325,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 278.70580000000336,
+          "end": 285.7282000000014,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 282.89180000000124,
+          "end": 285.96160000000236,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 283.40120000000024,
+          "end": 286.58400000000256,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 284.5287000000026,
+          "end": 287.08430000000226,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 3,
+      "ready_ms": 545.0597999999991,
+      "list_ready_ms": 545.0565999999999,
+      "api_requests": 20,
+      "config_requests": 15,
+      "bytes": 1081,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1271.476,
+        "average_fps": 5.084,
+        "p95_frame_ms": 216.7,
+        "longest_frame_ms": 216.7,
+        "dropped_frames": 0,
+        "frame_samples": 5,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 6.903,
+        "script_ms": 2.409,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.554
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 69.11700000000201,
+          "end": 71.31690000000162,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 70.05450000000201,
+          "end": 71.55970000000161,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 70.3711000000003,
+          "end": 71.89530000000013,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 112.83390000000145,
+          "end": 119.15360000000146,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 114.7455000000009,
+          "end": 119.81420000000071,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 127.47950000000128,
+          "end": 132.33599999999933,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 128.18059999999969,
+          "end": 132.40980000000127,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 128.547300000002,
+          "end": 133.29379999999946,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 129.9945000000007,
+          "end": 133.39909999999873,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 130.69570000000022,
+          "end": 133.45869999999923,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 209.42429999999877,
+          "end": 216.11439999999857,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 210.96740000000136,
+          "end": 218.02270000000135,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 214.07670000000144,
+          "end": 219.1146000000008,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 216.43249999999898,
+          "end": 220.0103999999992,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 217.06590000000142,
+          "end": 220.27720000000045,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 220.89210000000094,
+          "end": 223.41150000000198,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 221.77130000000034,
+          "end": 224.04880000000048,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 299.9919000000009,
+          "end": 305.16820000000007,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 301.6287000000011,
+          "end": 306.3355999999985,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 303.01130000000194,
+          "end": 306.5714000000007,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 4,
+      "ready_ms": 379.83120000000054,
+      "list_ready_ms": 379.8295999999973,
+      "api_requests": 20,
+      "config_requests": 15,
+      "bytes": 1081,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1267.939,
+        "average_fps": 4.138,
+        "p95_frame_ms": 250,
+        "longest_frame_ms": 250,
+        "dropped_frames": 0,
+        "frame_samples": 4,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 9.85,
+        "script_ms": 2.787,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.729
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 58.64170000000013,
+          "end": 61.33949999999459,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 59.69779999999446,
+          "end": 61.861699999994016,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 60.390999999995984,
+          "end": 62.26429999999527,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 134.12869999999384,
+          "end": 136.15359999999782,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 142.86339999999473,
+          "end": 145.25079999999434,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 209.44700000000012,
+          "end": 214.7725999999966,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 210.36349999999948,
+          "end": 214.9716999999946,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 212.24069999999483,
+          "end": 214.98579999999492,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 212.66859999999724,
+          "end": 215.04849999999715,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 213.0679999999993,
+          "end": 215.0821999999971,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 320.2956999999951,
+          "end": 322.45529999999417,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 323.5095000000001,
+          "end": 327.80159999999887,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 323.9094999999943,
+          "end": 327.82709999999497,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 325.3604999999952,
+          "end": 327.8413999999975,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 326.061099999999,
+          "end": 328.6602999999959,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 326.3199999999997,
+          "end": 329.02999999999884,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 329.4654999999984,
+          "end": 335.3964999999953,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 332.3246999999974,
+          "end": 335.8460999999952,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 333.8561999999947,
+          "end": 336.591499999995,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 334.17659999999887,
+          "end": 336.8422999999966,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 5,
+      "ready_ms": 466.43410000000586,
+      "list_ready_ms": 466.43240000000515,
+      "api_requests": 20,
+      "config_requests": 15,
+      "bytes": 1081,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1274.263,
+        "average_fps": 4.285,
+        "p95_frame_ms": 250.1,
+        "longest_frame_ms": 250.1,
+        "dropped_frames": 0,
+        "frame_samples": 4,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 8.933,
+        "script_ms": 3.157,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.68
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 104.0306000000055,
+          "end": 107.26370000000315,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 104.95690000000468,
+          "end": 107.46970000000147,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 106.03480000000127,
+          "end": 107.9268000000011,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 179.64489999999932,
+          "end": 180.94060000000172,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 190.38420000000042,
+          "end": 193.20690000000468,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 291.57740000000194,
+          "end": 296.9305999999997,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 291.99920000000566,
+          "end": 297.44780000000173,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 294.5981000000029,
+          "end": 297.52909999999974,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 295.2982000000047,
+          "end": 297.5462000000043,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 295.7005000000063,
+          "end": 297.5774999999994,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 299.1229999999996,
+          "end": 303.975400000003,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 300.27060000000347,
+          "end": 306.5497000000032,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 302.2679000000062,
+          "end": 307.09240000000136,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 302.6258000000016,
+          "end": 307.1929999999993,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 304.07360000000335,
+          "end": 309.532100000004,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 305.1621000000014,
+          "end": 309.5925000000061,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 309.70670000000246,
+          "end": 315.69080000000395,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 311.49030000000494,
+          "end": 316.0767000000051,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 312.1860000000015,
+          "end": 316.7092000000048,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 312.43330000000424,
+          "end": 318.4236000000019,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 6,
+      "ready_ms": 346.3084999999992,
+      "list_ready_ms": 346.30719999999565,
+      "api_requests": 22,
+      "config_requests": 15,
+      "bytes": 1216,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1274.068,
+        "average_fps": 3.809,
+        "p95_frame_ms": 383.4,
+        "longest_frame_ms": 383.4,
+        "dropped_frames": 1,
+        "frame_samples": 4,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 8.436,
+        "script_ms": 3.227,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.589
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 42.670500000000175,
+          "end": 44.13730000000214,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 43.005199999999604,
+          "end": 44.40879999999743,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 43.43099999999686,
+          "end": 44.76829999999609,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 95.14379999999801,
+          "end": 97.11839999999938,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 96.34930000000168,
+          "end": 97.49109999999928,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 152.65789999999834,
+          "end": 155.4467999999979,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 153.08840000000055,
+          "end": 155.488400000002,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 158.75860000000102,
+          "end": 160.99669999999605,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 159.09539999999834,
+          "end": 161.2771999999968,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 159.268799999998,
+          "end": 161.51780000000144,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 160.02270000000135,
+          "end": 161.56760000000213,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 160.20300000000134,
+          "end": 161.95270000000164,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 162.99519999999757,
+          "end": 164.65759999999864,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 163.98029999999562,
+          "end": 165.5385000000024,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 164.91359999999986,
+          "end": 167.61579999999958,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 165.81620000000112,
+          "end": 169.47729999999865,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 167.7656999999963,
+          "end": 171.69120000000112,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 169.63790000000154,
+          "end": 172.925900000002,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 170.1472999999969,
+          "end": 172.95880000000034,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 170.34569999999803,
+          "end": 173.2364000000016,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 170.63960000000225,
+          "end": 173.3084000000017,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 172.0749999999971,
+          "end": 173.32489999999962,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 7,
+      "ready_ms": 468.7172999999966,
+      "list_ready_ms": 468.7157999999981,
+      "api_requests": 22,
+      "config_requests": 15,
+      "bytes": 1216,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1276.408,
+        "average_fps": 4.545,
+        "p95_frame_ms": 233.4,
+        "longest_frame_ms": 233.4,
+        "dropped_frames": 0,
+        "frame_samples": 5,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 10.473,
+        "script_ms": 2.72,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.735
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 71.2306000000026,
+          "end": 74.87030000000232,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 71.72069999999803,
+          "end": 74.95380000000296,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 72.02610000000277,
+          "end": 75.4343000000008,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 111.29379999999946,
+          "end": 113.16879999999946,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 112.34300000000076,
+          "end": 113.73649999999907,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 164.90600000000268,
+          "end": 166.99990000000253,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 165.34169999999722,
+          "end": 167.29430000000139,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 173.29000000000087,
+          "end": 178.32770000000164,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 173.94840000000113,
+          "end": 178.34679999999935,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 176.09389999999985,
+          "end": 178.387999999999,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 177.28749999999854,
+          "end": 178.630799999999,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 177.6183000000019,
+          "end": 178.7525999999998,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 256.8549999999959,
+          "end": 266.4542000000001,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 260.4947000000029,
+          "end": 268.6521999999968,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 261.2898999999961,
+          "end": 268.6754000000001,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 263.9542000000001,
+          "end": 270.05369999999675,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 266.5964000000022,
+          "end": 272.447699999997,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 267.61389999999665,
+          "end": 275.375,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 270.19430000000284,
+          "end": 278.162599999996,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 270.86009999999806,
+          "end": 278.1837000000014,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 272.5984000000026,
+          "end": 278.60719999999856,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 275.7977000000028,
+          "end": 278.7511000000013,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 8,
+      "ready_ms": 414.37549999999464,
+      "list_ready_ms": 414.37369999999646,
+      "api_requests": 20,
+      "config_requests": 15,
+      "bytes": 1081,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1271.713,
+        "average_fps": 4.615,
+        "p95_frame_ms": 233.3,
+        "longest_frame_ms": 233.3,
+        "dropped_frames": 0,
+        "frame_samples": 4,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 8.68,
+        "script_ms": 2.434,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.698
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 69.39019999999437,
+          "end": 71.8975999999966,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 70.34139999999752,
+          "end": 72.26169999999547,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 70.70390000000043,
+          "end": 72.41129999999976,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 147.712099999997,
+          "end": 150.17009999999573,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 157.57999999999447,
+          "end": 161.45209999999497,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 330.5980999999956,
+          "end": 335.45910000000003,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 331.7760999999955,
+          "end": 335.5246999999945,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 332.30169999999634,
+          "end": 335.81559999999445,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 333.8200999999972,
+          "end": 336.2626999999993,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 334.09790000000066,
+          "end": 336.84590000000026,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 338.3903999999966,
+          "end": 340.5106999999989,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 339.918399999995,
+          "end": 346.2500999999975,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 343.1209999999992,
+          "end": 349.4195999999938,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 343.8897999999972,
+          "end": 349.4453999999969,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 345.86999999999534,
+          "end": 349.9670999999944,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 346.5286999999953,
+          "end": 350.13179999999556,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 347.7244999999966,
+          "end": 351.222299999994,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 353.23129999999946,
+          "end": 358.31669999999576,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 354.5732999999964,
+          "end": 358.6032999999952,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 354.9681999999957,
+          "end": 358.9467000000004,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/",
+      "delay": 0,
+      "turns": 50,
+      "run": 9,
+      "ready_ms": 441.8004000000001,
+      "list_ready_ms": 441.799500000001,
+      "api_requests": 22,
+      "config_requests": 15,
+      "bytes": 1216,
+      "dom_nodes": 202,
+      "measured": {
+        "duration_ms": 1274.733,
+        "average_fps": 4.364,
+        "p95_frame_ms": 266.7,
+        "longest_frame_ms": 266.7,
+        "dropped_frames": 0,
+        "frame_samples": 4,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 0,
+        "dom_nodes": 202,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 8.752,
+        "script_ms": 2.737,
+        "layout_ms": 0,
+        "recalc_style_ms": 0.812
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 66.10770000000048,
+          "end": 67.92200000000594,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 66.52470000000176,
+          "end": 68.02720000000409,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 66.77290000000357,
+          "end": 68.32850000000326,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 152.40800000000309,
+          "end": 155.37820000000647,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 155.52160000000003,
+          "end": 159.38750000000437,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 171.25370000000112,
+          "end": 174.41820000000007,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 171.93800000000192,
+          "end": 174.66890000000421,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 245.64510000000155,
+          "end": 252.74900000000343,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 248.36930000000575,
+          "end": 252.89790000000357,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 249.08179999999993,
+          "end": 252.93410000000586,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 249.6522000000041,
+          "end": 253.52330000000075,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 250.64689999999973,
+          "end": 254.0882000000056,
+          "bytes": 84
+        },
+        {
+          "path": "/config/session-classes",
+          "start": 255.13410000000295,
+          "end": 262.8805000000066,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=asr",
+          "start": 258.12910000000556,
+          "end": 266.68470000000525,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=embedding",
+          "start": 259.8510000000024,
+          "end": 267.31370000000607,
+          "bytes": 2
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 263.25530000000435,
+          "end": 269.06690000000526,
+          "bytes": 47
+        },
+        {
+          "path": "/config/models?type=rerank",
+          "start": 264.70730000000185,
+          "end": 271.02150000000256,
+          "bytes": 2
+        },
+        {
+          "path": "/config/versions?resources=session_classes",
+          "start": 265.1029000000053,
+          "end": 271.0428000000029,
+          "bytes": 93
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 267.5725999999995,
+          "end": 274.8775000000023,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 269.2948000000033,
+          "end": 275.75220000000263,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 271.8526000000056,
+          "end": 276.0083000000013,
+          "bytes": 84
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 273.45070000000123,
+          "end": 277.2195000000065,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 0,
+      "ready_ms": 1439.0215000000026,
+      "list_ready_ms": 350.07369999999355,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 54011,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 36055.863,
+        "average_fps": 3.338,
+        "p95_frame_ms": 566.6,
+        "longest_frame_ms": 833.3,
+        "dropped_frames": 8,
+        "frame_samples": 119,
+        "long_tasks": 1,
+        "long_task_total_ms": 175,
+        "renderer_mutations": 136,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 13.638,
+        "js_heap_peak_mb": 13.638,
+        "js_heap_end_mb": 13.638,
+        "task_ms": 1813.874,
+        "script_ms": 206.265,
+        "layout_ms": 42.497,
+        "recalc_style_ms": 80.728
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 63.58839999999327,
+          "end": 66.90699999999197,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 64.37369999999646,
+          "end": 67.03699999999662,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 64.70139999999083,
+          "end": 67.53669999999693,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 99.63159999999334,
+          "end": 105.09209999999439,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 101.38670000000275,
+          "end": 105.75430000000051,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 111.61999999999534,
+          "end": 114.30950000000303,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 112.09429999999702,
+          "end": 114.54699999999139,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 243.3521000000037,
+          "end": 246.75890000000072,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 245.09999999999127,
+          "end": 247.53639999999723,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 251.26979999999458,
+          "end": 253.57099999999627,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 255.7939999999944,
+          "end": 260.24559999999474,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 256.19689999999537,
+          "end": 260.2887000000046,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 256.494200000001,
+          "end": 260.33699999999953,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 257.867499999993,
+          "end": 260.7841000000044,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 258.26660000000265,
+          "end": 261.3408999999956,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 270.0659999999916,
+          "end": 271.1551999999938,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 959.0210999999981,
+          "end": 964.4847000000009,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 961.8000000000029,
+          "end": 965.5481,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 962.3879999999917,
+          "end": 966.4363999999914,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 962.9685000000027,
+          "end": 967.000199999995,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 963.2072999999946,
+          "end": 967.2736999999906,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30101.35699999999,
+          "end": 30102.492999999988,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30128.85579999999,
+          "end": 30130.093599999993,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30129.492,
+          "end": 30130.4957,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 1,
+      "ready_ms": 1371.1515000000072,
+      "list_ready_ms": 412.1120000000228,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 54011,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 33015.294,
+        "average_fps": 3.65,
+        "p95_frame_ms": 516.6,
+        "longest_frame_ms": 566.6,
+        "dropped_frames": 7,
+        "frame_samples": 119,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 128,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1490.625,
+        "script_ms": 182.479,
+        "layout_ms": 41.077,
+        "recalc_style_ms": 102.388
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 71.04380000001402,
+          "end": 75.87420000002021,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 74.12739999999758,
+          "end": 75.92450000002282,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 74.58090000000084,
+          "end": 76.30320000002393,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 121.12720000001718,
+          "end": 127.58770000000368,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 125.1307000000088,
+          "end": 129.3798999999999,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 212.58350000000792,
+          "end": 216.8233000000182,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 215.30460000000312,
+          "end": 217.0126000000164,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 284.13240000000224,
+          "end": 287.3549000000057,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 286.07870000001276,
+          "end": 287.72630000000936,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 291.64690000002156,
+          "end": 293.1618000000017,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 296.58740000001853,
+          "end": 301.53900000001886,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 298.11860000001616,
+          "end": 302.3837000000058,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 298.9666000000143,
+          "end": 302.781100000022,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 299.51170000000275,
+          "end": 303.32320000001346,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 299.77680000002147,
+          "end": 303.78570000000764,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 342.8234999999986,
+          "end": 344.06770000001416,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 956.7717000000121,
+          "end": 965.7989999999991,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 958.3366000000096,
+          "end": 965.836100000015,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 959.0370000000112,
+          "end": 966.0366999999969,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 959.7773000000161,
+          "end": 966.1146000000008,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 960.0985000000219,
+          "end": 966.1291000000201,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30122.02800000002,
+          "end": 30123.64480000001,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30230.084200000012,
+          "end": 30231.92810000002,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30230.665200000018,
+          "end": 30232.217900000018,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 2,
+      "ready_ms": 1884.927800000005,
+      "list_ready_ms": 506.6582000000053,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 53876,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 33263.211,
+        "average_fps": 3.623,
+        "p95_frame_ms": 500,
+        "longest_frame_ms": 666.6,
+        "dropped_frames": 7,
+        "frame_samples": 119,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 132,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1510.505,
+        "script_ms": 184.273,
+        "layout_ms": 40.624,
+        "recalc_style_ms": 99.638
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 56.588199999998324,
+          "end": 59.018699999985984,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 57.01589999999851,
+          "end": 59.07819999998901,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 57.689299999998184,
+          "end": 59.774600000004284,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 86.28279999998631,
+          "end": 88.99339999997756,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 87.3855999999796,
+          "end": 89.16180000000168,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 183.522799999977,
+          "end": 187.1080999999831,
+          "bytes": 44
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 184.7715999999782,
+          "end": 187.4896000000008,
+          "bytes": 84
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 274.67539999997825,
+          "end": 279.4187999999849,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 281.4431999999797,
+          "end": 286.5518999999913,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 283.11189999998896,
+          "end": 287.01780000000144,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 284.18049999998766,
+          "end": 287.2543000000005,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 284.86509999999544,
+          "end": 287.44980000000214,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 396.0683999999892,
+          "end": 401.03999999997905,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 446.4287999999942,
+          "end": 448.5431999999855,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1178.7912999999826,
+          "end": 1185.5754999999772,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 1180.290399999998,
+          "end": 1185.6038999999873,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 1180.7127000000037,
+          "end": 1187.7792999999947,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 1182.239499999996,
+          "end": 1188.1367000000027,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 1182.5409999999974,
+          "end": 1188.2446000000054,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30087.940199999983,
+          "end": 30089.76059999998,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30103.684799999988,
+          "end": 30105.90109999999,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30104.65579999998,
+          "end": 30106.5233,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 3,
+      "ready_ms": 1767.114899999986,
+      "list_ready_ms": 365.12099999998463,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 53876,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 33540.741,
+        "average_fps": 3.59,
+        "p95_frame_ms": 516.6,
+        "longest_frame_ms": 566.6,
+        "dropped_frames": 9,
+        "frame_samples": 119,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 127,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1459.388,
+        "script_ms": 179.703,
+        "layout_ms": 38.857,
+        "recalc_style_ms": 103.065
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 71.75979999999981,
+          "end": 75.06349999998929,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 72.99270000000251,
+          "end": 75.70319999998901,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 73.33299999998417,
+          "end": 75.76420000000508,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 105.25370000000112,
+          "end": 109.09239999999409,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 109.60670000000391,
+          "end": 114.56909999999334,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 207.99710000000778,
+          "end": 210.3016999999818,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 209.0271000000066,
+          "end": 210.37789999999222,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 215.8753999999899,
+          "end": 217.50870000000577,
+          "bytes": 47
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 296.3261999999813,
+          "end": 299.5015999999887,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 300.8047999999835,
+          "end": 309.2815999999875,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 303.55799999999,
+          "end": 310.1815999999817,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 304.61819999999716,
+          "end": 310.7862000000023,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 305.5387000000046,
+          "end": 310.82480000000214,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 313.57379999998375,
+          "end": 315.2639999999956,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1385.689400000003,
+          "end": 1393.8353999999817,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 1386.3043999999936,
+          "end": 1393.8646000000008,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 1389.7390000000014,
+          "end": 1394.6631000000052,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 1390.9021999999823,
+          "end": 1394.6797999999835,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 1391.1909999999916,
+          "end": 1394.6913000000059,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30109.63559999998,
+          "end": 30110.789300000004,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30119.402499999997,
+          "end": 30121.451299999986,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30119.930399999983,
+          "end": 30121.96589999998,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 4,
+      "ready_ms": 1096.202099999995,
+      "list_ready_ms": 276.0688000000082,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 54011,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 33518.078,
+        "average_fps": 3.619,
+        "p95_frame_ms": 533.2,
+        "longest_frame_ms": 600,
+        "dropped_frames": 12,
+        "frame_samples": 119,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 127,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1476.067,
+        "script_ms": 186.071,
+        "layout_ms": 38.222,
+        "recalc_style_ms": 92.443
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 52.89459999999963,
+          "end": 55.84639999998035,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 53.2443000000203,
+          "end": 56.03179999999702,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 54.648700000019744,
+          "end": 56.2160000000149,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 84.77429999999003,
+          "end": 89.87959999998566,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 85.14710000000196,
+          "end": 90.77249999996275,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 97.6310999999987,
+          "end": 102.27679999999236,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 99.2282000000123,
+          "end": 102.43489999999292,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 190.46730000001844,
+          "end": 193.61469999997644,
+          "bytes": 44
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 192.09450000000652,
+          "end": 194.1706000000122,
+          "bytes": 84
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 207.04769999999553,
+          "end": 209.9501000000164,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 211.99109999998473,
+          "end": 217.15179999999236,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 214.46309999999357,
+          "end": 217.80920000001788,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 215.1149999999907,
+          "end": 218.266100000008,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 215.66310000000522,
+          "end": 218.77539999998407,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 221.80410000000848,
+          "end": 223.52009999996517,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 267.3153000000166,
+          "end": 269.2013000000152,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 673.4515999999712,
+          "end": 675.9256000000169,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 674.4851999999955,
+          "end": 677.0437999999849,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 675.0126999999629,
+          "end": 678.7887999999803,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 675.375,
+          "end": 678.8106999999727,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 675.9850999999908,
+          "end": 678.8299000000115,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30087.956799999985,
+          "end": 30089.510699999984,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30119.42420000001,
+          "end": 30121.218599999964,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30120.415299999993,
+          "end": 30121.61170000001,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 5,
+      "ready_ms": 1549.1744999999646,
+      "list_ready_ms": 324.81609999999637,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 53876,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 34779.795,
+        "average_fps": 3.475,
+        "p95_frame_ms": 533.3,
+        "longest_frame_ms": 616.6,
+        "dropped_frames": 9,
+        "frame_samples": 120,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 132,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1509.214,
+        "script_ms": 181.783,
+        "layout_ms": 39.349,
+        "recalc_style_ms": 99.338
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 66.73690000001807,
+          "end": 68.54839999997057,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 67.10899999999674,
+          "end": 68.88919999997597,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 67.27519999997457,
+          "end": 69.09739999996964,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 108.99770000000717,
+          "end": 114.05400000000373,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 109.46759999997448,
+          "end": 114.34249999996973,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 195.93640000000596,
+          "end": 199.49790000001667,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 197.6582000000053,
+          "end": 199.87059999996563,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 271.8230999999796,
+          "end": 273.7341000000015,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 276.195000000007,
+          "end": 280.83909999998286,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 278.24479999998584,
+          "end": 281.8139000000083,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 278.7069999999949,
+          "end": 283.12020000000484,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 278.93939999997383,
+          "end": 283.6792000000132,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 279.99030000000494,
+          "end": 285.2236999999732,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 289.82769999996526,
+          "end": 290.913499999966,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1201.705399999977,
+          "end": 1208.984999999986,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 1203.407899999991,
+          "end": 1211.0568999999668,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 1205.2299999999814,
+          "end": 1211.464800000016,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 1206.2092999999877,
+          "end": 1211.4815999999992,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 1206.7605999999796,
+          "end": 1211.4952000000048,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30103.39539999998,
+          "end": 30104.45669999998,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30126.2059,
+          "end": 30128.012099999993,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30126.769099999976,
+          "end": 30128.25349999999,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 6,
+      "ready_ms": 1037.4766999999993,
+      "list_ready_ms": 322.32419999997364,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 53876,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 32057.085,
+        "average_fps": 3.756,
+        "p95_frame_ms": 316.7,
+        "longest_frame_ms": 583.4,
+        "dropped_frames": 5,
+        "frame_samples": 119,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 142,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1431.809,
+        "script_ms": 172.004,
+        "layout_ms": 38.759,
+        "recalc_style_ms": 99.09
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 91.6758999999729,
+          "end": 94.92209999996703,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 93.17869999998948,
+          "end": 94.97409999999218,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 93.8228999999701,
+          "end": 95.2390000000014,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 119.55689999996684,
+          "end": 122.48449999996228,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 120.45769999996992,
+          "end": 123.54819999996107,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 266.16279999999097,
+          "end": 268.44150000001537,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 267.44819999998435,
+          "end": 268.6313000000082,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 272.2238999999827,
+          "end": 273.71879999997327,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 275.3362999999663,
+          "end": 277.98479999997653,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 276.1953999999678,
+          "end": 278.14299999998184,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 276.5072999999975,
+          "end": 278.6596000000136,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 277.1082999999635,
+          "end": 279.02389999997104,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 277.6554999999935,
+          "end": 279.2951999999932,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 310.8267999999807,
+          "end": 312.89059999998426,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 608.5513999999966,
+          "end": 616.5744999999879,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 609.5154999999795,
+          "end": 616.835699999996,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 609.7477000000072,
+          "end": 616.858499999973,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 611.3695999999763,
+          "end": 616.9697999999626,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 612.0597999999882,
+          "end": 616.9863999999943,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30114.657299999963,
+          "end": 30116.128599999996,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30133.66109999997,
+          "end": 30135.43299999996,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30134.0588,
+          "end": 30135.48709999997,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 7,
+      "ready_ms": 1220.8487000000314,
+      "list_ready_ms": 409.219700000016,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 54011,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 33647.575,
+        "average_fps": 3.583,
+        "p95_frame_ms": 333.3,
+        "longest_frame_ms": 566.6,
+        "dropped_frames": 4,
+        "frame_samples": 119,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 132,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1493.298,
+        "script_ms": 182.221,
+        "layout_ms": 42.412,
+        "recalc_style_ms": 95.924
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 75.03370000002906,
+          "end": 80.00950000004377,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 76.98190000001341,
+          "end": 80.28059999999823,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 78.36680000001797,
+          "end": 80.51390000001993,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 129.7597999999998,
+          "end": 133.87670000002254,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 131.5283000000054,
+          "end": 135.75940000003902,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 216.75560000003316,
+          "end": 221.12140000000363,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 219.05490000004647,
+          "end": 221.29220000002533,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 289.9753999999957,
+          "end": 292.5088000000105,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 290.44469999999274,
+          "end": 292.6174000000465,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 295.3494000000064,
+          "end": 297.26720000000205,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 300.2693999999901,
+          "end": 308.08520000003045,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 303.8966000000364,
+          "end": 308.63469999999506,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 304.618300000031,
+          "end": 308.78630000003614,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 304.930800000031,
+          "end": 308.8000999999931,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 306.9446000000462,
+          "end": 309.22120000002906,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 314.7514000000083,
+          "end": 316.3339000000269,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 808.1408999999985,
+          "end": 810.3839000000153,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 810.9739000000409,
+          "end": 817.650500000047,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 811.9317000000156,
+          "end": 817.741399999999,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 812.4446000000462,
+          "end": 817.7532000000356,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 812.8816000000224,
+          "end": 817.9279000000097,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30134.39300000004,
+          "end": 30135.986600000004,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30234.88829999999,
+          "end": 30236.4081,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30235.204200000037,
+          "end": 30236.61930000002,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 8,
+      "ready_ms": 1149.5813000000198,
+      "list_ready_ms": 361.5934000000125,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 53876,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 33112.6,
+        "average_fps": 3.632,
+        "p95_frame_ms": 499.9,
+        "longest_frame_ms": 633.3,
+        "dropped_frames": 8,
+        "frame_samples": 119,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 132,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1458.204,
+        "script_ms": 175.306,
+        "layout_ms": 41.416,
+        "recalc_style_ms": 95.571
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 58.12160000001313,
+          "end": 61.053000000014435,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 58.84419999999227,
+          "end": 61.20579999999609,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 59.56319999997504,
+          "end": 61.57429999997839,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 103.61879999999655,
+          "end": 106.90840000001481,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 107.5283000000054,
+          "end": 109.43040000001201,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 240.3398000000161,
+          "end": 242.68400000000838,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 242.12819999997737,
+          "end": 243.36759999999776,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 244.3412000000244,
+          "end": 245.73660000000382,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 248.23810000001686,
+          "end": 256.718600000022,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 250.34720000001835,
+          "end": 257.26520000002347,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 255.72360000002664,
+          "end": 257.61469999997644,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 255.9988000000012,
+          "end": 257.7148000000161,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 256.15439999999944,
+          "end": 258.26819999999134,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 264.4672000000137,
+          "end": 266.2849999999744,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 740.687099999981,
+          "end": 746.5520999999717,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 741.6366999999736,
+          "end": 746.6856000000262,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 742.4263999999966,
+          "end": 748.376099999994,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 743.9876999999979,
+          "end": 748.8224000000046,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 744.4983999999822,
+          "end": 748.8510999999708,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30111.677599999995,
+          "end": 30113.19929999998,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30187.653500000015,
+          "end": 30190.020100000023,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30188.182700000005,
+          "end": 30190.244000000006,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 100,
+      "history": true,
+      "run": 9,
+      "ready_ms": 992.4592999999877,
+      "list_ready_ms": 292.23649999999907,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 53876,
+      "dom_nodes": 5243,
+      "measured": {
+        "duration_ms": 33824.15,
+        "average_fps": 3.558,
+        "p95_frame_ms": 500,
+        "longest_frame_ms": 750,
+        "dropped_frames": 8,
+        "frame_samples": 119,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 132,
+        "dom_nodes": 5243,
+        "js_heap_start_mb": 12.112,
+        "js_heap_peak_mb": 12.112,
+        "js_heap_end_mb": 12.112,
+        "task_ms": 1502.685,
+        "script_ms": 186.883,
+        "layout_ms": 42.191,
+        "recalc_style_ms": 104.984
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 76.84979999996722,
+          "end": 79.55669999995735,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 77.89379999996163,
+          "end": 80.13269999995828,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 78.89609999995446,
+          "end": 80.47849999996834,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 105.27609999995911,
+          "end": 110.47810000000754,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 108.31459999998333,
+          "end": 112.3012999999919,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 219.21649999998044,
+          "end": 220.93949999997858,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 219.96429999999236,
+          "end": 221.5178999999771,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 225.05179999995744,
+          "end": 226.74719999998342,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 231.3850000000093,
+          "end": 237.81339999998454,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 232.96669999998994,
+          "end": 237.97930000000633,
+          "bytes": 11109
+        },
+        {
+          "path": "/api/projects",
+          "start": 233.82439999998314,
+          "end": 238.0327999999863,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 234.21820000000298,
+          "end": 238.3649999999907,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 236.66209999995772,
+          "end": 238.71369999996386,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 245.50919999997132,
+          "end": 248.72949999995762,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 612.442699999956,
+          "end": 617.7061999999569,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 614.4966999999597,
+          "end": 619.8850000000093,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 614.8163999999524,
+          "end": 619.8986999999615,
+          "bytes": 41585
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 615.9409999999916,
+          "end": 619.9091999999946,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 616.664300000004,
+          "end": 619.9540999999736,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30105.88519999996,
+          "end": 30107.457799999975,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30122.026399999973,
+          "end": 30123.852799999993,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30122.886999999988,
+          "end": 30124.11619999999,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 0,
+      "ready_ms": 5898.915099999984,
+      "list_ready_ms": 307.43439999991097,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 433322,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 33871.057,
+        "average_fps": 3.563,
+        "p95_frame_ms": 500,
+        "longest_frame_ms": 566.6,
+        "dropped_frames": 6,
+        "frame_samples": 119,
+        "long_tasks": 19,
+        "long_task_total_ms": 1023,
+        "renderer_mutations": 20,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 29.755,
+        "js_heap_peak_mb": 29.755,
+        "js_heap_end_mb": 29.755,
+        "task_ms": 5221.518,
+        "script_ms": 600.538,
+        "layout_ms": 657.192,
+        "recalc_style_ms": 291.05
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 85.79399999999441,
+          "end": 88.9134999999078,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 86.81990000000224,
+          "end": 89.33669999998529,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 87.26969999994617,
+          "end": 89.77429999993183,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 115.76130000001285,
+          "end": 120.68829999992158,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 118.78169999993406,
+          "end": 121.34919999993872,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 248.20750000001863,
+          "end": 252.40179999999236,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 249.7990999999456,
+          "end": 252.81789999990724,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 255.3188000000082,
+          "end": 257.39709999994375,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 259.21249999990687,
+          "end": 263.9891999999527,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 260.69699999992736,
+          "end": 264.2949999999255,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 261.1884999999311,
+          "end": 264.639099999913,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 261.47259999997914,
+          "end": 265.21609999996144,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 262.68779999995604,
+          "end": 265.607699999935,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 269.5823000000091,
+          "end": 271.38980000000447,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 583.7926999999909,
+          "end": 596.3103000000119,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 585.3533999999054,
+          "end": 596.9046000000089,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 586.5357999999542,
+          "end": 599.1117000000086,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 589.0804999999236,
+          "end": 599.529499999946,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 589.6718999999575,
+          "end": 599.797099999967,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30127.617699999944,
+          "end": 30128.99650000001,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30142.828800000018,
+          "end": 30144.987199999974,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30143.415299999993,
+          "end": 30145.219700000016,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 1,
+      "ready_ms": 8960.635800000047,
+      "list_ready_ms": 344.0259000000078,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 433457,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 32848.502,
+        "average_fps": 3.681,
+        "p95_frame_ms": 466.7,
+        "longest_frame_ms": 566.7,
+        "dropped_frames": 9,
+        "frame_samples": 120,
+        "long_tasks": 7,
+        "long_task_total_ms": 369,
+        "renderer_mutations": 21,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 31.567,
+        "js_heap_peak_mb": 31.567,
+        "js_heap_end_mb": 31.567,
+        "task_ms": 4787.615,
+        "script_ms": 588.103,
+        "layout_ms": 676.021,
+        "recalc_style_ms": 175.878
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 71.08319999999367,
+          "end": 76.6247999999905,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 71.8242999999784,
+          "end": 76.64540000003763,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 73.06599999999162,
+          "end": 76.65690000005998,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 102.33880000002682,
+          "end": 106.25270000007004,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 104.88520000001881,
+          "end": 107.65870000002906,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 178.2172000000719,
+          "end": 180.7329000000609,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 178.65700000000652,
+          "end": 181.35190000000875,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 227.14080000005197,
+          "end": 228.45720000006258,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 227.90170000004582,
+          "end": 229.43410000007134,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 230.24459999997634,
+          "end": 231.328199999989,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 232.77960000000894,
+          "end": 236.4311999999918,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 233.63769999996293,
+          "end": 236.7286000000313,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 234.2612000000663,
+          "end": 236.74089999997523,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 234.53760000003967,
+          "end": 236.75390000001062,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 235.83330000005662,
+          "end": 237.1086999999825,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 267.30469999997877,
+          "end": 269.30099999997765,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 850.0317000000505,
+          "end": 851.8296000000555,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 852.5387999999803,
+          "end": 863.6101999999955,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 853.9882000000216,
+          "end": 865.0683999999892,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 856.985400000005,
+          "end": 865.4574000000721,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 857.233600000036,
+          "end": 865.718899999978,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30091.577400000067,
+          "end": 30092.74820000003,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30199.691699999967,
+          "end": 30201.20920000004,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30200.11719999998,
+          "end": 30201.315300000017,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 2,
+      "ready_ms": 4810.868800000055,
+      "list_ready_ms": 330.59539999999106,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 433457,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 32771.281,
+        "average_fps": 3.668,
+        "p95_frame_ms": 316.7,
+        "longest_frame_ms": 583.3,
+        "dropped_frames": 4,
+        "frame_samples": 120,
+        "long_tasks": 13,
+        "long_task_total_ms": 688,
+        "renderer_mutations": 20,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 29.755,
+        "js_heap_peak_mb": 29.755,
+        "js_heap_end_mb": 29.755,
+        "task_ms": 5184.346,
+        "script_ms": 612.804,
+        "layout_ms": 576.631,
+        "recalc_style_ms": 289.309
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 51.418199999956414,
+          "end": 54.93000000005122,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 52.01489999995101,
+          "end": 55.17420000000857,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 52.65419999998994,
+          "end": 56.053300000028685,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 92.16659999999683,
+          "end": 97.69570000004023,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 94.13439999998081,
+          "end": 97.71970000001602,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 159.4037000000244,
+          "end": 160.85549999994691,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 159.7783000000054,
+          "end": 161.07180000003427,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 214.17909999995027,
+          "end": 215.64280000003055,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 215.0272999999579,
+          "end": 216.28839999996126,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 217.9708999999566,
+          "end": 219.46380000002682,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 220.92839999997523,
+          "end": 223.16559999994934,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 221.21950000000652,
+          "end": 223.3908999999985,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 221.89020000002347,
+          "end": 223.483499999973,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 222.05389999994077,
+          "end": 223.7286000000313,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 222.233099999954,
+          "end": 223.88119999994524,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 229.24190000002272,
+          "end": 231.578600000008,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 752.2384000000311,
+          "end": 764.155700000003,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 752.5529000000097,
+          "end": 764.203300000052,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 752.7166000000434,
+          "end": 765.1951999999583,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 759.4906000000192,
+          "end": 765.6395000000484,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 760.234599999967,
+          "end": 765.8488999999827,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30097.748499999987,
+          "end": 30098.930900000036,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30384.857500000042,
+          "end": 30386.071600000025,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30385.19180000003,
+          "end": 30386.302999999956,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 3,
+      "ready_ms": 12080.495100000058,
+      "list_ready_ms": 279.0023999999976,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 433457,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 34011.559,
+        "average_fps": 3.537,
+        "p95_frame_ms": 516.6,
+        "longest_frame_ms": 783.4,
+        "dropped_frames": 10,
+        "frame_samples": 119,
+        "long_tasks": 36,
+        "long_task_total_ms": 1960,
+        "renderer_mutations": 2015,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 31.567,
+        "js_heap_peak_mb": 31.567,
+        "js_heap_end_mb": 31.567,
+        "task_ms": 5670.372,
+        "script_ms": 659.406,
+        "layout_ms": 685.226,
+        "recalc_style_ms": 257.748
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 57.84560000000056,
+          "end": 60.95200000004843,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 59.09189999999944,
+          "end": 61.04690000007395,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 59.76370000001043,
+          "end": 61.29420000000391,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 100.51250000006985,
+          "end": 103.07099999999627,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 102.52530000009574,
+          "end": 103.54610000003595,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 170.15290000010282,
+          "end": 172.26390000001993,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 170.73120000003837,
+          "end": 172.31670000008307,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 225.8188000000082,
+          "end": 228.87510000006296,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 227.03650000004563,
+          "end": 229.79910000006203,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 230.66890000004787,
+          "end": 233.1366000000853,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 235.7553000000771,
+          "end": 237.64459999999963,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 236.1038000000408,
+          "end": 237.94780000008177,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 236.33800000010524,
+          "end": 238.33360000001267,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 236.87470000004396,
+          "end": 238.74080000002868,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 239.22440000006463,
+          "end": 240.24880000005942,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 271.1003000000492,
+          "end": 272.5360000000801,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 529.0431000000099,
+          "end": 539.9958000000333,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 530.0914000000339,
+          "end": 540.8914000000805,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 530.421800000011,
+          "end": 543.0989000000991,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 533.3797999999952,
+          "end": 543.8154000000795,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 533.9916000000667,
+          "end": 544.046399999992,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30099.2034,
+          "end": 30101.113500000094,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30192.43790000002,
+          "end": 30193.852300000028,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30192.754000000074,
+          "end": 30193.88160000008,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 4,
+      "ready_ms": 5081.237199999974,
+      "list_ready_ms": 353.2319000000134,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 433322,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 36017.848,
+        "average_fps": 3.355,
+        "p95_frame_ms": 566.6,
+        "longest_frame_ms": 616.7,
+        "dropped_frames": 18,
+        "frame_samples": 120,
+        "long_tasks": 19,
+        "long_task_total_ms": 1059,
+        "renderer_mutations": 2020,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 29.755,
+        "js_heap_peak_mb": 29.755,
+        "js_heap_end_mb": 29.755,
+        "task_ms": 5328.671,
+        "script_ms": 699.37,
+        "layout_ms": 587.427,
+        "recalc_style_ms": 315.627
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 89.50349999999162,
+          "end": 93.72560000000522,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 91.20889999996871,
+          "end": 94.14950000005774,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 91.52330000000075,
+          "end": 94.29339999996591,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 117.60420000005979,
+          "end": 119.49750000005588,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 117.93489999999292,
+          "end": 119.5966999999946,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 243.7560999999987,
+          "end": 245.125800000038,
+          "bytes": 44
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 244.40610000002198,
+          "end": 245.53289999999106,
+          "bytes": 84
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 246.86629999999423,
+          "end": 247.89670000004116,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 249.68590000004042,
+          "end": 254.33669999998529,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 251.3579000000609,
+          "end": 254.39419999998063,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 251.75089999998454,
+          "end": 254.67500000004657,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 251.93920000002254,
+          "end": 255.10779999999795,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 253.4612999999663,
+          "end": 255.32889999996405,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 260.2471999999834,
+          "end": 263.1500999999698,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 564.7685000000056,
+          "end": 575.1191000000108,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 566.5533999999752,
+          "end": 575.1820999999763,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 567.1504000000423,
+          "end": 579.515400000033,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 569.5191999999806,
+          "end": 580.1134999999776,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 569.7528000000166,
+          "end": 580.1639000000432,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30123.344299999997,
+          "end": 30124.568899999955,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30213.022200000007,
+          "end": 30215.90670000005,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30213.76410000003,
+          "end": 30216.21669999999,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 5,
+      "ready_ms": 5454.025400000042,
+      "list_ready_ms": 327.8996000000043,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 433457,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 34264.793,
+        "average_fps": 3.533,
+        "p95_frame_ms": 500,
+        "longest_frame_ms": 783.3,
+        "dropped_frames": 8,
+        "frame_samples": 120,
+        "long_tasks": 7,
+        "long_task_total_ms": 364,
+        "renderer_mutations": 21,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 33.474,
+        "js_heap_peak_mb": 33.474,
+        "js_heap_end_mb": 33.474,
+        "task_ms": 5312.015,
+        "script_ms": 629.61,
+        "layout_ms": 477.68,
+        "recalc_style_ms": 111.849
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 47.959700000006706,
+          "end": 50.69280000007711,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 48.63450000004377,
+          "end": 50.71270000003278,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 49.969800000078976,
+          "end": 51.16249999997672,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 84.82099999999627,
+          "end": 85.9664000000339,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 86.22920000005979,
+          "end": 87.81929999997374,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 157.8542000000598,
+          "end": 159.64950000005774,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 158.24660000007134,
+          "end": 159.8357000000542,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 211.43500000005588,
+          "end": 213.00479999999516,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 212.46259999996983,
+          "end": 213.14850000001024,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 215.01069999998435,
+          "end": 216.75250000006054,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 218.82640000001993,
+          "end": 222.90710000006948,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 219.62260000000242,
+          "end": 223.64769999997225,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 220.25380000006407,
+          "end": 224.1692000000039,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 220.79390000004787,
+          "end": 224.50410000002012,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 221.20700000005309,
+          "end": 225.02620000008028,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 259.1280000000261,
+          "end": 260.2137000000803,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 567.4860000000335,
+          "end": 579.0820000000531,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 569.1946000000462,
+          "end": 581.2780999999959,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 569.5543000000762,
+          "end": 584.8645999999717,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 573.0707999999868,
+          "end": 585.454000000027,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 573.3951000000816,
+          "end": 585.9966000000713,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30094.97710000002,
+          "end": 30096.576,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30259.31660000002,
+          "end": 30261.440100000007,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30260.03150000004,
+          "end": 30261.714200000046,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 6,
+      "ready_ms": 3883.5350000000326,
+      "list_ready_ms": 199.9248999999836,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 433322,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 34604.042,
+        "average_fps": 3.478,
+        "p95_frame_ms": 516.6,
+        "longest_frame_ms": 950,
+        "dropped_frames": 12,
+        "frame_samples": 120,
+        "long_tasks": 37,
+        "long_task_total_ms": 2025,
+        "renderer_mutations": 20,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 31.567,
+        "js_heap_peak_mb": 31.567,
+        "js_heap_end_mb": 31.567,
+        "task_ms": 5872.656,
+        "script_ms": 624.429,
+        "layout_ms": 738.255,
+        "recalc_style_ms": 257.88
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 52.66009999997914,
+          "end": 54.08079999999609,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 52.93949999997858,
+          "end": 54.10999999998603,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 53.27720000001136,
+          "end": 54.24780000001192,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 67.35640000004787,
+          "end": 70.35479999997187,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 67.86050000006799,
+          "end": 70.43310000002384,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 142.80610000004526,
+          "end": 144.38919999997597,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 143.61609999998473,
+          "end": 144.41659999999683,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 146.26049999997485,
+          "end": 149.46360000001732,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 151.14870000001974,
+          "end": 154.59380000003148,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 152.55220000003465,
+          "end": 155.21100000001024,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 153.05879999999888,
+          "end": 155.4649999999674,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 153.28090000001248,
+          "end": 155.72010000003502,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 153.52879999997094,
+          "end": 155.8864000000758,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 159.8978000000352,
+          "end": 161.13260000001173,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 475.51089999999385,
+          "end": 484.1286000000546,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 476.08360000001267,
+          "end": 484.13959999999497,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 476.4442000000272,
+          "end": 485.91210000007413,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 479.0580000000773,
+          "end": 486.5158999999985,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 479.30850000004284,
+          "end": 486.5493000000715,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30073.10349999997,
+          "end": 30074.299499999965,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30077.76780000003,
+          "end": 30079.54190000007,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30078.72940000007,
+          "end": 30079.681899999967,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 7,
+      "ready_ms": 5012.760699999984,
+      "list_ready_ms": 344.53249999997206,
+      "api_requests": 24,
+      "config_requests": 4,
+      "bytes": 433457,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 34710.846,
+        "average_fps": 3.456,
+        "p95_frame_ms": 566.5,
+        "longest_frame_ms": 749.9,
+        "dropped_frames": 8,
+        "frame_samples": 119,
+        "long_tasks": 18,
+        "long_task_total_ms": 943,
+        "renderer_mutations": 16,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 31.567,
+        "js_heap_peak_mb": 31.567,
+        "js_heap_end_mb": 31.567,
+        "task_ms": 5305.147,
+        "script_ms": 621.409,
+        "layout_ms": 656.484,
+        "recalc_style_ms": 183.512
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 56.46480000007432,
+          "end": 58.82020000007469,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 57.504700000048615,
+          "end": 59.20449999999255,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 57.95059999998193,
+          "end": 59.42240000003949,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 91.87060000002384,
+          "end": 94.2436999999918,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 93.34299999999348,
+          "end": 95.31140000000596,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 164.90650000004098,
+          "end": 167.0191000000341,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 165.30000000004657,
+          "end": 167.30770000000484,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 221.12309999996796,
+          "end": 224.29960000002757,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 223.41049999999814,
+          "end": 224.86670000001322,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 225.7268000000622,
+          "end": 227.61710000003222,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 230.39100000006147,
+          "end": 235.29099999996834,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 231.49849999998696,
+          "end": 236.56729999999516,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 231.83660000003874,
+          "end": 236.66170000005513,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 232.03630000003614,
+          "end": 236.90170000004582,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 234.59299999999348,
+          "end": 237.62470000004396,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 264.22380000003614,
+          "end": 266.6946000000462,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 555.1147999999812,
+          "end": 565.985100000049,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 555.8418999999994,
+          "end": 566.0250999999698,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 556.0134000000544,
+          "end": 567.6291999999667,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 558.7614000000758,
+          "end": 568.4444999999832,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 559.127300000051,
+          "end": 568.7423000000417,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30096.238699999987,
+          "end": 30097.724999999977,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30189.466000000015,
+          "end": 30191.092700000037,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30190.214600000065,
+          "end": 30191.20319999999,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 8,
+      "ready_ms": 5502.200799999991,
+      "list_ready_ms": 287.0365999999922,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 433322,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 36821.505,
+        "average_fps": 3.274,
+        "p95_frame_ms": 533.2,
+        "longest_frame_ms": 749.9,
+        "dropped_frames": 8,
+        "frame_samples": 120,
+        "long_tasks": 46,
+        "long_task_total_ms": 2579,
+        "renderer_mutations": 20,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 35.572,
+        "js_heap_peak_mb": 35.572,
+        "js_heap_end_mb": 35.572,
+        "task_ms": 5946.386,
+        "script_ms": 679.505,
+        "layout_ms": 769.423,
+        "recalc_style_ms": 209.398
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 78.49180000007618,
+          "end": 82.93720000004396,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 78.87780000001658,
+          "end": 83.4735000000801,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 79.07250000000931,
+          "end": 83.58220000006258,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 98.64180000009947,
+          "end": 104.60390000010375,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 99.30600000009872,
+          "end": 104.7105000000447,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 227.21929999999702,
+          "end": 229.87979999999516,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 227.91760000004433,
+          "end": 230.05830000003334,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 232.91810000000987,
+          "end": 235.29140000010375,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 237.10310000006575,
+          "end": 243.5407000000123,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 237.68480000004638,
+          "end": 243.5574000000488,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 238.330200000084,
+          "end": 243.56690000009257,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 240.04470000008587,
+          "end": 243.92980000004172,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 242.50490000005811,
+          "end": 244.59189999999944,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 278.8312000000151,
+          "end": 280.75230000005104,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 588.1574000000255,
+          "end": 600.1920000000391,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 591.2225000000326,
+          "end": 604.6499000000767,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 593.6524000000209,
+          "end": 606.7887000000337,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 600.5117000000319,
+          "end": 607.1245000000345,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 601.1230000000214,
+          "end": 607.4416000000201,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30094.530900000012,
+          "end": 30095.87160000007,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30162.028300000005,
+          "end": 30165.61400000006,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30163.466000000015,
+          "end": 30166.184600000037,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 1000,
+      "history": true,
+      "run": 9,
+      "ready_ms": 10348.397200000007,
+      "list_ready_ms": 371.4411000000546,
+      "api_requests": 22,
+      "config_requests": 4,
+      "bytes": 433322,
+      "dom_nodes": 41603,
+      "measured": {
+        "duration_ms": 34657.181,
+        "average_fps": 3.485,
+        "p95_frame_ms": 533.4,
+        "longest_frame_ms": 799.9,
+        "dropped_frames": 11,
+        "frame_samples": 119,
+        "long_tasks": 15,
+        "long_task_total_ms": 805,
+        "renderer_mutations": 2016,
+        "dom_nodes": 41603,
+        "js_heap_start_mb": 31.567,
+        "js_heap_peak_mb": 31.567,
+        "js_heap_end_mb": 31.567,
+        "task_ms": 5114.425,
+        "script_ms": 656.068,
+        "layout_ms": 660.514,
+        "recalc_style_ms": 187.53
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 84.92740000004414,
+          "end": 86.94510000001173,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 85.58519999997225,
+          "end": 87.06539999996312,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 85.95220000005793,
+          "end": 87.28320000006352,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 111.64989999996033,
+          "end": 116.19949999998789,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 113.8752000000095,
+          "end": 117.40000000002328,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 241.81440000003204,
+          "end": 243.7946000000229,
+          "bytes": 44
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 242.44759999995586,
+          "end": 244.5749000000069,
+          "bytes": 84
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 246.2323000000324,
+          "end": 248.03430000005756,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 250.2164000000339,
+          "end": 256.9897999999812,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 252.17859999998473,
+          "end": 257.1071000000229,
+          "bytes": 11111
+        },
+        {
+          "path": "/api/projects",
+          "start": 254.5283000000054,
+          "end": 257.4978000000119,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 255.08739999996033,
+          "end": 257.76800000004005,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 255.62870000000112,
+          "end": 258.0557999999728,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 265.62609999999404,
+          "end": 267.5034000000451,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 895.5343000000576,
+          "end": 897.6005000000587,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 896.5041000000201,
+          "end": 904.3065000000643,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 898.1136999999871,
+          "end": 909.030299999984,
+          "bytes": 421029
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 900.859599999967,
+          "end": 909.3375000000233,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 901.1082999999635,
+          "end": 909.7173000000184,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 30118.031599999988,
+          "end": 30120.95319999999,
+          "bytes": 84
+        },
+        {
+          "path": "/api/health",
+          "start": 30125.04099999997,
+          "end": 30127.034400000004,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 30125.904300000053,
+          "end": 30127.342599999974,
+          "bytes": 31
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 0,
+      "ready_ms": 1104.532600000035,
+      "list_ready_ms": 373.2294000000693,
+      "api_requests": 23,
+      "config_requests": 3,
+      "bytes": 16434,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 791.412,
+        "average_fps": 3.158,
+        "p95_frame_ms": 316.7,
+        "longest_frame_ms": 316.7,
+        "dropped_frames": 0,
+        "frame_samples": 1,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 38,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 129.158,
+        "script_ms": 27.914,
+        "layout_ms": 2.815,
+        "recalc_style_ms": 4.007,
+        "first_content_ms": 205.32779999997,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 61.788799999980256,
+          "end": 64.32740000006743,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 62.42220000002999,
+          "end": 64.4651999999769,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 63.305300000007264,
+          "end": 64.49360000004526,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 89.16300000005867,
+          "end": 90.4605000000447,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 105.88450000004377,
+          "end": 108.19070000003558,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 118.07620000001043,
+          "end": 119.84920000005513,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 118.90190000005532,
+          "end": 120.11609999998473,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 247.70759999996517,
+          "end": 250.17249999998603,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 249.44140000001062,
+          "end": 250.86629999999423,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 252.1369999999879,
+          "end": 253.62530000007246,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 257.0405000000028,
+          "end": 261.02840000006836,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 258.47340000001714,
+          "end": 261.47140000003856,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 259.19409999996424,
+          "end": 262.3499000000302,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 259.7378000000026,
+          "end": 262.361200000043,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 260.0246000000043,
+          "end": 262.3695000000298,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 268.48750000004657,
+          "end": 270.16930000006687,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 860.5929999999935,
+          "end": 866.3257000000449,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 862.1275000000605,
+          "end": 866.4860000000335,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 862.9333000000333,
+          "end": 866.4986000000499,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 863.579800000065,
+          "end": 866.5099000000628,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 863.8329999999842,
+          "end": 866.5210000000661,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1447.7439000000013,
+          "end": 1449.5272000000114,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1918.2116999999853,
+          "end": 1919.5694999999832,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 1,
+      "ready_ms": 1425.1367999999784,
+      "list_ready_ms": 373.1200999999419,
+      "api_requests": 21,
+      "config_requests": 3,
+      "bytes": 16299,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 805.339,
+        "average_fps": 3.158,
+        "p95_frame_ms": 316.7,
+        "longest_frame_ms": 316.7,
+        "dropped_frames": 0,
+        "frame_samples": 1,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 38,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 145.905,
+        "script_ms": 32.899,
+        "layout_ms": 2.928,
+        "recalc_style_ms": 4.985,
+        "first_content_ms": 202.22530000004917,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 64.2489999999525,
+          "end": 67.36739999998827,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 64.70189999998547,
+          "end": 67.67790000000969,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 66.08289999992121,
+          "end": 67.75599999993574,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 100.44790000002831,
+          "end": 103.04999999993015,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 102.24820000003092,
+          "end": 103.56409999995958,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 173.75859999994282,
+          "end": 175.2043999999296,
+          "bytes": 44
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 174.37489999993704,
+          "end": 175.23509999993257,
+          "bytes": 84
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 180.36529999994673,
+          "end": 182.78980000002775,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 184.75300000002608,
+          "end": 187.54139999998733,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 185.73340000002645,
+          "end": 187.92969999997877,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 186.22019999998156,
+          "end": 188.05019999993965,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 186.48279999999795,
+          "end": 188.35989999992307,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 256.28509999997914,
+          "end": 258.5854999999283,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 300.11049999995157,
+          "end": 301.7580999999773,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1138.1703999999445,
+          "end": 1141.8229999999749,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 1139.1822999999858,
+          "end": 1145.419099999941,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 1140.4371999999275,
+          "end": 1145.7885999999708,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 1141.9464000000153,
+          "end": 1145.8399000000209,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 1142.436800000025,
+          "end": 1145.8530999999493,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1767.7572999999393,
+          "end": 1769.9096999999601,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 2236.6172999999253,
+          "end": 2237.714799999958,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 2,
+      "ready_ms": 1192.3654000000097,
+      "list_ready_ms": 228.89060000004247,
+      "api_requests": 23,
+      "config_requests": 3,
+      "bytes": 16434,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 839.504,
+        "average_fps": 3.334,
+        "p95_frame_ms": 300,
+        "longest_frame_ms": 300,
+        "dropped_frames": 0,
+        "frame_samples": 2,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 42,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 161.278,
+        "script_ms": 32.877,
+        "layout_ms": 2.985,
+        "recalc_style_ms": 5.512,
+        "first_content_ms": 208.9316000000108,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 61.553799999994226,
+          "end": 63.18859999999404,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 61.95370000007097,
+          "end": 63.2793000000529,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 62.14439999999013,
+          "end": 63.67170000006445,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 87.25150000001304,
+          "end": 90.09799999999814,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 88.5073000000557,
+          "end": 91.22909999999683,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 95.38750000006985,
+          "end": 97.48750000004657,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 96.44090000004508,
+          "end": 97.65049999998882,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 162.85499999998137,
+          "end": 165.6767000000691,
+          "bytes": 44
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 163.53240000002552,
+          "end": 165.77430000004824,
+          "bytes": 84
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 169.60080000001471,
+          "end": 171.66540000005625,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 173.9733000000706,
+          "end": 176.25300000002608,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 174.76390000001993,
+          "end": 176.54859999998007,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 175.02659999998286,
+          "end": 176.8239000000758,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 175.18540000007488,
+          "end": 177.00500000000466,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 175.92110000003595,
+          "end": 177.12829999998212,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 181.7636000000639,
+          "end": 183.19660000002477,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 908.7373000000371,
+          "end": 914.7086000000127,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 909.7140999999829,
+          "end": 914.7362999999896,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 912.310999999987,
+          "end": 919.33050000004,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 912.7919000000693,
+          "end": 919.3483000000706,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 913.0546000000322,
+          "end": 919.4923999999883,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1539.748900000006,
+          "end": 1541.5537999999942,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 2060.482399999979,
+          "end": 2061.8538999999873,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 3,
+      "ready_ms": 1043.7525000000605,
+      "list_ready_ms": 377.65890000003856,
+      "api_requests": 23,
+      "config_requests": 3,
+      "bytes": 16434,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 789.557,
+        "average_fps": 3.333,
+        "p95_frame_ms": 300.1,
+        "longest_frame_ms": 300.1,
+        "dropped_frames": 0,
+        "frame_samples": 2,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 42,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 167.155,
+        "script_ms": 33.625,
+        "layout_ms": 4.305,
+        "recalc_style_ms": 7.878,
+        "first_content_ms": 205.04000000003725,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 61.4658000000054,
+          "end": 64.27630000002682,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 62.29120000009425,
+          "end": 64.32610000006389,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 63.02210000006016,
+          "end": 64.72580000001471,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 107.25560000003316,
+          "end": 109.94780000008177,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 112.20640000002459,
+          "end": 114.17680000001565,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 193.96380000002682,
+          "end": 196.95490000001155,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 195.09980000008363,
+          "end": 198.24150000000373,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 256.7948000000324,
+          "end": 259.69490000000224,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 258.3548000000883,
+          "end": 260.53330000001006,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 261.79920000000857,
+          "end": 263.7311000000918,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 266.4153000001097,
+          "end": 271.87730000005104,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 267.2184000000125,
+          "end": 272.4171000000788,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 268.25900000007823,
+          "end": 272.9417000000831,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 270.2923000000883,
+          "end": 273.0627000000095,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 271.4949000000488,
+          "end": 273.35580000001937,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 278.25640000007115,
+          "end": 279.6686000000918,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 711.9914000000572,
+          "end": 718.2806000000564,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 713.6505000001052,
+          "end": 719.3339000000851,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 714.0960000000196,
+          "end": 719.3528000001097,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 715.1316000000807,
+          "end": 719.3644000000786,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 715.3741000000155,
+          "end": 719.7438000000548,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1388.376500000013,
+          "end": 1390.2704000000376,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1862.629200000083,
+          "end": 1864.7304000000004,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 4,
+      "ready_ms": 979.1212999999989,
+      "list_ready_ms": 342.07380000001285,
+      "api_requests": 21,
+      "config_requests": 3,
+      "bytes": 16299,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 838.685,
+        "average_fps": 3,
+        "p95_frame_ms": 333.3,
+        "longest_frame_ms": 333.3,
+        "dropped_frames": 0,
+        "frame_samples": 1,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 37,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 10.109,
+        "js_heap_peak_mb": 10.109,
+        "js_heap_end_mb": 10.109,
+        "task_ms": 148.847,
+        "script_ms": 33.37,
+        "layout_ms": 4.362,
+        "recalc_style_ms": 9.864,
+        "first_content_ms": 204.81929999997374,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 58.41109999991022,
+          "end": 61.00209999992512,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 59.26489999995101,
+          "end": 61.071499999961816,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 60.07449999998789,
+          "end": 61.418899999931455,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 82.52619999996386,
+          "end": 85.1176999999443,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 83.77960000000894,
+          "end": 85.86309999995865,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 181.87170000001788,
+          "end": 183.26949999993667,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 182.56959999992978,
+          "end": 183.88299999991432,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 209.98529999994207,
+          "end": 214.8051999999443,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 217.89179999998305,
+          "end": 223.2110999999568,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 219.71169999998529,
+          "end": 224.0457999999635,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 220.45759999996517,
+          "end": 224.63879999995697,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 220.93880000000354,
+          "end": 224.99259999999776,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 221.34950000001118,
+          "end": 225.2626000000164,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 229.71699999994598,
+          "end": 231.08239999995567,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 665.1100999999326,
+          "end": 668.0514999999432,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 666.5087000000058,
+          "end": 670.2933000000194,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 667.1435999999521,
+          "end": 670.7657999999356,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 667.3865999999689,
+          "end": 670.7873999999138,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 668.1505999999354,
+          "end": 670.8018000000156,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1319.0482999999076,
+          "end": 1320.7137999999104,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1843.7854999999981,
+          "end": 1845.4483999999939,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 5,
+      "ready_ms": 1527.0670999999857,
+      "list_ready_ms": 402.9906999999657,
+      "api_requests": 21,
+      "config_requests": 3,
+      "bytes": 16299,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 849.744,
+        "average_fps": 3.429,
+        "p95_frame_ms": 299.87,
+        "longest_frame_ms": 299.87,
+        "dropped_frames": 0,
+        "frame_samples": 2,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 42,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 195.024,
+        "script_ms": 39.351,
+        "layout_ms": 3.959,
+        "recalc_style_ms": 8.336,
+        "first_content_ms": 202.5729000000283,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 71.06869999994524,
+          "end": 73.8857999999309,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 71.49629999999888,
+          "end": 74.26399999996647,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 72.48159999994095,
+          "end": 74.63269999995828,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 107.02399999997579,
+          "end": 109.22729999991134,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 108.16459999990184,
+          "end": 109.64669999992475,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 197.63939999998547,
+          "end": 200.983899999992,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 199.93999999994412,
+          "end": 201.7310999999754,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 288.24969999992754,
+          "end": 290.8200999998953,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 293.10089999996126,
+          "end": 298.7332999999635,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 293.4885999999242,
+          "end": 298.7502000000095,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 294.67579999996815,
+          "end": 298.9732999999542,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 296.1477999999188,
+          "end": 299.3591000000015,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 296.6422999999486,
+          "end": 299.72629999998026,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 306.22060000000056,
+          "end": 308.201999999932,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1205.6504999999888,
+          "end": 1208.1209999999264,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 1206.435599999968,
+          "end": 1208.55979999993,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 1207.2441000000108,
+          "end": 1209.859599999967,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 1207.5158999999985,
+          "end": 1209.8998999999603,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 1207.6980999999214,
+          "end": 1209.9115999999922,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1881.6316999999108,
+          "end": 1882.9547999999486,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 2404.156399999978,
+          "end": 2405.9937999999383,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 6,
+      "ready_ms": 1230.2470000000903,
+      "list_ready_ms": 380.453199999989,
+      "api_requests": 23,
+      "config_requests": 3,
+      "bytes": 16434,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 785.193,
+        "average_fps": 3.001,
+        "p95_frame_ms": 333.2,
+        "longest_frame_ms": 333.2,
+        "dropped_frames": 0,
+        "frame_samples": 1,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 38,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 152.621,
+        "script_ms": 36.458,
+        "layout_ms": 3.807,
+        "recalc_style_ms": 5.345,
+        "first_content_ms": 203.11810000007972,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 61.85759999998845,
+          "end": 63.81020000006538,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 62.52090000000317,
+          "end": 64.1317000000272,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 62.70100000000093,
+          "end": 64.45250000001397,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 108.4377000000095,
+          "end": 110.83079999999609,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 110.26569999998901,
+          "end": 111.52540000004228,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 192.06750000000466,
+          "end": 195.4658000000054,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 193.7103000000352,
+          "end": 195.99840000004042,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 257.5258000000613,
+          "end": 260.19310000003316,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 258.9695000000065,
+          "end": 260.2333000000799,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 262.3939000000246,
+          "end": 264.2164000000339,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 265.82850000006147,
+          "end": 269.82480000006035,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 267.07380000001285,
+          "end": 269.86290000006557,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 267.8046000000322,
+          "end": 270.3386000000173,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 268.0997000000207,
+          "end": 270.533400000073,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 269.1181000000797,
+          "end": 271.13569999998435,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 308.95880000002217,
+          "end": 310.28289999999106,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 958.0121999999974,
+          "end": 962.5873000000138,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 959.4668999999994,
+          "end": 964.7386000000406,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 959.8423000000184,
+          "end": 964.8205999999773,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 961.5950000000885,
+          "end": 964.8501999999862,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 962.0171000000555,
+          "end": 964.8580000000075,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1584.5041000000201,
+          "end": 1586.4010000000708,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 2056.847000000067,
+          "end": 2058.4648000000743,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 7,
+      "ready_ms": 1314.7832999998936,
+      "list_ready_ms": 374.50049999996554,
+      "api_requests": 21,
+      "config_requests": 3,
+      "bytes": 16299,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 785.029,
+        "average_fps": 3.53,
+        "p95_frame_ms": 299.9,
+        "longest_frame_ms": 299.9,
+        "dropped_frames": 0,
+        "frame_samples": 2,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 38,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 149.921,
+        "script_ms": 33.575,
+        "layout_ms": 3.857,
+        "recalc_style_ms": 4.986,
+        "first_content_ms": 202.7439000000013,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 81.32589999993797,
+          "end": 84.42099999997299,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 82.85989999992307,
+          "end": 84.66419999999925,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 83.27129999990575,
+          "end": 85.03079999994952,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 116.48219999996945,
+          "end": 119.55219999991823,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 118.00079999992158,
+          "end": 120.73929999989923,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 204.73479999997653,
+          "end": 206.77129999990575,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 205.3678999999538,
+          "end": 206.80549999990035,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 210.5388999999268,
+          "end": 212.86589999997523,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 214.8389999999199,
+          "end": 220.0545999999158,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 216.22209999989718,
+          "end": 220.42519999993965,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 217.14929999993183,
+          "end": 220.46919999993406,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 217.63529999996535,
+          "end": 220.703199999989,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 218.90619999996852,
+          "end": 221.10459999996237,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 226.34829999995418,
+          "end": 227.9317999999039,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 993.5876999999164,
+          "end": 996.1455999999307,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 994.3720999999205,
+          "end": 998.3685999999288,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 995.7371999999741,
+          "end": 1000.5842999999877,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 997.2018999999855,
+          "end": 1000.8079999999609,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 997.6483999999473,
+          "end": 1000.8841999999713,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1662.436599999899,
+          "end": 1663.9780000000028,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 2143.9743000000017,
+          "end": 2145.0390999999363,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 8,
+      "ready_ms": 1128.4917999999598,
+      "list_ready_ms": 357.156799999997,
+      "api_requests": 23,
+      "config_requests": 3,
+      "bytes": 16434,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 711.189,
+        "average_fps": 3.159,
+        "p95_frame_ms": 316.6,
+        "longest_frame_ms": 316.6,
+        "dropped_frames": 0,
+        "frame_samples": 1,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 38,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 9.537,
+        "js_heap_peak_mb": 9.537,
+        "js_heap_end_mb": 9.537,
+        "task_ms": 124.765,
+        "script_ms": 31.134,
+        "layout_ms": 3.236,
+        "recalc_style_ms": 4.102,
+        "first_content_ms": 66.60619999992196,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 63.68939999991562,
+          "end": 66.26379999995697,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 64.51329999999143,
+          "end": 66.81279999995604,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 64.9773999999743,
+          "end": 66.90039999992587,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 108.17429999995511,
+          "end": 110.36199999996461,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 109.71549999993294,
+          "end": 111.24609999998938,
+          "bytes": 31
+        },
+        {
+          "path": "/api/health",
+          "start": 188.05589999991935,
+          "end": 190.6740999999456,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 189.66239999991376,
+          "end": 190.9415999999037,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 245.13629999989644,
+          "end": 247.46039999998175,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 246.26839999994263,
+          "end": 248.15339999995194,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 249.90549999999348,
+          "end": 252.01009999995586,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 253.66419999999925,
+          "end": 258.16339999996126,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 254.545199999935,
+          "end": 258.47609999997076,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 255.90599999995902,
+          "end": 258.6807999999728,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 256.8816999999108,
+          "end": 259.0445999999065,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 257.30629999993835,
+          "end": 259.50029999995604,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 265.04839999997057,
+          "end": 266.46919999993406,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 843.3483999999007,
+          "end": 845.623900000006,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 844.9432999999262,
+          "end": 849.5865999999223,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 846.76529999997,
+          "end": 851.0996999999043,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 847.5849999999627,
+          "end": 851.1157999999123,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 848.999899999937,
+          "end": 851.1403999999166,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1475.3681999999098,
+          "end": 1476.311299999943,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1864.7061999998987,
+          "end": 1865.8596999999136,
+          "bytes": 11
+        }
+      ]
+    },
+    {
+      "route": "/chat",
+      "delay": 0,
+      "turns": 10,
+      "history": true,
+      "streaming": true,
+      "run": 9,
+      "ready_ms": 918.2039000000805,
+      "list_ready_ms": 323.85779999999795,
+      "api_requests": 21,
+      "config_requests": 3,
+      "bytes": 16299,
+      "dom_nodes": 1647,
+      "measured": {
+        "duration_ms": 756.081,
+        "average_fps": 3.333,
+        "p95_frame_ms": 300,
+        "longest_frame_ms": 300,
+        "dropped_frames": 0,
+        "frame_samples": 1,
+        "long_tasks": 0,
+        "long_task_total_ms": 0,
+        "renderer_mutations": 38,
+        "dom_nodes": 1647,
+        "js_heap_start_mb": 10.109,
+        "js_heap_peak_mb": 10.109,
+        "js_heap_end_mb": 10.109,
+        "task_ms": 119.446,
+        "script_ms": 29.238,
+        "layout_ms": 2.881,
+        "recalc_style_ms": 6.429,
+        "first_content_ms": 209.50479999999516,
+        "stream_integrity": 1
+      },
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 68.16250000009313,
+          "end": 70.09950000001118,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 68.58500000007916,
+          "end": 70.22950000001583,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 69.2502000000095,
+          "end": 70.41110000002664,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 97.05950000009034,
+          "end": 98.5920000000624,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 99.82000000006519,
+          "end": 100.88540000002831,
+          "bytes": 31
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 219.0442000000039,
+          "end": 222.0407000000123,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/health",
+          "start": 219.86770000006072,
+          "end": 222.10409999999683,
+          "bytes": 44
+        },
+        {
+          "path": "/config/models?type=llm",
+          "start": 225.15660000010394,
+          "end": 226.81850000005215,
+          "bytes": 47
+        },
+        {
+          "path": "/api/chat/plugins",
+          "start": 229.16800000006333,
+          "end": 232.96940000005998,
+          "bytes": 14
+        },
+        {
+          "path": "/api/chat/conversations",
+          "start": 230.266100000008,
+          "end": 233.2889000000432,
+          "bytes": 11107
+        },
+        {
+          "path": "/api/projects",
+          "start": 231.01470000005793,
+          "end": 233.57280000008177,
+          "bytes": 15
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 231.40860000008252,
+          "end": 233.62350000010338,
+          "bytes": 174
+        },
+        {
+          "path": "/config/versions?resources=models",
+          "start": 232.37250000005588,
+          "end": 234.15140000008978,
+          "bytes": 84
+        },
+        {
+          "path": "/api/chat/models/detail",
+          "start": 238.53070000000298,
+          "end": 240.05790000001434,
+          "bytes": 174
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 580.3720000000903,
+          "end": 585.295700000017,
+          "bytes": 11
+        },
+        {
+          "path": "/api/chat/approval?conversation=benchmark-active",
+          "start": 582.5090000000782,
+          "end": 587.5060999999987,
+          "bytes": 74
+        },
+        {
+          "path": "/api/chat/turns?conversation=benchmark-active",
+          "start": 582.938300000038,
+          "end": 587.517300000065,
+          "bytes": 4123
+        },
+        {
+          "path": "/api/chat/command-history?conversation=benchmark-active",
+          "start": 583.4318000000203,
+          "end": 587.5241000000387,
+          "bytes": 43
+        },
+        {
+          "path": "/api/chat/max-iterations?conversation=benchmark-active",
+          "start": 583.9308000000892,
+          "end": 587.531799999997,
+          "bytes": 31
+        },
+        {
+          "path": "/api/chat/send",
+          "start": 1264.7638000000734,
+          "end": 1266.1010000000242,
+          "bytes": 95
+        },
+        {
+          "path": "/api/chat/runs?conversation=benchmark-active&limit=20&unfinished=false",
+          "start": 1708.452600000077,
+          "end": 1709.797900000005,
+          "bytes": 11
+        }
+      ]
+    }
+  ]
+}

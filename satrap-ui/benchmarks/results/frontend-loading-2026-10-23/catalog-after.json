@@ -1,0 +1,1639 @@
+{
+  "commit": "b295cc24e2f393f897880399e99a53818cc2ff91",
+  "source": "working tree",
+  "launch_profile": "headless-shell-default",
+  "bundle_sha256": "9a40c72d035c7c945ed9f6f9c788653ee279d5bb2766f005d43345492c8774fa",
+  "patch_sha256": "2cb6390c375eb1e360af83ad8718b216d630a4d4fcba068bd856c69de6d58504",
+  "extra_sources": {
+    "satrap/core/browser_sessions.py": "ec2231446bb3c294022f7d9bf673365994139ab8ff7a7105aca6a830e39e42b4",
+    "satrap-ui/src/components/common/LogoutButton.tsx": "6a0b98f37b1042919b3d593214aa01974eeb013bce3e4c88a568df3d33ef645b"
+  },
+  "created_at": "2026-10-23T10:14:49.087Z",
+  "node": "v24.18.0",
+  "browser": "151.0.7922.34",
+  "os": "win32 10.0.26200",
+  "iterations": 10,
+  "warmups": 2,
+  "samples": [
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 0,
+      "ready_ms": 410.96389999999883,
+      "list_ready_ms": 410.96219999999994,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 59.8765999999996,
+          "end": 220.3168999999998,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 60.255799999999,
+          "end": 220.59329999999864,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 60.34139999999934,
+          "end": 221.80029999999897,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 228.97329999999965,
+          "end": 393.1281999999992,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 234.6311999999998,
+          "end": 393.2374999999993,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 234.80229999999938,
+          "end": 393.3329999999987,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 234.8762999999999,
+          "end": 393.34589999999844,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 234.9383999999991,
+          "end": 393.378999999999,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 236.34569999999985,
+          "end": 393.67149999999856,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 1,
+      "ready_ms": 486.8127999999997,
+      "list_ready_ms": 486.8113999999987,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 79.35269999999946,
+          "end": 233.6301999999996,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 79.65959999999905,
+          "end": 233.71990000000005,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 79.73170000000027,
+          "end": 233.76159999999982,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 238.79179999999906,
+          "end": 405.7065999999995,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 240.6315999999988,
+          "end": 405.8132999999998,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 242.3122000000003,
+          "end": 405.89400000000023,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 242.46049999999923,
+          "end": 405.9347999999991,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 242.55409999999938,
+          "end": 406.2382999999991,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 242.63580000000002,
+          "end": 406.3269999999993,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 2,
+      "ready_ms": 517.095800000001,
+      "list_ready_ms": 517.0944,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 50.19160000000011,
+          "end": 215.52109999999993,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 50.35040000000117,
+          "end": 215.70210000000043,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 50.69410000000062,
+          "end": 216.01699999999983,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 272.07940000000053,
+          "end": 434.70150000000103,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 290.27510000000075,
+          "end": 451.5030000000006,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 290.3790000000008,
+          "end": 451.59879999999976,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 290.45550000000003,
+          "end": 451.70930000000044,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 290.52920000000086,
+          "end": 451.7982000000011,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 291.0025999999998,
+          "end": 452.2473000000009,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 3,
+      "ready_ms": 903.1470000000008,
+      "list_ready_ms": 903.1455999999998,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 62.411299999999756,
+          "end": 215.52760000000126,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 62.48360000000139,
+          "end": 215.97730000000047,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 62.518200000000434,
+          "end": 216.25840000000062,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 223.047700000001,
+          "end": 384.0154000000002,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 226.8742000000002,
+          "end": 384.0658000000003,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 226.95330000000104,
+          "end": 384.4230000000007,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 227.88810000000012,
+          "end": 384.64559999999983,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 227.96680000000015,
+          "end": 384.69760000000133,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 228.01980000000003,
+          "end": 384.7443000000003,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 4,
+      "ready_ms": 497.83569999999963,
+      "list_ready_ms": 497.83400000000074,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 54.321899999999005,
+          "end": 214.77199999999903,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 54.574899999999616,
+          "end": 214.98639999999978,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 54.61819999999898,
+          "end": 215.5038000000004,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 221.58239999999932,
+          "end": 387.8749000000007,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 226.4951999999994,
+          "end": 388.60659999999916,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 226.90259999999944,
+          "end": 388.7562999999991,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 226.95299999999952,
+          "end": 389.6203999999998,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 226.99549999999908,
+          "end": 389.97209999999905,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 227.04290000000037,
+          "end": 390.1823999999997,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 5,
+      "ready_ms": 479.6298999999999,
+      "list_ready_ms": 479.627199999999,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 97.41989999999896,
+          "end": 252.96219999999994,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 98.67159999999967,
+          "end": 253.0166999999983,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 98.77809999999954,
+          "end": 253.39480000000003,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 261.3851999999988,
+          "end": 428.17109999999957,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 264.65659999999843,
+          "end": 428.40189999999893,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 264.71469999999863,
+          "end": 428.7417999999998,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 264.7509999999984,
+          "end": 428.91719999999987,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 265.7465999999986,
+          "end": 429.10239999999976,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 265.8089999999993,
+          "end": 429.2408999999989,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 6,
+      "ready_ms": 1028.2272000000012,
+      "list_ready_ms": 1028.2252000000008,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 98.46900000000096,
+          "end": 261.51830000000155,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 99.87410000000091,
+          "end": 262.5005000000001,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 100.02310000000034,
+          "end": 262.83580000000075,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 402.5595000000012,
+          "end": 557.5128000000004,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 405.9183000000012,
+          "end": 559.0030999999999,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 406.40560000000005,
+          "end": 559.9506000000001,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 406.4521000000004,
+          "end": 560.3906000000006,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 406.4845000000005,
+          "end": 560.7840000000015,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 406.52810000000136,
+          "end": 561.0192000000006,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 7,
+      "ready_ms": 431.1230999999989,
+      "list_ready_ms": 431.1211999999996,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 65.0666999999994,
+          "end": 229.39389999999912,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 65.32649999999921,
+          "end": 229.8241999999991,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 65.36429999999928,
+          "end": 230.08479999999872,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 243.03639999999905,
+          "end": 400.8274000000001,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 246.59720000000016,
+          "end": 401.02759999999944,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 246.8037000000004,
+          "end": 401.28429999999935,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 246.8797999999988,
+          "end": 401.34239999999954,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 247.49189999999908,
+          "end": 401.64580000000024,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 247.57949999999983,
+          "end": 401.84939999999915,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 8,
+      "ready_ms": 529.9426000000003,
+      "list_ready_ms": 529.940700000001,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 72.88210000000072,
+          "end": 230.70429999999942,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 73.40689999999995,
+          "end": 231.22860000000037,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 73.45840000000135,
+          "end": 231.53170000000136,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 254.6744000000017,
+          "end": 420.6796000000013,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 259.28539999999884,
+          "end": 421.0700000000015,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 259.38610000000153,
+          "end": 421.39320000000043,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 259.4436000000005,
+          "end": 421.64750000000095,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 259.4948999999997,
+          "end": 421.9777000000013,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 261.22170000000006,
+          "end": 422.90630000000056,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 9,
+      "ready_ms": 456.9138000000021,
+      "list_ready_ms": 456.9095000000016,
+      "api_requests": 9,
+      "config_requests": 4,
+      "bytes": 545,
+      "dom_nodes": 152,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 60.68180000000211,
+          "end": 215.43580000000293,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 60.75500000000102,
+          "end": 215.8762999999999,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 60.869000000002416,
+          "end": 217.2940000000017,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 247.5454000000027,
+          "end": 415.6686000000009,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 255.03420000000187,
+          "end": 415.8509000000013,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=asr",
+          "start": 255.37360000000263,
+          "end": 416.1127000000015,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=embedding",
+          "start": 255.4171000000024,
+          "end": 416.3564000000006,
+          "bytes": 83
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=llm",
+          "start": 255.44880000000194,
+          "end": 416.57120000000214,
+          "bytes": 128
+        },
+        {
+          "path": "/config/snapshot?resource=models&type=rerank",
+          "start": 255.71220000000176,
+          "end": 416.8582000000024,
+          "bytes": 83
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 0,
+      "ready_ms": 501.71670000000086,
+      "list_ready_ms": 501.71670000000086,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 496.2428,
+          "end": 652.4999000000025,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 1,
+      "ready_ms": 729.6833000000006,
+      "list_ready_ms": 729.6833000000006,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 723.4987999999976,
+          "end": 888.5297000000028,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 2,
+      "ready_ms": 486.52850000000035,
+      "list_ready_ms": 486.52850000000035,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 481.61559999999736,
+          "end": 638.3632999999973,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 3,
+      "ready_ms": 404.4392000000007,
+      "list_ready_ms": 404.4392000000007,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 398.6777000000002,
+          "end": 552.1484999999957,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 4,
+      "ready_ms": 279.72290000000066,
+      "list_ready_ms": 279.72290000000066,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 274.77479999999923,
+          "end": 437.80449999999837,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 5,
+      "ready_ms": 304.91820000000007,
+      "list_ready_ms": 304.91820000000007,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 299.082699999999,
+          "end": 454.95640000000276,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 6,
+      "ready_ms": 409.6814999999988,
+      "list_ready_ms": 409.6814999999988,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 400.1921999999977,
+          "end": 565.5083999999988,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 7,
+      "ready_ms": 528.1387999999934,
+      "list_ready_ms": 528.1387999999934,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 523.1500999999989,
+          "end": 687.1935999999987,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 8,
+      "ready_ms": 526.7209000000003,
+      "list_ready_ms": 526.7209000000003,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 519.5930999999982,
+          "end": 684.9084999999977,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/models",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 9,
+      "ready_ms": 333.6116000000038,
+      "list_ready_ms": 333.6116000000038,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 84,
+      "dom_nodes": 154,
+      "requests": [
+        {
+          "path": "/config/versions?resources=models",
+          "start": 327.67139999999927,
+          "end": 481.71370000000024,
+          "bytes": 84
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 0,
+      "ready_ms": 555.809699999998,
+      "list_ready_ms": 555.8086000000039,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 61.64390000000276,
+          "end": 218.66649999999936,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 61.763700000003155,
+          "end": 218.77550000000338,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 61.919800000003306,
+          "end": 218.8113000000012,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 244.84339999999793,
+          "end": 403.8248999999996,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 246.94340000000375,
+          "end": 403.9472999999998,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 254.9864000000016,
+          "end": 408.60519999999815,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 1,
+      "ready_ms": 535.1916999999958,
+      "list_ready_ms": 535.1909000000014,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 101.16099999999278,
+          "end": 264.4403999999922,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 101.64909999999509,
+          "end": 265.097299999994,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 101.68790000000445,
+          "end": 265.39650000000256,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 271.66049999999814,
+          "end": 423.25500000000466,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 278.6883999999991,
+          "end": 436.8594000000012,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 279.93829999999434,
+          "end": 437.2195999999967,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 2,
+      "ready_ms": 530.4890999999916,
+      "list_ready_ms": 530.4876999999979,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 66.6762000000017,
+          "end": 226.72539999999572,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 67.25190000000293,
+          "end": 226.86599999999453,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 67.6024000000034,
+          "end": 227.1137999999919,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 256.12660000000324,
+          "end": 410.434699999998,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 257.52309999999125,
+          "end": 411.2917999999918,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 264.972299999994,
+          "end": 424.73519999999553,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 3,
+      "ready_ms": 439.01380000000063,
+      "list_ready_ms": 439.0127000000066,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 68.54920000000857,
+          "end": 228.3524000000034,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 69.08370000000286,
+          "end": 228.4444000000076,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 69.1877999999997,
+          "end": 228.98219999999856,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 236.76720000000205,
+          "end": 393.51929999999993,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 238.6079000000027,
+          "end": 393.72060000000056,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 239.41900000000896,
+          "end": 394.00130000000354,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 4,
+      "ready_ms": 485.226800000004,
+      "list_ready_ms": 485.2259000000049,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 97.15729999999166,
+          "end": 250.6143999999913,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 98.05019999999786,
+          "end": 251.17840000000433,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 98.4262999999919,
+          "end": 251.70070000000123,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 264.01299999999173,
+          "end": 423.50220000000263,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 267.4924000000028,
+          "end": 423.7531999999919,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 268.4962999999989,
+          "end": 424.1561999999976,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 5,
+      "ready_ms": 552.9042999999947,
+      "list_ready_ms": 552.9027999999962,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 82.87259999998787,
+          "end": 239.204899999997,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 83.44679999999062,
+          "end": 239.56329999999434,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 84.55549999998766,
+          "end": 240.10149999998976,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 284.9444999999978,
+          "end": 439.2624999999971,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 287.76149999999325,
+          "end": 440.09629999999015,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 293.9234999999899,
+          "end": 453.80109999999695,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 6,
+      "ready_ms": 538.1466000000073,
+      "list_ready_ms": 538.1454999999987,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 88.11759999999776,
+          "end": 253.2957000000024,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 88.45990000000165,
+          "end": 253.75440000000526,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 88.6825000000099,
+          "end": 254.11209999999846,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 268.99319999999716,
+          "end": 421.62390000000596,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 270.391100000008,
+          "end": 422.27410000000964,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 277.98829999999725,
+          "end": 436.745900000009,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 7,
+      "ready_ms": 542.3389000000025,
+      "list_ready_ms": 542.3380999999936,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 76.06140000000596,
+          "end": 240.44779999999446,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 76.13270000000193,
+          "end": 240.80430000000342,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 76.45739999999932,
+          "end": 241.50470000000496,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 260.4747999999963,
+          "end": 427.67170000000624,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 261.45650000000023,
+          "end": 428.1521999999968,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 266.43790000000445,
+          "end": 428.6097000000009,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 8,
+      "ready_ms": 519.2344000000012,
+      "list_ready_ms": 519.2333999999973,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 68.70859999999811,
+          "end": 231.70019999999204,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 69.31379999998899,
+          "end": 232.0561000000016,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 69.38450000000012,
+          "end": 232.49289999999746,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 247.74219999999332,
+          "end": 405.0833999999886,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 248.8966999999975,
+          "end": 405.53469999998924,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 256.5146999999997,
+          "end": 407.99099999999453,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": false,
+      "run": 9,
+      "ready_ms": 498.30040000000736,
+      "list_ready_ms": 498.2991000000038,
+      "api_requests": 6,
+      "config_requests": 1,
+      "bytes": 7281,
+      "dom_nodes": 381,
+      "requests": [
+        {
+          "path": "/auth/session",
+          "start": 95.52990000000864,
+          "end": 261.15460000000894,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 95.64960000000428,
+          "end": 261.24809999999707,
+          "bytes": 11
+        },
+        {
+          "path": "/auth/session",
+          "start": 95.71319999999832,
+          "end": 261.4988000000012,
+          "bytes": 11
+        },
+        {
+          "path": "/api/health",
+          "start": 271.5761999999959,
+          "end": 430.43270000000484,
+          "bytes": 104
+        },
+        {
+          "path": "/status",
+          "start": 272.94169999999576,
+          "end": 430.62880000000587,
+          "bytes": 31
+        },
+        {
+          "path": "/config/snapshot?resource=plugin_catalog",
+          "start": 279.0688999999984,
+          "end": 430.8555999999953,
+          "bytes": 7113
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 0,
+      "ready_ms": 490.38840000001073,
+      "list_ready_ms": 490.38840000001073,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 289.3899000000092,
+          "end": 453.8109000000113,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 1,
+      "ready_ms": 497.661500000002,
+      "list_ready_ms": 497.661500000002,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 277.01660000000265,
+          "end": 438.9918000000034,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 2,
+      "ready_ms": 483.064200000008,
+      "list_ready_ms": 483.064200000008,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 279.25070000000414,
+          "end": 433.5697000000073,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 3,
+      "ready_ms": 482.6362999999983,
+      "list_ready_ms": 482.6362999999983,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 272.9021000000066,
+          "end": 435.6108999999997,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 4,
+      "ready_ms": 658.8161000000109,
+      "list_ready_ms": 658.8161000000109,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 430.97380000000703,
+          "end": 596.3743000000104,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 5,
+      "ready_ms": 673.9748999999865,
+      "list_ready_ms": 673.9748999999865,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 462.90810000000056,
+          "end": 622.1927999999898,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 6,
+      "ready_ms": 474.15320000000065,
+      "list_ready_ms": 474.15320000000065,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 262.5219999999972,
+          "end": 422.31149999999616,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 7,
+      "ready_ms": 536.9762000000046,
+      "list_ready_ms": 536.9762000000046,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 328.1849000000075,
+          "end": 483.5543999999936,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 8,
+      "ready_ms": 893.4438999999984,
+      "list_ready_ms": 893.4438999999984,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 679.7183999999979,
+          "end": 841.1054000000004,
+          "bytes": 225
+        }
+      ]
+    },
+    {
+      "route": "/plugins",
+      "delay": 150,
+      "turns": 50,
+      "hot": true,
+      "run": 9,
+      "ready_ms": 705.3021000000008,
+      "list_ready_ms": 705.3021000000008,
+      "api_requests": 1,
+      "config_requests": 1,
+      "bytes": 225,
+      "dom_nodes": 386,
+      "requests": [
+        {
+          "path": "/config/versions?resources=chat_plugins,edictum_configs,plugin_catalog",
+          "start": 492.2372000000032,
+          "end": 654.0734999999986,
+          "bytes": 225
+        }
+      ]
+    }
+  ]
+}
