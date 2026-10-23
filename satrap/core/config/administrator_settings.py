@@ -41,8 +41,29 @@ def normalize_platform_user(platform: Mapping[str, Any], user_id: str) -> str:
     return adapter.normalize_user_identifier(user_id)
 
 
+def normalize_platform_chat(platform: Mapping[str, Any], chat_id: str) -> str:
+    """
+    通过适配器规范群聊身份, 不查询或展开群成员
+
+    参数:
+    - platform: 已配置的平台实例
+    - chat_id: 用户填写的群聊识别号
+
+    返回:
+    - 当前适配器认可的群 ID, 不支持群聊或格式非法时抛出 ValueError
+    """
+    from satrap.core.platform.catalog import adapter_catalog
+
+    adapter_catalog()
+    adapter = registry.get(str(platform.get("type", "")))
+    if adapter is None or "group" not in adapter.conversation_kinds:
+        raise ValueError("所选平台不支持群聊授权")
+    return adapter.normalize_group_identifier(chat_id)
+
+
 def _rebind_keys(
     existing: set[tuple[str, str, str]], rebinding: object, key_field: str, field_name: str, label: str,
+    identity_field: str = "user_id",
 ) -> set[tuple[str, str, str]]:
     """
     校验显式重绑列表并返回被要求重绑的旧身份
@@ -53,6 +74,7 @@ def _rebind_keys(
     - key_field: 条目 ID 在重绑项中的字段名
     - field_name: 请求载荷中的列表字段名, 用于错误提示
     - label: 提示中的条目名称
+    - identity_field: user_id 或 chat_id, 默认按成员身份处理
 
     返回:
     - 去重后的重绑身份集合, 结构非法或引用不存在条目时抛出 ValueError
@@ -62,27 +84,29 @@ def _rebind_keys(
         raise ValueError(f"{field_name} 必须是列表")
     requested: set[tuple[str, str, str]] = set()
     for entry in rebinding:
-        if not isinstance(entry, dict) or set(entry) != {key_field, "platform_id", "user_id"} or any(not isinstance(value, str) for value in entry.values()):
-            raise ValueError(f"重绑{label}必须明确填写条目, 平台和原用户识别号")
-        key = (entry[key_field], entry["platform_id"], entry["user_id"])
+        if not isinstance(entry, dict) or set(entry) != {key_field, "platform_id", identity_field} or any(not isinstance(value, str) for value in entry.values()):
+            raise ValueError(f"重绑{label}必须明确填写条目, 平台和原识别号")
+        key = (entry[key_field], entry["platform_id"], entry[identity_field])
         if key not in existing or key in requested:
             raise ValueError(f"重绑{label}不存在或重复")
         requested.add(key)
     return requested
 
 
-def _group_member_keys(groups: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
+def _group_member_keys(groups: list[dict[str, Any]], field: str = "members", identity_field: str = "user_id") -> set[tuple[str, str, str]]:
     """
-    展开管理组中所有成员的绑定身份
+    展开管理组中指定成员或群聊的绑定身份
 
     参数:
     - groups: 已保存的规范管理组列表
+    - field: members 或 chats
+    - identity_field: 对应 user_id 或 chat_id
 
     返回:
-    - (组 ID, 平台 ID, 用户识别号) 集合
+    - (组 ID, 平台 ID, 成员或群聊识别号) 集合
     """
-    return {(group["id"], member["platform_id"], member["user_id"])
-            for group in groups for member in group["members"]}
+    return {(group["id"], member["platform_id"], member[identity_field])
+            for group in groups for member in group.get(field, [])}
 
 
 def _override_keys(overrides: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
@@ -98,20 +122,24 @@ def _override_keys(overrides: list[dict[str, Any]]) -> set[tuple[str, str, str]]
     return {(item["id"], item["platform_id"], item["user_id"]) for item in overrides}
 
 
-def _strip_members(source: list[dict[str, Any]], requested: set[tuple[str, str, str]]) -> list[dict[str, Any]]:
+def _strip_members(source: list[dict[str, Any]], requested: set[tuple[str, str, str]],
+                   field: str = "members", identity_field: str = "user_id") -> list[dict[str, Any]]:
     """
-    生成移除待重绑成员后的旧管理组副本
+    生成移除待重绑成员或群聊后的旧管理组副本
 
     参数:
     - source: 已保存的规范管理组列表
-    - requested: 被要求重绑的成员集合
+    - requested: 被要求重绑的成员或群聊集合
+    - field: members 或 chats
+    - identity_field: 对应 user_id 或 chat_id
 
     返回:
     - 深拷贝且已剔除待重绑成员的组列表, 供重新绑定新实例代次
     """
     preserved = deepcopy(source)
     for item in preserved:
-        item["members"] = [member for member in item["members"] if (item["id"], member["platform_id"], member["user_id"]) not in requested]
+        if field in item:
+            item[field] = [member for member in item[field] if (item["id"], member["platform_id"], member[identity_field]) not in requested]
     return preserved
 
 
@@ -155,6 +183,8 @@ def administrator_settings_snapshot(
     available = {platform["id"]: platform_instance_id(platform) for platform in platforms}
     invalid = [{"group_id": group["id"], **member} for group in groups for member in group["members"]
                if available.get(member["platform_id"]) != member["platform_instance_id"]]
+    invalid_chats = [{"group_id": group["id"], **chat} for group in groups for chat in group.get("chats", [])
+                     if available.get(chat["platform_id"]) != chat["platform_instance_id"]]
     invalid_overrides = [{"override_id": item["id"], "platform_id": item["platform_id"],
                           "platform_instance_id": item["platform_instance_id"], "user_id": item["user_id"]}
                          for item in overrides
@@ -172,11 +202,12 @@ def administrator_settings_snapshot(
             "platforms": [{"id": item["id"], "type": item["type"], "name": item.get("name", item["id"]),
                            "instance_id": platform_instance_id(item), "enabled": item.get("enable", True)} for item in platforms],
             "plugins": plugins, "plugin_errors": list(directory.scan_errors), "invalid_members": invalid,
-            "invalid_overrides": invalid_overrides, "migrated_from_legacy": migrated_from_legacy,
+            "invalid_overrides": invalid_overrides, "invalid_chats": invalid_chats, "migrated_from_legacy": migrated_from_legacy,
             "migration_pending": pending}
 
 
-def prepare_administrator_groups(config: Mapping[str, Any], groups: object, rebind_members: object = None) -> list[dict[str, Any]]:
+def prepare_administrator_groups(config: Mapping[str, Any], groups: object, rebind_members: object = None,
+                                 rebind_chats: object = None) -> list[dict[str, Any]]:
     """
     校验管理组草稿并显式重绑指定旧成员, 不保存或授予权限
 
@@ -184,6 +215,7 @@ def prepare_administrator_groups(config: Mapping[str, Any], groups: object, rebi
     - config: 当前已保存配置
     - groups: 提交的完整管理组列表
     - rebind_members: 明确要求重绑的 group_id, platform_id, user_id 列表, 默认空
+    - rebind_chats: 明确要求重绑的 group_id, platform_id, chat_id 列表, 默认空
 
     返回:
     - 服务端绑定的规范管理组, 非法提交抛出 ValueError
@@ -191,9 +223,11 @@ def prepare_administrator_groups(config: Mapping[str, Any], groups: object, rebi
     platforms = validate_platforms(config.get("platforms", []))
     previous = normalize_administrator_groups(config.get("administrator_groups"), platforms)
     requested = _rebind_keys(_group_member_keys(previous), rebind_members, "group_id", "rebind_members", "成员")
-    preserved = _strip_members(previous, requested)
+    requested_chats = _rebind_keys(_group_member_keys(previous, "chats", "chat_id"), rebind_chats,
+                                   "group_id", "rebind_chats", "群聊", "chat_id")
+    preserved = _strip_members(_strip_members(previous, requested), requested_chats, "chats", "chat_id")
     return normalize_administrator_groups(groups, platforms, bind_new=True, previous=preserved,
-                                          normalize_user=normalize_platform_user, strict_scope=True)
+                                          normalize_user=normalize_platform_user, normalize_chat=normalize_platform_chat, strict_scope=True)
 
 
 def prepare_administrator_overrides(config: Mapping[str, Any], overrides: object, rebind_overrides: object = None) -> list[dict[str, Any]]:
@@ -218,7 +252,7 @@ def prepare_administrator_overrides(config: Mapping[str, Any], overrides: object
 
 def save_administrator_groups(
     path: str | Path, groups: object, *, overrides: object, expected_revision: str,
-    rebind_members: object = None, rebind_overrides: object = None,
+    rebind_members: object = None, rebind_overrides: object = None, rebind_chats: object = None,
 ) -> dict[str, Any]:
     """
     只更新管理员双区段并原子保存, 版本冲突由 API 边界捕获
@@ -230,6 +264,7 @@ def save_administrator_groups(
     - expected_revision: 读取时的完整配置修订, 必填
     - rebind_members: 明确重绑的旧成员, 默认空
     - rebind_overrides: 明确重绑的旧例外身份, 默认空
+    - rebind_chats: 明确重绑的旧群聊身份, 默认空
 
     返回:
     - 已保存的完整配置, 非法或版本冲突不会覆盖旧文件
@@ -237,14 +272,14 @@ def save_administrator_groups(
     if not isinstance(expected_revision, str) or not expected_revision:
         raise ValueError("保存管理员设置必须携带 expected_revision")
     config = load_config_document(path)
-    config["administrator_groups"] = prepare_administrator_groups(config, groups, rebind_members)
+    config["administrator_groups"] = prepare_administrator_groups(config, groups, rebind_members, rebind_chats)
     config["administrator_overrides"] = prepare_administrator_overrides(config, overrides, rebind_overrides)
     return save_config_document(path, config, expected_revision=expected_revision)
 
 
 def preview_administrator_groups(
     config: Mapping[str, Any], groups: object, *, overrides: object,
-    rebind_members: object = None, rebind_overrides: object = None,
+    rebind_members: object = None, rebind_overrides: object = None, rebind_chats: object = None,
 ) -> dict[str, Any]:
     """
     计算草稿中各身份的有效插件权限, 保留组与例外两侧来源
@@ -255,25 +290,34 @@ def preview_administrator_groups(
     - overrides: 完整成员例外草稿, 必填以免预览漏算例外层
     - rebind_members: 明确重绑的成员, 默认空
     - rebind_overrides: 明确重绑的例外身份, 默认空
+    - rebind_chats: 明确重绑的旧群聊身份, 默认空
 
     返回:
     - 各身份的有效插件, 来源归属与管理条目, 不保存也不应用
     """
-    normalized = prepare_administrator_groups(config, groups, rebind_members)
+    normalized = prepare_administrator_groups(config, groups, rebind_members, rebind_chats)
     normalized_overrides = prepare_administrator_overrides(config, overrides, rebind_overrides)
     service = AdministratorService(lambda: validate_platforms(config.get("platforms", [])), normalized, normalized_overrides)
     catalog = PluginCatalog().scan()
     override_index = {(item["platform_id"], item["user_id"]): item["id"] for item in normalized_overrides}
     identities = {(member["platform_id"], member["user_id"]) for group in normalized for member in group["members"]}
     identities.update(override_index)   # 只由例外授权的人也要出现在预览里
-    members = []
-    for platform_id, user_id in sorted(identities):
-        origin = CallOrigin(platform_id, "", "", "", user_id, "", "")
+    def plugins_for(host: AdministratorService, origin: CallOrigin) -> list[dict[str, object]]:
+        """
+        生成指定来源的插件授权说明
+
+        参数:
+        - host: 使用草稿快照的权限服务
+        - origin: 预览用的身份, 不传入实际执行路径
+
+        返回:
+        - 有允许或否决来源的插件与判定
+        """
         plugins = []
         for plugin in catalog:
             if not plugin.permissions.supports_administrators:
                 continue
-            grant = service.resolve(origin, plugin.name)
+            grant = host.resolve(origin, plugin.name)
             sources = {"allow": [*(f"group:{item}" for item in grant.group_ids),
                                  *(f"override:{item}" for item in grant.allowed_overrides)],
                        "deny": [*(f"group:{item}" for item in grant.excluded_by),
@@ -284,7 +328,19 @@ def preview_administrator_groups(
             plugins.append({"name": plugin.name, "allowed": grant.allowed, "group_ids": list(grant.group_ids),
                             "override_ids": list(grant.allowed_overrides), "sources": sources, "permissions": [
                 {"id": key, "description": rule.description} for key, rule in plugin.permissions.rules.items() if rule.system_admin]})
+        return plugins
+
+    members = []
+    for platform_id, user_id in sorted(identities):
+        origin = CallOrigin(platform_id, "", "", "", user_id, "", "")
+        plugins = plugins_for(service, origin)
         members.append({"platform_id": platform_id, "user_id": user_id,
                         "override_id": override_index.get((platform_id, user_id), ""), "plugins": plugins})
-    return {"groups": normalized, "overrides": normalized_overrides, "members": members,
+    chat_service = AdministratorService(lambda: validate_platforms(config.get("platforms", [])),
+                                        [{**group, "members": []} for group in normalized])
+    chats = []
+    for platform_id, chat_id in sorted({(chat["platform_id"], chat["chat_id"]) for group in normalized for chat in group.get("chats", [])}):
+        origin = CallOrigin(platform_id, "preview", "GroupMessage", chat_id, "*", "", "", conversation_kind="group")
+        chats.append({"platform_id": platform_id, "chat_id": chat_id, "plugins": plugins_for(chat_service, origin)})
+    return {"groups": normalized, "overrides": normalized_overrides, "members": members, "chats": chats,
             "section_revision": administrator_revision(normalized, normalized_overrides)}

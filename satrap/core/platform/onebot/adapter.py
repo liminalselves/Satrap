@@ -174,6 +174,22 @@ class OneBotAdapter(PlatformAdapter):
         if not isinstance(value, str) or not value.strip().isascii() or not value.strip().isdigit() or len(value.strip()) > 20 or int(value.strip()) <= 0:
             raise ValueError("此平台的用户识别号必须是有效 QQ 号")
         return str(int(value.strip()))
+    @staticmethod
+    def normalize_group_identifier(value: str) -> str:
+        """
+        将 QQ 群号规范为与入站事件一致的十进制身份
+
+        参数:
+        - value: 用户填写的 QQ 群号
+
+        返回:
+        - 正整数的十进制群号, 非法格式抛出 ValueError
+        """
+        try:
+            return OneBotAdapter.normalize_user_identifier(value)
+        except ValueError as error:
+            raise ValueError("此平台的群聊识别号必须是有效 QQ 群号") from error
+
     display_name = "OneBot"
     supports_scheduled_group_send = True
 

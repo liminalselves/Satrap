@@ -158,8 +158,10 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any], *,
         raise ValueError("当前不是群聊上下文, 必须显式指定 group_id")
     if allowed and group_id not in allowed:
         raise PermissionError("目标群不在插件允许范围内")
-    if tool is not None and _uses_platform_group_admin(tool) and group_id != origin.chat_id:
-        raise PermissionError("QQ 群管理员只能管理当前群")
+    if tool is not None:
+        decision = require_plugin_entry_permission(tool._plugin_entry_binding, refresh=True)
+        if group_id != origin.chat_id and any(grant.source in {"platform_group_admin", "administrator_chat"} for grant in decision.grants):
+            raise PermissionError("群聊授权的管理员只能管理当前群")
     return group_id
 
 

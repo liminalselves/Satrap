@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from satrap.core.call_context import CallOrigin
     from satrap.core.friends.service import FriendService
     from satrap.core.config.administrator_groups import AdministratorService
+    from satrap.core.config.group_actions import GroupActionRecord
     from satrap.core.group_chat.reminder_host import ReminderHost
     from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
     from satrap.core.platform.scheduled import ScheduledTarget, ScheduledRecorder
@@ -122,6 +123,21 @@ class PlatformAdapter(ABC):
         """
         if not isinstance(value, str) or not 1 <= len(value.strip()) <= 256 or any(ord(char) < 32 for char in value):
             raise ValueError("平台用户识别号必须是有效文字")
+        return value.strip()
+
+    @staticmethod
+    def normalize_group_identifier(value: str) -> str:
+        """
+        校验配置中的群聊身份, 不把群号按成员身份解释
+
+        参数:
+        - value: 用户填写的群聊识别号
+
+        返回:
+        - 保留大小写的非空群聊 ID, 非法格式抛出 ValueError
+        """
+        if not isinstance(value, str) or not 1 <= len(value.strip()) <= 256 or any(ord(char) < 32 for char in value):
+            raise ValueError("群聊识别号必须是有效文字")
         return value.strip()
 
     @classmethod
@@ -590,7 +606,7 @@ class PlatformAdapter(ABC):
         """
         raise NotImplementedError("适配器未实现群资料查询")
 
-    async def group_chat_set_nickname(self, scope: MessageScope, nickname: str) -> dict[str, Any]:
+    async def group_chat_set_nickname(self, scope: MessageScope, nickname: str) -> GroupActionRecord:
         """
         经宿主审批修改当前账号自身群昵称, 默认不支持
 

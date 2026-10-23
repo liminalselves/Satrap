@@ -1741,7 +1741,7 @@ async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse |
             return 200, {"ok": True, **snapshot, "runtime": runtime}
         if ctx.method == "PUT" and ctx.path == root:
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
-            if set(payload) - {"groups", "overrides", "expected_revision", "rebind_members", "rebind_overrides"} or "groups" not in payload:
+            if set(payload) - {"groups", "overrides", "expected_revision", "rebind_members", "rebind_overrides", "rebind_chats"} or "groups" not in payload:
                 raise ValueError("管理员保存正文无效")
             if "overrides" not in payload:
                 raise ValueError("管理员保存正文必须显式携带 overrides, 缺失按键清空成员例外处理")
@@ -1751,20 +1751,20 @@ async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse |
             saved = await asyncio.to_thread(
                 save_administrator_groups, CONFIG_PATH, payload["groups"], overrides=payload["overrides"],
                 expected_revision=expected_revision, rebind_members=payload.get("rebind_members"),
-                rebind_overrides=payload.get("rebind_overrides"))
+                rebind_overrides=payload.get("rebind_overrides"), rebind_chats=payload.get("rebind_chats"))
             snapshot = await asyncio.to_thread(_administrator_settings_snapshot, saved)
             runtime = await asyncio.to_thread(_administrator_runtime_request, snapshot["section_revision"], apply=True)
             return 200, {"ok": True, **snapshot, "runtime": runtime}
         if ctx.method == "POST" and ctx.path == root + "/preview":
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
-            if set(payload) - {"groups", "overrides", "rebind_members", "rebind_overrides"} or "groups" not in payload:
+            if set(payload) - {"groups", "overrides", "rebind_members", "rebind_overrides", "rebind_chats"} or "groups" not in payload:
                 raise ValueError("管理员预览正文无效")
             if "overrides" not in payload:
                 raise ValueError("管理员预览正文必须显式携带 overrides, 缺失按键清空成员例外处理")
             preview = await asyncio.to_thread(
                 preview_administrator_groups, load_config_document(CONFIG_PATH), payload["groups"],
                 overrides=payload["overrides"], rebind_members=payload.get("rebind_members"),
-                rebind_overrides=payload.get("rebind_overrides"))
+                rebind_overrides=payload.get("rebind_overrides"), rebind_chats=payload.get("rebind_chats"))
             return 200, {"ok": True, **preview}
         if ctx.method == "POST" and ctx.path == root + "/apply":
             payload = await _read_json_body(ctx.reader, ctx.raw_request)

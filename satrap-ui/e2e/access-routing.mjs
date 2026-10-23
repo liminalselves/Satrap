@@ -21,6 +21,7 @@ async function administrators(runtime) {
     const origin = server.resolvedUrls.local[0].replace(/\/$/, '');
     browser = await runtime.browser;
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await page.addInitScript(() => { Object.defineProperty(Crypto.prototype, 'randomUUID', { value: undefined, configurable: true }); });
     page.setDefaultTimeout(10000);
     const errors = [];
     const writes = [];
@@ -67,7 +68,7 @@ async function administrators(runtime) {
           ? { ...snapshot, runtime: { status: 'unconfirmed', error: '尚未确认运行状态' } } : snapshot, headers: cors });
         const payload = request.postDataJSON();
         if (conflict || payload.expected_revision !== snapshot.revision) return route.fulfill({ status: 409, json: { error: '配置已被其他操作修改' }, headers: cors });
-        snapshot.groups = payload.groups.map(item => ({ ...item, members: item.members.map(member => ({ ...member, platform_instance_id: 'new-instance' })) }));
+        snapshot.groups = payload.groups.map(item => ({ ...item, members: item.members.map(member => ({ ...member, platform_instance_id: 'new-instance' })), ...(item.chats ? { chats: item.chats.map(chat => ({ ...chat, platform_instance_id: 'new-instance' })) } : {}) }));
         snapshot.overrides = payload.overrides.map(item => ({ ...item, platform_instance_id: 'new-instance' }));
         snapshot.revision = `v${++revision}`;
         snapshot.section_revision = `s${revision}`;
@@ -122,7 +123,7 @@ async function administrators(runtime) {
     // 卡片网格只显示摘要 (含失效身份标记), 详情在弹窗中编辑
     const groupCard = panel.locator('[aria-label^="管理组卡片"]').first();
     const overrideCard = panel.locator('[aria-label^="成员例外卡片"]').first();
-    await groupCard.getByText('成员 1 人 · 指定插件 4 个 · 有失效身份', { exact: false }).waitFor();
+    await groupCard.getByText('成员 1 人 · 授权群聊 0 个 · 指定插件 4 个 · 有失效身份', { exact: false }).waitFor();
     await overrideCard.getByText('允许 0 个 · 否决 1 个 · 身份已失效', { exact: false }).waitFor();
     assert.equal(await page.getByLabel('管理组名称').count(), 0);
     await groupCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
@@ -153,7 +154,7 @@ async function administrators(runtime) {
     await panel.getByText('已将旧版“指定插件”模式下的组排除迁移为成员例外, 保存后生效。', { exact: true }).waitFor();
     await panel.getByText('迁移按当前成员展开, 之后新加入该组的成员不会自动继承这条否决。', { exact: true }).waitFor();
     // 迁移冲突提示与"旧排除未迁移仍生效"说明
-    await panel.getByText('1 个组的旧排除与现有例外的启用状态冲突, 未自动迁移; 请调整对应例外条目的启用状态后保存。', { exact: true }).waitFor();
+    await panel.getByText('1 个组的旧排除无法安全展开为成员例外, 未自动迁移; 请检查群聊授权或对应例外条目的启用状态。', { exact: true }).waitFor();
     await panel.getByText('涉及管理组: legacy-pending。未迁移期间这些旧排除仍按原规则生效, 可原样保留。', { exact: true }).waitFor();
     // 组在指定插件模式下只有"已允许"名单, 排除只存在于成员例外
     assert.equal(await dialog.locator('[aria-label="已排除的插件"]').count(), 0);
@@ -241,6 +242,10 @@ async function administrators(runtime) {
     await dialog.getByRole('button', { name: '添加管理员成员', exact: true }).click();
     await dialog.getByLabel('管理员平台').selectOption('future');
     await dialog.getByLabel('平台用户识别号').fill('another@example.test');
+    await dialog.getByRole('button', { name: '添加授权群聊', exact: true }).click();
+    await dialog.getByLabel('授权群聊平台').selectOption('future');
+    await dialog.getByLabel('群聊识别号', { exact: true }).fill('shared-room');
+    await dialog.getByText('群内任何成员发起请求时都获得本组的插件管理权限', { exact: false }).waitFor();
     await dialog.getByLabel('适用插件', { exact: true }).selectOption('all');
     await dialog.locator('[aria-label="已排除的插件"]').getByLabel('添加排除的插件', { exact: true }).selectOption('group_admin');
     await page.keyboard.press('Escape');
@@ -254,6 +259,8 @@ async function administrators(runtime) {
     assert.deepEqual(snapshot.groups[0].plugin_scope.excluded, []);
     assert.deepEqual([...snapshot.groups[0].plugin_scope.included].sort(), ['disabled_plugin', 'group_admin', 'other_platform_plugin', 'temporarily_missing']);
     assert.equal(snapshot.groups[1].members[0].user_id, 'another@example.test');
+    assert.deepEqual(snapshot.groups[1].chats, [{ platform_id: 'future', chat_id: 'shared-room', platform_instance_id: 'new-instance' }]);
+
     assert.equal(snapshot.overrides.length, 2);
     assert.deepEqual(snapshot.overrides[0].deny, ['group_admin']);
     assert.deepEqual(snapshot.overrides[1].allow, ['group_admin']);
@@ -273,6 +280,26 @@ async function administrators(runtime) {
     await groupCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
     assert.equal(await dialog.getByLabel('管理组名称').inputValue(), '保存后不能被旧状态覆盖');
     await page.keyboard.press('Escape');
+    snapshot.groups[1].chats[0].platform_instance_id = 'old-instance';
+    await panel.getByRole('button', { name: '刷新目录与状态', exact: true }).click();
+    const secondCard = panel.getByLabel('管理组卡片 第二管理组');
+    await secondCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+    await dialog.getByText('原平台已移除或重建, 此群聊授权已失效', { exact: false }).waitFor();
+    await dialog.getByRole('button', { name: '绑定到当前平台', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await save.click();
+    await panel.getByText('已保存, 后端启动后生效', { exact: true }).waitFor();
+    const rebound = writes.filter(item => item.path === '/config/administrator-groups').at(-1);
+    assert.deepEqual(rebound.payload.rebind_chats, [{ group_id: snapshot.groups[1].id, platform_id: 'future', chat_id: 'shared-room' }]);
+    await secondCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+    assert.equal(await dialog.getByLabel('群聊识别号', { exact: true }).inputValue(), 'shared-room');
+    await mkdir(path.join(root, 'test-results', 'administrators'), { recursive: true });
+    await dialog.screenshot({ path: path.join(root, 'test-results', 'administrators', 'chat-grants.png') });
+    await dialog.getByRole('button', { name: '移除群聊', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await save.click();
+    await panel.getByText('已保存, 后端启动后生效', { exact: true }).waitFor();
+    assert.deepEqual(snapshot.groups[1].chats, []);
     assert.equal(writes.some(item => item.path === '/restart'), false);
     assert.deepEqual(errors, []);
     await page.mouse.move(2, 2);
