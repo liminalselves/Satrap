@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { apiClient, ApiError } from './client';
 import { getApiBaseUrl } from '@/utils/constants';
 
@@ -88,7 +89,7 @@ async function applicationDeadline<T>(timeout: number, signal: AbortSignal | und
 }
 
 export class RuntimeApplication<T> {
-  readonly id = crypto.randomUUID();
+  readonly id = createUuid();
   readonly baseUrl: string;
   private readonly currentService: () => string;
   private readonly queryPrefix: string;

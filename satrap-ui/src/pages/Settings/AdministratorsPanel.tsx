@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { administratorsApi, administratorError, administratorRuntimeLabel, type AdministratorGroup, type AdministratorOverride, type AdministratorOverrideRebind, type AdministratorPreview, type AdministratorRebind, type AdministratorPlugin, type AdministratorSnapshot } from '@/api/administrators';
 import { Button } from '@/components/ui/Button';
@@ -207,13 +208,13 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
     <div className="flex flex-wrap gap-2">
       <Button disabled={busy || loading} onClick={() => void load()}>刷新目录与状态</Button>
       <Button disabled={!snapshot || busy} onClick={() => {
-        const id = crypto.randomUUID();
+        const id = createUuid();
         setGroups(current => [...current, { id, name: '', enabled: true, protect: true, members: [], plugin_scope: { mode: 'selected', included: [], excluded: [] } }]);
         setOpenCard(id);
         setPreview(null);
       }}>新增管理组</Button>
       <Button disabled={!snapshot || busy} onClick={() => {
-        const id = crypto.randomUUID();
+        const id = createUuid();
         setOverrides(current => [...current, { id, enabled: true, protect: false, platform_id: '', user_id: '', allow: [], deny: [] }]);
         setOpenCard(id);
         setPreview(null);

@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { groupActionStateLabels as actionStateLabels } from './groupActionLabels';
 import { Link } from 'react-router-dom';
 import { approvalLink } from '@/api/platformActions';
@@ -83,7 +84,7 @@ export function GroupManage() {
       if (!raw && !['card', 'title', 'reason'].includes(key)) continue;
       params[key] = kind === 'bool' ? raw === 'true' : kind === 'duration' ? Number(raw) : raw;
     }
-    const id = operationId || crypto.randomUUID();
+    const id = operationId || createUuid();
     const payload = submitted || { action_type: type, params };
     setOperationId(id);
     setSubmitted(payload);

@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { Link } from 'react-router-dom';
 import { approvalLink } from '@/api/platformActions';
 import { useConfirm } from '@/hooks/useConfirm';
@@ -68,7 +69,7 @@ export function AccountInvitations({ adapterId, account, open, onClose }: {
     const generation = epoch.current;
     setBusy(true); setError(''); setResult('');
     let actionId = operationIds.current.get(key);
-    if (!actionId) { actionId = crypto.randomUUID(); operationIds.current.set(key, actionId); }
+    if (!actionId) { actionId = createUuid(); operationIds.current.set(key, actionId); }
     try {
       const record = await task(actionId);
       if (generation !== epoch.current) return;

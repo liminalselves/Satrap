@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { ConfirmModal } from '@/components/common/ConfirmModal';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { controlApi } from '@/api/control';
@@ -84,7 +85,7 @@ export function GroupSummaries({ record, refresh }: { record: PlatformArchiveRec
       <p className="break-words font-medium">{summary.title || '来源已失效的摘要'}</p>
       <p className="text-xs text-text-tertiary">{formatTime(summary.created_at)} · {summary.selection?.selected_count ?? 0} 条来源记录</p>
       <p className={`text-sm ${summary.state === 'active' ? 'text-text-secondary' : 'text-warning'}`}>{summary.state === 'active' ? summary.selection.truncated ? '部分记录摘要' : '已保存；平台历史可能不完整' : '来源已删除、撤回或过期，摘要正文不可用'}</p>
-      <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => inspect(summary)}>查看摘要</Button><Button size="sm" variant="danger" disabled={busy} onClick={() => { setPending({ summary, key: crypto.randomUUID() }); setDeleteError(''); }}>删除摘要</Button></div>
+      <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => inspect(summary)}>查看摘要</Button><Button size="sm" variant="danger" disabled={busy} onClick={() => { setPending({ summary, key: createUuid() }); setDeleteError(''); }}>删除摘要</Button></div>
     </div>)}
     <div className="flex justify-between gap-2"><Button size="sm" disabled={!cursors.length || loading} onClick={() => setCursors((values) => values.slice(0, -1))}>上一页摘要</Button><Button size="sm" disabled={!page?.next_cursor || loading} onClick={() => { if (page?.next_cursor) setCursors((values) => [...values, page.next_cursor!]); }}>下一页摘要</Button></div>
     <Modal open={!!detail} title="群摘要详情" size="lg" onClose={() => { detailRequest.current += 1; setDetail(undefined); }}>

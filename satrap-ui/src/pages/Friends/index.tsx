@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { approvalLink } from '@/api/platformActions';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -110,7 +111,7 @@ export function Friends() {
   }, [adapterId, account, tab, search, currentCursor, page, refresh, requestView, requestCategory, info?.capabilities]);
 
   const open = (selection: Selection) => {
-    setSelected(selection); setRemark(''); setSubmitted(false); setResult(null); setOperationId(crypto.randomUUID()); setError('');
+    setSelected(selection); setRemark(''); setSubmitted(false); setResult(null); setOperationId(createUuid()); setError('');
   };
   const run = async () => {
     if (!selected || busyRef.current || submitted) return;

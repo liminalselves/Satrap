@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { Link } from 'react-router-dom';
 import { approvalLink } from '@/api/platformActions';
 import { groupActionStateLabels as actionStateLabels } from './groupActionLabels';
@@ -66,7 +67,7 @@ export function GroupMembers() {
   const open = (member: GroupMember, action: string) => {
     if (result?.state === 'unknown' || result?.state === 'executing') return;
     setSelected({ member, action }); setResult(null); setCard(member.card || ''); setDuration('1800');
-    setEnable('true'); setReject(false); setError(''); setOperationId(crypto.randomUUID()); setSubmitted(null);
+    setEnable('true'); setReject(false); setError(''); setOperationId(createUuid()); setSubmitted(null);
   };
   const submit = async () => {
     if (!selected || busy) return;

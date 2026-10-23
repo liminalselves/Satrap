@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { controlApi } from '@/api/control';
@@ -33,7 +34,7 @@ export function StickerSettings({ record, onDirty }: { record: PlatformArchiveRe
     if (!data || busy || loading) return;
     setBusy(true); setError(''); setNotice('');
     try {
-      const result = await controlApi.saveGroupStickerSettings(record, selected, data.revision, intent.current || (intent.current = crypto.randomUUID()));
+      const result = await controlApi.saveGroupStickerSettings(record, selected, data.revision, intent.current || (intent.current = createUuid()));
       if (mounted.current) { setData(result); setSelected(result.collections); setNotice('此对话的表情集合已保存，后续查询立即使用新设置'); }
     } catch (error) { if (mounted.current) setError(`${errorText(error)}；选择已保留，刷新会重新读取已保存设置`); }
     finally { if (mounted.current) setBusy(false); }

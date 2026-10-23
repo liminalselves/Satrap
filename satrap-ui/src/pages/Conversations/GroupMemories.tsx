@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { ConfirmModal } from '@/components/common/ConfirmModal';
 import { useEffect, useRef, useState } from 'react';
 import { memoryApi, type MemoryKind, type MemoryPage, type MemoryProposal, type ScopedMemory } from '@/api/memory';
@@ -54,11 +55,11 @@ export function GroupMemories({ record, refresh, onDirty }: { record: PlatformAr
   const beginEdit = (memory?: ScopedMemory) => {
     setDraftError('');
     setDraft({ memory, kind: memory?.kind || (tab === 'member_preference' ? tab : 'group_rule'), owner: memory?.owner_user_id || '',
-      key: memory?.key || '', title: memory?.title || '', content: memory?.content || '', operationKey: crypto.randomUUID() });
+      key: memory?.key || '', title: memory?.title || '', content: memory?.content || '', operationKey: createUuid() });
   };
   const closeDraft = () => { if (!busy && confirmDiscard()) { setDraft(undefined); setDraftError(''); } };
   const updateDraft = (field: keyof Pick<Draft, 'kind' | 'owner' | 'key' | 'title' | 'content'>, value: string) => {
-    setDraft((old) => old ? { ...old, [field]: value, operationKey: crypto.randomUUID() } : old);
+    setDraft((old) => old ? { ...old, [field]: value, operationKey: createUuid() } : old);
   };
   const save = async () => {
     if (!draft || busyRef.current) return;
@@ -114,7 +115,7 @@ export function GroupMemories({ record, refresh, onDirty }: { record: PlatformAr
       <p className="break-words font-medium">{memory.title}</p><p className="whitespace-pre-wrap break-words text-sm">{memory.content}</p>
       <p className="break-all text-xs text-text-tertiary">{memory.kind === 'member_preference' ? `成员 ${memory.owner_user_id}` : '本群记忆'} · 用途 {memory.key} · 修订 {memory.revision}</p>
       <p className="text-xs text-text-secondary">{memory.source_status === 'operator' ? '人工维护，没有平台消息出处' : memory.source_status === 'unavailable' ? '来源已不可用，主动保存的记忆仍保留' : '附有效来源消息'}</p>
-      <div className="flex flex-wrap gap-2"><Button size="sm" disabled={busy} onClick={() => beginEdit(memory)}>编辑记忆</Button><Button size="sm" variant="danger" disabled={busy} onClick={() => setPendingDelete({ memory, key: crypto.randomUUID() })}>删除记忆</Button>{memory.source_message_ids.map((id) => <Button key={id} size="sm" variant="ghost" onClick={() => inspectSource(id)}>查看出处 {id}</Button>)}</div>
+      <div className="flex flex-wrap gap-2"><Button size="sm" disabled={busy} onClick={() => beginEdit(memory)}>编辑记忆</Button><Button size="sm" variant="danger" disabled={busy} onClick={() => setPendingDelete({ memory, key: createUuid() })}>删除记忆</Button>{memory.source_message_ids.map((id) => <Button key={id} size="sm" variant="ghost" onClick={() => inspectSource(id)}>查看出处 {id}</Button>)}</div>
     </div>)}
     {tab !== 'proposals' && <div className="flex justify-between gap-2"><Button disabled={!cursors.length || loading} onClick={() => setCursors((values) => values.slice(0, -1))}>上一页记忆</Button><Button disabled={!page?.next_cursor || loading} onClick={() => { if (page?.next_cursor) setCursors((values) => [...values, page.next_cursor!]); }}>下一页记忆</Button></div>}
     {tab === 'proposals' && !loading && !proposals.length && <p className="text-text-secondary">暂无记忆提案</p>}
