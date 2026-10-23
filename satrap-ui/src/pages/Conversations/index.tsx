@@ -192,6 +192,7 @@ export function Conversations() {
 
 function ConversationDetail({ platform, record, requestedContext, onDirty, onSaved }: { platform: string; record: ConversationRecord; requestedContext: string; onDirty: (dirty: boolean) => void; onSaved: () => void }) {
   const [layer, setLayer] = useState<'context' | 'history'>('context');
+  const supportsHistory = record.supports_history ?? record.history_count > 0;
   const defaultContext = requestedContext !== record.conversation_id && record.context_ids.includes(requestedContext)
     ? requestedContext : record.context_ids[0] || record.conversation_id;
   const [context, setContext] = useState(defaultContext);
@@ -212,10 +213,19 @@ function ConversationDetail({ platform, record, requestedContext, onDirty, onSav
       <h2 className="break-all text-lg font-semibold">{record.title}</h2>
       <RecordTags record={record} />
       <div className="flex flex-wrap gap-2">
-        <Button variant={layer === 'context' ? 'primary' : 'ghost'} onClick={() => switchLayer('context')}>上下文</Button>
-        <Button variant={layer === 'history' ? 'primary' : 'ghost'} onClick={() => switchLayer('history')} disabled={!(record.supports_history ?? (record.history_count > 0))}>Chat 展示历史</Button>
+        {supportsHistory ? <div role="tablist" aria-label="对话数据类型" className="flex gap-2">
+          {(['context', 'history'] as const).map((value) => <Button key={value} role="tab" id={`data-tab-${value}`} aria-controls="conversation-data-panel"
+            aria-selected={layer === value} tabIndex={layer === value ? 0 : -1} variant={layer === value ? 'primary' : 'ghost'}
+            onClick={() => switchLayer(value)} onKeyDown={(event) => {
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+              event.preventDefault();
+              const next = event.key === 'Home' ? 'context' : event.key === 'End' ? 'history' : layer === 'context' ? 'history' : 'context';
+              if (!dirty || confirmDiscard()) { setDirty(false); setLayer(next); document.getElementById(`data-tab-${next}`)?.focus(); }
+            }}>{value === 'context' ? '模型上下文' : 'Chat 展示历史'}</Button>)}
+        </div> : <h3 className="self-center font-medium">模型上下文</h3>}
         <Link className="self-center text-sm text-accent" to={`/conversations/versions?${new URLSearchParams({ platform, conversation: context })}`}>版本与恢复</Link>
       </div>
+      {!supportsHistory && <p className="text-sm text-text-secondary">平台聊天原文请在平台消息档案查看。<Link className="ml-2 text-accent" to={`/conversations?${new URLSearchParams({ view: 'archive', platform })}`}>查看平台消息档案</Link></p>}
       {layer === 'context' && (
         <label className="block text-sm">上下文范围
           <select
@@ -232,7 +242,9 @@ function ConversationDetail({ platform, record, requestedContext, onDirty, onSav
       )}
       <p className="text-sm text-text-secondary">{layer === 'context' ? '修改此处会影响机器人后续使用的上下文，不改写 Chat 展示记录。这里展示保存的完整消息；模型请求还可能应用截断、总结及临时提示。' : '修改此处只改变 Chat 页面展示的历史，不改写模型上下文。已有回复版本与工具明细分别保留。'}</p>
     </Card>
-    <DataPanel key={`${layer}:${context}`} platform={platform} conversation={layer === 'context' ? context : record.conversation_id} layer={layer} onDirty={setDirty} onSaved={onSaved} />
+    <div id="conversation-data-panel" role={supportsHistory ? 'tabpanel' : 'region'} aria-labelledby={supportsHistory ? `data-tab-${layer}` : undefined} aria-label={supportsHistory ? undefined : '模型上下文消息'}>
+      <DataPanel key={`${layer}:${context}`} platform={platform} conversation={layer === 'context' ? context : record.conversation_id} layer={layer} onDirty={setDirty} onSaved={onSaved} />
+    </div>
   </div>;
 }
 
