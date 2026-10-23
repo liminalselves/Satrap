@@ -652,7 +652,6 @@ def _is_control_api_path(path: str) -> bool:
         "/config",
         "/chat/history",
         "/storage",
-        "/platforms",
         "/api/platforms/",
         "/api/group-chat/",
         "/api/skills/",

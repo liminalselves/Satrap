@@ -729,7 +729,7 @@ class _static_ui_BufferWriter:
         self.data.extend(data)
 
 @pytest.mark.asyncio
-async def test_spa_static_service_serves_index_assets_and_routes(tmp_path: Path):
+async def test_spa_static_service_serves_index_assets_and_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """静态服务应提供入口, 资源和 SPA 路由回退"""
     static_dir = tmp_path / "dist"
     assets_dir = static_dir / "assets"
@@ -754,6 +754,16 @@ async def test_spa_static_service_serves_index_assets_and_routes(tmp_path: Path)
     assert await service.serve(cast(asyncio.StreamWriter, route_writer), "/settings") is True
     assert b"<main>Satrap</main>" in route_writer.data
     assert b"Cache-Control: no-cache" in route_writer.data
+
+    monkeypatch.setattr(control_server, 'CONTROL_STATIC_UI', SPAStaticService(
+        static_dir, excluded_prefixes=control_server.CONTROL_STATIC_UI.excluded_prefixes,
+    ))
+    for route in ('/platforms', '/platforms/approvals?source=friend', '/platforms/ob/groups'):
+        response = await _request(route, authenticated=False)
+        assert b'200 OK' in response and b'<main>Satrap</main>' in response
+    for route in ('/api/platforms/ob/groups', '/config/platforms'):
+        response = await _request(route, authenticated=False)
+        assert b'401 Error' in response and b'<main>Satrap</main>' not in response
 
 @pytest.mark.asyncio
 async def test_spa_static_service_uses_stable_javascript_mime(

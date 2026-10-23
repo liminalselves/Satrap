@@ -2,7 +2,7 @@
 
 日期: 2026-10-23
 
-本轮已完成本地修改与验收, 未连接或部署远端服务器
+本轮已完成本地修改与验收; 用户随后授权部署到远端服务器, 部署记录见文末
 
 ## 实现范围
 
@@ -62,3 +62,13 @@ Windows 本机 Python 3.13, 临时合成 SQLite 数据库, 每组 2 次预热和
 部分平台失败会展示覆盖警告和已读取结果, 数量是已确认范围的下限; 当前身份未确认时不会显示为已确认的零条
 
 中心中可见不保证仍能执行, 最终由原决策接口复核; 不提供批量批准或 unknown 自动重试
+
+## 后续授权部署
+
+用户于同日授权部署, 服务器 /opt/satrap 的 fix/issue-24 分支从 30c77d0 快进到本轮提交, 前端使用本地重新构建的生产资源; Docker 镜像依赖未变, 复用现有镜像
+
+部署前正常停止 Backend, 保存旧提交和前端资源至 /opt/satrap-deploy-backups/20261023-220300; config.yaml, compose.yaml 与 Dockerfile 的哈希保持一致, 数据目录不迁移
+
+真实 HTTP 验收发现 Control 把所有 /platforms 前端路径误判为 API, 导致刷新审批中心返回 404; 已移除这一无对应业务路由的旧前缀, 保留 /api/platforms/ 与 /config/platforms 的认证要求
+
+回归使用实际 Control 请求处理器验证平台列表, 审批中心带筛选 URL 与群页面的 SPA 回退, 同时断言原管理 API 无认证仍返回 401; Windows Control 模块 53 passed, 1 项符号链接权限不足跳过; 原生 Linux 同模块 54 passed, Pyright 零错误
