@@ -1,0 +1,32 @@
+{
+  "browser": "151.0.7922.34",
+  "checks": [
+    "QQ 仅显示模型上下文, 档案链接保留平台",
+    "Chat 标签切换, 空历史, 键盘导航和脏编辑保护",
+    "切换记录后重置上下文范围和标签",
+    "平台页只读摘要, 三类审批同屏且邀请不重复",
+    "批准原拒绝邀请动作, 原接口执行且读回 unknown",
+    "响应丢失后按原动作查询, 不重放写请求",
+    "历史账号只读, URL 刷新保留筛选",
+    "服务读取失败有明确提示",
+    "部分平台失败仍保留可用记录和覆盖警告",
+    "后端离线时不显示可执行审批"
+  ],
+  "decisions": [
+    {
+      "path": "/api/platforms/qq/account-requests/group-invites/actions/invite/decision",
+      "body": {
+        "expected_self_id": "100",
+        "approve": true
+      }
+    },
+    {
+      "path": "/api/platforms/qq/friends/actions/collision/decision",
+      "body": {
+        "expected_self_id": "100",
+        "approve": true
+      }
+    }
+  ],
+  "page_errors": []
+}

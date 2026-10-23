@@ -82,3 +82,24 @@ npx playwright install chromium
 RAF 数据来自固定版本的 Chromium 新无头模式, 适合与同一设备上的基线比较, 不应当作显示器物理刷新率
 
 对比报告默认将 FPS、帧耗时、脚本、布局、样式重算和内存变化超过 10%～15% 标记为回退, 流式内容完整性不允许回退
+
+## 对话记录与统一审批中心
+
+从仓库根目录执行查询规模基准, 使用已安装项目依赖的 Python:
+
+```powershell
+python satrap-ui/benchmarks/platform_actions.py
+```
+
+从 satrap-ui 执行生产浏览器验收:
+
+```powershell
+npm run build
+node benchmarks/verify-platform-management.mjs
+```
+
+查询基准在系统临时目录创建合成数据库, 覆盖 1 / 5 个平台和每平台 1,000 / 10,000 条动作, 每组 2 次预热与 30 次正式采样; 记录列表和摘要耗时, SQL 次数及查询期间健康检查的额外调度延迟
+
+浏览器验收使用生产 dist 和独立临时 HTTP 服务, API 与 WebSocket 使用夹具, 覆盖标签, 编辑保护, 统一审批, 原动作语义, 写响应丢失, 账号和离线状态; 不访问生产后端或用户数据库
+
+结果写入 results/platform-approvals-2026-10-23, 临时数据库和服务在结束时释放; 基准不包含真实 HTTP 查询传输和公网平台耗时
