@@ -76,7 +76,7 @@ export function Groups() {
   const [modeSaving, setModeSaving] = useState(false);
   const [settingsApplying, setSettingsApplying] = useState(false);
   const [showApproval, setShowApproval] = useState(false);
-  const [showInvitations, setShowInvitations] = useState(false);
+  const [showInvitations, setShowInvitations] = useState(() => params.get('invites') === '1');
   const [approvalDraft, setApprovalDraft] = useState<ApprovalDraft>({});
   const [approvalBaseline, setApprovalBaseline] = useState('{}');
   const [approvalSaving, setApprovalSaving] = useState(false);

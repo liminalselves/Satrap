@@ -25,6 +25,10 @@ import { WakeDryRunPanel } from './WakeDryRunPanel';
 import { PlatformConnectionTest } from './PlatformConnectionTest';
 import { AdapterStatus } from '@/components/common/AdapterStatus';
 import { AgentRoutingEditor, agentOptions, bindingError } from './AgentRoutingEditor';
+import { PlatformNavigation } from './PlatformNavigation';
+import { platformActionsApi, approvalLink, type ActionCatalog } from '@/api/platformActions';
+import { startVisiblePoll } from '@/utils/visiblePoll';
+import { errorText } from '@/utils/errorText';
 import type { FormField } from '@/components/common';
 import type { GroupOverrideRow, RowIssue, TimeRuleRow } from '@/utils/wakeOverrides';
 import type { AdapterDeclaration, AgentBinding, PlatformConfig } from '@/api/types';
@@ -37,6 +41,19 @@ export function Platforms() {
     sessionClasses: state.sessionClasses, fetchSessionClasses: state.fetchSessionClasses, asrConfigs: state.asrConfigs,
     edictumConfigs: state.edictumConfigs, fetchEdictumConfigs: state.fetchEdictumConfigs })));
   const [revision, setRevision] = useState('');
+  const [approvalSummary, setApprovalSummary] = useState<ActionCatalog>();
+  const [approvalError, setApprovalError] = useState('');
+  useEffect(() => {
+    setApprovalSummary(undefined); setApprovalError('');
+    if (!isRunning) return;
+    const poll = startVisiblePoll(async (signal) => {
+      try {
+        const result = await platformActionsApi.summary(signal);
+        if (!signal.aborted) { setApprovalSummary(result); setApprovalError(''); }
+      } catch (error) { if (!signal.aborted) setApprovalError(errorText(error)); }
+    }, { interval: 10000 });
+    return () => poll.stop();
+  }, [isRunning]);
   const [draftRevision, setDraftRevision] = useState('');
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
   const [adapterTypes, setAdapterTypes] = useState<AdapterDeclaration[]>([]);
@@ -536,6 +553,9 @@ export function Platforms() {
         }
       />
 
+      <PlatformNavigation pending={approvalError ? undefined : approvalSummary?.pending_count} incomplete={!!approvalError || !isRunning || !!(approvalSummary && !approvalSummary.complete)} />
+      {approvalError && <p role="status" className="text-warning">审批数量暂未确认: {approvalError}</p>}
+
       {/* 运行中的适配器 */}
       {isRunning && Object.keys(adapters).length > 0 && (
         <Card>
@@ -628,6 +648,7 @@ export function Platforms() {
                   </div>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                <Link className="glass-button px-3 py-1.5 text-sm" to={approvalLink({ platform: platform.id })}>审批</Link>
                 <Button size="sm" variant="default" onClick={() => setTestingPlatformId(platform.id)}
                   aria-label={`测试连接 ${platform.id}`}>测试连接</Button>
                 {(platform.type === 'onebot' || platform.type === 'aiocqhttp') && (

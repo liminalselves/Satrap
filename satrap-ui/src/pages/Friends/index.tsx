@@ -1,3 +1,4 @@
+import { approvalLink } from '@/api/platformActions';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -128,16 +129,6 @@ export function Friends() {
       if (scopeRef.current === requestScope) setError(`${errorText(caught)}; 请在操作记录核查, 不要重复提交. 动作 ID: ${operationId}`);
     } finally { busyRef.current = false; if (scopeRef.current === requestScope) setBusy(false); }
   };
-  const decide = async (action: FriendAction, approve: boolean) => {
-    if (busyRef.current) return;
-    if (approve && !(await confirm(action.action_type === 'delete_friend'
-      ? `机器人 ${account}\n删除好友 ${action.target?.nickname || ''} (${action.params.user_id})\n备注: ${action.target?.remark || '无'}\n确认批准此申请? 历史对话和上下文保留`
-      : `机器人 ${account}\n${action.params.approve ? '同意' : '拒绝'}归档好友申请 ${action.params.request_id}\n平台状态可能尚未确认, 是否批准一次处理尝试?`))) return;
-    busyRef.current = true; setBusy(true);
-    try { const data = await friendApi.decide(adapterId, account, action.action_id, approve); if (scopeRef.current === scope) { toast(data.state === 'failed' || data.state === 'unknown' ? 'error' : 'success', outcome(data)); setRefresh((value) => value + 1); } }
-    catch (caught) { if (scopeRef.current === scope) setError(`${errorText(caught)}; 请刷新操作记录核查结果`); }
-    finally { busyRef.current = false; if (scopeRef.current === scope) setBusy(false); }
-  };
   const saveProtection = async () => {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true);
@@ -177,7 +168,7 @@ export function Friends() {
     <p className="text-sm text-gray-500">管理此机器人账号的好友关系与申请. 人工操作独立于模型插件开关</p>
     {error && <div role="alert" className="rounded p-3 bg-red-500/10 text-red-600">{error}</div>}
     {!account && <Card><p>请先启动平台并等待机器人账号确认. 不支持好友操作的平台可以查看能力说明</p></Card>}
-    <div className="flex flex-wrap gap-2">{([['friends', '好友列表'], ['requests', '好友申请'], ['actions', '操作记录与审批'], ['protection', '删除保护']] as const).map(([key, label]) =>
+    <div className="flex flex-wrap gap-2">{([['friends', '好友列表'], ['requests', '好友申请'], ['actions', '操作记录'], ['protection', '删除保护']] as const).map(([key, label]) =>
       <Button key={key} disabled={busy} variant={tab === key ? 'primary' : 'default'} onClick={() => { setTab(key); setCursors([]); setPage(1); setNext(null); setError(''); }}>{label}</Button>)}</div>
     {tab === 'friends' && <Card>
       <div className="mb-4 space-y-2"><Button disabled={busy || !account || !available('send_request')} onClick={() => { setRequestTarget(''); setRequestMessage(''); open({ kind: 'send' }); }}>发送好友申请</Button>
@@ -224,13 +215,13 @@ export function Friends() {
       {!available('handle_request') && <p>{cap('handle_request')?.reason || '当前平台不支持处理申请'}</p>}
     </Card>}
     {tab === 'actions' && <Card>
-      <p className="mb-3">模型的删除与归档申请处理在此批准; 人工确认的操作直接执行</p>
+      <p className="mb-3">待人工批准的操作统一在审批中心处理; 此处保留业务操作记录</p>
       {loading && <p role="status">正在读取记录…</p>}
       {actions.map((action) => <div key={action.action_id} className="border-b py-3 space-y-2"><p className="font-medium">{action.action_type === 'send_request' ? '发送好友申请' : action.action_type === 'delete_friend' ? '删除好友' : action.params.approve ? '同意好友申请' : '拒绝好友申请'} · {action.actor_kind === 'model' ? '模型申请' : '人工操作'} · {states[action.state] || action.state}</p>
         <p className="text-sm">发起者: {action.actor_kind === 'panel' ? '后台登录用户' : action.actor_id || '模型工具调用者'}</p>
         <p>目标: {action.target?.nickname || ''} {action.params.user_id || action.params.request_id} {action.target?.remark ? `· 备注: ${action.target.remark}` : ''}</p><p className="text-sm break-all">动作 ID: {action.action_id} · {formatTime(action.created_at)}</p>
         {action.result && <p>{outcome(action)}</p>}
-        {action.state === 'pending' && <div className="flex gap-2"><Button size="sm" disabled={busy || action.expires_at <= Date.now() / 1000} onClick={() => decide(action, true)}>{action.action_type === 'delete_friend' ? '批准删除' : '批准处理'}</Button><Button size="sm" disabled={busy} onClick={() => decide(action, false)}>拒绝申请</Button><span>有效至 {formatTime(action.expires_at)}</span></div>}
+        {action.state === 'pending' && <Link className="text-accent" to={approvalLink({ platform: adapterId, account, source: 'friend', action: action.action_id })}>前往审批中心</Link>}
         {action.state === 'unknown' && <p>结果未确认, 请刷新好友列表核查, 不要重复提交</p>}
       </div>)}
       {!loading && !error && actions.length === 0 && <p>暂无好友操作记录</p>}
@@ -255,7 +246,8 @@ export function Friends() {
           {selected.request.archived && <p role="status">此申请已在本地归档, 平台状态可能未确认. 点击确认后只尝试处理一次, 结果未知时请核查操作记录</p>}
           {selected.request.request_category === 'suspicious' && <p>平台标记为可疑 · 原因: {selected.request.suspicious_reason || '未提供'}; 此申请不支持填写好友备注</p>}
           {selected.approve && selected.request.request_category !== 'suspicious' && <label className="block">好友备注 (可选)<input className="glass-input w-full" aria-label="好友备注" maxLength={60} disabled={submitted} value={remark} onChange={(event) => setRemark(event.target.value)} /></label>}</>}
-        {result && <div role="status">{outcome(result)}</div>}
+        {result?.state === 'pending' && <Link className="text-accent" to={approvalLink({ platform: adapterId, account, source: 'friend', action: result.action_id })}>已提交, 前往审批中心</Link>}
+      {result && <div role="status">{outcome(result)}</div>}
         {submitted && !result && !busy && <Button onClick={() => friendApi.action(adapterId, account, operationId).then((value) => { if (scopeRef.current === scope) setResult(value); }).catch((caught) => setError(errorText(caught)))}>核查此动作</Button>}
         <div className="flex justify-end gap-2"><Button disabled={busy} onClick={() => setSelected(null)}>{submitted ? '关闭' : '取消'}</Button>
           <Button disabled={busy || submitted || (selected.kind === 'friend' ? !available('delete_friend') || protectedIds.includes(selected.friend.user_id) : selected.kind === 'send' ? !available('send_request') || !requestTarget.trim() : !available('handle_request') || selected.request.can_handle === false)} onClick={run}>

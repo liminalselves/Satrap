@@ -14,7 +14,7 @@ import { getApiBaseUrl, getControlApiUrl } from '@/utils/constants';
 const sections = [
   ['overview', '概览'], ['policy', '响应策略'], ['session', '会话配置'],
   ['members', '成员'], ['manage', '群管理'], ['events', '事件与诊断'],
-  ['actions', '审批与记录'],
+  ['actions', '动作记录'],
 ] as const;
 
 interface GroupContext {
