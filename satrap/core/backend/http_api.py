@@ -331,6 +331,7 @@ class BackendHTTPServer(MiniHTTPServer):
             self._route_administrators,
             self._route_ui_health_reload,
             self._route_platform_connection,
+            self._route_platform_actions,
             self._route_friends,
             self._route_account_requests,
             self._route_reminders,
@@ -459,6 +460,37 @@ class BackendHTTPServer(MiniHTTPServer):
 
             logger.error("[提醒接口] 请求失败" + "\n" + traceback.format_exc())
             return 503, {"error": "提醒服务暂不可用", "reason": "unavailable"}
+
+    async def _route_platform_actions(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        查询统一动作目录, 人工决策仍由原业务路由处理
+
+        参数:
+        - method: HTTP 方法
+        - path: 路径与筛选参数
+        - body: 未使用的请求体
+
+        返回:
+        - 汇总结果或不匹配时的 None
+        """
+        parsed = urlsplit(path)
+        if parsed.path not in {'/api/platform-actions', '/api/platform-actions/summary'}:
+            return None
+        if method != 'GET':
+            return 405, {'error': '动作目录仅支持读取'}
+        query = parse_qs(parsed.query)
+        try:
+            if any(key not in {'platform_id', 'account', 'source', 'state', 'target', 'action_id', 'cursor', 'limit'} or len(values) != 1 for key, values in query.items()):
+                raise ValueError('动作查询包含未知或重复参数')
+            return 200, await self.backend.platform_actions(
+                summary=parsed.path.endswith('/summary'), platform_id=query.get('platform_id', [''])[0],
+                account=query.get('account', ['current'])[0], source=query.get('source', ['all'])[0],
+                state=query.get('state', ['pending'])[0], target=query.get('target', [''])[0],
+                action_id=query.get('action_id', [''])[0], cursor=query.get('cursor', [''])[0],
+                limit=int(query.get('limit', ['50'])[0]),
+            )
+        except ValueError as error:
+            return 400, {'error': str(error), 'reason': 'invalid_action_query'}
 
     async def _route_friends(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """

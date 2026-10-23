@@ -35,6 +35,7 @@ from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_actions import GroupActionStore
+from satrap.core.platform.action_catalog import ActionCatalog, ActionScope, platform_action_catalog
 from satrap.core.config.group_action_origin import (
     ModelActionAuthorization, ModelActionAuthorizationError, bind_group_action_preflight,
     current_group_request_occupancy, current_model_action_authorization,
@@ -1506,6 +1507,40 @@ class BackendManager:
         if result.get("target") != f"group:{group_id}":
             raise LookupError("群手动唤醒记录不存在")
         return result
+
+    async def platform_actions(self, *, summary: bool = False, platform_id: str = '', account: str = 'current',
+                               source: str = 'all', state: str = 'pending', target: str = '', action_id: str = '',
+                               limit: int = 50, cursor: str = '') -> ActionCatalog:
+        """
+        从已配置平台读取动作目录, 不初始化会触发恢复的业务存储
+
+        参数:
+        - summary: 是否只查询待审批计数
+        - platform_id: 可选平台筛选
+        - account: 当前或指定历史账号
+        - source: 动作来源
+        - state: 状态筛选
+        - target: 群或用户 ID
+        - action_id: 原动作 ID
+        - limit: 每页数量
+        - cursor: 同筛选范围的分页游标
+
+        返回:
+        - 平台动作列表及读取覆盖情况
+        """
+        scopes = []
+        for config in self.config.platforms:
+            identity = config.get('id', '')
+            if not isinstance(identity, str) or not identity:
+                continue
+            adapter = self._adapter_mgr.get_adapter(identity) if self._adapter_mgr else None
+            current_account = adapter.friend_account() if adapter else ''
+            online = bool(adapter and adapter.config.enable and current_account)
+            if isinstance(adapter, OneBotAdapter):
+                online = online and adapter.get_client() is not None
+            scopes.append(ActionScope(identity, self._storage.platform_db(identity), current_account, online))
+        return await platform_action_catalog(scopes, summary=summary, platform_id=platform_id, account=account,
+                                             source=source, state=state, target=target, action_id=action_id, limit=limit, cursor=cursor)
 
     async def group_actions(
         self, adapter_id: str, self_id: str, group_id: str, *,
