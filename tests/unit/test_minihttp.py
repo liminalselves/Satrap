@@ -185,8 +185,10 @@ async def test_dashboard_password_gate_covers_bootstrap_login_change_and_clear(t
         assert _status_code(await _raw_request(
             port, _request_bytes("PUT", "/auth/password", extra=cookie.decode(),
                                  body=b'{"current_password":"Secret-123","new_password":"Newer-456"}'))) == 200
-        assert _status_code(await _raw_request(
-            port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"Newer-456"}'))) == 200
+        relogin = await _raw_request(port, _request_bytes('POST', '/auth/password/login', body=b'{"password":"Newer-456"}'))
+        assert _status_code(relogin) == 200
+        assert _status_code(await _raw_request(port, _request_bytes('GET', echo, extra=cookie.decode()))) == 401
+        cookie = b'Cookie: ' + relogin.split(b'Set-Cookie: ', 1)[1].split(b';', 1)[0] + b'\r\n'
         assert _status_code(await _raw_request(
             port, _request_bytes("PUT", "/auth/password", extra=cookie.decode(),
                                  body=b'{"current_password":"Secret-123","new_password":"Again-789"}'))) == 403
@@ -207,6 +209,105 @@ async def test_dashboard_password_gate_covers_bootstrap_login_change_and_clear(t
         assert _status_code(await _raw_request(port, _request_bytes("POST", "/auth/session"))) == 401
     finally:
         await server.stop()
+
+
+async def test_remembered_login_restores_after_restart_and_rejects_revoked_versions(tmp_path, monkeypatch):
+    """真实 HTTP 覆盖持久登录, 重启恢复, 续期, 改密, 退出及服务范围隔离"""
+    import sqlite3
+    from satrap.core.auth_password import update_dashboard_password
+    from satrap.core.browser_sessions import PersistentBrowserSessions
+
+    config = tmp_path / 'config.yaml'
+    monkeypatch.setattr('satrap.core.auth_password.dashboard_password_path', lambda: config)
+    monkeypatch.setenv('SATRAP_CREDENTIALS_ROOT', str(tmp_path / 'credentials'))
+    update_dashboard_password('Secret-123')
+    server = _EchoServer()
+    port = await _start_server(server)
+    login = await _raw_request(port, _request_bytes('POST', '/auth/password/login', body=b'{"password":"Secret-123","remember":true}'))
+    assert _status_code(login) == 200 and b'Max-Age=2592000' in login
+    credential = login.split(b'Set-Cookie: ', 1)[1].split(b';', 1)[0]
+    cookie = 'Cookie: ' + credential.decode() + '\r\n'
+    session = credential.decode().split('=', 1)[1]
+    database = tmp_path / 'credentials/browser-sessions.db'
+    assert session.encode() not in database.read_bytes()
+    await server.stop()
+
+    server = _EchoServer()
+    port = await _start_server(server)
+    try:
+        restored = await _raw_request(port, _request_bytes('POST', '/auth/session', extra=cookie))
+        assert _status_code(restored) == 200 and b'Set-Cookie' not in restored
+        assert _status_code(await _raw_request(port, _request_bytes('GET', '/api/echo', extra=cookie))) == 200
+        assert server.auth.remembered_sessions is not None
+        store = server.auth.remembered_sessions
+        wrong_service = PersistentBrowserSessions(database, 'chat', store.scope)
+        assert not wrong_service.validate(session, server.auth._password_version())
+        wrong_deployment = PersistentBrowserSessions(database, store.namespace, 'other-deployment')
+        assert not wrong_deployment.validate(session, server.auth._password_version())
+        peer = ServerAuth.create('127.0.0.1', 0, token=server.auth.token, session_namespace='chat')
+        assert not peer.cookie_authorized({'cookie': credential.decode()})
+        shared = peer.restore_session('127.0.0.1', 'http://127.0.0.1:5173', {'cookie': credential.decode()})
+        assert shared and shared['Set-Cookie'].startswith('satrap_session_chat=p_')
+        peer_cookie = shared['Set-Cookie'].split(';', 1)[0]
+        assert peer.cookie_authorized({'cookie': peer_cookie})
+        with sqlite3.connect(database) as connection:
+            connection.execute('UPDATE browser_sessions SET renewed_at=renewed_at-86401')
+        renewed = await _raw_request(port, _request_bytes('POST', '/auth/session', extra=cookie))
+        assert _status_code(renewed) == 200 and b'Max-Age=2592000' in renewed
+        combined = 'Cookie: ' + credential.decode() + '; ' + peer_cookie + '\r\n'
+        assert _status_code(await _raw_request(port, _request_bytes('POST', '/auth/logout', extra=combined))) == 200
+        assert not peer.cookie_authorized({'cookie': peer_cookie})
+        assert _status_code(await _raw_request(port, _request_bytes('POST', '/auth/session', extra=cookie))) == 401
+
+        login = await _raw_request(port, _request_bytes('POST', '/auth/password/login', body=b'{"password":"Secret-123","remember":true}'))
+        cookie = 'Cookie: ' + login.split(b'Set-Cookie: ', 1)[1].split(b';', 1)[0].decode() + '\r\n'
+        update_dashboard_password('Changed-456')
+        assert _status_code(await _raw_request(port, _request_bytes('POST', '/auth/session', extra=cookie))) == 401
+    finally:
+        await server.stop()
+
+
+async def test_remembered_cookie_survives_real_browser_reopen(tmp_path, monkeypatch):
+    """关闭真实 Chromium 进程再以同一配置启动, 无需重输密码"""
+    import shutil
+    from satrap.core.auth_password import update_dashboard_password
+
+    node = shutil.which('node')
+    ui = Path(__file__).resolve().parents[2] / 'satrap-ui'
+    if node is None or not (ui / 'node_modules/playwright').is_dir():
+        pytest.skip('未安装 Node 或 Playwright')
+    monkeypatch.setattr('satrap.core.auth_password.dashboard_password_path', lambda: tmp_path / 'config.yaml')
+    monkeypatch.setenv('SATRAP_CREDENTIALS_ROOT', str(tmp_path / 'credentials'))
+    update_dashboard_password('Secret-123')
+    script = """
+const { chromium } = require('playwright');
+(async () => {
+  const context = await chromium.launchPersistentContext(process.argv[2], { headless: true });
+  try {
+    const login = process.argv[3] === 'login';
+    const response = await context.request.post('http://127.0.0.1:' + process.argv[1] + (login ? '/auth/password/login' : '/auth/session'), {
+      headers: { Origin: 'http://127.0.0.1:5173' }, ...(login ? { data: { password: 'Secret-123', remember: true } } : {})
+    });
+    console.log(JSON.stringify({ status: response.status(), cookies: (await context.cookies()).length }));
+  } finally { await context.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    for phase in ('login', 'restore'):
+        server = _EchoServer()
+        port = await _start_server(server)
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(node, '-e', script, str(port), str(tmp_path / 'browser'), phase,
+                                                          cwd=ui, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=45)
+            assert process.returncode == 0, stderr.decode('utf-8', errors='replace')
+            result = json.loads(stdout)
+            assert result['status'] == 200 and result['cookies'] == 1
+        finally:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            await server.stop()
 
 
 async def test_password_login_without_origin_and_bearer_still_works(tmp_path, monkeypatch):

@@ -74,7 +74,7 @@ from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
 from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError, progress_phase
 from satrap.core.backend.plugin_application import relay_plugin_application, runtime_result
-from satrap.core.config.versions import ConfigVersionService
+from satrap.core.config.versions import ConfigVersionService, ConfigVersionsResult
 from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
@@ -1799,7 +1799,7 @@ def _invalidate_config_reads() -> None:
     EdictumConfigManager.invalidate_read_snapshots()
 
 
-def _config_versions(resources: tuple[str, ...] | None, force: bool) -> dict[str, object]:
+def _config_versions(resources: tuple[str, ...] | None, force: bool) -> ConfigVersionsResult:
     """
     在线程中复用来源探测器, 路径切换不共享旧主文档
 
@@ -1823,6 +1823,60 @@ def _config_versions(resources: tuple[str, ...] | None, force: bool) -> dict[str
     return service.get(force=force) if resources is None else service.get(resources, force=force)
 
 
+def _read_config_snapshot(resource: str, model_type: str = 'llm') -> dict[str, object]:
+    """
+    在同一工作线程中读取正文及前后版本, 减少浏览器网络往返
+
+    参数:
+    - resource: 模型, 会话类, Edictum 或插件目录资源
+    - model_type: 模型分类
+
+    返回:
+    - 来源稳定的正文和版本信封, 来源持续变化时抛出 RuntimeError
+    """
+    resources = {'models': ('models',), 'session_classes': ('session_classes',),
+                 'edictum_configs': ('edictum_configs', 'plugin_catalog'),
+                 'plugin_catalog': ('plugin_catalog', 'edictum_configs', 'chat_plugins')}
+    if resource not in resources:
+        raise ValueError('不支持的配置快照资源')
+    for _ in range(3):
+        before = _config_versions(resources[resource], False)['resources']
+        if any(value.get('state') in {'damaged', 'unreadable'} for value in before.values()):
+            raise ValueError('配置来源损坏或不可读')
+        if resource == 'models':
+            data = _model_config_service().list_configs(model_type)
+        elif resource == 'session_classes':
+            data = _session_class_config_service().list_configs()
+        elif resource == 'edictum_configs':
+            data = _edictum_config_service(PluginCatalog().snapshot()).list_configs()
+        else:
+            data = _plugin_management_service(PluginCatalog().snapshot()).list_plugins()
+        after = _config_versions(resources[resource], False)['resources']
+        if before == after:
+            return {'data': data, 'versions': after}
+    raise RuntimeError('配置来源在读取期间变化, 请重试')
+
+
+def _read_config_overview() -> dict[str, object]:
+    """
+    只返回仪表盘所需数量, 避免传输全部模型配置和能力声明
+
+    返回:
+    - 来源版本, 模型分类数量及会话类数量
+    """
+    for _ in range(3):
+        before = _config_versions(('models', 'session_classes'), False)['resources']
+        if any(value.get('state') in {'damaged', 'unreadable'} for value in before.values()):
+            raise ValueError('配置来源损坏或不可读')
+        models = _model_config_service().manager.get_runtime_configs()
+        count = len(_session_class_config_service().list_configs())
+        after = _config_versions(('models', 'session_classes'), False)['resources']
+        if before == after:
+            return {'ok': True, 'model_counts': {name: len(values) for name, values in models.items()},
+                    'session_count': count, 'versions': after}
+    raise RuntimeError('配置来源在读取期间变化, 请重试')
+
+
 async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
     """
     配置文档与平台区段: /config, /config/default, /config/validate, /config/platforms
@@ -1833,6 +1887,19 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
     返回:
     - ControlResponse | None: 路径不属于本区段时返回 None
     """
+    if ctx.method == 'GET' and ctx.path in {'/config/overview', '/config/snapshot'}:
+        try:
+            if ctx.path == '/config/overview':
+                return 200, await RAG_WORKERS.run(_read_config_overview)
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            return 200, await RAG_WORKERS.run(_read_config_snapshot, query.get('resource', [''])[0], query.get('type', ['llm'])[0])
+        except WorkerBusyError as error:
+            return 503, {'error': str(error)}
+        except RuntimeError as error:
+            return 409, {'error': str(error), 'code': 'config_version_changed'}
+        except (OSError, TypeError, ValueError) as error:
+            return 400, {'error': str(error)}
+
     if ctx.method == 'GET' and ctx.path == '/config/versions':
         try:
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
@@ -2628,15 +2695,34 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
                 selected_platforms = [item for item in selected_platforms if item["type"] == platform_type]
             items = []
             warnings = []
-            for descriptor in selected_platforms:
-                try:
-                    service = ConversationDataService(layout.platform_db(descriptor["id"]))
-                    items.extend(await RAG_WORKERS.run(service.catalog_records, descriptor))
-                except Exception as error:
-                    logger.error(f"[对话目录] 平台目录读取失败: {descriptor['id']}, {error}\n{traceback.format_exc()}")
-                    if not all_platforms:
-                        raise
-                    warnings.append(f"{descriptor['id']}: 读取失败")
+            identity = query.get('conversation_id', [''])[0]
+            semaphore = asyncio.Semaphore(4)
+
+            async def read_platform(descriptor: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+                """
+                有界并发读取单个平台目录
+
+                参数:
+                - descriptor: 平台描述
+
+                返回:
+                - 目录记录及可选失败说明
+                """
+                async with semaphore:
+                    try:
+                        service = ConversationDataService(layout.platform_db(descriptor['id']))
+                        rows = await RAG_WORKERS.run(service.catalog_records, descriptor, identity)
+                        return rows, None
+                    except Exception as error:
+                        logger.error(f"[对话目录] 平台目录读取失败: {descriptor['id']}, {error}\n{traceback.format_exc()}")
+                        if not all_platforms:
+                            raise
+                        return [], f"{descriptor['id']}: 读取失败"
+
+            for rows, warning in await asyncio.gather(*(read_platform(descriptor) for descriptor in selected_platforms)):
+                items.extend(rows)
+                if warning:
+                    warnings.append(warning)
             items.sort(key=lambda item: (-(item["last_activity_at"] or 0), item["platform_id"], item["conversation_id"]))
             filters = {key.removeprefix("filter."): values[0] for key, values in query.items() if key.startswith("filter.")}
             matched = filter_records(items, query.get("q", [""])[0], filters)
@@ -3520,7 +3606,8 @@ async def _handle_request(
         if method == "POST" and path == "/auth/session":
             peer: tuple[object, ...] | None = writer.get_extra_info("peername")
             peer_host = str(peer[0]) if isinstance(peer, tuple) and peer else ""
-            if not _CONTROL_AUTH.can_bootstrap(peer_host, origin, headers):
+            restored = await asyncio.to_thread(_CONTROL_AUTH.restore_session, peer_host, origin, headers, writer.get_extra_info('ssl_object') is not None)
+            if restored is None:
                 await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
                 return
             await _send_control_json(
@@ -3528,15 +3615,12 @@ async def _handle_request(
                 200,
                 {"ok": True},
                 origin,
-                {"Set-Cookie": _CONTROL_AUTH.session_cookie()},
+                restored,
             )
             return
 
         if method == "POST" and path == "/auth/logout":
-            if not _CONTROL_AUTH.cookie_authorized(headers):
-                await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
-                return
-            _CONTROL_AUTH.revoke_cookie(headers)
+            await asyncio.to_thread(_CONTROL_AUTH.revoke_cookie, headers)
             await _send_control_json(
                 writer,
                 200,
@@ -3575,23 +3659,28 @@ async def _handle_request(
             except ValueError as error:
                 await _send_control_json(writer, 500, {"error": str(error)}, origin)
                 return
-            if stored is not None and not verify_dashboard_password(stored, login_payload.get("password")):
+            if stored is not None and not await asyncio.to_thread(verify_dashboard_password, stored, login_payload.get("password")):
                 failures.append(now)
                 _PASSWORD_LOGIN_FAILURES[login_host] = failures
                 await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
                 return
             _PASSWORD_LOGIN_FAILURES.pop(login_host, None)
+            try:
+                cookie = await asyncio.to_thread(_CONTROL_AUTH.session_cookie, stored is not None and login_payload.get('remember') is True, _CONTROL_AUTH.cookie_secure(origin, writer.get_extra_info('ssl_object') is not None))
+            except RuntimeError as error:
+                await _send_control_json(writer, 503, {'error': str(error)}, origin)
+                return
             await _send_control_json(
                 writer,
                 200,
                 {"ok": True},
                 origin,
-                {"Set-Cookie": _CONTROL_AUTH.session_cookie()},
+                {"Set-Cookie": cookie},
             )
             return
 
         if method == "PUT" and path == "/auth/password":
-            if not _CONTROL_AUTH.authorized(headers):
+            if not await asyncio.to_thread(_CONTROL_AUTH.authorized, headers):
                 await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
                 return
             from satrap.core.auth_password import dashboard_password_hash, update_dashboard_password, verify_dashboard_password
@@ -3628,7 +3717,7 @@ async def _handle_request(
             await writer.drain()
             return
 
-        if _is_control_api_path(path) and not _CONTROL_AUTH.authorized(headers):
+        if _is_control_api_path(path) and not await asyncio.to_thread(_CONTROL_AUTH.authorized, headers):
             await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
             return
 

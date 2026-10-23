@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from functools import lru_cache
 from pathlib import Path
 
 from satrap.core.config.document import find_config_path, load_config_document, save_config_document
@@ -104,15 +105,32 @@ def dashboard_password_path() -> Path:
 
 def dashboard_password_hash() -> str | None:
     """
-    读取配置中的访问密码哈希, 每次调用走磁盘以支持跨进程热更新
+    按文件指纹读取访问密码哈希, 支持跨进程热更新并避免反复解析 YAML
 
     返回:
     - 未设置时 None; 非法存储值抛出 ValueError 由边界映射为明确错误
     """
+    path = dashboard_password_path().resolve()
     try:
-        api = load_config_document(dashboard_password_path(), locked=True).get("api")
+        info = path.stat()
     except FileNotFoundError:
         return None
+    return _cached_password_hash(str(path), (info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_ino))
+
+
+@lru_cache(maxsize=8)
+def _cached_password_hash(path: str, fingerprint: tuple[int, int, int, int]) -> str | None:
+    """
+    缓存同一文件版本的密码字段
+
+    参数:
+    - path: 配置绝对路径
+    - fingerprint: 文件版本, 仅用作缓存键
+
+    返回:
+    - 合法哈希或未设置时的 None
+    """
+    api = load_config_document(path, locked=True).get('api')
     stored = api.get("dashboard_password") if isinstance(api, dict) else None
     if stored in (None, ""):
         return None

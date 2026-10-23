@@ -1,7 +1,7 @@
 """本地管理服务共享鉴权, 来源校验与令牌持久化"""
 from __future__ import annotations
 
-from http.cookies import SimpleCookie
+from http.cookies import SimpleCookie, CookieError
 from urllib.parse import urlsplit
 from dataclasses import dataclass
 import ipaddress
@@ -14,8 +14,10 @@ import hmac
 import time
 import os
 import re
+import sqlite3
 
 from satrap.core.runtime_paths import get_credential_path
+from satrap.core.browser_sessions import PersistentBrowserSessions, REMEMBER_SECONDS, DASHBOARD_NAMESPACES
 
 
 TOKEN_ENV_NAME = "SATRAP_API_TOKEN"
@@ -48,6 +50,7 @@ class BrowserSessionStore:
         self.max_sessions = max(1, int(max_sessions))
         self._now = now_provider
         self._sessions: dict[str, float] = {}
+        self._versions: dict[str, str] = {}
         self._lock = threading.RLock()
 
     @staticmethod
@@ -73,13 +76,18 @@ class BrowserSessionStore:
         expired = [digest for digest, deadline in self._sessions.items() if deadline <= now]
         for digest in expired:
             self._sessions.pop(digest, None)
+            self._versions.pop(digest, None)
         while len(self._sessions) >= self.max_sessions:
             oldest = min(self._sessions, key=self._sessions.__getitem__)
             self._sessions.pop(oldest, None)
+            self._versions.pop(oldest, None)
 
-    def issue(self) -> str:
+    def issue(self, password_version: str | None = None) -> str:
         """
         创建随机浏览器会话
+
+        参数:
+        - password_version: 可选密码版本, 登录后修改密码会使绑定版本失效
 
         返回:
         - 可写入 HttpOnly Cookie 的随机会话 ID
@@ -89,14 +97,17 @@ class BrowserSessionStore:
         with self._lock:
             self._prune(now)
             self._sessions[self._digest(session_id)] = now + self.ttl_seconds
+            if password_version is not None:
+                self._versions[self._digest(session_id)] = password_version
         return session_id
 
-    def validate(self, session_id: str) -> bool:
+    def validate(self, session_id: str, password_version: str | None = None) -> bool:
         """
         校验浏览器会话并清理过期记录
 
         参数:
         - session_id: Cookie 中的随机会话 ID
+        - password_version: 当前密码版本, 未绑定的旧会话不比较版本
 
         返回:
         - 会话存在且未过期时返回 True
@@ -109,8 +120,11 @@ class BrowserSessionStore:
             deadline = self._sessions.get(digest)
             if deadline is None:
                 return False
+            if digest in self._versions and self._versions[digest] != password_version:
+                return False
             if deadline <= now:
                 self._sessions.pop(digest, None)
+                self._versions.pop(digest, None)
                 return False
             return True
 
@@ -127,6 +141,7 @@ class BrowserSessionStore:
         if not session_id:
             return False
         with self._lock:
+            self._versions.pop(self._digest(session_id), None)
             return self._sessions.pop(self._digest(session_id), None) is not None
 
 
@@ -263,6 +278,7 @@ class ServerAuth:
     cookie_name: str
     browser_sessions: BrowserSessionStore
     loopback_bootstrap: bool
+    remembered_sessions: PersistentBrowserSessions | None = None
 
     @classmethod
     def create(
@@ -308,6 +324,7 @@ class ServerAuth:
             cookie_name=f"{SESSION_COOKIE_NAME}_{namespace}",
             browser_sessions=BrowserSessionStore(browser_session_ttl, max_browser_sessions),
             loopback_bootstrap=loopback_bootstrap,
+            remembered_sessions=PersistentBrowserSessions(get_credential_path('browser-sessions.db').resolve(), namespace, hashlib.sha256(resolved_token.encode()).hexdigest()),
         )
 
     def origin_allowed(self, origin: str | None) -> bool:
@@ -356,7 +373,11 @@ class ServerAuth:
         except Exception:
             return False
         morsel = cookie.get(self.cookie_name)
-        return morsel is not None and self.browser_sessions.validate(morsel.value)
+        if morsel is None:
+            return False
+        if morsel.value.startswith('p_'):
+            return self.remembered_sessions is not None and self.remembered_sessions.validate(morsel.value, self._password_version())
+        return self.browser_sessions.validate(morsel.value, self._password_version())
 
     def authorized(self, headers: dict[str, str]) -> bool:
         """
@@ -414,18 +435,99 @@ class ServerAuth:
             and self.origin_allowed(origin)
         )
 
-    def session_cookie(self) -> str:
+    @staticmethod
+    def _password_version() -> str:
+        """
+        读取当前密码版本, 密码修改后旧凭据立即失效
+
+        返回:
+        - 仅用于版本比较的 SHA-256 摘要
+        """
+        from satrap.core.auth_password import dashboard_password_hash
+        return hashlib.sha256((dashboard_password_hash() or '').encode()).hexdigest()
+
+    def restore_session(self, peer_host: str, origin: str | None, headers: dict[str, str], secure: bool = False) -> dict[str, str] | None:
+        """
+        优先恢复已有 Cookie, 避免重新签发短会话覆盖持久登录
+
+        参数:
+        - peer_host: 实际客户端地址
+        - origin: 已校验的浏览器来源
+        - headers: 请求头
+        - secure: 当前连接是否为 HTTPS
+
+        返回:
+        - 认证成功时的额外响应头, 未授权时为 None
+        """
+        secure = self.cookie_secure(origin, secure)
+        if self.cookie_authorized(headers):
+            cookie = SimpleCookie()
+            cookie.load(headers.get('cookie', ''))
+            session = cookie[self.cookie_name].value
+            if session.startswith('p_') and self.remembered_sessions and self.remembered_sessions.renew(session, self._password_version()):
+                return {'Set-Cookie': self._format_cookie(session, REMEMBER_SECONDS, secure)}
+            return {}
+        if self.remembered_sessions and origin and self.origin_allowed(origin):
+            cookies = SimpleCookie()
+            try:
+                cookies.load(headers.get('cookie', ''))
+            except CookieError:
+                cookies = SimpleCookie()
+            for namespace in DASHBOARD_NAMESPACES:
+                peer = cookies.get(f'{SESSION_COOKIE_NAME}_{namespace}')
+                if peer and peer.value.startswith('p_') and self.remembered_sessions.validate_related(peer.value, namespace, self._password_version()):
+                    return {'Set-Cookie': self.session_cookie(remember=True, secure=secure)}
+        if self.can_bootstrap(peer_host, origin, headers):
+            return {'Set-Cookie': self.session_cookie(secure=secure)}
+        return None
+
+    def cookie_secure(self, origin: str | None, encrypted: bool = False) -> bool:
+        """
+        从 TLS 或已配置允许的 HTTPS 来源确定 Cookie 标记
+
+        参数:
+        - origin: 浏览器来源, 不使用未受信任的 Forwarded 头
+        - encrypted: 当前连接是否使用 TLS
+
+        返回:
+        - Cookie 应限制为 HTTPS 时为 True
+        """
+        return encrypted or bool(origin and self.origin_allowed(origin) and urlsplit(origin).scheme == 'https')
+
+    def _format_cookie(self, session_id: str, ttl: int, secure: bool) -> str:
+        """
+        按同一策略生成 Cookie 属性
+
+        参数:
+        - session_id: 随机凭据
+        - ttl: 有效期秒数
+        - secure: HTTPS 标记
+
+        返回:
+        - Set-Cookie 响应头值
+        """
+        return f'{self.cookie_name}={session_id}; HttpOnly; SameSite=Strict; Path=/; Max-Age={ttl}' + ('; Secure' if secure else '')
+
+    def session_cookie(self, remember: bool = False, secure: bool = False) -> str:
         """
         签发不包含主 API token 的随机浏览器会话 Cookie
+
+        参数:
+        - remember: 密码登录是否选择持久保存
+        - secure: 当前连接是否为 HTTPS
 
         返回:
         - 带 HttpOnly, SameSite 和有效期属性的 Set-Cookie 值
         """
-        session_id = self.browser_sessions.issue()
-        return (
-            f"{self.cookie_name}={session_id}; HttpOnly; SameSite=Strict; Path=/; "
-            f"Max-Age={self.browser_sessions.ttl_seconds}"
-        )
+        if remember:
+            if self.remembered_sessions is None:
+                raise RuntimeError('持久浏览器会话存储未配置')
+            try:
+                session = self.remembered_sessions.issue(self._password_version())
+            except (OSError, sqlite3.Error) as error:
+                raise RuntimeError('无法保存持久登录, 请检查 credentials 目录是否可写') from error
+            return self._format_cookie(session, REMEMBER_SECONDS, secure)
+        return self._format_cookie(self.browser_sessions.issue(self._password_version()), self.browser_sessions.ttl_seconds, secure)
 
     def revoke_cookie(self, headers: dict[str, str]) -> bool:
         """
@@ -443,7 +545,14 @@ class ServerAuth:
         except Exception:
             return False
         morsel = cookie.get(self.cookie_name)
-        return morsel is not None and self.browser_sessions.revoke(morsel.value)
+        related = False
+        if self.remembered_sessions:
+            related = self.remembered_sessions.revoke_related([cookie[name].value for namespace in DASHBOARD_NAMESPACES if (name := f'{SESSION_COOKIE_NAME}_{namespace}') in cookie])
+        if morsel is None:
+            return related
+        if morsel.value.startswith('p_'):
+            return related or (self.remembered_sessions is not None and self.remembered_sessions.revoke(morsel.value))
+        return self.browser_sessions.revoke(morsel.value) or related
 
     def expired_session_cookie(self) -> str:
         """

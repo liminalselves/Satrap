@@ -97,6 +97,27 @@ async def _request(
     return bytes(writer.data)
 
 @pytest.mark.asyncio
+async def test_control_config_snapshots_overview_and_damaged_sources(tmp_path, monkeypatch):
+    """配置摘要与正文版本共同更新, 保留脱敏并明确拒绝损坏来源"""
+    model_path = tmp_path / 'models.json'
+    config_path = tmp_path / 'config.json'
+    config_path.write_text(json.dumps({'model_config_path': str(model_path), 'session_class_config_path': str(tmp_path / 'sessions.json'), 'platforms': []}), encoding='utf-8')
+    monkeypatch.setattr(control_server, 'CONFIG_PATH', config_path)
+    assert b'200' in await _request('/config/models/llm/bench', 'POST', b'{"model":"first","api_key":"private-test-key"}')
+    first = await _request('/config/snapshot?resource=models&type=llm')
+    snapshot = json.loads(first.split(b'\r\n\r\n', 1)[1])
+    assert snapshot['data']['bench']['model'] == 'first' and b'private-test-key' not in first
+    overview = json.loads((await _request('/config/overview')).split(b'\r\n\r\n', 1)[1])
+    assert overview['model_counts']['llm'] == len(snapshot['data'])
+    assert isinstance(overview['session_count'], int) and 'versions' in overview
+    await _request('/config/models/llm/bench', 'PATCH', b'{"model":"second"}')
+    changed = json.loads((await _request('/config/snapshot?resource=models&type=llm')).split(b'\r\n\r\n', 1)[1])
+    assert changed['data']['bench']['model'] == 'second' and changed['versions'] != snapshot['versions']
+    model_path.write_text('{', encoding='utf-8')
+    assert b'400' in (await _request('/config/snapshot?resource=models&type=llm')).split(b'\r\n', 1)[0]
+    assert b'400' in (await _request('/config/overview')).split(b'\r\n', 1)[0]
+
+
 async def test_control_api_requires_authentication() -> None:
     """控制服务管理 API 缺少令牌时返回 401"""
     response = await _request("/status", authenticated=False)
