@@ -7,6 +7,8 @@ export interface Conversation<Message> {
   updatedAt: number;
   // 是否已从后端加载历史
   loaded?: boolean;
+  hasOlder?: boolean;
+  olderBefore?: number | null;
   // 所属项目 id (无项目会话为 null/缺省, 归入"最近")
   projectId?: string | null;
   // 是否为尚未发送首条消息的后端预加载会话
@@ -21,6 +23,7 @@ export function restoreConversation<Message = never>(
   previous?: Conversation<Message>,
 ): Conversation<Message> {
   return {
+    ...previous,
     id: item.conversation_id,
     title: item.title,
     messages: previous?.messages ?? [],

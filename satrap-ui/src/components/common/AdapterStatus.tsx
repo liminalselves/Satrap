@@ -15,7 +15,7 @@ function statusLabel(status: string): string {
 }
 
 export function AdapterStatus({ info, application }: { info: AdapterInfo; application?: PlatformConfigApplication }) {
-  useConfigWatch([info.session_provider === 'edictum' ? 'edictum' : 'sessions']);
+  useConfigWatch(info.session_type ? [info.session_provider === 'edictum' ? 'edictum' : 'sessions'] : []);
   const sessionEnabled = useConfigStore((state) => (info.session_provider === 'edictum' ? state.edictumConfigs : state.sessionClasses)[info.session_type || '']?.enabled);
   return <div className="flex flex-wrap items-center gap-2">
     <Badge variant={info.status === 'running' ? 'success' : info.status === 'error' ? 'error' : 'warning'}>

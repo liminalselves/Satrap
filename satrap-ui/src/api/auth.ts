@@ -26,7 +26,7 @@ function consumeBootstrapToken(): string | null {
   return bootstrapToken;
 }
 
-export async function establishApiSession(baseUrl: string): Promise<void> {
+export async function establishApiSession(baseUrl: string, options: { background?: boolean } = {}): Promise<void> {
   const normalized = baseUrl.replace(/\/$/, '');
   const existing = pendingSessions.get(normalized);
   if (existing) return existing;
@@ -34,7 +34,7 @@ export async function establishApiSession(baseUrl: string): Promise<void> {
   const token = consumeBootstrapToken();
   const request = Promise.resolve().then(async () => {
     const previous = useApiSessionStore.getState().sessions[normalized];
-    setApiSessionState(normalized, { ...previous, state: 'checking' });
+    if (!options.background || previous?.state !== 'ready') setApiSessionState(normalized, { ...previous, state: 'checking' });
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired = false;
@@ -56,7 +56,7 @@ export async function establishApiSession(baseUrl: string): Promise<void> {
       if (!response.ok) {
         if (responseStatus === 401 || responseStatus === 403) {
           try {
-            const statusResponse = await fetch(`${normalized}/auth/password/status`, { credentials: 'include' });
+            const statusResponse = await Promise.race([fetch(`${normalized}/auth/password/status`, { credentials: 'include', signal: controller.signal }), deadline]);
             if (statusResponse.ok) {
               const data = (await statusResponse.json()) as { password_required?: boolean };
               if (data.password_required === true) {
@@ -79,7 +79,9 @@ export async function establishApiSession(baseUrl: string): Promise<void> {
       const message = expired ? '连接请求超过 8 秒, 请确认服务运行后重试'
         : errorKind === 'network' ? '无法连接服务, 请检查服务是否已启动及连接地址'
         : error instanceof Error ? error.message : '无法建立 API 会话';
-      setApiSessionState(normalized, { state: 'error', error: message, errorKind, status: responseStatus });
+      if (!options.background || previous?.state !== 'ready' || (errorKind !== 'network' && errorKind !== 'timeout')) {
+        setApiSessionState(normalized, { state: 'error', error: message, errorKind, status: responseStatus });
+      }
       throw new Error(message);
     } finally {
       clearTimeout(timer);
@@ -108,6 +110,15 @@ export async function establishApiSessions(): Promise<void> {
   await Promise.allSettled([...urls].map((url) => establishApiSession(url)));
 }
 
+let lastRenewal = Date.now();
+export async function renewReadyApiSessions(): Promise<void> {
+  if (Date.now() - lastRenewal < 6 * 3600000) return;
+  lastRenewal = Date.now();
+  const urls = new Set([getApiBaseUrl(), getControlApiUrl(), getChatApiUrl()]);
+  await Promise.allSettled([...urls].filter((url) => useApiSessionStore.getState().sessions[url.replace(/\/$/, '')]?.state === 'ready')
+    .map((url) => establishApiSession(url, { background: true })));
+}
+
 // ---------- 访问密码 ----------
 
 export async function getPasswordStatus(baseUrl: string): Promise<boolean> {
@@ -118,18 +129,31 @@ export async function getPasswordStatus(baseUrl: string): Promise<boolean> {
   return data.password_required === true;
 }
 
-export async function passwordLogin(baseUrl: string, password: string): Promise<void> {
+export async function passwordLogin(baseUrl: string, password: string, remember = true): Promise<void> {
   const normalized = baseUrl.replace(/\/$/, '');
   const response = await fetch(`${normalized}/auth/password/login`, {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, remember }),
   });
   if (response.status === 401 || response.status === 403) throw new Error('密码不正确');
   if (response.status === 429) throw new Error('尝试过于频繁, 请稍后重试');
-  if (!response.ok) throw new Error(`登录失败: HTTP ${response.status}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(body?.error || `登录失败: HTTP ${response.status}`);
+  }
   const previous = useApiSessionStore.getState().sessions[normalized];
   setApiSessionState(normalized, { ...previous, state: 'ready', error: undefined, errorKind: undefined, status: undefined });
+}
+
+export async function logoutBrowser(): Promise<void> {
+  const urls = [...new Set([getApiBaseUrl(), getControlApiUrl(), getChatApiUrl()])];
+  const results = await Promise.allSettled(urls.map(async (url) => {
+    const response = await fetch(`${url.replace(/\/$/, '')}/auth/logout`, { method: 'POST', credentials: 'include', signal: AbortSignal.timeout(API_SESSION_TIMEOUT_MS) });
+    if (!response.ok && response.status !== 401) throw new Error(`退出失败: HTTP ${response.status}`);
+  }));
+  if (results.some((result) => result.status === 'rejected')) throw new Error('部分服务退出未完成, 请确认服务连接后重试');
+  window.location.reload();
 }
 
 export async function setDashboardPassword(baseUrl: string, currentPassword: string | null, newPassword: string | null): Promise<boolean> {

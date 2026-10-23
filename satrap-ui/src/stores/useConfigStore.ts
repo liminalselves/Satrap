@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { modelApi } from '@/api/model';
 import { sessionApi } from '@/api/session';
 import { edictumApi } from '@/api/edictum';
-import { getConfigVersions, VersionedConfigRead, type ConfigReadOptions, type ConfigResource } from '@/api/configVersions';
+import { getConfigVersions, readConfigSnapshot, VersionedConfigRead, type ConfigReadOptions, type ConfigResource } from '@/api/configVersions';
 import type { EdictumSessionConfig } from '@/api/types';
 import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, ModelConfig, ModelType, SessionClassConfig } from '@/api/types';
 
@@ -38,10 +38,13 @@ export type WatchedConfig = ModelType | 'sessions' | 'edictum';
 const watchers = new Map<WatchedConfig, number>();
 const modelTypes: ModelType[] = ['llm', 'embedding', 'rerank', 'asr'];
 const modelReads = Object.fromEntries(modelTypes.map((type) => [type,
-  new VersionedConfigRead(['models'], (signal) => modelApi.list(type, signal)),
+  new VersionedConfigRead(['models'], (signal) => modelApi.list(type, signal), undefined,
+    (signal) => readConfigSnapshot<Record<string, ModelConfig>>('models', signal, { type })),
 ])) as Record<ModelType, VersionedConfigRead<Record<string, ModelConfig>>>;
-const sessionRead = new VersionedConfigRead(['session_classes'], (signal) => sessionApi.list(signal));
-const edictumRead = new VersionedConfigRead(['edictum_configs', 'plugin_catalog'], (signal) => edictumApi.list(signal));
+const sessionRead = new VersionedConfigRead(['session_classes'], (signal) => sessionApi.list(signal), undefined,
+  (signal) => readConfigSnapshot<Record<string, SessionClassConfig>>('session_classes', signal));
+const edictumRead = new VersionedConfigRead(['edictum_configs', 'plugin_catalog'], (signal) => edictumApi.list(signal), undefined,
+  (signal) => readConfigSnapshot<Record<string, EdictumSessionConfig>>('edictum_configs', signal));
 
 export const useConfigStore = create<ConfigState>((set, get) => ({
   llmConfigs: {},

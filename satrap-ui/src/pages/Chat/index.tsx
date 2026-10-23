@@ -2,6 +2,7 @@ import { ApprovalSettings } from './ApprovalSettings';
 import { useApprovalMode, type ApprovalControl } from './useApprovalMode';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
+import { LogoutButton } from '@/components/common/LogoutButton';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { restoreConversation, type Conversation as ConversationState } from './conversations';
 import { RunRecovery } from "./RunRecovery";
@@ -198,6 +199,7 @@ interface ChatMessage {
   activeVariant?: number;
   // 已持久化的回复版本总数
   variantCount?: number;
+  variantIndices?: number[];
   // 分段内容 (按时间顺序, 用于流式渲染)
   segments?: LocalMessageSegment[];
   // 本回复版本对应的上下文准备和 API token 统计
@@ -281,6 +283,7 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
       segments,
       activeVariant: turn.active_variant ?? 0,
       variantCount: turn.variant_count ?? 1,
+      variantIndices: turn.variant_indices,
       variants: (turn.variants?.length ? turn.variants : [currentVariant]).map(convertVariant),
       outputFiles: turn.output_files,
       contextStats: turn.context_stats,
@@ -327,6 +330,10 @@ export function Chat() {
   const [historyOpen, setHistoryOpen] = useState(false);
   // 项目列表 (绑定的工作区文件夹)
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [nextConversations, setNextConversations] = useState<string | null>(null);
+  const [pagingError, setPagingError] = useState('');
+  const pageBusy = useRef(false);
+  const olderBusy = useRef(new Set<string>());
   // 项目组折叠状态 (project_id -> 是否折叠)
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   // 新建项目对话框
@@ -342,6 +349,9 @@ export function Chat() {
   const modelReadVersion = useRef(0);
   // 模型详情 (设置弹窗管理用)
   const [modelsDetail, setModelsDetail] = useState<Record<string, ModelConfigItem>>({});
+  const modelDetailsSnapshot = useRef<Record<string, ModelConfigItem>>({});
+  const initialModelRead = useRef<Promise<void> | null>(null);
+  const initialPublishedModels = useRef(publishedModels);
   // 模型编辑弹窗: null=关闭, ''=新增, 否则为编辑的模型名
   const [editingModel, setEditingModel] = useState<string | null>(null);
   // 文件选择器 ref
@@ -518,6 +528,14 @@ export function Chat() {
                 const localTurn = conversation.messages.filter((message) => message.turnIndex === pending.turnIndex);
                 messages = [...messages.filter((message) => message.turnIndex !== pending.turnIndex), ...localTurn];
               }
+            }
+            if (event.has_more !== undefined) {
+              const lower = event.turns[0]?.turn_index;
+              const overlapping = lower !== undefined && conversation.messages.some((message) => message.turnIndex !== undefined && message.turnIndex >= lower);
+              const earlier = event.has_more && overlapping ? conversation.messages.filter((message) => message.turnIndex !== undefined && message.turnIndex < lower!) : [];
+              return { ...conversation, messages: [...earlier, ...messages], loaded: true,
+                hasOlder: earlier.length ? conversation.hasOlder : event.has_more,
+                olderBefore: earlier.length ? conversation.olderBefore : event.next_before };
             }
             return { ...conversation, messages, loaded: true };
           });
@@ -710,17 +728,48 @@ export function Chat() {
     async (conversationId: string) => {
       try {
         const epoch = snapshotEpochRef.current[conversationId] ?? 0;
-        const { turns } = await chatApi.listTurns(conversationId);
+        const { turns, has_more, next_before } = await chatApi.listTurnPage(conversationId);
         if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch) return;
         const messages = turnsToMessages(turns);
-        updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true }));
+        updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true, hasOlder: has_more, olderBefore: next_before }));
       } catch (err) {
         console.error('[Chat] 加载历史失败:', err);
+        setPagingError(err instanceof Error ? err.message : '历史加载失败');
         updateConversation(conversationId, (c) => ({ ...c, loaded: true }));
       }
     },
     [updateConversation]
   );
+
+  const loadOlder = useCallback(async (conversation: Conversation) => {
+    if (!conversation.hasOlder || conversation.olderBefore == null || olderBusy.current.has(conversation.id)) return;
+    const before = conversation.olderBefore;
+    const epoch = snapshotEpochRef.current[conversation.id] ?? 0;
+    olderBusy.current.add(conversation.id);
+    try {
+      const page = await chatApi.listTurnPage(conversation.id, before);
+      if ((snapshotEpochRef.current[conversation.id] ?? 0) !== epoch) return;
+      const messages = turnsToMessages(page.turns);
+      updateConversation(conversation.id, (current) => current.olderBefore !== before ? current : {
+        ...current, messages: [...messages.filter((message) => !current.messages.some((item) => item.id === message.id)), ...current.messages],
+        hasOlder: page.has_more, olderBefore: page.next_before,
+      });
+      setPagingError('');
+    } catch (error) { setPagingError(error instanceof Error ? error.message : '历史加载失败'); }
+    finally { olderBusy.current.delete(conversation.id); }
+  }, [updateConversation]);
+
+  const loadConversationPage = async () => {
+    if (!nextConversations || pageBusy.current) return;
+    pageBusy.current = true;
+    try {
+      const page = await chatApi.listConversationPage(nextConversations);
+      setConversations((current) => [...current, ...page.conversations.filter((item) => !current.some((entry) => entry.id === item.conversation_id)).map((item) => restoreConversation<ChatMessage>(item))]);
+      setNextConversations(page.next_cursor);
+      setPagingError('');
+    } catch (error) { setPagingError(error instanceof Error ? error.message : '对话加载失败'); }
+    finally { pageBusy.current = false; }
+  };
 
   // 订阅当前会话 WS (草稿态不订阅)
   useEffect(() => {
@@ -741,40 +790,31 @@ export function Chat() {
       const names = Object.keys(detail);
       setModels(names);
       setModelsDetail(detail);
+      modelDetailsSnapshot.current = detail;
       if (names.length) setSettings((previous) => names.includes(previous.model) ? previous : { ...previous, model: names[0] });
     } catch (error) {
       if (!signal?.aborted) console.error('[Chat] 刷新模型列表失败:', error);
     }
   }, []);
 
-  useEffect(() => {
-    if (!settingsOpen && !Object.keys(publishedModels).length) return;
-    const controller = new AbortController();
-    void handleModelSaved(controller.signal);
-    return () => controller.abort();
-  }, [publishedModels, settingsOpen, handleModelSaved]);   // 配置版本变化或打开设置时刷新, Chat 仍从自己的服务读取模型详情
-
   // 初始化: 健康检查 + 加载模型/插件/会话列表
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        await chatApi.health();
+        void chatApi.health().then(() => { if (!cancelled) setBackendOk(true); }).catch((error) => {
+          console.error('[Chat] 健康检查失败:', error);
+          if (!cancelled) setBackendOk(false);
+        });
+        void chatApi.listPlugins().then(({ plugins }) => { if (!cancelled) setPlugins(plugins); }).catch((error) => console.error('[Chat] 插件读取失败:', error));
+        void chatApi.listProjects().then(({ projects }) => { if (!cancelled) setProjects(projects); }).catch((error) => console.error('[Chat] 项目读取失败:', error));
+        initialModelRead.current = handleModelSaved();
+        const { conversations: convList, next_cursor } = await chatApi.listConversationPage();
         if (cancelled) return;
-        setBackendOk(true);
-        const [{ plugins: pluginList }, { conversations: convList }, { projects: projectList }] =
-          await Promise.all([
-            chatApi.listPlugins(),
-            chatApi.listConversations(),
-            chatApi.listProjects(),
-            handleModelSaved(),
-          ]);
-        if (cancelled) return;
-        setPlugins(pluginList);
-        setProjects(projectList);
         // 恢复历史会话
         const restored = convList.map((item) => restoreConversation<ChatMessage>(item));
         setConversations(restored);
+        setNextConversations(next_cursor);
         if (restored.length > 0) {
           // 有历史会话时展示入口选择, 不自动选中
           setShowEntryChoice(true);
@@ -788,6 +828,23 @@ export function Chat() {
       cancelled = true;
     };
   }, [handleModelSaved]);
+
+  useEffect(() => {
+    if (!settingsOpen && !Object.keys(publishedModels).length && publishedModels === initialPublishedModels.current) return;
+    const controller = new AbortController();
+    void (async () => {
+      await initialModelRead.current;
+      if (controller.signal.aborted) return;
+      const details = modelDetailsSnapshot.current;
+      const matching = Object.keys(details).length === Object.keys(publishedModels).length && Object.entries(publishedModels).every(([name, config]) => {
+        const actual = details[name] as unknown as Record<string, unknown> | undefined;
+        return actual && Object.entries(config).every(([key, value]) => JSON.stringify(actual[key]) === JSON.stringify(value));
+      });
+      if (settingsOpen || !matching) await handleModelSaved(controller.signal);
+    })();
+    return () => controller.abort();
+  }, [publishedModels, settingsOpen, handleModelSaved]);
+  // 等待首次详情后比较实际配置, 初始化期间来源变化仍会刷新, 不盲目忽略首次发布
 
   // 切换会话时按需加载历史
   useEffect(() => {
@@ -1414,6 +1471,7 @@ export function Chat() {
               segments: convertSegments(selected),
               activeVariant: turn.active_variant,
               variantCount: turn.variant_count,
+              variantIndices: turn.variants.map((variant) => variant.variant_index),
               variants: turn.variants.map(convertVariant),
               contextStats: selected.context_stats,
               outputFiles: selected.output_files,
@@ -1692,6 +1750,7 @@ export function Chat() {
                 </div>
               )}
               {/* 最近区: 无项目会话 (平铺, 保持原有形态) */}
+              {nextConversations && <Button className="w-full" onClick={() => void loadConversationPage()}>加载更多对话</Button>}
               {grouped.recent.length > 0 && (
                 <div className="space-y-1">
                   {grouped.groups.length > 0 && (
@@ -1718,6 +1777,7 @@ export function Chat() {
         </div>
       </Card>
 
+      {pagingError && <p role="alert" className="text-error">{pagingError}</p>}
       {/* 聊天主区 */}
       <Card className="glass-card-static flex-1 flex flex-col p-0 overflow-hidden min-w-0">
         {/* 头部 */}
@@ -1738,7 +1798,7 @@ export function Chat() {
         )}
 
         {/* 消息流 (输入区内嵌于底部, sticky 固定, 滚动不消失) */}
-        <div ref={messageScroll.containerRef} onScroll={messageScroll.onScroll} style={{ overflowAnchor: 'none' }} className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">
+        <div ref={messageScroll.containerRef} onScroll={() => { messageScroll.onScroll(); if ((messageScroll.containerRef.current?.scrollTop ?? 100) < 80 && active) void loadOlder(active); }} style={{ overflowAnchor: 'none' }} className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">
           {/* 内容区 */}
           <div ref={messageScroll.contentRef} className="flex-1 flex flex-col pb-4">
             {showEntryChoice ? (
@@ -1777,6 +1837,7 @@ export function Chat() {
               <EmptyWelcome onPromptClick={(text) => setInput(text)} />
             ) : (
               <div className="space-y-6">
+                {active.hasOlder && <Button onClick={() => void loadOlder(active)}>加载更早消息</Button>}
                 {active.messages.map((msg, idx) => (
                   <MessageBubble
                     key={msg.id}
@@ -1954,7 +2015,18 @@ export function Chat() {
         projects={projects}
         models={models}
         activeConversationId={activeId}
-        onOpenConversation={(conversationId) => {
+        onOpenConversation={async (conversationId) => {
+          if (!conversationsRef.current.some((item) => item.id === conversationId)) {
+            try {
+              const result = await chatApi.getConversation(conversationId);
+              const item = result.conversations.find((entry) => entry.conversation_id === conversationId);
+              if (!item) throw new Error('对话不存在或已移除');
+              setConversations((current) => current.some((entry) => entry.id === conversationId) ? current : [...current, restoreConversation<ChatMessage>(item)]);
+            } catch (error) {
+              setPagingError(error instanceof Error ? error.message : '对话读取失败');
+              return;
+            }
+          }
           setActiveId(conversationId);
           setShowEntryChoice(false);
           setHistoryOpen(false);
@@ -2934,6 +3006,7 @@ function ChatHeader({
   return (
     <header ref={headerRef} className="glass-header m-0 flex items-center justify-between px-4 py-2.5 shrink-0">
       <div className="flex items-center gap-3">
+        <LogoutButton />
         <button onClick={onBack} className="theme-toggle" title="返回管理面板">
           <ArrowLeft className="h-4 w-4 text-text-secondary" />
         </button>
@@ -3089,7 +3162,7 @@ function ProjectGroup({
       {!collapsed && (
         <div className="ml-4 mt-1 space-y-1">
           {conversations.length === 0 ? (
-            <div className="px-2 py-1 text-xs text-text-tertiary">暂无对话</div>
+            <div className="px-2 py-1 text-xs text-text-tertiary">当前列表暂无对话</div>
           ) : (
             conversations.map((conv) => (
               <ConversationItem
@@ -3251,9 +3324,10 @@ const MessageBubble = memo(function MessageBubble({
     ),
     [message.variants],
   );
+  const variantOrder = message.variantIndices ?? variants.map((variant) => variant.variantIndex);
   const activeVariantPosition = Math.max(
     0,
-    variants.findIndex((variant) => variant.variantIndex === message.activeVariant),
+    variantOrder.indexOf(message.activeVariant ?? 0),
   );
 
   return (
@@ -3401,12 +3475,12 @@ const MessageBubble = memo(function MessageBubble({
                   <RotateCcw className="h-3.5 w-3.5" />
                 </button>
               )}
-              {!isUser && isLast && onSelectVariant && message.turnIndex !== undefined && variants.length > 1 && (
+              {!isUser && isLast && onSelectVariant && message.turnIndex !== undefined && variantOrder.length > 1 && (
                 <div className="flex items-center gap-0.5 px-1 text-xs text-text-tertiary">
                   <button
                     onClick={() => onSelectVariant(
                       message.turnIndex!,
-                      variants[Math.max(0, activeVariantPosition - 1)].variantIndex,
+                      variantOrder[Math.max(0, activeVariantPosition - 1)],
                     )}
                     disabled={activeVariantPosition <= 0}
                     className="rounded p-0.5 hover:text-accent disabled:opacity-30"
@@ -3414,13 +3488,13 @@ const MessageBubble = memo(function MessageBubble({
                   >
                     <ChevronLeft className="h-3.5 w-3.5" />
                   </button>
-                  <span>{activeVariantPosition + 1} / {variants.length}</span>
+                  <span>{activeVariantPosition + 1} / {variantOrder.length}</span>
                   <button
                     onClick={() => onSelectVariant(
                       message.turnIndex!,
-                      variants[Math.min(variants.length - 1, activeVariantPosition + 1)].variantIndex,
+                      variantOrder[Math.min(variantOrder.length - 1, activeVariantPosition + 1)],
                     )}
-                    disabled={activeVariantPosition >= variants.length - 1}
+                    disabled={activeVariantPosition >= variantOrder.length - 1}
                     className="rounded p-0.5 hover:text-accent disabled:opacity-30"
                     title="下一个回复"
                   >

@@ -18,6 +18,24 @@ beforeEach(() => { vi.resetAllMocks(); scope = 'http://control-a'; vi.mocked(con
 afterEach(() => vi.useRealTimers());
 
 describe('配置版本读取', () => {
+  it('快照冷读只取一次正文, 热读核验版本, 保存失效及来源切换不回灌', async () => {
+    const snapshot = vi.fn().mockResolvedValue({ data: { model: 'current' }, versions: versions().data.resources });
+    const legacy = vi.fn();
+    const resource = new VersionedConfigRead(['models'], legacy, () => scope, snapshot);
+    const [first, joined] = await Promise.all([resource.read(), resource.read()]);
+    expect(first).toBe(joined);
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(controlClient.get).not.toHaveBeenCalled();
+    expect(await resource.read()).toBe(first);
+    expect(controlClient.get).toHaveBeenCalledOnce();
+    await resource.read({ force: true });
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    expect(legacy).not.toHaveBeenCalled();
+    scope = 'http://control-b';
+    await resource.read();
+    expect(snapshot).toHaveBeenCalledTimes(3);
+  });
+
   it('拒绝损坏来源和错误信封, 不把它们变成空配置', async () => {
     vi.mocked(controlClient.get).mockResolvedValueOnce(versions('bad', 'damaged')).mockResolvedValueOnce({ data: '<html>' });
     await expect(getConfigVersions(['models'])).rejects.toThrow('损坏');

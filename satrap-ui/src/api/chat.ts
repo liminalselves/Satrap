@@ -104,6 +104,7 @@ export interface ChatTurn {
   tool_calls: ToolCall[];
   active_variant: number;
   variant_count: number;
+  variant_indices?: number[];
   variants: ChatTurnVariant[];
   context_stats?: ContextTurnStats | null;
 }
@@ -273,7 +274,7 @@ export interface ApprovalPresentation {
 
 // WS 推送事件
 export type ChatEvent = (
-  | { type: 'snapshot'; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[]; approval?: ApprovalPresentation | null }[] }
+  | { type: 'snapshot'; has_more?: boolean; next_before?: number | null; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[]; approval?: ApprovalPresentation | null }[] }
   | { type: 'resync_required' }
   | { type: 'subscribed'; conversation_id: string }
   | { type: 'turn_start'; user_input: string; turn_id: number; turn_index: number; variant_index: number; retry?: boolean }
@@ -409,6 +410,8 @@ export const chatApi = {
     ),
 
   listConversations: () => request<{ conversations: ConversationItem[] }>('GET', '/api/chat/conversations'),
+  listConversationPage: (cursor?: string) => request<{ conversations: ConversationItem[]; has_more: boolean; next_cursor: string | null }>('GET', '/api/chat/conversations/page?' + new URLSearchParams({ limit: '50', ...(cursor ? { cursor } : {}) })),
+  getConversation: (id: string) => request<{ conversations: ConversationItem[] }>('GET', '/api/chat/conversations/page?' + new URLSearchParams({ conversation_id: id })),
 
   queryHistory: (query: ChatHistoryQuery = {}) =>
     request<ChatHistoryResult>('GET', `/api/chat/history${historyQueryString(query)}`),
@@ -434,6 +437,8 @@ export const chatApi = {
 
   listTurns: (conversation: string) =>
     request<{ turns: ChatTurn[] }>('GET', `/api/chat/turns?conversation=${encodeURIComponent(conversation)}`),
+  listTurnPage: (conversation: string, before?: number) =>
+    request<{ turns: ChatTurn[]; has_more: boolean; next_before: number | null }>('GET', '/api/chat/turns/page?' + new URLSearchParams({ conversation, limit: '50', ...(before !== undefined ? { before: String(before) } : {}) })),
 
   send: (
     conversation: string,
@@ -572,7 +577,7 @@ export type ChatEventHandler = (event: ChatEvent) => void;
 // 订阅会话实时事件; 返回取消订阅函数
 export function subscribeChat(conversationId: string, onEvent: ChatEventHandler): () => void {
   const baseUrl = getChatApiUrl();
-  const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
+  const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}&history_limit=50`;
   let ws: WebSocket;
   let stopped = false;
   let retry = 0;
