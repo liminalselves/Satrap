@@ -65,13 +65,13 @@ describe('配置版本读取', () => {
     expect(loader).toHaveBeenCalledTimes(2);
   });
 
-  it('只兼容 404 旧版本服务, 每次读取正文且不持久缓存', async () => {
+  it('版本或快照接口缺失时明确失败, 不静默降级为旧读取协议', async () => {
     vi.mocked(controlClient.get).mockRejectedValue(failed(404));
-    const loader = vi.fn().mockResolvedValueOnce('first').mockResolvedValueOnce('second');
-    const resource = new VersionedConfigRead(['models'], loader);
-    expect(await resource.read()).toBe('first');
-    expect(await resource.read()).toBe('second');
-    expect(loader).toHaveBeenCalledTimes(2);
+    const loader = vi.fn().mockResolvedValue('legacy');
+    await expect(new VersionedConfigRead(['models'], loader).read()).rejects.toBeInstanceOf(AxiosError);
+    const snapshot = vi.fn().mockRejectedValue(failed(404));
+    await expect(new VersionedConfigRead(['models'], loader, () => scope, snapshot).read()).rejects.toBeInstanceOf(AxiosError);
+    expect(loader).not.toHaveBeenCalled();
   });
 
   it('单个消费者取消不影响其它消费者, 全部取消释放共享读取', async () => {

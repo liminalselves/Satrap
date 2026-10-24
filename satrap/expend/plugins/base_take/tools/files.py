@@ -36,7 +36,7 @@ class _FileCore(_DocumentCore):
                     "name": {"type": "string", "minLength": 1, "maxLength": 240, "description": self.params_dict["name"][1]}},
                     "required": ["path"], "additionalProperties": False}}}
 
-    def _prepare_file(self, path: str, name: str | None) -> tuple[FileRead, Path, FileLease]:
+    def _prepare_file(self, path: str, name: str | None) -> tuple[FileRead, Path]:
         """
         固定读取对象和本次宿主产物目录, 发送目标不属于模型参数
 
@@ -45,7 +45,7 @@ class _FileCore(_DocumentCore):
         - name: 可选显示名称
 
         返回:
-        - 读取审批计划, 产物根和需要关闭的维护租约
+        - 读取审批计划和产物根, 审批等待期间不取得维护租约
         """
         if self._plugin_host is None:
             raise ValueError("file_delivery_unavailable: 当前宿主未接入文件交付")
@@ -63,7 +63,7 @@ class _FileCore(_DocumentCore):
                 path = str(environment.sandbox_root / path)
         plan = prepare_file_read(self, path, workspace=workspace, environment=environment,
                                  current_environment=self._environment, parameters={"operation": "send_file", "name": name})
-        return plan, root, artifact_lease(root)
+        return plan, root
 
 
 class SendFileTool(_FileCore, Tool):
@@ -93,7 +93,7 @@ class SendFileTool(_FileCore, Tool):
         lease: FileLease | None = None
         keep = False
         try:
-            plan, root, lease = self._prepare_file(path, name)
+            plan, root = self._prepare_file(path, name)
             def copy(target: Path) -> FileArtifact:
                 """
                 记录已复制对象, 后置校验失败时仍能回收
@@ -104,6 +104,8 @@ class SendFileTool(_FileCore, Tool):
                 返回:
                 - 固定内容的文件引用
                 """
+                nonlocal lease
+                lease = artifact_lease(root)
                 artifact = freeze_file(target, root, name)
                 artifacts.append(artifact)
                 return artifact
@@ -115,11 +117,16 @@ class SendFileTool(_FileCore, Tool):
             logger.warning(f"[文件交付] 同步操作失败, 类型={type(error).__name__}: {error}")
             return {"ok": False, "status": "failed", "reason": str(error)}
         finally:
-            if not keep:
-                for artifact in artifacts:
-                    (artifact.root / artifact.file_id).unlink(missing_ok=True)
-            if lease is not None:
-                lease.close()
+            try:
+                if not keep:
+                    for artifact in artifacts:
+                        try:
+                            (artifact.root / artifact.file_id).unlink(missing_ok=True)
+                        except OSError as error:
+                            logger.warning(f"[文件交付] 产物清理失败: {artifact.file_id}, {error}")
+            finally:
+                if lease is not None:
+                    lease.close()
 
 
 class AsyncSendFileTool(_FileCore, AsyncTool):
@@ -149,7 +156,7 @@ class AsyncSendFileTool(_FileCore, AsyncTool):
         lease: FileLease | None = None
         keep = False
         try:
-            plan, root, lease = self._prepare_file(path, name)
+            plan, root = self._prepare_file(path, name)
             def copy(target: Path) -> FileArtifact:
                 """
                 记录已复制对象, 后置校验失败时仍能回收
@@ -160,6 +167,8 @@ class AsyncSendFileTool(_FileCore, AsyncTool):
                 返回:
                 - 固定内容的文件引用
                 """
+                nonlocal lease
+                lease = artifact_lease(root)
                 artifact = freeze_file(target, root, name)
                 artifacts.append(artifact)
                 return artifact
@@ -173,8 +182,13 @@ class AsyncSendFileTool(_FileCore, AsyncTool):
             logger.warning(f"[文件交付] 异步操作失败, 类型={type(error).__name__}: {error}")
             return {"ok": False, "status": "failed", "reason": str(error)}
         finally:
-            if not keep:
-                for artifact in artifacts:
-                    (artifact.root / artifact.file_id).unlink(missing_ok=True)
-            if lease is not None:
-                lease.close()
+            try:
+                if not keep:
+                    for artifact in artifacts:
+                        try:
+                            (artifact.root / artifact.file_id).unlink(missing_ok=True)
+                        except OSError as error:
+                            logger.warning(f"[文件交付] 产物清理失败: {artifact.file_id}, {error}")
+            finally:
+                if lease is not None:
+                    lease.close()

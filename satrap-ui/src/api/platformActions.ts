@@ -22,7 +22,7 @@ export const actionSourceLabels: Record<ActionSource, string> = { group: '群管
 export const actionStateLabels: Record<string, string> = { ...groupActionStateLabels, pending: '待人工批准', ready: '准备执行' };
 
 export function approvalLink(filters: ActionFilters = {}): string {
-  const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => !!value) as [string, string][]);
+  const query = new URLSearchParams(Object.entries({ ...filters, ...(filters.action && !filters.state ? { state: 'all' } : {}) }).filter(([, value]) => !!value) as [string, string][]);
   return '/platforms/approvals' + (query.size ? '?' + query : '');
 }
 
@@ -51,7 +51,7 @@ export function actionDescription(item: PlatformAction): string {
 
 export const platformActionsApi = {
   list: (filters: ActionFilters, signal?: AbortSignal): Promise<ActionCatalog> => apiClient.get('/api/platform-actions', {
-    platform_id: filters.platform, account: filters.account || 'current', source: filters.source || 'all', state: filters.state || 'pending',
+    platform_id: filters.platform, account: filters.account || 'current', source: filters.source || 'all', state: filters.state || (filters.action ? 'all' : 'pending'),
     target: filters.target, action_id: filters.action, cursor: filters.cursor, limit: 50,
   }, signal),
   summary: (signal?: AbortSignal): Promise<ActionCatalog> => apiClient.get('/api/platform-actions/summary', undefined, signal),

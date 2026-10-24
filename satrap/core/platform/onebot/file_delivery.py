@@ -40,21 +40,26 @@ async def deliver(adapter: OneBotAdapter, origin: CallOrigin, artifact: FileArti
     stream_id = uuid.uuid4().hex
     submitted = False
 
-    async def valid() -> None:
-        """每块及正式发送前重新核验目标和连接"""
-        check()
+    def connection_valid() -> None:
+        """分块期间只核验当前连接, 不重复读取权限和路由数据库"""
         if adapter._bot is not bot or adapter.group_chat_connection_token() != connection:
             raise PermissionError("文件传输期间平台连接已经变化")
+
+    async def valid() -> None:
+        """上传开始, 组装与正式发送前重新核验权限, 目标和连接"""
+        check()
+        connection_valid()
         if await adapter.file_delivery_scope(origin) != scope:
             raise PermissionError("文件传输期间目标已经变化")
 
     try:
         async with asyncio.timeout(150):
+            await valid()
             stream = await open_artifact(artifact)
             try:
                 total = max(1, (artifact.size + CHUNK_BYTES - 1) // CHUNK_BYTES)
                 for index in range(total):
-                    await valid()
+                    connection_valid()
                     data = await asyncio.to_thread(stream.read, CHUNK_BYTES)
                     encoded = base64.b64encode(data).decode("ascii") or "\n"
                     # 实现端以字符串真值判断是否有分块, 空文件用合法 Base64 空白表示零字节块

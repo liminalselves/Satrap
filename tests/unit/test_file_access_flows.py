@@ -65,6 +65,10 @@ async def test_send_file_uses_single_file_approval_and_immutable_current_host_ar
     engine.set_mode("user", persist=False)
     requests, received = [], []
     def approve(request):
+        from satrap.core.storage.file_lock import FileLock
+        artifacts_root = cast(Path, environment_snapshot(session).artifacts_root)
+        with FileLock(artifacts_root.parent.parent.parent / "locks" / (artifacts_root.parent.name + ".lock"), timeout=.02):
+            pass
         requests.append(request)
         return ApprovalResult.for_request(request, "allow", "同意本次文件读取", "user")
     session.approval_provider = approve
@@ -307,3 +311,70 @@ async def test_external_media_is_decoded_only_after_approval(file_host, monkeypa
         with pytest.raises(asyncio.CancelledError):
             await task
         assert len(decoded) == 2
+
+
+def test_artifact_open_uses_metadata_and_explicit_verification(tmp_path, monkeypatch):
+    """普通打开不预读, 显式核验发现同大小改写, 路径和大小检查仍生效"""
+    from satrap.core.file_access.artifacts import freeze_file, display_name
+    import hashlib
+    import os
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"original")
+    artifact = freeze_file(source, tmp_path / "artifacts")
+    real_hash = hashlib.sha256
+    monkeypatch.setattr(hashlib, "sha256", lambda: pytest.fail("普通打开不应计算完整摘要"))
+    with artifact.open() as stream:
+        assert stream.tell() == 0 and stream.read() == b"original"
+    monkeypatch.setattr(hashlib, "sha256", real_hash)
+    artifact.verify()
+    artifact.path.write_bytes(b"modified")
+    with artifact.open() as stream:
+        assert stream.read() == b"modified"
+    with pytest.raises(ValueError, match="校验失败"):
+        artifact.verify()
+    artifact.path.write_bytes(b"different size")
+    with pytest.raises(ValueError, match="大小或类型"):
+        artifact.open()
+    if os.name != "nt":
+        assert display_name("Q3:report.pdf") == "Q3:report.pdf"
+    else:
+        with pytest.raises(ValueError):
+            display_name("Q3:report.pdf")
+
+
+async def test_file_cleanup_error_releases_maintenance_lease(file_host, monkeypatch):
+    """交付失败且产物无法删除时仍释放租约, 保留原交付结果"""
+    from satrap.core.file_access.artifacts import bind_file_receiver
+    from satrap.core.storage.file_lock import _FILE_LEASES, FileLock
+    import importlib
+    session, execute, _, trusted, _ = file_host
+    source = trusted[0] / "cleanup.txt"
+    source.write_text("cleanup", encoding="utf-8")
+    environment = environment_snapshot(session)
+    module = importlib.import_module(type(session.tools_manager.tools["send_file"]).__module__)
+    original_lease = module.artifact_lease
+    leases = []
+    def tracked_lease(root):
+        lease = original_lease(root)
+        leases.append(lease)
+        return lease
+    monkeypatch.setattr(module, "artifact_lease", tracked_lease)
+    original_unlink = Path.unlink
+    def denied(path, *args, **kwargs):
+        if path.parent == environment.artifacts_root:
+            raise PermissionError("模拟文件占用")
+        return original_unlink(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", denied)
+    async def receive(_):
+        return {"ok": False, "status": "failed", "reason": "模拟交付失败"}
+    try:
+        with bind_file_receiver(receive):
+            result = await execute("send_file", path=str(source))
+        assert result["reason"] == "模拟交付失败"
+        assert len(leases) == 1 and leases[0].released
+        assert leases[0].path not in _FILE_LEASES
+        with FileLock(leases[0].path, timeout=.05):
+            pass
+    finally:
+        for lease in leases:
+            lease.close()

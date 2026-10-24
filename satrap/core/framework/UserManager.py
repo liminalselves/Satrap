@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from satrap.core.storage.context_catalog import ensure_conversation_indexes
+
 from dataclasses import dataclass
 import threading
 from pathlib import Path
@@ -117,6 +119,7 @@ class UserInfoStore:
                     "SELECT context_key, session_id, created_at, last_used_at FROM context_sessions"
                 )   # 仅迁移已核验的当前映射, 不根据 scope_ 前缀猜测旧归属
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_csh_session ON context_session_history(session_id)")
+                ensure_conversation_indexes(conn)
                 conn.commit()
 
     @staticmethod
@@ -422,6 +425,40 @@ class UserInfoStore:
                 )
                 conn.commit()
         return context_key
+
+    def has_context_reference(self, session_id: str) -> bool:
+        """
+        判断新建失败的会话是否已被任何可信路由引用, 避免回滚成功绑定的目标
+
+        参数:
+        - session_id: 本次创建的会话 ID
+
+        返回:
+        - 当前路由或历史中存在引用时为 True
+        """
+        with self._lock, self._connect() as conn:
+            return conn.execute("SELECT 1 FROM context_sessions WHERE session_id=? UNION ALL "
+                                "SELECT 1 FROM context_session_history WHERE session_id=? LIMIT 1",
+                                (session_id, session_id)).fetchone() is not None
+
+    def extend_legacy_history(self, route: ConversationRoute, session_ids: list[str]) -> None:
+        """
+        将已核验的旧用户绑定加入旧路由历史, 不迁移到群共享或成员隔离范围
+
+        参数:
+        - route: 宿主冻结的旧用户路由
+        - session_ids: 已按存在性, Provider 和类型核验的历史 ID
+        """
+        if route.key is not None or not session_ids:
+            return
+        key = self._context_key(route.owner, route.platform, route.session_type, route.provider)
+        with self._lock, self._connect() as conn:
+            current = conn.execute("SELECT created_at FROM context_sessions WHERE context_key=? AND user_id=? "
+                                   "AND platform=? AND provider_name=? AND session_type=?",
+                                   (key, route.owner, route.platform, route.provider, route.session_type)).fetchone()
+            if current is not None:
+                conn.executemany("INSERT OR IGNORE INTO context_session_history VALUES(?, ?, ?, ?)",
+                                 [(key, sid, current[0], current[0]) for sid in session_ids])
 
     def list_context_history(self, route: ConversationRoute) -> list[str]:
         """
@@ -998,6 +1035,25 @@ class UserManager:
         )
 
     # ---------- 消息路由 ----------
+    def context_history(self, route: ConversationRoute) -> list[str]:
+        """
+        返回可信路由历史, 首次访问时补齐仍可核验的旧用户历史绑定
+
+        参数:
+        - route: 当前请求的完整宿主路由
+
+        返回:
+        - 该路由仍可见的历史 ID, 不根据 ID 文本猜测归属
+        """
+        history = self.store.list_context_history(route)
+        if route.key is None and route.owner:
+            candidates = [sid for sid in self.get_user_session_ids(route.owner) if sid not in history]
+            verified = self.sm.store.existing_ids(candidates, session_type=route.session_type, provider=route.provider)
+            if verified:
+                self.store.extend_legacy_history(route, [sid for sid in candidates if sid in verified])
+                history = self.store.list_context_history(route)
+        return history
+
     def route_call(self, user_call: UserCall, user_id: str) -> str:
         """
         按用户维度路由消息到 SessionManager

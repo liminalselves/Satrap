@@ -485,7 +485,7 @@ class MiniHTTPServer:
                                                verify_dashboard_password)
         if clean == "/auth/password/status" and method == "GET":
             try:
-                required = dashboard_password_hash() is not None
+                required = await asyncio.to_thread(dashboard_password_hash) is not None
             except ValueError as error:
                 self._send_json(writer, 500, {"error": str(error)}, origin)
                 return True
@@ -514,7 +514,8 @@ class MiniHTTPServer:
                 self._send_json(writer, 500, {"error": str(error)}, origin)
                 return True
             if stored is None:
-                self._send_json(writer, 200, {"ok": True}, origin, {"Set-Cookie": self.auth.session_cookie()})
+                cookie = await asyncio.to_thread(self.auth.session_cookie, False, self.auth.cookie_secure(origin, writer.get_extra_info('ssl_object') is not None))
+                self._send_json(writer, 200, {"ok": True}, origin, {"Set-Cookie": cookie})
                 return True
             if not await asyncio.to_thread(verify_dashboard_password, stored, candidate):
                 failures.append(now)
@@ -545,11 +546,11 @@ class MiniHTTPServer:
                 self._send_json(writer, 400, {"error": "参数必须是 current_password 与 new_password"}, origin)
                 return True
             try:
-                stored = dashboard_password_hash()
+                stored = await asyncio.to_thread(dashboard_password_hash)
             except ValueError as error:
                 self._send_json(writer, 500, {"error": str(error)}, origin)
                 return True
-            if stored is not None and not verify_dashboard_password(stored, payload.get("current_password")):
+            if stored is not None and not await asyncio.to_thread(verify_dashboard_password, stored, payload.get("current_password")):
                 self._send_json(writer, 403, {"error": "当前密码不正确"}, origin)
                 return True
             new_password = payload.get("new_password")

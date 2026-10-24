@@ -1926,3 +1926,19 @@ async def test_visual_attachments_rejected_before_turn_creation(tmp_path, monkey
         assert server._request_body_limit("POST", "/api/chat/upload") > 32 * 1024 * 1024 * 4 // 3
     finally:
         await service.close()
+
+
+def test_retry_snapshot_exposes_registered_files_before_variant_completion(tmp_path):
+    """新回复变体生成期间的分页恢复包含已登记文件, 不串入旧变体"""
+    recorder = DisplayRecorder(tmp_path / "display.db", "retry-files")
+    try:
+        recorder.start_turn("问题")
+        recorder.end_turn("原回答")
+        assert recorder.start_retry_variant() is not None
+        file = {"file_id": "sf_" + "a" * 32, "name": "chart.png", "size": 10, "sha256": "a" * 64, "mime": "image/png"}
+        recorder.add_output_file(file, recorder.recovery_origin())
+        page = recorder.snapshot_turns(limit=50)
+        assert page[0]["generating"] and page[0]["output_files"] == [file]
+        assert next(variant for variant in page[0]["variants"] if variant["variant_index"] == 0)["output_files"] == []
+    finally:
+        recorder.close()

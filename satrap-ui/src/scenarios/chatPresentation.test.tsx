@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AskUserPanel } from "@/pages/Chat/AskUserPanel";
 import { OutputFiles } from "@/pages/Chat/OutputFiles";
 import { type ConversationItem } from "@/api/chat";
-import { restoreConversation } from "@/pages/Chat/conversations";
+import { conversationBoundaryReached, restoreConversation, sidebarConversationVisible, type Conversation } from "@/pages/Chat/conversations";
 import { applyStreamingDeltas, enqueueStreamingDelta, type StreamingDelta } from "@/pages/Chat/streaming";
 import { REJECTION_STAGE_FILTER, RequestDiagnosticsPanel, attachmentLabel, reasonLabel } from "@/components/diagnostics/RequestDiagnosticsPanel";
 
@@ -205,5 +205,47 @@ describe("components/diagnostics/RequestDiagnosticsPanel", () => {
       expect(reasonLabel('image_unavailable')).toBe('图片无法获取');
       expect(reasonLabel('image_media_budget_dropped')).toBe('图片超出本事件媒体预算');
     });
+  });
+});
+
+describe('本次打开会话的侧栏生命周期', () => {
+  it('首条发送和冷历史打开后切走仍可见, 目录刷新保留本地标记', () => {
+    const listed = new Set(['other']);
+    const sent: Conversation<never> = { id: 'sent', title: '新对话', messages: [], updatedAt: 1, preloaded: false, locallyOpened: true };
+    const cold = { ...sent, id: 'cold', title: '旧历史' };
+    for (const item of [sent, cold]) {
+      expect(sidebarConversationVisible(item, listed, 'other', '', '')).toBe(true);
+      expect(sidebarConversationVisible(item, listed, 'other', '不匹配', '')).toBe(false);
+      expect(sidebarConversationVisible(item, listed, 'other', '', 'different')).toBe(false);
+    }
+    const restored = restoreConversation({ conversation_id: 'sent', title: '新对话', last_at: 2, turn_count: 0 }, sent);
+    expect(restored.locallyOpened).toBe(true);
+  });
+  it('搜索中创建的当前分支可见, 普通缓存不会混进服务端目录', () => {
+    const item: Conversation<never> = { id: 'fork', title: '分支', messages: [], updatedAt: 1 };
+    expect(sidebarConversationVisible(item, new Set(), 'fork', '原会话', '')).toBe(true);
+    expect(sidebarConversationVisible(item, new Set(), 'other', '', '')).toBe(false);
+  });
+});
+
+
+describe('项目变动后的侧栏筛选', () => {
+  it('刷新覆盖原排序边界, 边界删除和非 ASCII ID 的顺序与服务端一致', () => {
+    const item = (id: string, time = 10): ConversationItem => ({ conversation_id: id, last_at: time, title: id, turn_count: 0 });
+    expect(conversationBoundaryReached(item('a', 11), item('b'))).toBe(false);
+    expect(conversationBoundaryReached(item('a', 9), item('b'))).toBe(true);
+    expect(conversationBoundaryReached(item('a'), item('b'))).toBe(false);
+    expect(conversationBoundaryReached(item('b'), item('b'))).toBe(true);
+    expect(conversationBoundaryReached(item('c'), item('b'))).toBe(true);
+    expect(conversationBoundaryReached(item('😀'), item('\uffff'))).toBe(true);
+    expect(conversationBoundaryReached(item('\uffff'), item('😀'))).toBe(false);
+    expect(conversationBoundaryReached(undefined, null)).toBe(true);
+  });
+  it('目录中仍有旧 ID 时也遵守最新项目归属, 保留服务端正文搜索结果', () => {
+    const item: Conversation<never> = { id: 'moved', title: '标题', projectId: 'b', messages: [], updatedAt: 1 };
+    const listed = new Set(['moved']);
+    expect(sidebarConversationVisible(item, listed, 'moved', '', 'a')).toBe(false);
+    expect(sidebarConversationVisible(item, listed, 'other', '正文匹配', 'b')).toBe(true);
+    expect(sidebarConversationVisible({ ...item, projectId: null }, listed, 'moved', '', 'b')).toBe(false);
   });
 });

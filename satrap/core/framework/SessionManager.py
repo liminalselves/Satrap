@@ -5,6 +5,8 @@
 同时负责会话元数据持久化, 恢复和默认模型配置注入
 """
 from __future__ import annotations
+
+from satrap.core.storage.context_catalog import ensure_conversation_indexes
 from satrap.core.plugin_interop.environment import EnvironmentSnapshot, bind_environment
 
 import dataclasses
@@ -244,6 +246,7 @@ class SessionConfigStore:
                     )
                 if "history_started_at" not in columns:
                     conn.execute("ALTER TABLE session_configs ADD COLUMN history_started_at REAL")
+                ensure_conversation_indexes(conn)
                 conn.commit()
 
     @staticmethod
@@ -335,6 +338,35 @@ class SessionConfigStore:
                 if row is None:
                     return None
                 return self._row_to_config(row)
+
+    def existing_ids(self, session_ids: list[str], *, session_type: str | None = None, provider: str | None = None) -> set[str]:
+        """
+        在同一连接内批量核验会话存在性, 不反序列化完整配置
+
+        参数:
+        - session_ids: 可信路由历史中的候选会话 ID
+        - session_type: 可选的旧历史迁移类型约束
+        - provider: 可选的旧历史迁移 Provider 约束
+
+        返回:
+        - 仍存在的会话 ID 集合, 分块避免超出 SQLite 参数限制
+        """
+        identities = list(dict.fromkeys(session_ids))
+        if not identities:
+            return set()
+        result: set[str] = set()
+        with self._lock, self._connection() as conn:
+            for offset in range(0, len(identities), 900):
+                batch = identities[offset:offset + 900]
+                conditions = "session_id IN (" + ",".join("?" for _ in batch) + ")"
+                if session_type is not None:
+                    conditions += " AND session_type_name=?"
+                    batch.append(session_type)
+                if provider is not None:
+                    conditions += " AND provider_name=?"
+                    batch.append(provider)
+                result.update(str(row[0]) for row in conn.execute("SELECT session_id FROM session_configs WHERE " + conditions, batch))
+        return result
 
     def list(self, limit: int = 200) -> List[SessionConfig]:
         """
@@ -1514,7 +1546,7 @@ class SessionManager:
         - action: 原生命令返回的动作
 
         返回:
-        - 已验证或新建的目标配置, 越界或目标无效时抛出 ValueError
+        - 已验证的现有配置或尚未持久化的新配置, 越界或目标无效时抛出 ValueError
         """
         target = action.target_session_id
         if action.action not in {"new_session", "switch", "switch_session"} or not isinstance(target, str) or not target.strip():
@@ -1528,19 +1560,17 @@ class SessionManager:
             bound = manager.store.get_context_session(route.owner, route.platform, route.session_type, route.provider, context_key=route.key)
             if bound is None or bound.session_id != source.session_id:
                 raise ValueError("当前会话不再属于该路由")
-            if not creating and target not in manager.store.list_context_history(route):
+            if not creating and target not in manager.context_history(route):
                 raise ValueError("目标会话不属于当前对话范围")
-        elif user_call.origin is not None:
-            raise ValueError("平台会话切换缺少可信路由")
+        elif user_call.origin is not None or manager is not None:
+            raise ValueError("会话切换缺少可信路由")
         existing = self.store.get(target)
         if creating:
             if existing is not None:
                 raise ValueError("新会话 ID 已存在")
-            created = self._resolve_or_create_session_config(dataclasses.replace(
+            return self._resolve_or_create_session_config(dataclasses.replace(
                 user_call, session_id=target, session_provider=source.provider_name, session_type=source.session_type_name,
-            ))
-            created.history_started_at = self.store.ensure_history_start(target, user_call.received_wall_at)
-            return created
+            ), persist=False)
         if existing is None:
             raise ValueError("目标会话不存在")
         if route is not None and (existing.provider_name, existing.session_type_name) != (source.provider_name, source.session_type_name):
@@ -1569,16 +1599,10 @@ class SessionManager:
         owner = ""
         if manager is not None:
             route = user_call.route
-            if route is not None:
-                owner = route.owner
-                platform, session_type, provider, context_key = route.platform, route.session_type, route.provider, route.key
-            else:
-                parts = (source.session_id or "").split(":")
-                if len(parts) < 3 or (parts[2] if len(parts) >= 4 else parts[1]).startswith("scope_"):
-                    raise ValueError("无法确认当前会话归属")
-                owner = parts[2] if len(parts) >= 4 else parts[1]
-                platform = parts[1] if len(parts) >= 4 else parts[0]
-                session_type, provider, context_key = source.session_type_name, source.provider_name, None
+            if route is None:
+                raise ValueError("会话切换缺少可信路由")
+            owner = route.owner
+            platform, session_type, provider, context_key = route.platform, route.session_type, route.provider, route.key
             if manager.storage_layout is not None:
                 manager.storage_layout.bind_session(StorageScope(platform_id=manager.platform_id, user_id=owner, session_id=target_id))
             manager.store.upsert_context_session(owner, platform, session_type, target_id, provider,
@@ -1602,8 +1626,14 @@ class SessionManager:
         返回:
         - 实际生效的回执或明确的切换失败说明
         """
+        target: SessionConfig | None = None
+        published = False
+        result = "切换失败"
         try:
             target = self._transition_config(user_call, source, action)
+            if action.action in {"new_session", "switch"}:
+                self._persist_config(target)
+                target.history_started_at = self.store.ensure_history_start(target.session_id or "", user_call.received_wall_at)
             entry = self._acquire_or_create_entry(target)
             if entry is None or isinstance(entry.session, AsyncSession):
                 if entry is not None:
@@ -1612,12 +1642,26 @@ class SessionManager:
             try:
                 with entry.sync_operation_lock:
                     self._prepare_session_sync(entry.session)
-                    return self._publish_transition(user_call, source, target, action)
+                    result = self._publish_transition(user_call, source, target, action)
+                    published = True
             finally:
                 self.pool.release(entry)
         except Exception as error:
             logger.error(f"[SessionManager] 会话切换失败: {traceback.format_exc()}")
-            return f"切换失败: {error}"
+            result = f"切换失败: {error}"
+        finally:
+            if not published and target is not None and action.action in {"new_session", "switch"}:
+                try:
+                    target_id = target.session_id or ""
+                    exists = (self.store.get(target_id) is not None or self.pool.get(target_id) is not None
+                              or self.storage_layout.session_root(self.platform_id, target_id).exists())
+                    if exists and (self._user_mgr is None or not self._user_mgr.store.has_context_reference(target_id)):
+                        if not self.remove_session(target.session_id or "", remove_config=True):
+                            raise RuntimeError("未能回收失败的新会话")
+                except Exception as cleanup_error:
+                    logger.error(f"[SessionManager] 新会话回收失败: {target.session_id}, {cleanup_error}")
+                    result += f"; 新会话清理失败: {cleanup_error}"
+        return result
 
     async def _handle_transition_async(self, user_call: UserCall, source: SessionConfig, action: CommandAction) -> str:
         """
@@ -1631,8 +1675,14 @@ class SessionManager:
         返回:
         - 实际生效的回执或明确的切换失败说明
         """
+        target: SessionConfig | None = None
+        published = False
+        result = "切换失败"
         try:
             target = self._transition_config(user_call, source, action)
+            if action.action in {"new_session", "switch"}:
+                self._persist_config(target)
+                target.history_started_at = self.store.ensure_history_start(target.session_id or "", user_call.received_wall_at)
             entry = await self._acquire_or_create_entry_async(target)
             if entry is None:
                 raise ValueError("无法初始化目标会话")
@@ -1642,12 +1692,26 @@ class SessionManager:
                     setattr(entry.session, "_satrap_group_plugins", group_plugins)
                     await self._prepare_session_async(entry.session)
                     await self._apply_group_session_overrides(target, entry.session, user_call, group_plugins)
-                    return self._publish_transition(user_call, source, target, action)
+                    result = self._publish_transition(user_call, source, target, action)
+                    published = True
             finally:
                 self.pool.release(entry)
         except Exception as error:
             logger.error(f"[SessionManager] 会话切换失败: {traceback.format_exc()}")
-            return f"切换失败: {error}"
+            result = f"切换失败: {error}"
+        finally:
+            if not published and target is not None and action.action in {"new_session", "switch"}:
+                try:
+                    target_id = target.session_id or ""
+                    exists = (self.store.get(target_id) is not None or self.pool.get(target_id) is not None
+                              or self.storage_layout.session_root(self.platform_id, target_id).exists())
+                    if exists and (self._user_mgr is None or not self._user_mgr.store.has_context_reference(target_id)):
+                        if not await self.remove_session_async(target.session_id or "", remove_config=True):
+                            raise RuntimeError("未能回收失败的新会话")
+                except Exception as cleanup_error:
+                    logger.error(f"[SessionManager] 新会话回收失败: {target.session_id}, {cleanup_error}")
+                    result += f"; 新会话清理失败: {cleanup_error}"
+        return result
 
     def _observe_group_apply(self, user_call: UserCall, session_id: str, instance_generation: str) -> None:
         """把群调用与当前实例的可信关联交给平台运行时"""
@@ -2469,12 +2533,13 @@ class SessionManager:
         self._model_cfg_mgr = mgr
 
     # ---------- 内部逻辑 ----------
-    def _resolve_or_create_session_config(self, user_call: UserCall) -> SessionConfig:
+    def _resolve_or_create_session_config(self, user_call: UserCall, *, persist: bool = True) -> SessionConfig:
         """
-        按 user_call 解析 SessionConfig, 不存在则创建并持久化
+        按 user_call 解析 SessionConfig, 不存在则创建并按调用方要求持久化
 
         参数:
         - user_call: 用户调用请求 (UserCall)
+        - persist: 新配置是否立即持久化; 切换入口先取得配置以覆盖提交后的异常清理
 
         返回:
         - 会话配置 (SessionConfig)
@@ -2543,7 +2608,8 @@ class SessionManager:
                 else dict(definition.params)
             ),
         )
-        self._persist_config(cfg)
+        if persist:
+            self._persist_config(cfg)
         return cfg
 
     def _create_entry(

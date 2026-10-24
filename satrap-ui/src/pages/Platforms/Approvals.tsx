@@ -26,7 +26,7 @@ export function Approvals() {
   const busyRef = useRef(false);
   const request = useRef(0);
   const confirm = useConfirm(scope);
-  const state = search.get('state') || 'pending';
+  const state = search.get('state') || (search.get('action') ? 'all' : 'pending');
   const platform = search.get('platform') || '';
   const reload = useCallback(async (signal?: AbortSignal) => {
     if (!isRunning) return;

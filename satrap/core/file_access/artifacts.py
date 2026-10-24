@@ -44,7 +44,7 @@ def display_name(value: str) -> str:
     - 可用于附件响应的名称, 无效时抛出 ValueError
     """
     if (not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 240
-            or any(ord(char) < 32 or char in '/\\:' for char in value) or value in {".", ".."}):
+            or any(ord(char) < 32 or char in '/\\' or (os.name == 'nt' and char == ':') for char in value) or value in {".", ".."}):
         raise ValueError("文件名必须是最多 240 UTF-8 字节的单个名称, 不能包含路径或控制字符")
     return value
 
@@ -103,10 +103,10 @@ class FileArtifact:
 
     def open(self) -> BinaryIO:
         """
-        流式校验缓存内容后返回已打开的二进制流
+        校验路径, 类型和登记大小后打开二进制流, 不预扫描文件内容
 
         返回:
-        - 定位到开头的文件流, 调用者负责关闭; 损坏或超限时拒绝
+        - 定位到开头的文件流, 调用者负责关闭; 路径, 类型或大小变化时拒绝
         """
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         stream = os.fdopen(os.open(self.path, flags), "rb")
@@ -114,6 +114,14 @@ class FileArtifact:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode) or info.st_size != self.size:
                 raise ValueError("文件产物大小或类型发生变化")
+            return stream
+        except BaseException:
+            stream.close()
+            raise
+
+    def verify(self) -> None:
+        """显式扫描产物并核对冻结摘要, 不要求普通下载执行磁盘完整性检查"""
+        with self.open() as stream:
             digest, count = hashlib.sha256(), 0
             while chunk := stream.read(CHUNK_BYTES):
                 count += len(chunk)
@@ -122,11 +130,6 @@ class FileArtifact:
                 digest.update(chunk)
             if count != self.size or digest.hexdigest() != self.sha256:
                 raise ValueError("文件产物校验失败")
-            stream.seek(0)
-            return stream
-        except BaseException:
-            stream.close()
-            raise
 
 
 def freeze_file(source: Path, root: Path, name: str | None = None) -> FileArtifact:
@@ -210,12 +213,16 @@ def copy_artifact(artifact: FileArtifact, root: Path) -> None:
     target = root / artifact.file_id
     if target.exists():
         from dataclasses import replace
-        replace(artifact, root=root).open().close()
+        replace(artifact, root=root).verify()
         return
     try:
         with artifact.open() as source, target.open("xb") as output:
+            digest = hashlib.sha256()
             while chunk := source.read(CHUNK_BYTES):
+                digest.update(chunk)
                 output.write(chunk)
+            if output.tell() != artifact.size or digest.hexdigest() != artifact.sha256:
+                raise ValueError("文件产物校验失败")
             output.flush()
             os.fsync(output.fileno())
     except BaseException:
@@ -225,7 +232,7 @@ def copy_artifact(artifact: FileArtifact, root: Path) -> None:
 
 async def open_artifact(artifact: FileArtifact) -> BinaryIO:
     """
-    在线程中校验并打开文件, 取消时等待操作完成再关闭句柄
+    在线程中打开受控文件, 取消时等待操作完成再关闭句柄
 
     参数:
     - artifact: 受控文件引用

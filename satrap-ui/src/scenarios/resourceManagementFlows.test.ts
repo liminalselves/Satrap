@@ -135,6 +135,10 @@ describe('平台统一审批链路', () => {
     expect(actionDescription(item)).toContain('12 小时');
     expect(actionKey(invitation)).not.toBe(actionKey(item));
     expect(approvalLink({ platform: 'bot/中文', account: '100', source: 'invitation', action: 'same' })).toContain('source=invitation');
+    expect(approvalLink({ action: 'same' })).toContain('state=all');
+    await platformActionsApi.list({ action: 'same' });
+    expect(requests[requests.length - 1]?.params).toMatchObject({ state: 'all', action_id: 'same' });
+
     respond = () => { throw new Error('connection lost'); };
     const before = requests.length;
     await expect(platformActionsApi.decide(item, true)).rejects.toThrow('connection lost');

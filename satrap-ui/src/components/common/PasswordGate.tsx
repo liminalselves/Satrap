@@ -1,9 +1,8 @@
 import { useState, useSyncExternalStore } from 'react';
 import { router } from '@/router';
-import { passwordLogin } from '@/api/auth';
+import { passwordLogin, requiredApiServices } from '@/api/auth';
 import { PasswordInput } from '@/components/ui/PasswordInput';
 import { useApiSessionStore } from '@/stores/useApiSessionStore';
-import { getApiBaseUrl, getChatApiUrl, getControlApiUrl } from '@/utils/constants';
 
 export function PasswordGate() {
   const pathname = useSyncExternalStore((changed) => router.subscribe(() => changed()), () => router.state.location.pathname);
@@ -12,10 +11,9 @@ export function PasswordGate() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [remember, setRemember] = useState(true);
-  const services = [getApiBaseUrl(), getControlApiUrl(), getChatApiUrl()]
-    .map((url) => url.replace(/\/$/, ''));
-  const currentService = (pathname.startsWith('/chat') ? getChatApiUrl() : getControlApiUrl()).replace(/\/$/, '');
-  const required = [currentService].filter((url) => sessions[url]?.state === 'password_required');
+  const activeServices = requiredApiServices(pathname).map((url) => url.replace(/\/$/, ''));
+  const currentService = activeServices[0];
+  const required = activeServices.filter((url) => sessions[url]?.state === 'password_required');
   const unsettled = sessions[currentService]?.state === 'checking' || !sessions[currentService];
   // 当前页面所需服务未完成认证时盖住页面, 其它离线服务不延迟进入
   if (!required.length && !unsettled) return null;
@@ -25,7 +23,7 @@ export function PasswordGate() {
     if (!password || busy) return;
     setBusy(true);
     setError('');
-    const results = await Promise.allSettled([...new Set(services)].filter((url) => sessions[url]?.state === 'password_required').map((url) => passwordLogin(url, password, remember)));
+    const results = await Promise.allSettled([...new Set(required)].map((url) => passwordLogin(url, password, remember)));
     setBusy(false);
     const failure = results.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined;
     if (failure) setError(failure.reason instanceof Error ? failure.reason.message : '登录失败');

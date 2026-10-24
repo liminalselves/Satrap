@@ -455,6 +455,7 @@ export interface ConversationCatalog {
   facets?: Record<string, { value: string; label: string }[]>;
   warnings?: string[];
   facet_names?: Record<string, string>;
+  facets_scope?: 'platform' | 'result';
 }
 
 export interface ConversationDataItem {

@@ -4,48 +4,11 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'satrap/core/utils/sandbox/**'
-      - 'satrap/core/utils/media*.py'
-      - 'tests/unit/test_visual_input_flows.py'
-      - 'tests/unit/test_session_command_flows.py'
-      - 'satrap/core/conversation.py'
-      - 'satrap/core/pipeline/**'
-      - 'satrap/core/framework/SessionManager.py'
-      - 'satrap/core/framework/UserManager.py'
-      - 'satrap/core/storage/**'
-      - 'satrap/expend/command/session_commands.py'
-      - 'satrap/expend/plugins/session_commands/**'
-      - 'tests/unit/test_routing_flows.py'
-      - 'tests/unit/test_session_management_flows.py'
-      - 'tests/unit/test_wake_pipeline_flows.py'
-      - 'tests/unit/test_wake_policy_flows.py'
-      - 'satrap/core/group_chat/**'
-      - 'satrap/core/file_access/**'
-      - 'satrap/core/plugin_interop/artifacts.py'
-      - 'satrap/core/platform/**'
-      - 'satrap/display/**'
-      - 'tests/unit/test_file_access_flows.py'
-      - 'tests/unit/test_display_service.py'
-      - 'tests/unit/test_chat_stream_flows.py'
-      - 'tests/unit/test_platform_reply_flows.py'
-      - 'tests/unit/test_platform_misskey_flows.py'
-      - 'satrap/expend/tools/sandbox_tools/**'
-      - 'satrap/expend/tools/search/**'
-      - 'tests/unit/test_web_research_flows.py'
-      - 'satrap/expend/plugins/base_take/**'
-      - 'satrap/expend/plugins/satrap_coding/**'
-      - 'satrap/cli/backend_lock.py'
-      - 'satrap/core/config/loader.py'
-      - 'satrap/core/backend/BackendManager.py'
-      - 'satrap/core/backend/control_server.py'
-      - 'satrap/core/framework/session_discovery.py'
-      - 'tests/unit/test_cli_configuration_flows.py'
-      - 'tests/unit/test_control_dispatch.py'
-      - 'tests/unit/test_coding_flows.py'
-      - 'satrap/expend/plugins/group_chat/**'
-      - 'tests/unit/test_coding_security_flows.py'
-      - 'tests/unit/test_coding_configuration_flows.py'
-      - 'tests/unit/test_group_media_flows.py'
+      - 'satrap/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'satrap-ui/**'
+      - 'pyproject.toml'
       - 'setup.py'
       - 'requirements.txt'
       - '.github/workflows/code-sandbox.yml'
@@ -80,38 +43,37 @@ jobs:
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           python -m pip install '.[sandbox,vector,video,web-js]' pytest pytest-asyncio
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise real worker and guards
+      - name: Exercise integrated unit flows once
         run: |
           [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pytest tests/unit/test_coding_security_flows.py tests/unit/test_group_media_flows.py -q -k 'sandbox or internal_file or traversal or outside_path or delete_sandbox or code_execution_timeout or trusted_sdk'
+          python -m pytest tests/unit -q
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise media and command flows
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: satrap-ui/package-lock.json
+      - run: npm ci
+        working-directory: satrap-ui
+      - run: npm test
+        working-directory: satrap-ui
+      - run: npm run build
+        working-directory: satrap-ui
+      - run: npx playwright install --with-deps chromium
+        working-directory: satrap-ui
+      - name: Exercise authentication recovery and paged chat flows
+        working-directory: satrap-ui
         run: |
-          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pytest tests/unit/test_visual_input_flows.py tests/unit/test_session_command_flows.py tests/unit/test_routing_flows.py tests/unit/test_session_management_flows.py tests/unit/test_wake_pipeline_flows.py tests/unit/test_wake_policy_flows.py tests/unit/test_conversation_storage_flows.py tests/unit/test_storage_flows.py -q
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise native coding shells and configuration startup
-        run: |
-          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pytest tests/unit/test_coding_flows.py tests/unit/test_coding_configuration_flows.py tests/unit/test_coding_security_flows.py tests/unit/test_cli_configuration_flows.py tests/unit/test_control_dispatch.py -q -k 'not sandbox'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise browser requests and outbound boundaries
-        run: |
-          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pytest tests/unit/test_web_research_flows.py -q
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise file delivery and authenticated downloads
-        run: |
-          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pytest tests/unit/test_file_access_flows.py tests/unit/test_display_service.py tests/unit/test_chat_stream_flows.py tests/unit/test_platform_reply_flows.py tests/unit/test_platform_misskey_flows.py tests/unit/test_conversation_storage_flows.py tests/unit/test_minihttp.py -q
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node e2e/run.mjs --case backend-password-recovery
+          node e2e/run.mjs --case runtime-cleanup
+          node e2e/run.mjs --case attached-service-password-recovery
+          node e2e/run.mjs --case chat-fork-projects
+          node e2e/run.mjs --case chat-sidebar-state
+          node e2e/run.mjs --case chat-history-races
+          node e2e/run.mjs --case runtime-application-progress

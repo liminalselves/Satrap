@@ -764,6 +764,9 @@ async def test_spa_static_service_serves_index_assets_and_routes(tmp_path: Path,
     for route in ('/api/platforms/ob/groups', '/config/platforms'):
         response = await _request(route, authenticated=False)
         assert b'401 Error' in response and b'<main>Satrap</main>' not in response
+    rejected = await _request('/api/platforms/ob/groups/settings', method='PATCH', body=b'{}', authenticated=False)
+    assert b'401 Error' in rejected
+
 
 @pytest.mark.asyncio
 async def test_spa_static_service_uses_stable_javascript_mime(
@@ -1063,6 +1066,19 @@ async def test_control_password_endpoints_gate_bootstrap_and_change(tmp_path: Pa
     from satrap.core.auth_password import update_dashboard_password
     config = tmp_path / "config.yaml"
     monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: config)
+    import threading
+    from satrap.core import auth_password
+    event_thread = threading.get_ident()
+    original_verify = auth_password.verify_dashboard_password
+    def verify_in_worker(stored, candidate):
+        assert threading.get_ident() != event_thread
+        return original_verify(stored, candidate)
+    monkeypatch.setattr(auth_password, "verify_dashboard_password", verify_in_worker)
+    original_hash = auth_password.dashboard_password_hash
+    def hash_in_worker():
+        assert threading.get_ident() != event_thread
+        return original_hash()
+    monkeypatch.setattr(auth_password, "dashboard_password_hash", hash_in_worker)
     origin = {"Origin": "http://127.0.0.1:5173"}
 
     status_response = await _request("/auth/password/status", authenticated=False)

@@ -45,7 +45,6 @@ async function loadConfigVersions(resources: readonly ConfigResource[], force = 
     }
     return data.resources as ConfigVersions;
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 404) return null; // 旧控制服务没有版本接口时仍实时读取正文
     throw error;
   }
 }
@@ -92,23 +91,19 @@ export class VersionedConfigRead<T> {
   private async load(flight: Flight<T>, force: boolean, hint?: ConfigVersions | null): Promise<T> {
     const signal = flight.controller.signal;
     if (this.snapshotLoader) {
-      try {
-        if (force) await getConfigVersions(this.resources, true, signal);
-        const cached = this.cached;
-        const versions = cached && !force ? hint !== undefined ? hint : await getConfigVersions(this.resources, false, signal) : undefined;
-        if (flight.scope !== this.scope() || signal.aborted) throw new DOMException('读取已取消或服务已改变', 'AbortError');
-        if (cached?.scope === flight.scope && versions && sameConfigVersions(cached.versions, versions, this.resources)) return cached.data;
-        const snapshot = await this.snapshotLoader(signal);
-        for (const name of this.resources) {
-          const version = snapshot.versions[name];
-          if (!version?.change_token || !['available', 'missing'].includes(version.state)) throw new Error('配置快照来源无效: ' + name);
-        }
-        if (flight.scope !== this.scope() || signal.aborted) throw new DOMException('读取已取消或服务已改变', 'AbortError');
-        if (flight.epoch === this.epoch) this.cached = { scope: flight.scope, versions: snapshot.versions, data: snapshot.data };
-        return snapshot.data;
-      } catch (error) {
-        if (!axios.isAxiosError(error) || error.response?.status !== 404) throw error;
+      if (force) await getConfigVersions(this.resources, true, signal);
+      const cached = this.cached;
+      const versions = cached && !force ? hint !== undefined ? hint : await getConfigVersions(this.resources, false, signal) : undefined;
+      if (flight.scope !== this.scope() || signal.aborted) throw new DOMException('读取已取消或服务已改变', 'AbortError');
+      if (cached?.scope === flight.scope && versions && sameConfigVersions(cached.versions, versions, this.resources)) return cached.data;
+      const snapshot = await this.snapshotLoader(signal);
+      for (const name of this.resources) {
+        const version = snapshot.versions[name];
+        if (!version?.change_token || !['available', 'missing'].includes(version.state)) throw new Error('配置快照来源无效: ' + name);
       }
+      if (flight.scope !== this.scope() || signal.aborted) throw new DOMException('读取已取消或服务已改变', 'AbortError');
+      if (flight.epoch === this.epoch) this.cached = { scope: flight.scope, versions: snapshot.versions, data: snapshot.data };
+      return snapshot.data;
     }
     for (let attempt = 0; attempt < 3; attempt++) {
       try {

@@ -1,8 +1,11 @@
+import { finishConfirmation } from './confirmation.mjs';
+import { conversationPageResponse, turnPageResponse } from './config-fixtures.mjs';
+import { emptyConfigResponse } from './runtime.mjs';
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBenchmarkFixture, installHttpMocks, jsonResponse } from "../benchmarks/fixtures.mjs";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, assertNoConfigErrors, waitForRequestEntry } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function chat_history_media(runtime) {
@@ -252,8 +255,9 @@ async function chat_media(runtime) {
       } });
       const responses = {
         '/api/chat/health': { ok: true, conversations: 1, preloaded: 0 },
-        '/api/chat/conversations': { conversations: fixture.conversations },
+        '/api/chat/conversations/page': conversationPageResponse(route.request().url(), fixture.conversations),
         '/api/chat/turns': { turns: fixture.turns },
+        '/api/chat/turns/page': turnPageResponse(route.request().url(), fixture.turns),
         '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
         '/api/chat/models': { models: ['benchmark-model'] },
         '/api/chat/models/detail': { ok: true, models: { 'benchmark-model': { supports_visual_input: true } } },
@@ -268,7 +272,7 @@ async function chat_media(runtime) {
           headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' },
         });
       }
-      return route.fulfill({ json: responses[url.pathname] ?? { ok: true },
+      return route.fulfill({ json: responses[url.pathname] ?? emptyConfigResponse(route.request().url()),
         headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type' },
       });
     });
@@ -340,25 +344,63 @@ async function chat_fork_projects(runtime) {
       { ...fixture.conversations[0], title: '项目甲原会话', project_id: 'a' },
       { ...fixture.conversations[1], title: '项目乙原会话', project_id: 'b' },
     ];
-    let forked = false;
+    const directory = [...conversations, ...Array.from({ length: 4998 }, (_, index) => ({ ...conversations[0], conversation_id: 'older-' + index,
+      title: index === 4997 ? '检索唯一旧会话' : '普通记录-' + index, project_id: index === 4997 ? 'b' : null, last_at: 1 - index }))];
+    const pageReads = [];
+    let forked = false, releaseFork, enterFork, failRefresh = false;
+    const forkEntered = new Promise((resolve) => { enterFork = resolve; });
+    const cold = { ...conversations[0], conversation_id: 'cold-history', title: '冷历史打开验证', project_id: null };
+    const sent = { ...conversations[0], conversation_id: 'new-sent', title: '首条发送验证', project_id: null };
+    const dialogs = [];
+    const sentTurns = [];
+    let newSnapshotSent;
+    const newSnapshotReady = new Promise((resolve) => { newSnapshotSent = resolve; });
+    let preloadCount = 0;
     await context.route(`${origin}/ui-config.json`, route => route.fulfill({ json: {
       backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
     } }));
-    await context.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, route => {
-      const pathname = new URL(route.request().url()).pathname;
+    await context.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, async route => {
+      const url = new URL(route.request().url());
+      const pathname = url.pathname;
+      assert.notEqual(pathname, '/api/chat/conversations', '聊天操作不能回退为全量目录');
+      if (pathname === '/api/chat/conversations/page') {
+        pageReads.push(Object.fromEntries(url.searchParams));
+        if (failRefresh && !url.searchParams.get('conversation_id')) {
+          failRefresh = false;
+          return route.fulfill({ status: 503, json: { error: '模拟目录刷新失败' }, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' } });
+        }
+        let rows = forked ? [{ ...conversations[0], conversation_id: 'fork', title: '项目甲分支' }, ...directory] : directory;
+        if (url.searchParams.get('conversation_id')) rows = [...rows, cold, sent].filter((row) => row.conversation_id === url.searchParams.get('conversation_id'));
+        if (url.searchParams.get('search')) rows = rows.filter((row) => row.title.includes(url.searchParams.get('search')));
+        if (url.searchParams.get('project_id')) rows = rows.filter((row) => row.project_id === url.searchParams.get('project_id'));
+        const offset = Number(url.searchParams.get('cursor') || 0);
+        const selected = rows.slice(offset, offset + 50);
+        const more = rows.length > offset + 50;
+        return route.fulfill({ json: { conversations: selected, has_more: more, next_cursor: more ? String(offset + 50) : null }, headers: {
+          'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type' } });
+      }
+      if (pathname === '/api/chat/conversations/preload') {
+        preloadCount++;
+        return route.fulfill({ json: { ok: true, conversation_id: sent.conversation_id }, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' } });
+      }
+      if (pathname === '/api/chat/send') {
+        sentTurns.push({ ...fixture.turns[0], user_input: route.request().postDataJSON().text, answer: '发送已确认' });
+        return route.fulfill({ json: { ok: true, turn_index: 0, turn_id: 1, variant_index: 0 }, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' } });
+      }
       if (pathname === '/api/chat/fork' && route.request().method() === 'POST') {
         assert.deepEqual(route.request().postDataJSON(), { conversation: 'benchmark-active', turn_index: 0 });
+        enterFork();
+        await new Promise((resolve) => { releaseFork = resolve; });
         forked = true;
       }
       const responses = {
         '/api/chat/health': { ok: true, conversations: 2, preloaded: 0 },
-        '/api/chat/conversations': { conversations: forked
-          ? [...conversations, { ...conversations[0], conversation_id: 'fork', title: '项目甲分支' }]
-          : conversations },
-        '/api/chat/turns': { turns: fixture.turns },
+        '/api/chat/turns': { turns: url.searchParams.get('conversation') === sent.conversation_id ? sentTurns : fixture.turns },
+        '/api/chat/turns/page': turnPageResponse(route.request().url(), url.searchParams.get('conversation') === sent.conversation_id ? sentTurns : fixture.turns),
         '/api/chat/models': { models: ['benchmark-model'] },
         '/api/chat/models/detail': { ok: true, models: {} },
         '/api/chat/plugins': { plugins: [] },
+        '/api/chat/history': { items: [cold], total: 1, page: 1, page_size: 50, mode: 'hot', storage_size_bytes: 0 },
         '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
         '/api/projects': { projects: [
           { project_id: 'a', name: '项目甲', root_path: 'a', created_at: 1 },
@@ -366,20 +408,23 @@ async function chat_fork_projects(runtime) {
         ] },
         '/api/chat/fork': { ok: true, conversation_id: 'fork', copied_turns: 1 },
       };
-      return route.fulfill({ json: responses[pathname] ?? { ok: true }, headers: {
+      return route.fulfill({ json: responses[pathname] ?? emptyConfigResponse(route.request().url()), headers: {
         'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
         'Access-Control-Allow-Headers': 'Content-Type',
       } });
     });
     const page = await context.newPage();
     const errors = [];
+    page.on('dialog', async (dialog) => { dialogs.push(dialog.message()); await dialog.dismiss(); });
     page.on('pageerror', error => { errors.push(error.message); console.error(error.stack); });
     await page.routeWebSocket('ws://127.0.0.1:19872/ws/chat**', socket => {
+      const id = new URL(socket.url()).searchParams.get('conversation');
       socket.send(JSON.stringify({
-        type: 'snapshot', conversation_id: forked ? 'fork' : 'benchmark-active',
+        type: 'snapshot', conversation_id: new URL(socket.url()).searchParams.get('conversation'),
         stream_id: 'fork-test', seq: 1, state: 'idle', active_turn_id: null,
-        turns: fixture.turns, pending_user_inputs: [],
+        turns: id === sent.conversation_id ? sentTurns : fixture.turns, pending_user_inputs: [],
       }));
+      if (id === sent.conversation_id) newSnapshotSent();
     });
     await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
     await mockConfigVersions(page, origin, () => JSON.stringify({}));
@@ -388,18 +433,73 @@ async function chat_fork_projects(runtime) {
     const group = name => page.getByText(name, { exact: true }).locator('..').locator('..');
     await group('项目甲').getByText('项目甲原会话', { exact: true }).waitFor();
     await group('项目乙').getByText('项目乙原会话', { exact: true }).waitFor();
+    const search = page.getByPlaceholder('搜索对话', { exact: true });
+    await search.fill('检索唯一旧会话');
+    await page.getByText('检索唯一旧会话', { exact: true }).waitFor();
+    await search.fill('');
+    const projectRead = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === '/api/chat/conversations/page' && url.searchParams.get('project_id') === 'b' && !url.searchParams.get('search');
+    });
+    await page.getByLabel('筛选对话项目').selectOption('b');
+    await projectRead;
+    await page.getByText('检索唯一旧会话', { exact: true }).waitFor();
+    await page.getByLabel('筛选对话项目').selectOption('');
+    await group('项目甲').getByText('项目甲原会话', { exact: true }).waitFor();
+
     try {
       await page.getByTitle('从这里分支', { exact: true }).first().click({ timeout: 10000 });
     } catch (error) {
       console.error(await page.locator('body').innerText(), errors);
       throw error;
     }
+    await forkEntered;
+    const changedFilters = page.waitForResponse((response) => {
+      const query = new URL(response.url()).searchParams;
+      return query.get('search') === '项目乙' && query.get('project_id') === 'b';
+    });
+    await search.fill('项目乙');
+    await page.getByLabel('筛选对话项目').selectOption('b');
+    await changedFilters;
+    const refreshed = page.waitForResponse((response) => response.status() === 503 && new URL(response.url()).searchParams.get('search') === '项目乙');
+    failRefresh = true;
+    releaseFork();
+    await refreshed;
+    assert.equal(pageReads.filter((query) => !query.conversation_id).at(-1).search, '项目乙');
+    assert.equal(pageReads.filter((query) => !query.conversation_id).at(-1).project_id, 'b');
+    await page.getByText(/分支已创建.*侧栏刷新失败/).waitFor();
+    await page.getByLabel('筛选对话项目').selectOption('');
     await group('项目甲').getByText('项目甲分支', { exact: true }).waitFor();
+    await search.fill('');
+    await group('项目甲').getByText('项目甲原会话', { exact: true }).waitFor();
     assert.ok(forked);
     assert.equal(await group('项目甲').getByText('项目甲原会话', { exact: true }).count(), 1);
     assert.equal(await group('项目乙').getByText('项目乙原会话', { exact: true }).count(), 1);
     assert.deepEqual(errors, []);
-    console.log('PASS: fork 后原有会话与新分支均保留项目分组');
+    assert.ok(pageReads.some((query) => query.search === '检索唯一旧会话'));
+    assert.ok(pageReads.some((query) => query.project_id === 'b'));
+    await page.getByTitle('对话设置', { exact: true }).click();
+    await page.getByRole('dialog', { name: '对话设置', exact: true }).getByRole('button', { name: '数据管理', exact: true }).click();
+    await page.getByText('管理历史与回收站', { exact: true }).click();
+    await page.getByRole('dialog', { name: '会话历史管理', exact: true }).getByRole('button', { name: '打开', exact: true }).click();
+    await page.locator('div.text-sm.truncate').filter({ hasText: new RegExp(`^${cold.title}$`) }).waitFor();
+    await group('项目甲').getByText('项目甲原会话', { exact: true }).click();
+    await page.getByText(cold.title, { exact: true }).waitFor();
+    await page.getByRole('button', { name: '新建对话', exact: true }).click();
+    await newSnapshotReady;
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(await page.locator('.chat-message-item').count(), 0);
+    const input = page.getByPlaceholder('输入消息, Enter 发送, Shift+Enter 换行', { exact: true });
+    await input.fill(sent.title);
+    const sendResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/chat/send');
+    await input.press('Enter');
+    await sendResponse;
+    await group('项目甲').getByText('项目甲原会话', { exact: true }).click();
+    await page.getByText(sent.title, { exact: true }).waitFor();
+    assert.ok(preloadCount > 0);
+    assert.deepEqual(dialogs, []);
+    await assertNoConfigErrors(page);
+    console.log('PASS: 搜索期间 Fork 使用最新筛选, 冷历史打开和首条发送后切走不丢失侧栏入口');
   } finally {
     await runtime.closeContexts();
     await runtime.releaseServer(server);
@@ -407,7 +507,272 @@ async function chat_fork_projects(runtime) {
 
 }
 
+async function chat_sidebar_state(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.preview({ root, preview: { host: '127.0.0.1', port: 0 } });
+  const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const context = await runtime.browser.newContext();
+  const page = await context.newPage();
+  const fixture = createBenchmarkFixture(2);
+  fixture.conversations[0].title = '甲会话'; fixture.conversations[0].project_id = 'a';
+  fixture.conversations[1].title = '乙会话'; fixture.conversations[1].project_id = 'b';
+  for (let index = fixture.conversations.length; index < 150; index++) fixture.conversations.push({
+    ...fixture.conversations[0], conversation_id: `benchmark-${index}`, title: `性能测试会话 ${index}`, project_id: null,
+    last_at: fixture.conversations[0].last_at - index * 120,
+  });
+  fixture.conversations[55].title = '第二页会话'; fixture.conversations[105].title = '第三页会话';
+  fixture.conversations[119].title = '待移除会话';
+  fixture.conversations[149].title = '原分页末项';
+  let projects = [{ project_id: 'a', name: '项目甲', root_path: 'a-workspace' }, { project_id: 'b', name: '项目乙', root_path: 'b-workspace' }];
+  let delayPage = false, delayRefresh = false, failRefresh = false, releasePage, releaseRefresh, enterPage, enterRefresh;
+  let enterMoveRefresh, releaseMoveRefresh;
+  let failSecondPage = false;
+  const pageEntered = new Promise((resolve) => { enterPage = resolve; });
+  const refreshEntered = new Promise((resolve) => { enterRefresh = resolve; });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS' };
+  await context.route(origin + '/ui-config.json', route => route.fulfill({ json: { backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' } }));
+  await context.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, async route => {
+    const url = new URL(route.request().url());
+    const reply = (json, status = 200) => route.fulfill({ json, status, headers });
+    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+    if (url.pathname === '/api/chat/conversations/page') {
+      if (url.searchParams.get('cursor') === '50' && failSecondPage) {
+        failSecondPage = false;
+        return reply({ error: '后续页刷新失败' }, 503);
+      }
+      if (!url.searchParams.has('conversation_id') && enterMoveRefresh) {
+        const entered = enterMoveRefresh; enterMoveRefresh = null; entered();
+        await new Promise((resolve) => { releaseMoveRefresh = resolve; });
+        return reply({ error: '非活跃移动刷新失败' }, 503);
+      }
+      if (url.searchParams.has('cursor') && delayPage) {
+        delayPage = false; enterPage();
+        await new Promise((resolve) => { releasePage = resolve; });
+        return reply({ error: '旧分页迟到失败' }, 503);
+      }
+      if (!url.searchParams.has('conversation_id') && delayRefresh) {
+        delayRefresh = false; enterRefresh();
+        await new Promise((resolve) => { releaseRefresh = resolve; });
+        return reply({ error: '旧刷新迟到失败' }, 503);
+      }
+      if (!url.searchParams.has('conversation_id') && failRefresh) {
+        failRefresh = false;
+        return reply({ error: '当前刷新失败' }, 503);
+      }
+      return reply(conversationPageResponse(url.href, fixture.conversations));
+    }
+    if (/^\/api\/chat\/conversations\/[^/]+\/project$/.test(url.pathname)) {
+      const id = decodeURIComponent(url.pathname.split('/')[4]);
+      fixture.conversations.find((item) => item.conversation_id === id).project_id = route.request().postDataJSON().project_id;
+      return reply({ ok: true });
+    }
+    if (url.pathname.startsWith('/api/projects/') && route.request().method() === 'DELETE') {
+      const id = decodeURIComponent(url.pathname.split('/').at(-1));
+      projects = projects.filter((item) => item.project_id !== id);
+      fixture.conversations.forEach((item) => { if (item.project_id === id) item.project_id = null; });
+      return reply({ ok: true });
+    }
+    const responses = {
+      '/api/chat/health': { ok: true, conversations: fixture.conversations.length },
+      '/api/chat/models': { models: ['benchmark-model'] }, '/api/chat/models/detail': { ok: true, models: {} },
+      '/api/chat/plugins': { plugins: [] }, '/api/chat/runs': { runs: [] },
+      '/api/chat/turns': { turns: fixture.turns },
+        '/api/chat/turns/page': turnPageResponse(route.request().url(), fixture.turns), '/api/projects': { projects },
+    };
+    return reply(responses[url.pathname] ?? emptyConfigResponse(url.href));
+  });
+  await page.routeWebSocket('ws://127.0.0.1:19872/ws/chat**', socket => socket.send(JSON.stringify({ type: 'snapshot', conversation_id: new URL(socket.url()).searchParams.get('conversation'), stream_id: 'sidebar-state', seq: 1, state: 'idle', turns: fixture.turns, pending_user_inputs: [] })));
+  await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
+  await mockConfigVersions(page, origin, () => '{}');
+  const selector = page.getByLabel('筛选对话项目');
+  const afterRender = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const row = (title) => page.locator('div.text-sm.truncate').filter({ hasText: new RegExp(`^${title}$`) }).locator('..').locator('..');
+  const moved = () => row('甲会话');
+  const moveToB = async () => {
+    await moved().getByTitle('移入/移出项目', { exact: true }).click();
+    await page.getByRole('dialog', { name: '移动会话到项目', exact: true }).getByRole('button', { name: /项目乙/ }).click();
+  };
+  try {
+    await page.goto(origin + '/chat');
+    await page.getByText('继续最近对话', { exact: true }).click();
+    const moveRefreshEntered = new Promise((resolve) => { enterMoveRefresh = resolve; });
+    await row('乙会话').getByTitle('移入/移出项目', { exact: true }).click();
+    await page.getByRole('dialog', { name: '移动会话到项目', exact: true }).getByRole('button', { name: /项目甲/ }).click();
+    await waitForRequestEntry(moveRefreshEntered); await afterRender();
+    assert.equal(await row('乙会话').count(), 1, '非活跃会话在移动后的刷新在途时仍保留入口');
+    releaseMoveRefresh();
+    await page.getByRole('alert').filter({ hasText: '非活跃移动刷新失败' }).waitFor();
+    assert.equal(await row('乙会话').count(), 1, '移动成功但刷新失败时保留非活跃会话入口');
+    await row('乙会话').getByTitle('移入/移出项目', { exact: true }).click();
+    await page.getByRole('dialog', { name: '移动会话到项目', exact: true }).getByRole('button', { name: /项目乙/ }).click();
+    await page.getByRole('alert').filter({ hasText: '非活跃移动刷新失败' }).waitFor({ state: 'hidden' });
+    delayPage = true;
+    await page.getByRole('button', { name: '加载更多对话', exact: true }).click();
+    await waitForRequestEntry(pageEntered);
+    await selector.selectOption('b');
+    await page.locator('div.text-sm.truncate').filter({ hasText: /^乙会话$/ }).waitFor();
+    const oldPageFailed = page.waitForResponse((response) => response.status() === 503 && new URL(response.url()).searchParams.has('cursor'));
+    releasePage(); await oldPageFailed; await afterRender();
+    assert.equal(await page.getByRole('alert').filter({ hasText: '旧分页迟到失败' }).count(), 0);
+    await selector.selectOption('a');
+    await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).waitFor();
+    delayRefresh = true;
+    await moveToB(); await waitForRequestEntry(refreshEntered);
+    assert.equal(await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).count(), 0);
+    await selector.selectOption('b');
+    await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).waitFor();
+    const oldRefreshFailed = page.waitForResponse((response) => response.status() === 503 && !new URL(response.url()).searchParams.has('cursor'));
+    releaseRefresh(); await oldRefreshFailed; await afterRender();
+    assert.equal(await page.getByRole('alert').filter({ hasText: '旧刷新迟到失败' }).count(), 0);
+    failRefresh = true;
+    await moveToB();
+    await page.getByRole('alert').filter({ hasText: '当前刷新失败' }).waitFor();
+    await moveToB();
+    await page.getByRole('alert').filter({ hasText: '当前刷新失败' }).waitFor({ state: 'hidden' });
+    await page.getByTitle('b-workspace', { exact: true }).locator('..').getByTitle('删除项目 (仅解绑会话, 磁盘文件不动)', { exact: true }).click();
+    await finishConfirmation(page);
+    await page.waitForFunction(() => document.querySelector('[aria-label="筛选对话项目"]').value === '');
+    await page.locator('div.text-sm.truncate').filter({ hasText: /^乙会话$/ }).waitFor();
+    assert.equal(await selector.locator('option[value="b"]').count(), 0);
+    await page.getByRole('button', { name: '加载更多对话', exact: true }).click();
+    await row('第二页会话').waitFor();
+    const movePaged = async (title) => {
+      await row(title).getByTitle('移入/移出项目', { exact: true }).click();
+      await page.getByRole('dialog', { name: '移动会话到项目', exact: true }).getByRole('button', { name: /项目甲/ }).click();
+    };
+    failSecondPage = true;
+    await movePaged('第二页会话');
+    await page.getByRole('alert').filter({ hasText: '后续页刷新失败' }).waitFor();
+    assert.equal(await row('第二页会话').count(), 1, '第二页刷新失败不能提交只有第一页的目录');
+    await movePaged('第二页会话');
+    await page.getByRole('alert').filter({ hasText: '后续页刷新失败' }).waitFor({ state: 'hidden' });
+    assert.equal(await row('第二页会话').count(), 1, '成功刷新仍保留第二页的非活跃会话');
+    await page.getByRole('button', { name: '加载更多对话', exact: true }).click();
+    await row('第三页会话').waitFor();
+    await row('待移除会话').waitFor();
+    await row('原分页末项').waitFor();
+    const latest = fixture.conversations[0];
+    fixture.conversations.unshift(...[2, 1].map((index) => ({ ...latest,
+      conversation_id: `new-head-${index}`, title: `新增会话 ${index}`, project_id: null, last_at: latest.last_at + index,
+    })));
+    fixture.conversations = fixture.conversations.filter((item) => item.title !== '待移除会话');
+    const lastPageRefreshed = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/chat/conversations/page' && new URL(response.url()).searchParams.get('cursor') === '150');
+    await movePaged('第三页会话');
+    await lastPageRefreshed; await afterRender();
+    assert.equal(await row('第二页会话').count(), 1);
+    assert.equal(await row('第三页会话').count(), 1, '成功刷新仍保留第三页的非活跃会话');
+    assert.equal(await row('原分页末项').count(), 1, '新会话挤动分页边界后仍保留原已加载末项');
+    assert.equal(await row('待移除会话').count(), 0, '刷新后移除服务端已删除的会话');
+    assert.equal(await page.getByRole('button', { name: '加载更多对话', exact: true }).count(), 0);
+    const projectPagesRefreshed = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/chat/conversations/page' && new URL(response.url()).searchParams.get('cursor') === '150');
+    await page.getByTitle('a-workspace', { exact: true }).locator('..').getByTitle('删除项目 (仅解绑会话, 磁盘文件不动)', { exact: true }).click();
+    await finishConfirmation(page);
+    await projectPagesRefreshed; await afterRender();
+    assert.equal(await row('第二页会话').count(), 1);
+    assert.equal(await row('第三页会话').count(), 1);
+    assert.equal(await row('原分页末项').count(), 1);
+    assert.equal(await selector.locator('option[value="a"]').count(), 0);
+    assert.deepEqual(errors, []);
+    await assertNoConfigErrors(page);
+    console.log('PASS: 移动和删除项目保留已展开分页及原末项, 后续页刷新失败不提交部分目录, 删除和筛选正常生效');
+  } finally {
+    releasePage?.(); releaseRefresh?.(); releaseMoveRefresh?.();
+    await runtime.closeContexts(); await runtime.releaseServer(server);
+  }
+}
+
+async function chat_history_races(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.preview({ root, preview: { host: '127.0.0.1', port: 0 } });
+  const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const context = await runtime.browser.newContext(), page = await context.newPage();
+  const fixture = createBenchmarkFixture(120), errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await installHttpMocks(context, origin, fixture);
+  const gates = [0, 1, 2].map(() => {
+    let enter, release;
+    const entered = new Promise((resolve) => { enter = resolve; });
+    const released = new Promise((resolve) => { release = resolve; });
+    return { entered, released, enter, release };
+  });
+  let olderPhase = 'stale', chatSocket, socketReady;
+  const connected = new Promise((resolve) => { socketReady = resolve; });
+  await context.route('http://127.0.0.1:19872/api/chat/turns/page**', async (route) => {
+    const older = new URL(route.request().url()).searchParams.has('before');
+    if (!older) {
+      gates[0].enter(); await gates[0].released;
+      return route.fulfill({ ...jsonResponse({ error: '旧历史迟到失败0' }, origin), status: 503 });
+    }
+    const phase = olderPhase;
+    if (phase === 'stale') {
+      gates[1].enter(); await gates[1].released;
+      return route.fulfill({ ...jsonResponse({ error: '旧历史迟到失败1' }, origin), status: 503 });
+    }
+    if (phase === 'current-error') return route.fulfill({ ...jsonResponse({ error: '当前历史加载失败' }, origin), status: 503 });
+    gates[2].enter(); await gates[2].released;
+    return route.fallback();
+  });
+  await page.routeWebSocket('ws://127.0.0.1:19872/ws/chat**', (socket) => {
+    chatSocket = socket; socketReady();
+    socket.send(JSON.stringify({ type: 'subscribed', conversation_id: 'benchmark-active' }));
+  });
+  await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
+  const afterRender = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const sendSnapshot = async (seq) => {
+    const turns = fixture.turns.slice(-50).map((turn, index, all) => index === all.length - 1
+      ? { ...turn, answer: `快照版本${seq}`, segments: [{ type: 'content', content: `快照版本${seq}` }] } : turn);
+    chatSocket.send(JSON.stringify({ type: 'snapshot', conversation_id: 'benchmark-active', stream_id: 'history-race', seq,
+      state: 'idle', active_turn_id: null, turns, has_more: true, next_before: turns[0].turn_index, pending_user_inputs: [] }));
+    await page.getByText(`快照版本${seq}`, { exact: true }).waitFor();
+  };
+  try {
+    await page.goto(origin + '/chat');
+    await page.getByText('继续最近对话', { exact: true }).click();
+    await waitForRequestEntry(gates[0].entered); await waitForRequestEntry(connected);
+    await sendSnapshot(1);
+    const firstFailed = page.waitForResponse((response) => response.url().includes('/api/chat/turns/page') && !new URL(response.url()).searchParams.has('before') && response.status() === 503);
+    gates[0].release(); await firstFailed; await afterRender();
+    assert.equal(await page.getByRole('alert').filter({ hasText: '旧历史迟到失败0' }).count(), 0);
+    await page.getByRole('button', { name: '加载更早消息', exact: true }).click();
+    await waitForRequestEntry(gates[1].entered);
+    await sendSnapshot(2);
+    const olderFailed = page.waitForResponse((response) => response.url().includes('/api/chat/turns/page') && new URL(response.url()).searchParams.has('before') && response.status() === 503);
+    olderPhase = 'current-error';
+    gates[1].release(); await olderFailed; await afterRender();
+    assert.equal(await page.getByRole('alert').filter({ hasText: '旧历史迟到失败1' }).count(), 0);
+    await page.getByRole('button', { name: '加载更早消息', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor();
+    const automaticFailed = page.waitForResponse((response) => response.url().includes('/api/chat/turns/page') && new URL(response.url()).searchParams.has('before') && response.status() === 503);
+    await page.evaluate(() => {
+      const scroller = [...document.querySelectorAll('div')].find((element) => element.style.overflowAnchor === 'none');
+      if (!scroller) throw new Error('未找到消息滚动容器');
+      scroller.scrollTop = 0;
+      scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+    await automaticFailed; await afterRender();
+    assert.equal(await page.getByRole('button', { name: '加载更早消息', exact: true }).count(), 1);
+    olderPhase = 'retry';
+    await page.getByRole('button', { name: '加载更早消息', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await waitForRequestEntry(gates[2].entered);
+    assert.equal(await page.getByRole('button', { name: '加载更早消息', exact: true }).count(), 1);
+    gates[2].release();
+    await page.getByText('第 1 轮用户消息, 请解释当前测试内容', { exact: true }).waitFor();
+    await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor({ state: 'hidden' });
+    assert.equal(await page.getByText('快照版本2', { exact: true }).count(), 1);
+    assert.deepEqual(errors, []); assert.deepEqual(fixture.errors, []);
+    console.log('PASS: 历史失败按显式阶段处理, 自动滚动不提前消耗成功响应, 迟到失败不污染新快照且当前失败可重试');
+  } finally {
+    gates.forEach((gate) => gate.release());
+    await runtime.closeContexts(); await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
+  ["chat-history-races", chat_history_races],
+  ["chat-sidebar-state", chat_sidebar_state],
   ['chat-output-files', async (runtime) => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     const server = await runtime.preview({ root, preview: { host: '127.0.0.1', port: 0 } });

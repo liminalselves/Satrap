@@ -5,6 +5,12 @@ let bootstrapToken: string | null | undefined;
 const pendingSessions = new Map<string, Promise<void>>();
 export const API_SESSION_TIMEOUT_MS = 8000;
 
+export function requiredApiServices(pathname: string): string[] {
+  if (pathname === '/chat' || pathname.startsWith('/chat/')) return [getChatApiUrl()];
+  const backendPage = !['/models', '/rag'].includes(pathname.replace(/\/$/, ''));
+  return [...new Set([getControlApiUrl(), ...(backendPage ? [getApiBaseUrl()] : [])])];
+}
+
 export class PasswordRequiredError extends Error {
   constructor() {
     super('需要访问密码');

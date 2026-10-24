@@ -87,8 +87,7 @@ def _prepare_shell(
             prefix + command + "\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }",
         ]
     elif shell == "cmd":
-        args = [executable, "/D", "/S", "/C", f'chcp 65001 > nul & "{executable}" /D /S /C "{command}"']
-        # cmd 在解析复合行时缓存代码页, 先设置 UTF-8 再启动实际命令解释器
+        args = [executable, "/D", "/S", "/C", command]
     elif shell == "bash":
         args = [executable, "--noprofile", "--norc", "-c", command]
     else:
@@ -102,6 +101,15 @@ def _prepare_shell(
 
 _OUTPUT_BYTES = 80_000
 _OUTPUT_CHARS = 20_000
+
+_CMD_BOOTSTRAP = (
+    "import ctypes,subprocess,sys; "
+    "kernel=ctypes.WinDLL('kernel32',use_last_error=True); "
+    "assert kernel.SetConsoleCP(65001) and kernel.SetConsoleOutputCP(65001), ctypes.get_last_error(); "
+    "command=subprocess.list2cmdline(sys.argv[1:-1])+' \"'+sys.argv[-1]+'\"'; "
+    "sys.exit(subprocess.call(command))"
+)
+# 独立隐藏控制台先设置 UTF-8, 再启动单层 cmd, 避免第二次命令解析改变引号语义
 
 
 class _OutputTail:
@@ -200,8 +208,7 @@ def _run_shell(args: list[str], workdir: Path, timeout: int, allow: frozenset[st
             startupinfo.wShowWindow = subprocess.SW_HIDE
         launch: list[str] | str = args
         if os.name == "nt" and Path(args[0]).name.lower() == "cmd.exe":
-            launch = subprocess.list2cmdline(args[:-1]) + " " + args[-1]
-            # /C 后是 cmd 原生语法, 不能再用 CRT 规则把引号转成反斜杠引号
+            launch = [sys.executable, "-I", "-B", "-X", "utf8", "-c", _CMD_BOOTSTRAP, *args]
         process: subprocess.Popen[bytes] = subprocess.Popen(
             launch,
             cwd=str(workdir),

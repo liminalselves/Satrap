@@ -62,7 +62,10 @@ async def test_onebot_file_stream_transfers_real_bytes_then_uploads_only_remote_
     artifact = freeze_file(source, tmp_path / "artifacts")
     origin = CallOrigin("ob", "10000", "GroupMessage" if group else "FriendMessage", "456", "123", "77", "files")
     try:
-        result = await adapter.deliver_file(origin, artifact, lambda: None)
+        checks = []
+        result = await adapter.deliver_file(origin, artifact, lambda: checks.append(True))
+        assert len(checks) == 3
+
         assert result["ok"] and result["status"] == "uploaded", result
         assert b"".join(chunks[index] for index in sorted(chunks)) == source.read_bytes()
         assert len(uploads) == 1 and uploads[0][1]["name"] == "report.bin"

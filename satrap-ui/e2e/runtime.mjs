@@ -7,6 +7,13 @@ import { createServer, preview } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+export { emptyConfigResponse } from './config-fixtures.mjs';
+
+export async function assertNoConfigErrors(page) {
+  const errors = await page.locator('.glass-toast-error').allTextContents();
+  assert.deepEqual(errors.filter((message) => /配置快照|配置来源|配置版本/.test(message)), [], '配置夹具必须符合生产快照契约');
+}
+
 export async function waitForRequestEntry(promise) {
   let timer;
   try {
@@ -18,6 +25,28 @@ export async function waitForRequestEntry(promise) {
 
 // 旧夹具补齐真实管理读取要求的来源版本, 写入后的版本由场景数据计算
 export async function mockConfigVersions(page, origin, version) {
+  await page.route(/\/config\/snapshot(?:\?|$)/, async (route) => {
+    const url = new URL(route.request().url());
+    const resource = url.searchParams.get('resource');
+    const paths = { models: '/config/models?type=' + (url.searchParams.get('type') || 'llm'), session_classes: '/config/session-classes',
+      edictum_configs: '/config/edictum/sessions', plugin_catalog: '/config/plugins' };
+    assert.ok(paths[resource], `未声明的快照资源: ${resource}`);
+    const token = version();
+    const response = await page.evaluate(async (target) => {
+      const response = await fetch(target, { credentials: 'include' });
+      return { status: response.status, body: await response.json() };
+    }, url.origin + paths[resource]);
+    assert.equal(response.status, 200, `快照正文夹具请求失败: ${resource}`);
+    const data = resource === 'plugin_catalog' ? response.body.plugins : response.body;
+    assert.ok(data && typeof data === 'object' && (resource === 'plugin_catalog' ? Array.isArray(data)
+      : !Array.isArray(data) && Object.values(data).every((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))), `无效快照正文夹具: ${resource}`);
+    const resources = resource === 'plugin_catalog' ? ['plugin_catalog', 'edictum_configs', 'chat_plugins']
+      : resource === 'edictum_configs' ? ['edictum_configs', 'plugin_catalog'] : [resource];
+    return route.fulfill({ status: response.status, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' },
+      json: { data,
+        versions: Object.fromEntries(resources.map((name) => [name, { state: 'available', change_token: token }])) } });
+  });
+
   await page.route(/\/config\/versions(?:\?|$)/, (route) => {
     const url = new URL(route.request().url());
     const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
@@ -67,13 +96,19 @@ export async function runSuite(scenarios) {
       for (const [key, value] of servers) if (value === server) servers.delete(key);
     },
     async closeContexts() {
-      const pages = browser.contexts().flatMap((context) => context.pages());
-      if (pages.length) runtime.diagnostics = await Promise.all(pages.map(async (page) => ({
-        url: page.url(),
-        alerts: await page.getByRole('alert').allTextContents(),
-        dialogs: await page.getByRole('dialog').allTextContents(),
-      })));
-      await Promise.all(browser.contexts().map((context) => context.close()));
+      try {
+        const pages = browser.contexts().flatMap((context) => context.pages());
+        const results = await Promise.allSettled(pages.map(async (page) => ({
+          url: page.url(),
+          alerts: await page.getByRole('alert').allTextContents(),
+          dialogs: await page.getByRole('dialog').allTextContents(),
+        })));
+        if (pages.length) runtime.diagnostics = results.map((result, index) => result.status === 'fulfilled' ? result.value
+          : { url: pages[index].url(), diagnostic_error: String(result.reason) });
+        // 页面导航可能使诊断读取失效, 保留诊断错误但不改变业务场景结果
+      } finally {
+        await Promise.all(browser.contexts().map((context) => context.close()));
+      }
     },
   };
   const started = performance.now();

@@ -632,3 +632,17 @@ class TestPolicyDefaultSingleSource:
         monkeypatch.setitem(POLICY_DEFAULTS, "wake_mode", "frequency")
         result = await dry_run_wake(payload)
         assert result["automatic"]["mode"] == "frequency"
+
+
+@pytest.mark.asyncio
+async def test_new_reset_removes_late_old_claim_cooldown_and_submission_activity():
+    """旧消息晚于命令入队才被提交时, 新会话仍撤销旧冷却与提交比例"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"wake_mode": "frequency", "wake_cooldown": 60, "wake_message_threshold": 1}))
+    event = await _event(adapter)
+    window = WakeWindow()
+    snapshot = window.observe(event, 1)
+    assert window.claim(event, snapshot, automatic=False, now=4)
+    assert window.cooldown_remaining(event, 5) > 0
+    window.reset(event, 3)
+    assert window.cooldown_remaining(event, 5) == 0
+    assert not any(submitted for _, submitted in window._activity.get(window.key(event), []))

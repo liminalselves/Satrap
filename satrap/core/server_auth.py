@@ -375,7 +375,7 @@ class ServerAuth:
         morsel = cookie.get(self.cookie_name)
         if morsel is None:
             return False
-        if morsel.value.startswith('p_'):
+        if re.fullmatch(r'p_[A-Za-z0-9_-]{43}', morsel.value):
             return self.remembered_sessions is not None and self.remembered_sessions.validate(morsel.value, self._password_version())
         return self.browser_sessions.validate(morsel.value, self._password_version())
 
@@ -464,7 +464,7 @@ class ServerAuth:
             cookie = SimpleCookie()
             cookie.load(headers.get('cookie', ''))
             session = cookie[self.cookie_name].value
-            if session.startswith('p_') and self.remembered_sessions and self.remembered_sessions.renew(session, self._password_version()):
+            if re.fullmatch(r'p_[A-Za-z0-9_-]{43}', session) and self.remembered_sessions and self.remembered_sessions.renew(session, self._password_version()):
                 return {'Set-Cookie': self._format_cookie(session, REMEMBER_SECONDS, secure)}
             return {}
         if self.remembered_sessions and origin and self.origin_allowed(origin):
@@ -475,7 +475,7 @@ class ServerAuth:
                 cookies = SimpleCookie()
             for namespace in DASHBOARD_NAMESPACES:
                 peer = cookies.get(f'{SESSION_COOKIE_NAME}_{namespace}')
-                if peer and peer.value.startswith('p_') and self.remembered_sessions.validate_related(peer.value, namespace, self._password_version()):
+                if peer and re.fullmatch(r'p_[A-Za-z0-9_-]{43}', peer.value) and self.remembered_sessions.validate_related(peer.value, namespace, self._password_version()):
                     return {'Set-Cookie': self.session_cookie(remember=True, secure=secure)}
         if self.can_bootstrap(peer_host, origin, headers):
             return {'Set-Cookie': self.session_cookie(secure=secure)}
@@ -550,7 +550,7 @@ class ServerAuth:
             related = self.remembered_sessions.revoke_related([cookie[name].value for namespace in DASHBOARD_NAMESPACES if (name := f'{SESSION_COOKIE_NAME}_{namespace}') in cookie])
         if morsel is None:
             return related
-        if morsel.value.startswith('p_'):
+        if re.fullmatch(r'p_[A-Za-z0-9_-]{43}', morsel.value):
             return related or (self.remembered_sessions is not None and self.remembered_sessions.revoke(morsel.value))
         return self.browser_sessions.revoke(morsel.value) or related
 

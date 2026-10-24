@@ -62,6 +62,7 @@ class PlatformActionsInfo(TypedDict):
     online: bool
     accounts: list[str]
     pending_count: int | None
+    invalid_count: int
 
 
 class ActionCatalog(TypedDict):
@@ -123,7 +124,7 @@ def _read(scope: ActionScope, filters: dict[str, str], limit: int, before: list[
     - 当前平台有界列表, 匹配总数和账号摘要
     """
     info: PlatformActionsInfo = {'platform_id': scope.platform_id, 'current_account': scope.current_account,
-                                'online': scope.online, 'accounts': [], 'pending_count': 0 if scope.current_account else None}
+                                'online': scope.online, 'accounts': [], 'pending_count': 0, 'invalid_count': 0}
     if not scope.database.is_file():
         return [], 0, info
     with closing(sqlite3.connect(scope.database.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as connection:
@@ -133,19 +134,39 @@ def _read(scope: ActionScope, filters: dict[str, str], limit: int, before: list[
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         # Step.1 固定只读快照, 只访问已经存在的业务表
         sources = []
+        def valid_objects(*columns: str) -> str:
+            """
+            生成内部 JSON 对象校验条件, CASE 阻止损坏行触发 json_type 异常
+
+            参数:
+            - columns: 框架固定的 JSON 列名
+
+            返回:
+            - 可用于 SQL WHERE 的完整校验表达式
+            """
+            return " AND ".join("CASE WHEN json_valid(COALESCE(NULLIF(" + column + ",'') ,'{}')) THEN "
+                                "json_type(COALESCE(NULLIF(" + column + ",'') ,'{}'))='object' ELSE 0 END" for column in columns)
         if 'group_actions' in tables:
             sources.append("SELECT CASE WHEN action_type='handle_group_request' AND json_extract(params_json,'$.sub_type')='invite' "
                            "THEN 'invitation' ELSE 'group' END AS source, action_id, self_id, group_id, action_type, params_json, "
-                           "actor_kind, '' AS actor_id, created_at, expires_at, state, result_json, '{}' AS target_json FROM group_actions")
+                           "actor_kind, '' AS actor_id, created_at, expires_at, state, result_json, '{}' AS target_json FROM group_actions "
+                           "WHERE " + valid_objects('params_json', 'result_json'))
+            info['invalid_count'] += int(connection.execute("SELECT COUNT(*) FROM group_actions WHERE NOT (" + valid_objects('params_json', 'result_json') + ")").fetchone()[0])
         if 'friend_actions' in tables:
             sources.append("SELECT 'friend' AS source, action_id, self_id, '' AS group_id, action_type, params_json, actor_kind, "
-                           "actor_id, created_at, expires_at, state, result_json, target_json FROM friend_actions")
+                           "actor_id, created_at, expires_at, state, result_json, target_json FROM friend_actions WHERE " + valid_objects('params_json', 'result_json', 'target_json'))
+            info['invalid_count'] += int(connection.execute("SELECT COUNT(*) FROM friend_actions WHERE NOT (" + valid_objects('params_json', 'result_json', 'target_json') + ")").fetchone()[0])
         if not sources:
             return [], 0, info
         normalized = ("SELECT :platform AS platform_id, actions.*, CASE WHEN state='pending' AND expires_at IS NOT NULL "
                       "AND expires_at<=:now THEN 'expired' ELSE state END AS effective_state FROM (" + ' UNION ALL '.join(sources) + ') actions')
         args: dict[str, object] = {'platform': scope.platform_id, 'now': now, 'current': scope.current_account}
         # Step.2 归一化来源和到期状态, 摘要读取不解析记录正文
+        if not scope.current_account and not info['invalid_count']:
+            if connection.execute(f"SELECT 1 FROM ({normalized}) LIMIT 1", args).fetchone() is None:
+                return [], 0, info
+        if not scope.current_account:
+            info['pending_count'] = None
         if scope.current_account:
             info['pending_count'] = int(connection.execute(f"SELECT COUNT(*) FROM ({normalized}) WHERE self_id=:current AND effective_state='pending'", args).fetchone()[0])
         if summary:
@@ -238,7 +259,7 @@ async def platform_action_catalog(scopes: list[ActionScope], *, platform_id: str
     # Step.2 有界并发读取, 各平台分别维持自己的只读快照
     result: ActionCatalog = {'items': [], 'total': 0, 'pending_count': 0, 'complete': True, 'platforms': [], 'warnings': [], 'has_more': False, 'next_cursor': None}
     result['platforms'] = [{'platform_id': scope.platform_id, 'current_account': scope.current_account, 'online': scope.online,
-                            'accounts': [scope.current_account] if scope.current_account else [], 'pending_count': None} for scope in scopes]
+                            'accounts': [scope.current_account] if scope.current_account else [], 'pending_count': None, 'invalid_count': 0} for scope in scopes]
     for scope, response in zip(chosen, responses):
         if isinstance(response, BaseException):
             if isinstance(response, asyncio.CancelledError):
@@ -250,6 +271,9 @@ async def platform_action_catalog(scopes: list[ActionScope], *, platform_id: str
         result['items'].extend(items)
         result['total'] += total
         result['platforms'][next(index for index, value in enumerate(result['platforms']) if value['platform_id'] == scope.platform_id)] = info
+        if info['invalid_count']:
+            result['complete'] = False
+            result['warnings'].append(f"{scope.platform_id}: 已隔离 {info['invalid_count']} 条损坏动作记录, 列表与计数均不包含这些记录")
         if info['pending_count'] is None:
             result['complete'] = False
             result['warnings'].append(f'{scope.platform_id}: 当前机器人账号尚未确认')

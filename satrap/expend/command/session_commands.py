@@ -78,7 +78,9 @@ def _get_user_contexts_list(session: Session | AsyncSession) -> list[str]:
     if user_manager:
         route = current_conversation_route()
         if route is not None:
-            return [sid for sid in user_manager.store.list_context_history(route) if user_manager.sm.store.get(sid) is not None]
+            history = user_manager.context_history(route)
+            existing = user_manager.sm.store.existing_ids(history)
+            return [sid for sid in history if sid in existing]
         user_id = _parse_user_id(session.session_id)
         if user_id and not user_id.startswith("scope_"):
             return user_manager.get_user_session_ids(user_id)

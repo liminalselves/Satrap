@@ -751,6 +751,10 @@ async def test_conversation_cold_data_routes_auth_and_timeout_never_falls_back(t
         assert [item["conversation_id"] for item in exact["items"]] == ["test-conversation"]
         absent = _json_body(await _request("/config/conversations?platform_id=test-platform&conversation_id=missing"))
         assert absent["items"] == []
+        from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH
+        oversized = await _request("/config/conversations?platform_id=test-platform&conversation_id=" + "_" * (MAX_CONVERSATION_ID_LENGTH + 1))
+        assert oversized.startswith(b"HTTP/1.1 400")
+        assert "conversation_id" in _json_body(oversized)["error"]
         assert catalog["items"][0]["conversation_id"] == "test-conversation"
         request = {"platform_id": "test-platform", "conversation_id": "test-conversation", "layer": "context"}
         current = _json_body(await _request("/config/conversations/data", "POST", json.dumps(request).encode("utf-8")))
@@ -811,10 +815,10 @@ async def test_dynamic_conversation_platform_types_aggregate_same_ids_and_isolat
         filtered = _json_body(await _request("/config/conversations?scope=all&platform_type=custom-b&filter.source=unknown"))
         assert [row["platform_id"] for row in filtered["items"]] == ["instance-b"]
         read = ConversationDataService.catalog_records
-        def fail_one(self, platform=None):
+        def fail_one(self, platform=None, requested=''):
             if self.database == layout.platform_db("instance-b"):
                 raise sqlite3.OperationalError("平台数据库不可读")
-            return read(self, platform)
+            return read(self, platform, requested)
         monkeypatch.setattr(ConversationDataService, "catalog_records", fail_one)
         partial = _json_body(await _request("/config/conversations?scope=all"))
         assert [row["platform_id"] for row in partial["items"]] == ["instance-a"]

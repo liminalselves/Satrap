@@ -410,7 +410,9 @@ export const chatApi = {
     ),
 
   listConversations: () => request<{ conversations: ConversationItem[] }>('GET', '/api/chat/conversations'),
-  listConversationPage: (cursor?: string) => request<{ conversations: ConversationItem[]; has_more: boolean; next_cursor: string | null }>('GET', '/api/chat/conversations/page?' + new URLSearchParams({ limit: '50', ...(cursor ? { cursor } : {}) })),
+  listConversationPage: (cursor?: string, filters: { search?: string; project_id?: string } = {}, signal?: AbortSignal) =>
+    request<{ conversations: ConversationItem[]; has_more: boolean; next_cursor: string | null }>(
+      'GET', '/api/chat/conversations/page?' + new URLSearchParams({ limit: '50', ...filters, ...(cursor ? { cursor } : {}) }), undefined, signal),
   getConversation: (id: string) => request<{ conversations: ConversationItem[] }>('GET', '/api/chat/conversations/page?' + new URLSearchParams({ conversation_id: id })),
 
   queryHistory: (query: ChatHistoryQuery = {}) =>

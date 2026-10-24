@@ -350,13 +350,13 @@ class WakeWindow:
             self._pending[key] = retained
         else:
             self._pending.pop(key, None)
-        activity = [item for item in self._activity.get(key, []) if item[0] > cutoff]
+        activity = [item for item in self._activity.get(key, []) if item[0] > cutoff and not item[1]]
         if activity:
             self._activity[key] = activity
         else:
             self._activity.pop(key, None)
-        if self._submitted.get(key, float("-inf")) <= cutoff:
-            self._submitted.pop(key, None)
+        self._submitted.pop(key, None)
+        # 提交时刻可能晚于命令入队, 成功切换后旧会话的冷却和提交计数统一失效
 
     def cooldown_remaining(self, event: MessageEvent, now: float | None = None) -> float:
         """

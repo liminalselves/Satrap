@@ -52,7 +52,7 @@ from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConfl
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
-from satrap.core.config.conversation_catalog import platform_catalog, filter_records, record_facets
+from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, platform_catalog, filter_records, record_facets
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
 from satrap.core.config.platform_message_data import platform_archive_catalog, platform_archive_operation
 from satrap.core.config.group_chat_data import summary_management, parse_sticker_upload, native_sticker_catalog, sticker_settings_management
@@ -1111,7 +1111,9 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
     返回:
     - 群目录接口响应; 路径不属于此区段时返回 None
     """
-    parts = ctx.path.split("/")
+    if not ctx.path.startswith("/api/platforms/"):
+        return None
+    parts = ctx.path.removeprefix("/api").split("/")
     if len(parts) < 4 or parts[1] != "platforms" or parts[3] != "groups":
         return None
     adapter_id = urllib.parse.unquote(parts[2])
@@ -2686,6 +2688,9 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
             return 200, {"platforms": [item["id"] for item in descriptors], "items": descriptors}
         if ctx.path == prefix and ctx.method == "GET":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            identity = query.get('conversation_id', [''])[0]
+            if len(identity) > MAX_CONVERSATION_ID_LENGTH:
+                raise ValueError(f"conversation_id 不能超过 {MAX_CONVERSATION_ID_LENGTH} 个字符")
             platform = query.get("platform_id", ["local"])[0]
             all_platforms = query.get("scope", [""])[0] == "all"
             selected_platforms = descriptors if all_platforms else [next((item for item in descriptors if item["id"] == platform), {"id": platform, "type": "unknown"})]
@@ -2694,7 +2699,6 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
                 selected_platforms = [item for item in selected_platforms if item["type"] == platform_type]
             items = []
             warnings = []
-            identity = query.get('conversation_id', [''])[0]
             semaphore = asyncio.Semaphore(4)
 
             async def read_platform(descriptor: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
@@ -2730,7 +2734,7 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
                 matched = [item for item in matched if item["conversation_id"] == identity or identity in item["context_ids"]]
             offset = max(0, int(query.get("offset", ["0"])[0]))
             limit = min(100, max(1, int(query.get("limit", ["40"])[0])))
-            return 200, {"items": matched[offset:offset + limit], "total": len(matched), "facets": record_facets(items), "facet_names": {key: label for item in items for key, label in item["facet_names"].items()}, "warnings": warnings}
+            return 200, {"items": matched[offset:offset + limit], "total": len(matched), "facets": record_facets(items), "facets_scope": "result" if identity else "platform", "facet_names": {key: label for item in items for key, label in item["facet_names"].items()}, "warnings": warnings}
         if ctx.path != prefix + "/data" or ctx.method != "POST":
             return None
         payload = await _read_json_body(ctx.reader, ctx.raw_request)
@@ -3632,7 +3636,7 @@ async def _handle_request(
         if method == "GET" and path == "/auth/password/status":
             from satrap.core.auth_password import dashboard_password_hash
             try:
-                required = dashboard_password_hash() is not None
+                required = await asyncio.to_thread(dashboard_password_hash) is not None
             except ValueError as error:
                 await _send_control_json(writer, 500, {"error": str(error)}, origin)
                 return
@@ -3654,7 +3658,7 @@ async def _handle_request(
                 await _send_control_json(writer, 400, {"error": "请求格式无效"}, origin)
                 return
             try:
-                stored = dashboard_password_hash()
+                stored = await asyncio.to_thread(dashboard_password_hash)
             except ValueError as error:
                 await _send_control_json(writer, 500, {"error": str(error)}, origin)
                 return
@@ -3692,11 +3696,11 @@ async def _handle_request(
                 await _send_control_json(writer, 400, {"error": "参数必须是 current_password 与 new_password"}, origin)
                 return
             try:
-                stored = dashboard_password_hash()
+                stored = await asyncio.to_thread(dashboard_password_hash)
             except ValueError as error:
                 await _send_control_json(writer, 500, {"error": str(error)}, origin)
                 return
-            if stored is not None and not verify_dashboard_password(stored, password_payload.get("current_password")):
+            if stored is not None and not await asyncio.to_thread(verify_dashboard_password, stored, password_payload.get("current_password")):
                 await _send_control_json(writer, 403, {"error": "当前密码不正确"}, origin)
                 return
             new_password = password_payload.get("new_password")

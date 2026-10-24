@@ -159,6 +159,19 @@ async def test_dashboard_password_gate_covers_bootstrap_login_change_and_clear(t
     from satrap.core.auth_password import update_dashboard_password
     config = tmp_path / "config.yaml"
     monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: config)
+    import threading
+    from satrap.core import auth_password
+    event_thread = threading.get_ident()
+    original_verify = auth_password.verify_dashboard_password
+    def verify_in_worker(stored, candidate):
+        assert threading.get_ident() != event_thread
+        return original_verify(stored, candidate)
+    monkeypatch.setattr(auth_password, "verify_dashboard_password", verify_in_worker)
+    original_hash = auth_password.dashboard_password_hash
+    def hash_in_worker():
+        assert threading.get_ident() != event_thread
+        return original_hash()
+    monkeypatch.setattr(auth_password, "dashboard_password_hash", hash_in_worker)
     server = _EchoServer()
     port = await _start_server(server)
     try:
@@ -774,3 +787,49 @@ async def test_websocket_unexpected_failure_is_still_error(caplog: pytest.LogCap
         for level, message in messages
     )
     assert [message for level, message in messages if "[WebSocket] 连接已断开" in message] == []
+
+
+def test_short_cookie_with_persistent_prefix_authenticates_and_revokes(tmp_path, monkeypatch):
+    """短令牌碰巧以 p_ 开头时仍走短会话的认证, 恢复和撤销链路"""
+    from satrap.core.browser_sessions import PersistentBrowserSessions
+    from dataclasses import replace
+    monkeypatch.setattr(ServerAuth, "_password_version", staticmethod(lambda: "version"))
+    auth = replace(ServerAuth.create("127.0.0.1", 0, token="test-token-that-is-at-least-thirty-two-characters"),
+                   remembered_sessions=PersistentBrowserSessions(tmp_path / "sessions.db", "api", "scope"))
+    monkeypatch.setattr("satrap.core.server_auth.secrets.token_urlsafe", lambda size: "p_" + "a" * 41)
+    cookie = auth.session_cookie().split(";", 1)[0]
+    assert auth.cookie_authorized({"cookie": cookie})
+    assert auth.restore_session("127.0.0.1", "http://127.0.0.1:5173", {"cookie": cookie}) == {}
+    assert auth.revoke_cookie({"cookie": cookie})
+    assert not auth.cookie_authorized({"cookie": cookie})
+    persistent = auth.session_cookie(remember=True).split(";", 1)[0]
+    assert auth.cookie_authorized({"cookie": persistent})
+    assert auth.revoke_cookie({"cookie": persistent})
+    assert not auth.cookie_authorized({"cookie": persistent})
+
+
+async def test_no_password_login_race_retains_secure_cookie(tmp_path, monkeypatch):
+    """免密竞态登录与正常 HTTPS 来源使用相同的 Secure 策略"""
+    from dataclasses import replace
+    monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: tmp_path / "config.yaml")
+    import threading
+    from satrap.core import auth_password
+    event_thread = threading.get_ident()
+    hash_threads = []
+    original_hash = auth_password.dashboard_password_hash
+    def hash_in_worker():
+        hash_threads.append(threading.get_ident())
+        assert hash_threads[-1] != event_thread
+        return original_hash()
+    monkeypatch.setattr(auth_password, "dashboard_password_hash", hash_in_worker)
+    server = _EchoServer()
+    origin = "https://127.0.0.1:5173"
+    server.auth = replace(server.auth, allowed_origins=server.auth.allowed_origins | {origin})
+    port = await _start_server(server)
+    try:
+        response = await _raw_request(port, _request_bytes("POST", "/auth/password/login", origin=origin, body=b'{"password":"no-longer-required"}'))
+        assert _status_code(response) == 200
+        assert b"; Secure" in response.split(b"\r\n\r\n")[0]
+        assert len(hash_threads) >= 2
+    finally:
+        await server.stop()

@@ -96,7 +96,7 @@ export function AccessPasswordPanel({ active }: { active: boolean }) {
           </Button>
         )}
       </div>
-      <p className="text-sm text-text-tertiary">密码以 PBKDF2-SHA256 加盐哈希保存在配置文件, 明文不出现在存储中。忘记密码可在服务器上编辑配置文件的 api.dashboard_password 字段。</p>
+      <p className="text-sm text-text-tertiary">密码以 PBKDF2-SHA256 加盐哈希保存在配置文件, 明文不出现在存储中。忘记密码可在服务器配置文件中删除 api.dashboard_password 字段以恢复免密。</p>
     </section>
   );
 }

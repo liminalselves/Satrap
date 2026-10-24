@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from satrap.core.storage.context_catalog import BACKUP_INDEX
+
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -371,6 +373,7 @@ class ConversationDataService:
                     else:
                         raise ValueError("未知编辑操作")
             connection.execute("CREATE TABLE IF NOT EXISTS conversation_data_backups (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, layer TEXT NOT NULL, payload TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL)")
+            connection.execute(BACKUP_INDEX)
             backup_id = uuid.uuid4().hex
             connection.execute("INSERT INTO conversation_data_backups VALUES (?, ?, ?, ?, ?, ?)", (backup_id, conversation, layer, json.dumps(previous, ensure_ascii=False, allow_nan=False), str(action), time.time()))
             if layer == "context":

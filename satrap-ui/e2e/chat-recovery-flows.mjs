@@ -1,3 +1,5 @@
+import { conversationPageResponse, turnPageResponse } from './config-fixtures.mjs';
+import { emptyConfigResponse } from './runtime.mjs';
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,8 +96,9 @@ async function chat_reconnect(runtime) {
       }
       const responses = {
         '/api/chat/health': { ok: true, conversations: 1, preloaded: 0 },
-        '/api/chat/conversations': { conversations: fixture.conversations },
+        '/api/chat/conversations/page': conversationPageResponse(route.request().url(), fixture.conversations),
         '/api/chat/turns': { turns: fixture.turns },
+        '/api/chat/turns/page': turnPageResponse(route.request().url(), fixture.turns),
         '/api/chat/models': { models: ['benchmark-model'] },
         '/api/chat/models/detail': { ok: true, models: {} },
         '/api/chat/plugins': { plugins: [{ name: 'permissions', enabled: true, version: '0.1.0',
@@ -105,7 +108,7 @@ async function chat_reconnect(runtime) {
         '/api/projects': { projects: [] },
       };
       return route.fulfill({
-        json: responses[pathname] ?? { ok: true },
+        json: responses[pathname] ?? emptyConfigResponse(route.request().url()),
         headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type' },
       });
     });
@@ -319,7 +322,7 @@ async function checkpoint_branches(runtime) {
         assert.equal(url.searchParams.get('platform_id'), 'local');
         assert.equal(url.searchParams.get('conversation'), 'conv-test');
       }
-      return route.fulfill({ json: responses[url.pathname] ?? { ok: true }, headers: {
+      return route.fulfill({ json: responses[url.pathname] ?? emptyConfigResponse(route.request().url()), headers: {
         'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
         'Access-Control-Allow-Headers': 'Content-Type',
       } });

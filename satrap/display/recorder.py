@@ -725,7 +725,9 @@ class DisplayRecorder:
                     tool_calls=self._list_tool_calls_locked(self._get_conn(), active_turn_id, self._variant_index),
                 )
                 active = {key: turn[key] for key in ("answer", "thinking", "segments", "tool_calls", "created_at", "context_stats")}
-                active["output_files"] = next((item.get("output_files", []) for item in turn["variants"] if item["variant_index"] == self._variant_index), [])
+                files = self._get_conn().execute("SELECT output_files FROM display_turn_variants WHERE turn_id=? AND variant_index=?",
+                                                 (active_turn_id, self._variant_index)).fetchone()
+                active["output_files"] = json.loads(files[0]) if files else []
                 turn["output_files"] = active["output_files"]
                 active["variant_index"] = self._variant_index
                 turn["variants"] = [item for item in turn["variants"] if item["variant_index"] != self._variant_index] + [active]

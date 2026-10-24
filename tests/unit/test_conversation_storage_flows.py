@@ -607,3 +607,197 @@ def test_broken_association_is_visible_and_does_not_hide_other_users(tmp_path):
     assert users["empty"]["has_profile"]
     with pytest.raises(ValueError):
         service.mutate({"action": "associate", "user_id": "member", "session_id": "manual", "expected_revision": users["member"]["revision"]})
+
+
+def test_exact_catalog_query_work_does_not_grow_with_unrelated_history():
+    """精确 ID 查询的 SQL 工作量不随无关会话和展示轮次线性增长"""
+    from satrap.core.config.conversation_catalog import conversation_records
+    from satrap.core.storage.context_catalog import CATALOG_SCHEMA, ensure_conversation_indexes
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript("CREATE TABLE session_configs(session_id TEXT PRIMARY KEY, session_type_name TEXT, provider_name TEXT, session_config TEXT, last_used_at REAL);"
+                                 "CREATE TABLE display_turns(conversation_id TEXT, turn_index INTEGER, created_at REAL, user_input TEXT);"
+                                 "CREATE INDEX turns_identity ON display_turns(conversation_id,turn_index);"
+                                 "CREATE TABLE chat_history(conversation_id TEXT); CREATE INDEX history_identity ON chat_history(conversation_id);")
+        connection.execute(CATALOG_SCHEMA)
+        connection.execute("CREATE TABLE context_sessions(context_key TEXT PRIMARY KEY, session_id TEXT, user_id TEXT, platform TEXT, provider_name TEXT, session_type TEXT)")
+        connection.execute("CREATE TABLE context_session_history(context_key TEXT, session_id TEXT, first_used_at REAL, last_used_at REAL)")
+        connection.execute("CREATE TABLE conversation_meta(conversation_id TEXT PRIMARY KEY)")
+        connection.execute("CREATE TABLE conversation_data_backups(id TEXT PRIMARY KEY, conversation_id TEXT)")
+        ensure_conversation_indexes(connection)
+        for table, column in (("context_catalog", "session_id"), ("context_sessions", "session_id"), ("conversation_data_backups", "conversation_id")):
+            plan = list(connection.execute(f"EXPLAIN QUERY PLAN SELECT * FROM {table} WHERE {column}=?", ("s000000",)))
+            assert all("SCAN " + table not in row[3] for row in plan)
+        def add(first, last):
+            connection.executemany("INSERT INTO session_configs VALUES(?, 'simple', 'session_class', '{}', 1)", [(f"s{index:06}",) for index in range(first,last)])
+            connection.executemany("INSERT INTO display_turns VALUES(?, ?, 1, '问题')", [(f"s{index:06}", turn) for index in range(first,last) for turn in range(10)])
+            connection.executemany("INSERT INTO chat_history VALUES(?)", [(f"s{index:06}_main",) for index in range(first,last)])
+            connection.executemany("INSERT INTO context_catalog(context_id, session_id) VALUES(?,?)", [(f"s{index:06}_main", f"s{index:06}") for index in range(first,last)])
+            connection.executemany("INSERT INTO context_sessions VALUES(?,?, 'user', 'test', 'session_class', 'simple')", [(f"route{index}", f"s{index:06}") for index in range(first,last)])
+            connection.executemany("INSERT INTO conversation_data_backups VALUES(?,?)", [(f"backup{index}", f"s{index:06}_main") for index in range(first,last)])
+            connection.executemany("INSERT INTO conversation_meta VALUES(?)", [(f"m{index:06}",) for index in range(first,last)])
+            connection.executemany("INSERT INTO context_session_history VALUES(?,?,1,2)", [(f"route{index}", f"old{index:06}") for index in range(first,last)])
+        def measured():
+            ticks = [0]
+            def progress():
+                ticks[0] += 1
+                return 0
+            connection.set_progress_handler(progress, 1)
+            try:
+                rows = conversation_records(connection, requested="s000000")
+            finally:
+                connection.set_progress_handler(None, 0)
+            assert len(rows) == 1 and rows[0]['history_count'] == 10 and rows[0]['message_count'] == 1
+            return ticks[0]
+        add(0, 10)
+        small = measured()
+        add(10, 2010)
+        large = measured()
+        assert large < small * 2
+
+
+def test_existing_auxiliary_tables_gain_indexes_during_store_startup(tmp_path):
+    """旧数据库在写入存储启动时补索引, 随后的只读精确查询不扫描辅助表"""
+    from satrap.core.framework.SessionManager import SessionConfigStore
+    from satrap.core.storage.context_catalog import CATALOG_SCHEMA
+    database = tmp_path / "legacy.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute(CATALOG_SCHEMA)
+        connection.execute("CREATE TABLE context_sessions(context_key TEXT PRIMARY KEY, session_id TEXT)")
+        connection.execute("CREATE TABLE conversation_data_backups(id TEXT PRIMARY KEY, conversation_id TEXT)")
+    SessionConfigStore(database)
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+        for table, column in (("context_catalog", "session_id"), ("context_sessions", "session_id"), ("conversation_data_backups", "conversation_id")):
+            plan = list(connection.execute(f"EXPLAIN QUERY PLAN SELECT * FROM {table} WHERE {column}=?", ("target",)))
+            assert all("SCAN " + table not in row[3] for row in plan)
+
+
+@pytest.mark.parametrize("requested", ["s000000", "s000000_child_more", "missing_child_more", "m000000_child_more"])
+def test_exact_and_legacy_catalog_queries_stay_bounded(requested):
+    """精确命中, 旧前缀和未命中均使用键查找, 不随无关主会话数据线性增长"""
+    from satrap.core.config.conversation_catalog import conversation_records
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("CREATE TABLE session_configs(session_id TEXT PRIMARY KEY)")
+        connection.execute("CREATE TABLE conversation_meta(conversation_id TEXT PRIMARY KEY)")
+        connection.executemany("INSERT INTO session_configs VALUES(?)", [("s000000",), ("s000000_child",)])
+        connection.execute("INSERT INTO conversation_meta VALUES('m000000')")
+        connection.execute("CREATE TABLE chat_history(conversation_id TEXT)")
+        connection.execute("CREATE INDEX history_identity ON chat_history(conversation_id)")
+        connection.executemany("INSERT INTO chat_history VALUES(?)", [("s000000_child_more",), ("m000000_child_more",)])
+        def measure():
+            steps = [0]
+            connection.set_progress_handler(lambda: steps.__setitem__(0, steps[0] + 1) or 0, 1)
+            try:
+                rows = conversation_records(connection, requested=requested)
+            finally:
+                connection.set_progress_handler(None, 0)
+            if requested == "missing_child_more":
+                assert rows == []
+            else:
+                expected = "s000000_child" if requested == "s000000_child_more" else requested.split("_child")[0]
+                assert rows[0]["conversation_id"] == expected
+            return steps[0]
+        small = measure()
+        connection.executemany("INSERT INTO session_configs VALUES(?)", [(f"unrelated_s{index}",) for index in range(2000)])
+        connection.executemany("INSERT INTO conversation_meta VALUES(?)", [(f"unrelated_m{index}",) for index in range(2000)])
+        assert measure() < small * 2
+
+
+def test_restored_history_routes_have_session_index_before_user_store_starts(tmp_path):
+    """归档恢复独立建立历史会话索引, 不依赖 UserInfoStore 后续启动"""
+    from satrap.core.storage.database import restore_session_domain
+    database = tmp_path / "restored.db"
+    restore_session_domain(database, "target", {"context_session_history": [
+        {"context_key": "route", "session_id": "target", "first_used_at": 1, "last_used_at": 1},
+    ]})
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+        plans = connection.execute("EXPLAIN QUERY PLAN SELECT * FROM context_session_history WHERE session_id=?", ("target",)).fetchall()
+        assert all("SCAN context_session_history" not in row[3] for row in plans)
+
+
+@pytest.mark.parametrize("config,meta,requested,expected", [
+    ("abc", "abc_def", "abc_def", "abc_def"),
+    ("abc_def", "abc", "abc_def", "abc_def"),
+    ("a_b", "a_b_c", "a_b_c_d", "a_b_c"),
+    ("a_b_c", "a_b", "a_b_c_d", "a_b_c"),
+    ("a", "a_" + "b_" * 70 + "c", "a_" + "b_" * 70 + "c_d", "a_" + "b_" * 70 + "c"),
+    ("a", "unrelated", "a_" + "b_" * 70 + "c", "a"),
+])
+def test_catalog_exact_and_longest_prefix_are_global(config, meta, requested, expected):
+    """所有来源表的精确键优先于旧前缀, 最长前缀不受来源表顺序或批次影响"""
+    from satrap.core.config.conversation_catalog import conversation_records
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript("CREATE TABLE session_configs(session_id TEXT PRIMARY KEY);"
+                                 "CREATE TABLE conversation_meta(conversation_id TEXT PRIMARY KEY);"
+                                 "CREATE TABLE chat_history(conversation_id TEXT);")
+        connection.execute("INSERT INTO session_configs VALUES(?)", (config,))
+        connection.execute("INSERT INTO conversation_meta VALUES(?)", (meta,))
+        connection.execute("INSERT INTO chat_history VALUES(?)", (requested,))
+        rows = conversation_records(connection, requested=requested)
+        assert [row["conversation_id"] for row in rows] == [expected]
+        assert rows[0]["message_count"] == 1
+
+
+def test_catalog_identifier_limit_and_prefix_memory_are_bounded():
+    """拒绝超长输入且在合法长度上限内逐批分配前缀, 避免平方级峰值内存"""
+    import tracemalloc
+    from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, conversation_records
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("CREATE TABLE session_configs(session_id TEXT PRIMARY KEY)")
+        statements = []
+        connection.set_trace_callback(statements.append)
+        with pytest.raises(ValueError, match="conversation_id"):
+            conversation_records(connection, requested="_" * (MAX_CONVERSATION_ID_LENGTH + 1))
+        assert statements == []
+        connection.set_trace_callback(None)
+        tracemalloc.start()
+        try:
+            assert conversation_records(connection, requested="_" * MAX_CONVERSATION_ID_LENGTH) == []
+            assert tracemalloc.get_traced_memory()[1] < 2 * 1024 * 1024
+        finally:
+            tracemalloc.stop()
+        boundary = "x" * MAX_CONVERSATION_ID_LENGTH
+        connection.execute("INSERT INTO session_configs VALUES(?)", (boundary,))
+        assert conversation_records(connection, requested=boundary)[0]["conversation_id"] == boundary
+
+
+@pytest.mark.parametrize("source", ["session_configs", "conversation_meta", "display_turns", "context_sessions", "context_session_history", "context_catalog"])
+@pytest.mark.parametrize("requested", ["root", "root_child", "root_child_deep"])
+@pytest.mark.parametrize("with_history", [False, True])
+def test_exact_catalog_matches_full_directory_for_every_root_source(source, requested, with_history):
+    """各类根来源在精确, 旧前缀和父会话查询中与完整目录一致, 不吞并独立子会话"""
+    from satrap.core.config.conversation_catalog import conversation_records
+    from satrap.core.storage.context_catalog import CATALOG_SCHEMA, ensure_conversation_indexes
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.executescript("CREATE TABLE session_configs(session_id TEXT PRIMARY KEY); INSERT INTO session_configs VALUES('root');"
+                                 "CREATE TABLE conversation_meta(conversation_id TEXT PRIMARY KEY);"
+                                 "CREATE TABLE display_turns(conversation_id TEXT, turn_index INTEGER, created_at REAL, user_input TEXT);"
+                                 "CREATE INDEX turns_identity ON display_turns(conversation_id,turn_index);"
+                                 "CREATE TABLE chat_history(conversation_id TEXT); CREATE INDEX history_identity ON chat_history(conversation_id);"
+                                 "CREATE TABLE context_sessions(context_key TEXT PRIMARY KEY, session_id TEXT, user_id TEXT, platform TEXT, provider_name TEXT, session_type TEXT);"
+                                 "CREATE TABLE context_session_history(context_key TEXT, session_id TEXT, first_used_at REAL, last_used_at REAL);")
+        connection.execute(CATALOG_SCHEMA)
+        ensure_conversation_indexes(connection)
+        connection.execute("INSERT INTO context_session_history VALUES('orphan-route', 'root_child_deep', 1, 2)")
+        if source == "session_configs":
+            connection.execute("INSERT INTO session_configs VALUES('root_child')")
+        elif source == "conversation_meta":
+            connection.execute("INSERT INTO conversation_meta VALUES('root_child')")
+        elif source == "display_turns":
+            connection.execute("INSERT INTO display_turns VALUES('root_child', 0, 1, '子会话标题')")
+        elif source in {"context_sessions", "context_session_history"}:
+            current = "root_child" if source == "context_sessions" else "other"
+            connection.execute("INSERT INTO context_sessions VALUES('route', ?, 'user', 'test', 'session_class', 'simple')", (current,))
+            if source == "context_session_history":
+                connection.execute("INSERT INTO context_session_history VALUES('route', 'root_child', 1, 2)")
+        else:
+            connection.execute("INSERT INTO context_catalog(context_id,session_id) VALUES('opaque-context','root_child')")
+        if with_history:
+            connection.executemany("INSERT INTO chat_history VALUES(?)", [("root_main",), ("root_child",), ("root_child_deep",)])
+        complete = conversation_records(connection)
+        expected = [row for row in complete if row["conversation_id"] == requested or requested in row["context_ids"]]
+        assert conversation_records(connection, requested=requested) == expected

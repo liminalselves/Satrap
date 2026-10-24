@@ -396,6 +396,13 @@ async def test_shell_harness_read_control(shell_env, asynchronous):
         if shell == "cmd":
             command = f'"{sys.executable}" -X utf8 -c "print(\'中文 native\')"'
             assert "中文 native" in await execute_shell(shell_env, asynchronous, command, shell=shell)
+            for symbol in ('&', '|', '>', '<'):
+                quoted = f'"审计{symbol}quoted-output.txt"'
+                output = await execute_shell(shell_env, asynchronous, f'echo {quoted}', shell=shell)
+                assert quoted in output and "退出码" not in output
+            assert not (root / "quoted-output.txt").exists()
+            assert "退出码 7" in await execute_shell(shell_env, asynchronous, "exit /b 7", shell=shell)
+
 
 
 def _native_python_command(source: str) -> str:

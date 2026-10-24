@@ -995,16 +995,16 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     monkeypatch.setattr(control, "_check_backend_health", lambda: {"running": False})
     store = GroupDirectoryStore(control._configured_storage_layout().platform_db("bot"))
     store.adopt_legacy("100", {"group_management_version": 1})
-    assert control._is_control_api_path("/platforms/bot/groups")
+    assert control._is_control_api_path("/api/platforms/bot/groups")
     context = control._RouteContext(
-        "GET", "/platforms/bot/groups/accounts", "/platforms/bot/groups/accounts", asyncio.StreamReader(), b"",
+        "GET", "/api/platforms/bot/groups/accounts", "/api/platforms/bot/groups/accounts", asyncio.StreamReader(), b"",
     )
     result = await control._route_group_directory(context)
     assert result is not None
     status, accounts = result
     assert status == 200 and accounts["current_account"] == "100"
-    query = "/platforms/bot/groups?account=100"
-    context = control._RouteContext("GET", "/platforms/bot/groups", query, asyncio.StreamReader(), b"")
+    query = "/api/platforms/bot/groups?account=100"
+    context = control._RouteContext("GET", "/api/platforms/bot/groups", query, asyncio.StreamReader(), b"")
     result = await control._route_group_directory(context)
     assert result is not None
     status, listing = result
@@ -1015,7 +1015,7 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     reader = asyncio.StreamReader()
     reader.feed_data(body)
     reader.feed_eof()
-    route = "/platforms/bot/groups/settings"
+    route = "/api/platforms/bot/groups/settings"
     raw = f"PATCH {route} HTTP/1.1\r\nContent-Length: {len(body)}\r\n\r\n".encode("utf-8")
     context = control._RouteContext("PATCH", route, route, reader, raw)
     result = await control._route_group_directory(context)
@@ -1029,7 +1029,7 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
         "platforms": [{"id": "bot", "type": "onebot", "settings": {"group_management_version": 1}}],
     })
     context = control._RouteContext(
-        "GET", "/platforms/bot/groups/accounts", "/platforms/bot/groups/accounts", asyncio.StreamReader(), b"",
+        "GET", "/api/platforms/bot/groups/accounts", "/api/platforms/bot/groups/accounts", asyncio.StreamReader(), b"",
     )
     result = await control._route_group_directory(context)
     assert result is not None

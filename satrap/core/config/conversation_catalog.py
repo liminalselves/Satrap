@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 from collections.abc import Callable
+from itertools import islice
 import traceback
 import sqlite3
 import json
@@ -16,6 +17,8 @@ from satrap.core.storage.layout import StorageLayout, CHAT_PLATFORM_ID, LOCAL_PL
 from satrap.core.platform import registry
 
 from satrap.core.log import logger
+
+MAX_CONVERSATION_ID_LENGTH = 4096   # 约束外部标识驱动的前缀枚举工作量
 
 
 def platform_catalog(layout: StorageLayout, document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -74,7 +77,7 @@ def require_catalog_platform(layout: StorageLayout, document: dict[str, Any], pl
     return platform_id
 
 
-def _rows(connection: sqlite3.Connection, tables: set[str], table: str) -> list[dict[str, Any]]:
+def _rows(connection: sqlite3.Connection, tables: set[str], table: str, where: str = "", params: tuple[object, ...] = ()) -> list[dict[str, Any]]:
     """
     读取已有元数据表, 不迁移旧数据库
 
@@ -82,11 +85,13 @@ def _rows(connection: sqlite3.Connection, tables: set[str], table: str) -> list[
     - connection: 只读连接
     - tables: 已确认存在的表名
     - table: 内部指定的元数据表
+    - where: 内部构造的筛选表达式
+    - params: 筛选使用的绑定参数
 
     返回:
     - 命名行列表, 缺表时返回空列表
     """
-    return [dict(row) for row in connection.execute(f"SELECT * FROM {table}")] if table in tables else []
+    return [dict(row) for row in connection.execute(f"SELECT * FROM {table}" + (" WHERE " + where if where else ""), params)] if table in tables else []
 
 
 def _route_metadata(row: dict[str, Any]) -> dict[str, str]:
@@ -129,36 +134,78 @@ def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any
     参数:
     - connection: 使用 sqlite3.Row 的只读连接
     - platform: 动态平台描述, 未提供时保留存储层兼容入口
-    - requested: 可选精确对话或上下文 ID, 仅构建对应目录标签
+    - requested: 可选精确对话或上下文 ID, 在 SQL 中限定元数据读取和历史聚合; 超过长度上限时抛出 ValueError
 
     返回:
     - 带分类标签和真实活动时间的对话记录, 按最近活动排序
     """
+    if len(requested) > MAX_CONVERSATION_ID_LENGTH:
+        raise ValueError(f"conversation_id 不能超过 {MAX_CONVERSATION_ID_LENGTH} 个字符")
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    configs = {row["session_id"]: row for row in _rows(connection, tables, "session_configs")}
-    chat = {row["conversation_id"]: row for row in _rows(connection, tables, "conversation_meta")}
-    projects = {row["project_id"]: row for row in _rows(connection, tables, "projects")}
-    catalog = {row["context_id"]: row for row in _rows(connection, tables, "context_catalog")}
+    sources = [(table, key) for table, key in (
+        ('session_configs', 'session_id'), ('conversation_meta', 'conversation_id'),
+        ('display_turns', 'conversation_id'), ('context_sessions', 'session_id'), ('context_catalog', 'session_id'),
+    ) if table in tables]
+    if {'context_sessions', 'context_session_history'}.issubset(tables):
+        sources.append(('context_session_history h JOIN context_sessions c ON c.context_key=h.context_key AND h.session_id<>c.session_id', 'h.session_id'))
+    # 与下方 roots 的来源一致, 历史路由仅保留仍有关联上下文的记录
+    identity = requested
+    if requested and 'context_catalog' in tables:
+        explicit = connection.execute("SELECT session_id FROM context_catalog WHERE context_id=?", (requested,)).fetchone()
+        if explicit and explicit[0]:
+            identity = str(explicit[0])
+    if requested and identity == requested:
+        exact = any(connection.execute(f"SELECT 1 FROM {table} WHERE {key}=?", (identity,)).fetchone() for table, key in sources)
+        if not exact:
+            positions = (index for index in range(len(requested) - 1, 0, -1) if requested[index] == '_')
+            while candidates := [requested[:index] for index in islice(positions, 64)]:
+                placeholders = ','.join('?' for _ in candidates)
+                matches = [str(row[0]) for table, key in sources
+                           for row in connection.execute(f"SELECT DISTINCT {key} FROM {table} WHERE {key} IN ({placeholders})", candidates)]
+                if matches:
+                    identity = max(matches, key=len)
+                    break
+            # 先检查所有表的精确键, 再按长度递减分批比较跨表前缀, 不一次性分配全部子串
+    configs = {row["session_id"]: row for row in _rows(connection, tables, "session_configs", "session_id=?" if requested else "", (identity,) if requested else ())}
+    chat = {row["conversation_id"]: row for row in _rows(connection, tables, "conversation_meta", "conversation_id=?" if requested else "", (identity,) if requested else ())}
+    project = chat.get(identity, {}).get('project_id')
+    projects = {row["project_id"]: row for row in _rows(connection, tables, "projects", "project_id=?" if requested else "", (project,) if requested else ())}
+    context_where = "session_id=? OR context_id=? OR (context_id>=? AND context_id<?)"
+    context_args = (identity, identity, identity + '_', identity + '`')
+    catalog = {row["context_id"]: row for row in _rows(connection, tables, "context_catalog", context_where if requested else "", context_args if requested else ())}
     routes: dict[str, list[dict[str, Any]]] = {}
-    for row in _rows(connection, tables, "context_sessions"):
+    for row in _rows(connection, tables, "context_sessions", "session_id=?" if requested else "", (identity,) if requested else ()):
         routes.setdefault(row["session_id"], []).append(row)
     if {"context_sessions", "context_session_history"}.issubset(tables):
         for row in connection.execute(
             "SELECT c.context_key, c.user_id, c.platform, c.provider_name, c.session_type, "
             "h.session_id, h.first_used_at AS created_at, h.last_used_at "
             "FROM context_session_history h JOIN context_sessions c ON c.context_key=h.context_key "
-            "WHERE h.session_id<>c.session_id"
+            "WHERE h.session_id<>c.session_id" + (" AND h.session_id=?" if requested else ""),
+            (identity,) if requested else (),
         ):
             routes.setdefault(row["session_id"], []).append(dict(row))
-    users = {str(row["user_id"]): row for row in _rows(connection, tables, "user_info")}
+    user_ids = tuple({str(row['user_id']) for rows in routes.values() for row in rows if row.get('user_id')})
+    user_where = "user_id IN (" + ",".join("?" for _ in user_ids) + ")" if user_ids else "0"
+    users = {str(row["user_id"]): row for row in _rows(connection, tables, "user_info", user_where if requested else "", user_ids if requested else ())}
     turns: dict[str, list[dict[str, Any]]] = {}
     if "display_turns" in tables:
-        for row in connection.execute('SELECT t.conversation_id, MIN(t.turn_index) AS turn_index, MAX(t.created_at) AS created_at, COUNT(*) AS turn_count, (SELECT SUBSTR(first.user_input, 1, 100) FROM display_turns first WHERE first.conversation_id=t.conversation_id ORDER BY first.turn_index LIMIT 1) AS user_input FROM display_turns t GROUP BY t.conversation_id'):
+        for row in connection.execute('SELECT t.conversation_id, MIN(t.turn_index) AS turn_index, MAX(t.created_at) AS created_at, COUNT(*) AS turn_count, (SELECT SUBSTR(first.user_input, 1, 100) FROM display_turns first WHERE first.conversation_id=t.conversation_id ORDER BY first.turn_index LIMIT 1) AS user_input FROM display_turns t' + (' WHERE t.conversation_id=?' if requested else '') + ' GROUP BY t.conversation_id', (identity,) if requested else ()):
             turns.setdefault(row["conversation_id"], []).append(dict(row))
     roots = set(configs) | set(chat) | set(turns) | set(routes) | {row["session_id"] for row in catalog.values() if row["session_id"]}
-    counts = dict(connection.execute("SELECT conversation_id, COUNT(*) FROM chat_history GROUP BY conversation_id")) if "chat_history" in tables else {}
+    if requested:
+        for table, key in sources:
+            roots.update(str(row[0]) for row in connection.execute(
+                f"SELECT DISTINCT {key} FROM {table} WHERE {key}=? OR ({key}>=? AND {key}<?)",
+                (identity, identity + '_', identity + '`'),
+            ))
+        # 精确查询也需知道命名空间中的独立子会话根, 避免将它们的历史折叠进父会话
+    selected_contexts = tuple(set(catalog) | {identity})
+    history_where = "conversation_id IN (" + ",".join("?" for _ in selected_contexts) + ") OR (conversation_id>=? AND conversation_id<?)"
+    history_args = (*selected_contexts, identity + '_', identity + '`')
+    counts = dict(connection.execute("SELECT conversation_id, COUNT(*) FROM chat_history" + (" WHERE " + history_where if requested else "") + " GROUP BY conversation_id", history_args if requested else ())) if "chat_history" in tables else {}
     if "conversation_data_backups" in tables:
-        for row in connection.execute("SELECT DISTINCT conversation_id FROM conversation_data_backups"):
+        for row in connection.execute("SELECT DISTINCT conversation_id FROM conversation_data_backups" + (" WHERE " + history_where if requested else ""), history_args if requested else ()):
             counts.setdefault(row[0], 0)
     owners: dict[str, list[str]] = {root: [] for root in roots}
     inferred: set[str] = set()

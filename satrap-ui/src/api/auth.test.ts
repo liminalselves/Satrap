@@ -157,3 +157,14 @@ describe('每服务认证', () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 });
+
+
+it('管理业务页需要 Backend 认证, Chat 与模型配置保留独立服务入口', () => {
+  expect(auth.requiredApiServices('/platforms/approvals')).toEqual(['http://control', 'http://backend']);
+  expect(auth.requiredApiServices('/conversations')).toEqual(['http://control', 'http://backend']);
+  expect(auth.requiredApiServices('/chat')).toEqual(['http://chat']);
+  expect(auth.requiredApiServices('/')).toEqual(['http://control', 'http://backend']);
+  expect(auth.requiredApiServices('/models')).toEqual(['http://control']);
+  expect(auth.requiredApiServices('/rag')).toEqual(['http://control']);
+  expect(auth.requiredApiServices('/rag/')).toEqual(['http://control']);
+});

@@ -953,3 +953,23 @@ async def test_platform_approval_catalog_preserves_sources_pagination_and_storag
         assert (await server._route('GET', '/api/platform-actions' + query, b''))[0] == 400
     assert (await server._route('POST', '/api/platform-actions', b'{}'))[0] == 405
     assert database.read_bytes() == before
+
+    empty = await platform_action_catalog([ActionScope('unsupported', missing, '', False)])
+    assert empty['complete'] and empty['pending_count'] == 0 and not empty['warnings']
+    assert not missing.exists()
+    unsupported = tmp_path / 'unsupported.db'
+    with closing(sqlite3.connect(unsupported)) as connection, connection:
+        ensure_platform_tables(connection)
+    empty = await platform_action_catalog([ActionScope('unsupported', unsupported, '', False)])
+    assert empty['complete'] and empty['pending_count'] == 0 and not empty['warnings']
+    for table, column in [('group_actions', 'params_json'), ('group_actions', 'result_json'), ('friend_actions', 'target_json')]:
+        with closing(sqlite3.connect(database)) as connection, connection:
+            original = connection.execute(f"SELECT {column} FROM {table} WHERE action_id='same-id'").fetchone()[0]
+            connection.execute(f"UPDATE {table} SET {column}='broken-json' WHERE action_id='same-id'")
+        page = await platform_action_catalog([scope])
+        summary = await platform_action_catalog([scope], summary=True)
+        assert page['total'] == page['pending_count'] == summary['pending_count'] == 63
+        assert not page['complete'] and not summary['complete']
+        assert page['platforms'][0]['invalid_count'] == 1 and page['warnings']
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute(f"UPDATE {table} SET {column}=? WHERE action_id='same-id'", (original,))
