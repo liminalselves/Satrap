@@ -62,5 +62,6 @@ defusedxml==0.7.1
 # 测试框架
 pytest>=8.0
 pytest-asyncio>=0.23
+setuptools>=68
 
 packaging>=23.0

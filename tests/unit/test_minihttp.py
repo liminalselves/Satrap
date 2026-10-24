@@ -613,7 +613,7 @@ async def test_request_body_over_limit_returns_413():
             b"Content-Length: 9\r\n\r\n"
         )
         response = await _raw_request(port, request)
-        assert b"413 Content Too Large" in response
+        assert response.startswith(b"HTTP/1.1 413 ")
         assert b"request body too large" in response
     finally:
         await server.stop()

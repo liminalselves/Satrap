@@ -41,7 +41,7 @@ jobs:
           [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pip install '.[sandbox,vector,video,web-js]' pytest pytest-asyncio
+          python -m pip install '.[sandbox,vector,video,web-js]' -r requirements.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Exercise integrated unit flows once
         run: |
