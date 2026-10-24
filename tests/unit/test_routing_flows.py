@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 import pytest
+import sqlite3
+import threading
 from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
 from satrap.core.config.conversation_catalog import _route_metadata
 from satrap.core.config.document import validate_platforms
@@ -121,6 +123,48 @@ def test_persistent_generations_do_not_restore_old_binding(tmp_path: Path) -> No
     with ThreadPoolExecutor(max_workers=8) as executor:
         values = list(executor.map(lambda _: AgentRouteStore(path).revision("bot", "group", "g", ("c",), enabled=True), range(20)))
     assert values == [4] * 20
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_existing_route_remains_readable_during_unrelated_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    """已有签名和未启用的新对话不争抢其它业务持有的 SQLite 写锁"""
+    path = tmp_path / "platform.db"
+    AgentRouteStore(path).revision("bot", "group", "g", ("a",), enabled=True)
+    connect = sqlite3.connect
+
+    def limited_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        kwargs["timeout"] = 0.05
+        return connect(*args, **kwargs)
+
+    with closing(connect(path)) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        monkeypatch.setattr(sqlite3, "connect", limited_connect)
+        try:
+            reader = AgentRouteStore(path)
+            assert reader.revision("bot", "group", "g", ("a",), enabled=enabled) == 1
+            assert reader.current_revision("bot", "group", "g") == 1
+            assert reader.revision("bot", "group", "unregistered", ("a",), enabled=False) == 0
+        finally:
+            writer.rollback()
+
+
+def test_route_creation_rechecks_after_competing_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个进程形态的独立连接同时创建同一绑定时只分配一个代次"""
+    path = tmp_path / "platform.db"
+    AgentRouteStore(path).revision("bot", "group", "existing", ("a",), enabled=True)
+    connect = sqlite3.connect
+    barrier = threading.Barrier(2)
+
+    def synchronized_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = connect(*args, **kwargs)
+        connection.set_trace_callback(lambda sql: barrier.wait(timeout=3) if sql == "BEGIN IMMEDIATE" else None)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", synchronized_connect)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        values = list(executor.map(lambda _: AgentRouteStore(path).revision("bot", "group", "new", ("b",), enabled=True), range(2)))
+    assert values == [1, 1]
+
 
 def test_routes_isolate_chat_kinds_groups_and_members(tmp_path: Path) -> None:
     adapter = Adapter(PlatformConfig(id="test", session_type="shared", session_bindings=_bindings()))
