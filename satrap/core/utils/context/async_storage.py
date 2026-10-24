@@ -24,7 +24,7 @@ from .utils import (
 )
 from .base import _ContextCore
 
-from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_WRITE, catalog_values
+from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_INDEX, CATALOG_WRITE, catalog_values
 
 from satrap.core.log import logger
 
@@ -135,6 +135,7 @@ class _AsyncStorage(_ContextCore):
                         pass
 
                 await conn.execute(CATALOG_SCHEMA)
+                await conn.execute(CATALOG_INDEX)
                 await conn.commit()
         except Exception as e:
             logger.error(

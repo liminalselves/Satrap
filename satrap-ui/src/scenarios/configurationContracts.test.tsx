@@ -525,15 +525,18 @@ describe("utils/edictumParams", () => {
       expect(form.system_prompt).toBe('助手');
       expect(form.system_prompt_enabled).toBe(true);
       expect(readEdictumParams({ command_history_enabled: true }, true).command_history_enabled).toBe(true);
+      const prompted = readEdictumParams({ default_agent_prompt_enabled: true }, true);
+      expect(prompted.default_agent_prompt_enabled).toBe(true);
+      expect(writeEdictumParams(prompted, true).default_agent_prompt_enabled).toBe(true);
       expect(writeEdictumParams({ ...form, command_history_enabled: true }, true).command_history_enabled).toBe(true);
       expect(JSON.parse(form.params)).toEqual({ custom: { a: 1 } });
-      expect(writeEdictumParams(form, true)).toEqual({ system_prompt: '助手', command_history_enabled: false, custom: { a: 1 } });
+      expect(writeEdictumParams(form, true)).toEqual({ system_prompt: '助手', command_history_enabled: false, default_agent_prompt_enabled: false, custom: { a: 1 } });
     });
 
     it('区分主动清空与未配置, 拒绝重复入口', () => {
       const form = { params: '{}', system_prompt: '', system_prompt_enabled: true };
-      expect(writeEdictumParams(form, true)).toEqual({ system_prompt: '', command_history_enabled: false });
-      expect(writeEdictumParams({ ...form, system_prompt_enabled: false }, true)).toEqual({ command_history_enabled: false });
+      expect(writeEdictumParams(form, true)).toEqual({ system_prompt: '', command_history_enabled: false, default_agent_prompt_enabled: false });
+      expect(writeEdictumParams({ ...form, system_prompt_enabled: false }, true)).toEqual({ command_history_enabled: false, default_agent_prompt_enabled: false });
       expect(() => writeEdictumParams({ ...form, params: '{"system_prompt":"重复"}' }, true)).toThrow('输入框');
     });
 
@@ -544,8 +547,8 @@ describe("utils/edictumParams", () => {
 
     it('迁移旧生成参数, 保留零温度并支持恢复继承', () => {
       const form = readEdictumParams({ thinking: 'high', temperature: 0, model_params: { top_p: 0.8, max_tokens: 2048 }, custom: 1 }, true);
-      expect(writeEdictumParams(form, true)).toEqual({ thinking: 'high', command_history_enabled: false, model_params: { temperature: 0, top_p: 0.8, max_tokens: 2048 }, custom: 1 });
-      expect(writeEdictumParams({ ...form, thinking: '', temperature: undefined, top_p: undefined, max_tokens: undefined }, true)).toEqual({ command_history_enabled: false, custom: 1 });
+      expect(writeEdictumParams(form, true)).toEqual({ thinking: 'high', command_history_enabled: false, default_agent_prompt_enabled: false, model_params: { temperature: 0, top_p: 0.8, max_tokens: 2048 }, custom: 1 });
+      expect(writeEdictumParams({ ...form, thinking: '', temperature: undefined, top_p: undefined, max_tokens: undefined }, true)).toEqual({ command_history_enabled: false, default_agent_prompt_enabled: false, custom: 1 });
       expect(() => writeEdictumParams({ ...form, top_p: 0 }, true)).toThrow('top_p');
       expect(() => writeEdictumParams({ ...form, max_tokens: 1.5 }, true)).toThrow('正整数');
     });
@@ -554,6 +557,15 @@ describe("utils/edictumParams", () => {
 
 describe("components/common/PluginConfigFields", () => {
   describe('插件选项状态', () => {
+    it('中文标签展示不改变实际配置键及选项值', () => {
+      const schema = { history_scope: { type: 'select', default: 'current_session', description: '', label: '群消息查询范围',
+        options: ['current_session', 'group_archive', 'disabled'],
+        option_labels: { current_session: '仅当前会话', group_archive: '当前群全部保留记录', disabled: '禁止查询群记录' } } };
+      const markup = renderToStaticMarkup(<PluginConfigFields schema={schema} values={{ history_scope: 'group_archive' }} onChange={() => undefined} />);
+      expect(markup).toContain('群消息查询范围');
+      expect(markup).toMatch(/<option[^>]*value="group_archive"[^>]*selected[^>]*>当前群全部保留记录/);
+      expect(markup).toContain('仅当前会话');
+    });
     const schema = { note: { type: 'string', default: '', description: '' }, model: { type: 'llm', default: '', description: '' } };
     it('选项未就绪时保留原值, 不误报引用失效, 普通参数仍可编辑', () => {
       const markup = renderToStaticMarkup(<PluginConfigFields schema={schema} values={{ note: '草稿', model: 'saved' }} modelState="loading" onChange={() => undefined} />);

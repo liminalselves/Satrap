@@ -9,12 +9,25 @@ export interface AdministratorMember {
   user_id: string;
 }
 
+export interface AdministratorChat {
+  platform_id: string;
+  platform_instance_id?: string;
+  chat_id: string;
+}
+
+export interface AdministratorChatRebind {
+  group_id: string;
+  platform_id: string;
+  chat_id: string;
+}
+
 export interface AdministratorGroup {
   id: string;
   name: string;
   enabled: boolean;
   protect?: boolean;
   members: AdministratorMember[];
+  chats?: AdministratorChat[];
   plugin_scope: { mode: 'selected' | 'all'; included: string[]; excluded: string[] };
 }
 
@@ -73,6 +86,7 @@ export interface AdministratorSnapshot {
   plugins: AdministratorPlugin[];
   plugin_errors?: Array<{ name: string; error: string }>;
   invalid_members: AdministratorRebind[];
+  invalid_chats?: AdministratorChatRebind[];
   invalid_overrides: AdministratorInvalidOverride[];
   migrated_from_legacy?: boolean;
   migration_pending?: string[];
@@ -80,6 +94,7 @@ export interface AdministratorSnapshot {
 }
 
 export interface AdministratorPreview {
+  chats?: Array<{ platform_id: string; chat_id: string; plugins: AdministratorPreview['members'][number]['plugins'] }>;
   members: Array<{
     platform_id: string;
     user_id: string;
@@ -119,13 +134,13 @@ export const administratorsApi = {
       throw error;
     }
   },
-  save: async (groups: AdministratorGroup[], overrides: AdministratorOverride[], revision: string, rebind: AdministratorRebind[], rebindOverrides: AdministratorOverrideRebind[]) =>
+  save: async (groups: AdministratorGroup[], overrides: AdministratorOverride[], revision: string, rebind: AdministratorRebind[], rebindOverrides: AdministratorOverrideRebind[], rebindChats: AdministratorChatRebind[] = []) =>
     (await controlClient.put<AdministratorSnapshot>(root, {
-      groups, overrides, expected_revision: revision, rebind_members: rebind, rebind_overrides: rebindOverrides,
+      groups, overrides, expected_revision: revision, rebind_members: rebind, rebind_overrides: rebindOverrides, ...(rebindChats.length ? { rebind_chats: rebindChats } : {}),
     })).data,
-  preview: async (groups: AdministratorGroup[], overrides: AdministratorOverride[], rebind: AdministratorRebind[], rebindOverrides: AdministratorOverrideRebind[]) =>
+  preview: async (groups: AdministratorGroup[], overrides: AdministratorOverride[], rebind: AdministratorRebind[], rebindOverrides: AdministratorOverrideRebind[], rebindChats: AdministratorChatRebind[] = []) =>
     (await controlClient.post<AdministratorPreview>(root + '/preview', {
-      groups, overrides, rebind_members: rebind, rebind_overrides: rebindOverrides,
+      groups, overrides, rebind_members: rebind, rebind_overrides: rebindOverrides, ...(rebindChats.length ? { rebind_chats: rebindChats } : {}),
     })).data,
   apply: async (revision: string) =>
     (await controlClient.post<{ runtime: AdministratorRuntime }>(root + '/apply', { section_revision: revision })).data,

@@ -79,6 +79,11 @@ def test_code_execution_timeout(tmp_path: Path) -> None:
 async def test_sandbox_worker_lifecycle_without_approval(sandbox: CodeSandbox, asynchronous: bool) -> None:
     """七操作共用真实新进程, 无授权通道也能执行, 文件保留但变量不保留"""
     tool = AsyncCodeSandboxTool(sandbox) if asynchronous else CodeSandboxTool(sandbox)
+    parameters = tool.get_tool_defined()["function"]["parameters"]
+    assert parameters["required"] == ["operation"]
+    assert set(parameters["properties"]["operation"]["enum"]) == {
+        "run", "run_file", "save", "read", "delete", "delete_dir", "list",
+    }
 
     async def execute(operation, **kwargs):
         return await tool.execute(operation, **kwargs) if asynchronous else tool.execute(operation, **kwargs)
@@ -361,8 +366,6 @@ print(json.dumps(blocked))
 
 @pytest.fixture
 def shell_env(tmp_path, monkeypatch):
-    if os.name != "nt" or shutil.which("powershell") is None:
-        pytest.skip("实际 Shell 复现需要 Windows PowerShell")
     root = tmp_path / "workspace"
     root.mkdir()
     monkeypatch.setattr(coding, "WORKSPACE_ROOT", root)
@@ -373,13 +376,13 @@ def shell_env(tmp_path, monkeypatch):
     bind_environment(session, replace(environment_snapshot(session), workspace_root=Path(root)))
     return root, engine, session
 
-async def execute_shell(shell_env, asynchronous, command, shell="powershell"):
+async def execute_shell(shell_env, asynchronous, command, shell="auto", cwd="", timeout=10):
     _, engine, session = shell_env
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
     tool._bind(cast(Any, session))
     if isinstance(tool, coding.AsyncShellTool):
-        return await tool.execute(command, timeout=10, shell=shell)
-    return tool.execute(command, timeout=10, shell=shell)
+        return await tool.execute(command, timeout=timeout, shell=shell, cwd=cwd)
+    return tool.execute(command, timeout=timeout, shell=shell, cwd=cwd)
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
 async def test_shell_harness_read_control(shell_env, asynchronous):
@@ -392,9 +395,99 @@ async def test_shell_harness_read_control(shell_env, asynchronous):
     assert "audit-control" in output
     engine.set_plan_mode(False)
     session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
-    for shell in ("powershell", "cmd"):
+    for shell in (("powershell", "cmd") if os.name == "nt" else ("bash", "sh")):
         output = await execute_shell(shell_env, asynchronous, "echo 审计中文-control", shell=shell)
         assert "审计中文-control" in output
+        if shell == "cmd":
+            command = f'"{sys.executable}" -X utf8 -c "print(\'中文 native\')"'
+            assert "中文 native" in await execute_shell(shell_env, asynchronous, command, shell=shell)
+            for symbol in ('&', '|', '>', '<'):
+                quoted = f'"审计{symbol}quoted-output.txt"'
+                output = await execute_shell(shell_env, asynchronous, f'echo {quoted}', shell=shell)
+                assert quoted in output and "退出码" not in output
+            assert not (root / "quoted-output.txt").exists()
+            assert "退出码 7" in await execute_shell(shell_env, asynchronous, "exit /b 7", shell=shell)
+
+
+
+def _native_python_command(source: str) -> str:
+    """将真实 Python 场景编码为当前系统 Shell 可执行的固定命令"""
+    import shlex
+    payload = source.encode("utf-8").hex()
+    args = [sys.executable, "-X", "utf8", "-c", 'import sys;exec(bytes.fromhex(sys.argv[1]))', payload]
+    if os.name == "nt":
+        return "& " + " ".join("'" + value.replace("'", "''") + "'" for value in args)
+    return shlex.join(args)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_shell_native_io_exit_and_output_budget(shell_env, monkeypatch, asynchronous):
+    """真实 Shell 保留中文和工作目录, 关闭 stdin, 剥敏并限制输出内存"""
+    root, engine, session = shell_env
+    engine.set_plan_mode(False)
+    engine.set_mode("full-access", persist=False)
+    monkeypatch.setenv("SATRAP_NATIVE_TEST_TOKEN", "fake-native-secret")
+    folder = root / "中文 空格"
+    folder.mkdir()
+    startup = root / "startup.sh"
+    startup.write_text("touch unexpected-startup\n", encoding="utf-8")
+    monkeypatch.setenv("BASH_ENV", str(startup))
+    monkeypatch.setenv("ENV", str(startup))
+    source = "import os,sys;from pathlib import Path;print('你好-shell');print(Path.cwd().name);print(repr(sys.stdin.read()));print(os.environ.get('SATRAP_NATIVE_TEST_TOKEN','removed'))"
+    output = await execute_shell(shell_env, asynchronous, _native_python_command(source), cwd=folder.name)
+    assert "你好-shell" in output and folder.name in output and "''" in output
+    assert "removed" in output and "fake-native-secret" not in output
+    assert not (folder / "unexpected-startup").exists()
+    failed = await execute_shell(shell_env, asynchronous, _native_python_command("import sys;print('failure-中文',file=sys.stderr);sys.exit(7)"))
+    assert "退出码 7" in failed and "failure-中文" in failed
+    large = await execute_shell(shell_env, asynchronous, _native_python_command("import sys;sys.stdout.write('x'*10000000);sys.stderr.write('e'*10000000);print('tail-marker')"))
+    assert "输出已截断" in large and large.endswith("tail-marker\n")
+    assert len(large) < 20100
+    timed = await execute_shell(shell_env, asynchronous, _native_python_command("import time;time.sleep(30)"), timeout=1)
+    assert "执行超时" in timed
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX 进程组回收场景")
+@pytest.mark.parametrize("operation", ["timeout", "cancel", "parent_exit"])
+async def test_shell_posix_descendant_cleanup(shell_env, operation):
+    """真实异步工具超时及取消后等待进程组退出, 后代不再修改文件"""
+    import asyncio
+    import time
+    root, engine, session = shell_env
+    engine.set_plan_mode(False)
+    engine.set_mode("full-access", persist=False)
+    tool = coding.AsyncShellTool(engine)
+    tool._bind(cast(Any, session))
+    child = "import os,time;from pathlib import Path;Path('child.pid').write_text(str(os.getpid()));time.sleep(2);Path('escaped.txt').write_text('bad')"
+    source = f"import subprocess,sys,time;subprocess.Popen([sys.executable,'-c',{child!r}]);time.sleep({0 if operation == 'parent_exit' else 30})"
+    task = asyncio.create_task(tool.execute(_native_python_command(source), timeout=20 if operation == "cancel" else 1))
+    deadline = time.monotonic() + 5
+    while not (root / "child.pid").exists() and time.monotonic() < deadline and not task.done():
+        await asyncio.sleep(0.02)
+    assert (root / "child.pid").exists()
+    if operation == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        assert "执行超时" in await task
+    pid = int((root / "child.pid").read_text())
+    proc = Path(f"/proc/{pid}/stat")
+    deadline = time.monotonic() + 1
+    if sys.platform.startswith("linux"):
+        state = None
+        while time.monotonic() < deadline:
+            try:
+                state = proc.read_text().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                state = None
+                break
+            if state == "Z":
+                break
+            await asyncio.sleep(0.02)
+        assert state in {None, "Z"}
+    await asyncio.sleep(2.1)
+    assert not (root / "escaped.txt").exists()
 
 @pytest.mark.parametrize("command", [
     "echo (New-Item audit-marker)",
@@ -422,7 +515,7 @@ async def test_shell_must_not_read_protected_token(shell_env, asynchronous):
         (root / token_path).write_text(token, encoding="utf-8")
         if "拒绝读取" not in reader.execute(token_path):
             raise RuntimeError("复现前置条件失败: 文件工具未拒绝受保护路径")
-        output = await execute_shell(shell_env, asynchronous, "Get-Content " + token_path)
+        output = await execute_shell(shell_env, asynchronous, ("Get-Content " if os.name == "nt" else "cat ") + token_path)
         assert token not in output, "Shell 输出了文件工具拒绝读取的伪造令牌"
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -499,7 +592,7 @@ async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatc
 
     monkeypatch.setattr(coding, "get_plugin_state", state)
     monkeypatch.setattr(proc_env.os, "environ", {"FIRST_TOKEN": "first", "LAST_API_KEY": "last"})
-    def run(args, workdir, timeout, allow=frozenset()):
+    def run(args, workdir, timeout, allow=frozenset(), **kwargs):
         return ",".join(sorted(proc_env.sanitized_child_env(allow=allow)))
     monkeypatch.setattr(coding, "_run_shell", run)
     configurations = [{"allowed_env_vars": "FIRST_TOKEN"}, {"allowed_env_vars": ""}, {"allowed_env_vars": "LAST_API_KEY"}]

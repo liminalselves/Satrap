@@ -1,13 +1,13 @@
 import { controlApi } from './control';
-import { VersionedConfigRead } from './configVersions';
-import type { GlobalPluginConfig } from './types';
+import { VersionedConfigRead, readConfigSnapshot } from './configVersions';
+import type { GlobalPluginConfig, ManagedPlugin } from './types';
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 export const pluginCatalogRead = new VersionedConfigRead(['plugin_catalog', 'edictum_configs', 'chat_plugins'], async (signal) => {
   const plugins = await controlApi.listPlugins(signal);
   if (!Array.isArray(plugins) || plugins.some((plugin) => !isObject(plugin) || typeof plugin.name !== 'string' || !isObject(plugin.config_schema) || !isObject(plugin.capabilities))) throw new Error('插件目录响应格式无效');
   return plugins;
-});
+}, undefined, (signal) => readConfigSnapshot<ManagedPlugin[]>('plugin_catalog', signal));
 export const pluginModelRead = new VersionedConfigRead(['models'], async (signal) => {
   const result = await controlApi.pluginModelOptions(signal);
   if (!isObject(result?.options) || Object.values(result.options).some((items) => !Array.isArray(items))) throw new Error('模型选项响应格式无效');

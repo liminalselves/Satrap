@@ -24,7 +24,7 @@ from .utils import (
 )
 from .base import _ContextCore
 
-from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_WRITE, catalog_values
+from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_INDEX, CATALOG_WRITE, catalog_values
 
 from satrap.core.log import logger
 
@@ -130,6 +130,7 @@ class _SyncStorage(_ContextCore):
                     pass
 
             conn.execute(CATALOG_SCHEMA)
+            conn.execute(CATALOG_INDEX)
             conn.commit()
         except Exception as e:
             logger.error(

@@ -13,10 +13,11 @@ class WeatherTool(Tool):
     description = "查询城市天气"
     params_dict = {
         "city": ("string", "城市名称"),
+        "unit": ("string", "温度单位，默认 celsius"),
     }
 
-    def execute(self, city: str):
-        return {"city": city, "weather": "晴"}
+    def execute(self, city: str, unit: str = "celsius"):
+        return {"city": city, "unit": unit, "weather": "晴"}
 
 
 manager = ToolsManager()
@@ -26,7 +27,18 @@ print(manager.get_tools_definitions())
 print(manager.execute_tool("weather", {"city": "北京"}))
 ```
 
-`params_dict` 的类型值会直接写入 OpenAI function calling schema, 常用值包括 `string`, `number`, `boolean`, `array`, `object`。
+`params_dict` 简写为 `参数名: (类型, 描述)`。工具基类根据 `execute` 签名生成 `required`：无默认值的参数必填，有默认值的参数可省略。直接调用 `create_tool_defined()` 时可显式传入 `required`。
+
+需要枚举、数组元素、数值范围或默认值时，直接声明该项的 JSON Schema：
+
+```python
+params_dict = {
+    "mode": {"type": "string", "enum": ["auto", "text"], "default": "auto"},
+    "options": {"type": "array", "items": {"type": "string"}},
+}
+```
+
+`description` 应说明何时使用、何时不用这个工具；参数说明只写调用所需的信息，不混入宿主实现细节。只有 `**kwargs` 的动态工具应显式声明必填项。MCP 导出器使用原始 JSON Schema 提供输入声明和执行前校验, 保留必填状态、默认值、组合类型、根节点条件与 `$defs`。显式 `null` 与省略字段分别传递, 不由 SDK 改写为同一种输入。
 
 ## 异步工具
 
@@ -89,7 +101,7 @@ manager.unregister_tool("weather")
 | --- | --- |
 | `not_found` | 工具不存在 |
 | `disabled` | 工具已禁用 |
-| `invalid_arguments` | 参数不是字典 |
+| `invalid_arguments` | 参数 JSON 无法解析、缺少必填项或含未声明参数 |
 | `execution_error` | 工具内部执行异常 |
 | `invalid_tool_call` | 模型返回的 tool call 格式不合法 |
 
@@ -125,9 +137,11 @@ if response and response.type == "tools_call":
     print(final_response.content if final_response else "模型调用失败")
 ```
 
+`response.finish_reason` 保留模型结束原因。手动执行工具前应先检查该字段；`length` 表示输出可能被截断，不应执行不完整的工具调用。内置 Agent 会拒绝这类调用，参数 JSON 修复失败则由管理器返回 `invalid_arguments`，不会进入 `execute()`。
+
 ## ModelWorkflowFramework
 
-`ModelWorkflowFramework.full_agent()` 封装完整工具调用循环。
+`ModelWorkflowFramework.full_agent()` 封装完整工具调用循环。会话可通过 `default_agent_prompt_enabled=True` 在请求副本的 system 消息中补充内置工具使用规则, 默认关闭; 自定义 `system_prompt` 和持久历史不会被改写。技能目录和达到迭代上限后的收尾要求独立生效。
 
 ```python
 from satrap import LLM, ModelWorkflowFramework, ToolsManager
@@ -143,7 +157,7 @@ agent = ModelWorkflowFramework(
     llm=llm,
     context_id="agent-demo",
     tools_manager=tools,
-    system_prompt="你是一个会按需调用工具的助手",
+    system_prompt="你是助手",
 )
 
 answer = agent.full_agent(

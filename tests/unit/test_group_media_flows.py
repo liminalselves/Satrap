@@ -12,7 +12,7 @@ from satrap.core.group_chat.assets import AssetStore, inspect_image, _LEASES
 from satrap.core.group_chat.types import GroupChatError
 from satrap.core.platform.onebot.outbound import OutboundTurns
 from support.media import png
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from satrap.core.call_context import bind_call_origin
 from satrap.core.group_chat.types import GroupChatLimits
 from satrap.core.components import Image as _group_chat_media_service_Image
@@ -28,6 +28,7 @@ from satrap.core.storage.layout import StorageLayout as _group_chat_media_manage
 from satrap.core.config.group_chat_data import parse_sticker_upload
 from support.http import _request, _json_body, _use_config, _BufferWriter
 from satrap.core.group_chat.stickers import StickerStore
+from satrap.core.utils.outbound import UnsafeOutboundURLError, OutboundHTTPError, OutboundHTTPResponse
 from satrap.core.storage.layout import StorageLayout as _group_chat_stickers_StorageLayout
 
 def test_asset_scope_owner_source_and_lease(tmp_path: Path) -> None:
@@ -166,15 +167,46 @@ async def test_get_assets_downloads_once_refreshes_expired_url_and_preserves_inv
     refresh = AsyncMock(return_value="https://example.com/fresh")
     monkeypatch.setattr(adapter, "group_chat_refresh_image", refresh)
     with bind_call_origin(event.call_origin):
-        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"})
-        repeated = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"})
-        disabled = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(media_reply_enabled=False))
-        foreign = await service.execute("group_chat_get_message_assets", {"message_id": "image:source", "chat_id": "foreign"})
+        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
+        repeated = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
+        disabled = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(media_reply_enabled=False, history_scope="group_archive"))
+        foreign = await service.execute("group_chat_get_message_assets", {"message_id": "image:source", "chat_id": "foreign"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["ok"] and result["items"][0]["available"]
     assert repeated["items"][0]["asset_id"] == result["items"][0]["asset_id"]
     assert result["items"][1]["reason"] == "unsupported_media"
     assert download.await_count == 2 and refresh.await_count == 1
     assert disabled["error"]["code"] == "unsupported" and foreign["error"]["code"] == "invalid_argument"
+
+@pytest.mark.usefixtures('_group_chat_media_service_managed_media_layout')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [UnsafeOutboundURLError("地址被拒绝"), OutboundHTTPError("HTTP 403")])
+async def test_expected_image_download_failure_preserves_other_images_without_error_log(tmp_path: Path, monkeypatch, failure):
+    """下载拒绝逐图降级为 warning, 同一消息的 QQ 图片仍可升级 HTTPS 并登记"""
+    adapter, event, service = setup(tmp_path)
+    adapter.message_archive.record(SCOPE, ArchiveMessage("image:source", "123", time.time(), "图片", media=[
+        {"type": "Image", "url": "http://blocked.example/image", "native_id": "blocked"},
+        {"type": "Image", "url": "http://gchat.qpic.cn/gchatpic_new/image?key=test"},
+    ]))
+    monkeypatch.setattr(adapter, "group_chat_refresh_image", AsyncMock(return_value="https://blocked.example/refreshed"))
+    errors = Mock()
+    monkeypatch.setattr("satrap.core.group_chat.service.logger.error", errors)
+
+    async def download(url: str, **kwargs: Any) -> OutboundHTTPResponse:
+        if "blocked.example" in url:
+            raise failure
+        assert url == "https://gchat.qpic.cn/gchatpic_new/image?key=test"
+        assert kwargs["ssl_verify"] is True and kwargs["restrict_redirects_to_origin"] is True
+        assert kwargs["trusted_hosts"] == ()
+        return OutboundHTTPResponse(url=url, status_code=200, headers={}, content=png())
+
+    monkeypatch.setattr("satrap.core.pipeline.attachments.safe_async_get", download)
+    with bind_call_origin(event.call_origin):
+        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
+    assert result["ok"]
+    assert result["items"][0]["available"] is False and result["items"][0]["reason"] == "asset_unavailable"
+    assert result["items"][1]["available"] is True
+    errors.assert_not_called()
+
 
 @pytest.mark.usefixtures('_group_chat_media_service_managed_media_layout')
 @pytest.mark.asyncio
@@ -193,7 +225,7 @@ async def test_resolved_inbound_image_is_copied_before_temporary_cleanup(tmp_pat
     download = AsyncMock()
     monkeypatch.setattr("satrap.core.pipeline.attachments._download", download)
     with owner(event) as turn:
-        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"})
+        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
         assert result["items"][0]["available"]
         temporary.unlink()
         prepared = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": result["items"][0]["asset_id"]}]})
@@ -213,7 +245,7 @@ async def test_recall_during_download_never_exposes_asset_id(tmp_path: Path, mon
         return png()
     monkeypatch.setattr("satrap.core.pipeline.attachments._download", download)
     with bind_call_origin(event.call_origin):
-        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"})
+        result = await service.execute("group_chat_get_message_assets", {"message_id": "image:source"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert not result["ok"] and result["error"]["code"] == "asset_unavailable"
     assert not AssetStore(adapter.message_archive).root.exists()
 

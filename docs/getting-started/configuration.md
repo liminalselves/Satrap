@@ -22,6 +22,10 @@ Satrap 的配置分为三层:
 
 找不到配置时会创建 `.satrap/config.yaml`。
 
+显式 `--config <路径>` 优先于自动探测。已存在或显式指定的配置加载失败时停止启动, 错误包含文件路径和原因, 不再静默使用默认配置。Control 在启动或重启前进行同样的预检; 预检失败不会先停止仍在运行的后端。
+
+`session_classes` 和 `platforms` 的注释空节点或 `null` 分别按 `{}` 和 `[]` 处理, `api: null` 使用默认 API 配置。`session_scan_paths` 缺省或 `null` 使用默认扫描目录, 显式 `[]` 关闭外部目录扫描, 内置会话类型不受影响。其它错误类型会明确拒绝, 不隐式把字符串拆成列表。
+
 JSON 配置统一保存在 `.satrap/config/`:
 
 ```text
@@ -94,15 +98,20 @@ Copy-Item config.example.yaml config.yaml
 | `idle_timeout` | `3600` | Session 闲置超时秒数 |
 | `rate_limit` | `1.0` | 管线限流速率 |
 | `rate_burst` | `5` | 管线突发容量 |
-| `llm_timeout` | `120.0` | 单次 LLM 调用超时秒数 |
+| `session_timeout` | `120.0` | 单轮会话执行限时秒数, 包含模型、工具和审批等待; `null` 表示无限制 |
 | `error_feedback` | `true` | 出错或限流时是否向用户反馈 |
 | `api.host` | `127.0.0.1` | 后端 HTTP API 监听地址 |
 | `api.port` | `19870` | 后端 HTTP API 监听端口 |
+| `api.dashboard_password` | `null` | 前端访问密码的 PBKDF2-SHA256 哈希 (格式 `pbkdf2_sha256$迭代$盐$摘要`), 由系统设置"访问密码"写入; 未设置时前端免密进入, api-token 与 Bearer 访问不受其影响 |
 | `session_classes` | `{}` | 启动时静态注册的 Session 类 |
 | `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录; 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入 |
 | `workspace_roots` | `[]` | Chat 项目可浏览和绑定的目录根; 空列表默认使用本机磁盘 (Linux/macOS 为 `/`), 旧自动配置 `["."]` 同样使用此默认值; 显式填写其它路径时限制在这些目录内 |
 | `media_allowed_roots` | `null` | 本地媒体允许目录, 仅接受字符串列表或 null; 规则见下文 |
 | `platforms` | `[]` | 平台适配器实例配置 |
+
+`session_timeout` 限制平台单轮会话执行, 不包含前置附件解析和最终回复提交。填 `null` 可关闭总限时, 宿主停止和取消仍然有效。旧配置字段 `llm_timeout` 继续按原来的会话限时读取, 保存后统一改名为 `session_timeout`; 两者同时存在时以新字段为准。
+
+模型网络超时在共用的「模型配置 → LLM 配置 → 网络超时」中设置, 对应模型字段 `network_timeout`, 默认 60 秒。它传给 SDK 约束网络连接和读写等待, 不表示完整流式生成或整个任务的总时间。Chat 和平台使用同一份模型配置, 关闭会话总限时不会关闭网络超时。
 
 平台实例 `settings` 内的策略字段 (唤醒规则, 窗口与输入预算, 媒体下载, 命令入口等) 由 `satrap/core/config/platform_policy.py` 的 `POLICY_FIELD_CONTRACT` 声明并校验, 逐字段口径与默认值见[平台接入](../platform/platforms.md)。其中 `command_operators` 是 `/approve` 与 `/plan` 的操作员名单: 缺失, 为空或取值非法时这两条命令一律拒绝 (fail-closed), 升级后需先在平台设置中登记操作员, 否则群内与私聊都会收到固定拒绝文案。
 
@@ -222,7 +231,9 @@ satrap session enable assistant
 | `SATRAP_API_HOST` | `api_host` |
 | `SATRAP_API_PORT` | `api_port` |
 | `SATRAP_DATA_ROOT` | `data_root` |
-| `SATRAP_LLM_TIMEOUT` | `llm_timeout` |
+| `SATRAP_SESSION_TIMEOUT` | `session_timeout` |
+
+`SATRAP_SESSION_TIMEOUT=none` 或 `null` 表示不限时。旧环境变量 `SATRAP_LLM_TIMEOUT` 保留原语义作为兼容入口, 新变量优先。
 
 平台配置中的敏感字段可以写成 `${ENV_NAME}` 形式, 由相关配置编辑流程解析。
 

@@ -58,6 +58,10 @@ class _control_static_BufferWriter:
     async def drain(self) -> None:
         """模拟等待响应写出"""
 
+    def get_extra_info(self, name: str) -> tuple[str, int] | None:
+        """提供与真实流写入器一致的回环对端信息"""
+        return ("127.0.0.1", 40000) if name == "peername" else None
+
     def close(self) -> None:
         """记录连接关闭状态"""
         self.closed = True
@@ -93,6 +97,27 @@ async def _request(
     return bytes(writer.data)
 
 @pytest.mark.asyncio
+async def test_control_config_snapshots_overview_and_damaged_sources(tmp_path, monkeypatch):
+    """配置摘要与正文版本共同更新, 保留脱敏并明确拒绝损坏来源"""
+    model_path = tmp_path / 'models.json'
+    config_path = tmp_path / 'config.json'
+    config_path.write_text(json.dumps({'model_config_path': str(model_path), 'session_class_config_path': str(tmp_path / 'sessions.json'), 'platforms': []}), encoding='utf-8')
+    monkeypatch.setattr(control_server, 'CONFIG_PATH', config_path)
+    assert b'200' in await _request('/config/models/llm/bench', 'POST', b'{"model":"first","api_key":"private-test-key"}')
+    first = await _request('/config/snapshot?resource=models&type=llm')
+    snapshot = json.loads(first.split(b'\r\n\r\n', 1)[1])
+    assert snapshot['data']['bench']['model'] == 'first' and b'private-test-key' not in first
+    overview = json.loads((await _request('/config/overview')).split(b'\r\n\r\n', 1)[1])
+    assert overview['model_counts']['llm'] == len(snapshot['data'])
+    assert isinstance(overview['session_count'], int) and 'versions' in overview
+    await _request('/config/models/llm/bench', 'PATCH', b'{"model":"second"}')
+    changed = json.loads((await _request('/config/snapshot?resource=models&type=llm')).split(b'\r\n\r\n', 1)[1])
+    assert changed['data']['bench']['model'] == 'second' and changed['versions'] != snapshot['versions']
+    model_path.write_text('{', encoding='utf-8')
+    assert b'400' in (await _request('/config/snapshot?resource=models&type=llm')).split(b'\r\n', 1)[0]
+    assert b'400' in (await _request('/config/overview')).split(b'\r\n', 1)[0]
+
+
 async def test_control_api_requires_authentication() -> None:
     """控制服务管理 API 缺少令牌时返回 401"""
     response = await _request("/status", authenticated=False)
@@ -704,7 +729,7 @@ class _static_ui_BufferWriter:
         self.data.extend(data)
 
 @pytest.mark.asyncio
-async def test_spa_static_service_serves_index_assets_and_routes(tmp_path: Path):
+async def test_spa_static_service_serves_index_assets_and_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """静态服务应提供入口, 资源和 SPA 路由回退"""
     static_dir = tmp_path / "dist"
     assets_dir = static_dir / "assets"
@@ -729,6 +754,19 @@ async def test_spa_static_service_serves_index_assets_and_routes(tmp_path: Path)
     assert await service.serve(cast(asyncio.StreamWriter, route_writer), "/settings") is True
     assert b"<main>Satrap</main>" in route_writer.data
     assert b"Cache-Control: no-cache" in route_writer.data
+
+    monkeypatch.setattr(control_server, 'CONTROL_STATIC_UI', SPAStaticService(
+        static_dir, excluded_prefixes=control_server.CONTROL_STATIC_UI.excluded_prefixes,
+    ))
+    for route in ('/platforms', '/platforms/approvals?source=friend', '/platforms/ob/groups'):
+        response = await _request(route, authenticated=False)
+        assert b'200 OK' in response and b'<main>Satrap</main>' in response
+    for route in ('/api/platforms/ob/groups', '/config/platforms'):
+        response = await _request(route, authenticated=False)
+        assert b'401 Error' in response and b'<main>Satrap</main>' not in response
+    rejected = await _request('/api/platforms/ob/groups/settings', method='PATCH', body=b'{}', authenticated=False)
+    assert b'401 Error' in rejected
+
 
 @pytest.mark.asyncio
 async def test_spa_static_service_uses_stable_javascript_mime(
@@ -1021,3 +1059,59 @@ def test_session_reexport_cannot_escape_its_package(tmp_path: Path, monkeypatch)
     manager = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
     with pytest.raises(ValueError, match="不是模块内声明"):
         manager._load_class("satrap.core.framework.Base.Session")
+
+@pytest.mark.asyncio
+async def test_control_password_endpoints_gate_bootstrap_and_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """控制端访问密码: 免密状态, 设密码关闭回环引导, 登录签发 cookie, 改清密码即时生效, Bearer 不受影响"""
+    from satrap.core.auth_password import update_dashboard_password
+    config = tmp_path / "config.yaml"
+    monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: config)
+    import threading
+    from satrap.core import auth_password
+    event_thread = threading.get_ident()
+    original_verify = auth_password.verify_dashboard_password
+    def verify_in_worker(stored, candidate):
+        assert threading.get_ident() != event_thread
+        return original_verify(stored, candidate)
+    monkeypatch.setattr(auth_password, "verify_dashboard_password", verify_in_worker)
+    original_hash = auth_password.dashboard_password_hash
+    def hash_in_worker():
+        assert threading.get_ident() != event_thread
+        return original_hash()
+    monkeypatch.setattr(auth_password, "dashboard_password_hash", hash_in_worker)
+    origin = {"Origin": "http://127.0.0.1:5173"}
+
+    status_response = await _request("/auth/password/status", authenticated=False)
+    assert b'"password_required"' in status_response and b"false" in status_response
+    bootstrap = await _request("/auth/session", method="POST", headers=origin, authenticated=False)
+    assert b"200" in bootstrap
+
+    update_dashboard_password("Secret-123")
+    status_response = await _request("/auth/password/status", authenticated=False)
+    assert b"true" in status_response
+    bootstrap = await _request("/auth/session", method="POST", headers=origin, authenticated=False)
+    assert b"401" in bootstrap
+    bearer = await _request("/auth/session", method="POST", headers=origin)
+    assert b"200" in bearer
+
+    bad_login = await _request("/auth/password/login", method="POST", headers=origin,
+                               body=b'{"password":"wrong-123"}', authenticated=False)
+    assert b"401" in bad_login
+    login = await _request("/auth/password/login", method="POST", headers=origin,
+                           body=b'{"password":"Secret-123"}', authenticated=False)
+    assert b"200" in login and b"Set-Cookie" in login
+
+    wrong_current = await _request("/auth/password", method="PUT",
+                                   body=b'{"current_password":"nope","new_password":"Other-456"}')
+    assert b"403" in wrong_current
+    changed = await _request("/auth/password", method="PUT",
+                             body=b'{"current_password":"Secret-123","new_password":"Other-456"}')
+    assert b"200" in changed
+    relogin = await _request("/auth/password/login", method="POST", headers=origin,
+                             body=b'{"password":"Other-456"}', authenticated=False)
+    assert b"200" in relogin
+    cleared = await _request("/auth/password", method="PUT",
+                             body=b'{"current_password":"Other-456","new_password":null}')
+    assert b"200" in cleared
+    status_response = await _request("/auth/password/status", authenticated=False)
+    assert b"false" in status_response

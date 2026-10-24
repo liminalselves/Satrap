@@ -55,7 +55,7 @@ async def test_factory_configuration_isolated_without_host_paths(
     ]
     calls: list[tuple[Path, int]] = []
 
-    def run_shell(args: Any, cwd: Path, timeout: int, allow: Any = ()) -> str:
+    def run_shell(args: Any, cwd: Path, timeout: int, allow: Any = (), **kwargs: Any) -> str:
         calls.append((cwd, timeout))
         return "executed"
 
@@ -67,6 +67,18 @@ async def test_factory_configuration_isolated_without_host_paths(
         for session, config in zip(sessions, configs):
             session.approval_provider = lambda request: ApprovalResult.for_request(request, "allow", "用户批准", "user")
             maps.append({tool.tool_name: tool for tool in coding.get_tools(session, config)})
+        expected_required = {
+            "ask_user": ["question"], "shell": ["command"], "subagent": ["task"],
+            "read_file": ["path"], "write_file": ["path", "content"],
+            "edit_file": ["path", "old", "new"], "search_replace": ["path", "replacements"],
+            "todo_write": ["operation"], "list_dir": [], "glob_files": ["pattern"],
+            "grep_files": ["pattern"],
+        }
+        assert {name: tool.get_tool_defined()["function"]["parameters"]["required"]
+                for name, tool in maps[0].items()} == expected_required
+        replacements = maps[0]["search_replace"].get_tool_defined()["function"]["parameters"]["properties"]["replacements"]
+        assert replacements["items"]["required"] == ["old", "new"]
+        assert replacements["items"]["additionalProperties"] is False
         first_config = configs[0]
         assert first_config is not None
         first_config["workspace_root"] = str(tmp_path / "b")
@@ -76,11 +88,12 @@ async def test_factory_configuration_isolated_without_host_paths(
             assert coding._tool_root(tool) == expected
             assert await _execute(tool, "test") == "executed"
             assert calls[-1] == (expected, (7, 11, 120, 120)[index])
-            assert f"默认 {(7, 11, 120, 120)[index]}" in tool.params_dict["timeout"][1]
             definition = tool.get_tool_defined()["function"]["parameters"]
             assert definition["required"] == ["command"]
             assert definition["properties"]["timeout"]["default"] == (7, 11, 120, 120)[index]
             assert definition["properties"]["timeout"]["type"] == "integer"
+            assert definition["properties"]["shell"]["default"] == "auto"
+            assert set(definition["properties"]["shell"]["enum"]) == {"auto", "powershell", "cmd", "bash", "sh"}
             before = len(calls)
             assert "错误" in await _execute(tool, "test", timeout=0)
             assert len(calls) == before
@@ -695,15 +708,15 @@ def _base_take_plugin_session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
     return s
 
 def test_plugin_install_capabilities(_base_take_plugin_session: SimpleSession):
-    """安装: 5 工具, 无记忆处理器和命令"""
+    """安装: 6 工具, 无记忆处理器和命令"""
     plugin = _base_take_plugin_session.list_plugins()[0]
     assert plugin.name == "base_take"
     assert set(plugin.tools) == {
-        "search", "fetch_page", "code_sandbox", "read_document", "read_media",
+        "search", "fetch_page", "code_sandbox", "read_document", "read_media", "send_file",
     }
     assert not plugin.handlers
     assert not plugin.commands
-    assert len(_base_take_plugin_session.list_tools()) == 5
+    assert len(_base_take_plugin_session.list_tools()) == 6
 
 def test_config_schema_on_plugin(_base_take_plugin_session: SimpleSession):
     """config_schema 随插件返回 (供前端渲染表单)"""
@@ -736,7 +749,7 @@ def test_base_take_sandbox_whitelist_and_description(_base_take_plugin_session: 
     second = next(tool for tool in get_tools(_base_take_plugin_session, config) if isinstance(tool, CodeSandboxTool))
     assert first.sandbox.modules == ("math",)
     assert second.sandbox.modules == ()
-    assert "允许导入: math." in first.description and "允许导入: (无)" in second.description
+    assert "可导入模块: math。" in str(first.description) and "可导入模块: (无)" in str(second.description)
     assert first.execute("run", "import math\nprint(math.sqrt(9))")["stdout"] == "3.0\n"
     assert second.execute("run", "import math")["error_code"] == "module_not_allowed"
 

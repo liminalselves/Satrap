@@ -1,4 +1,7 @@
+import { createUuid } from '@/utils/uuid';
 import { groupActionStateLabels as actionStateLabels } from './groupActionLabels';
+import { Link } from 'react-router-dom';
+import { approvalLink } from '@/api/platformActions';
 import { useEffect, useState } from 'react';
 import { ApiError } from '@/api/client';
 import { groupApi, type GroupAction } from '@/api/groups';
@@ -81,7 +84,7 @@ export function GroupManage() {
       if (!raw && !['card', 'title', 'reason'].includes(key)) continue;
       params[key] = kind === 'bool' ? raw === 'true' : kind === 'duration' ? Number(raw) : raw;
     }
-    const id = operationId || crypto.randomUUID();
+    const id = operationId || createUuid();
     const payload = submitted || { action_type: type, params };
     setOperationId(id);
     setSubmitted(payload);
@@ -192,6 +195,7 @@ export function GroupManage() {
       </>}
       {result && <div className="rounded-lg border border-glass-border p-3 text-sm" aria-live="polite">
         <p>操作 ID: <code>{result.action_id}</code></p>
+        {result.state === 'pending' && <Link className="text-accent" to={approvalLink({ platform: adapterId, account, source: 'group', target: groupId, action: result.action_id })}>已提交, 前往审批中心</Link>}
         <p>状态: {actionStateLabels[result.state] || result.state} · {result.result?.reason || '等待后续处理'}</p>
         {result.state === 'unknown' && <p className="text-warning">结果未知, 请先核实平台状态</p>}
         <Button size="sm" variant="subtle" onClick={inspect}>按操作 ID 查询状态</Button>

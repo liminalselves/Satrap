@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
 import { FormModal } from '@/components/common';
@@ -141,7 +142,7 @@ export function ManualWakeModal({ onClose }: { onClose: () => void }) {
       return;
     }
     const content = JSON.stringify(form);
-    if (request.current.content !== content) request.current = { content, id: crypto.randomUUID() };
+    if (request.current.content !== content) request.current = { content, id: createUuid() };
     setSaving(true);
     try {
       const result = await backendApi.wakePlatform({ ...form, message_id: form.message_id.trim(), request_id: request.current.id });

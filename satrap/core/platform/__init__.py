@@ -32,10 +32,12 @@ if TYPE_CHECKING:
     from satrap.core.call_context import CallOrigin
     from satrap.core.friends.service import FriendService
     from satrap.core.config.administrator_groups import AdministratorService
+    from satrap.core.config.group_actions import GroupActionRecord
     from satrap.core.group_chat.reminder_host import ReminderHost
     from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
     from satrap.core.platform.scheduled import ScheduledTarget, ScheduledRecorder
     from satrap.core.platform.receipt import SendReceipt
+    from satrap.core.file_access.artifacts import FileArtifact
 
 
 EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
@@ -121,6 +123,21 @@ class PlatformAdapter(ABC):
         """
         if not isinstance(value, str) or not 1 <= len(value.strip()) <= 256 or any(ord(char) < 32 for char in value):
             raise ValueError("平台用户识别号必须是有效文字")
+        return value.strip()
+
+    @staticmethod
+    def normalize_group_identifier(value: str) -> str:
+        """
+        校验配置中的群聊身份, 不把群号按成员身份解释
+
+        参数:
+        - value: 用户填写的群聊识别号
+
+        返回:
+        - 保留大小写的非空群聊 ID, 非法格式抛出 ValueError
+        """
+        if not isinstance(value, str) or not 1 <= len(value.strip()) <= 256 or any(ord(char) < 32 for char in value):
+            raise ValueError("群聊识别号必须是有效文字")
         return value.strip()
 
     @classmethod
@@ -420,6 +437,43 @@ class PlatformAdapter(ABC):
         if revision != origin.agent_route_generation:
             raise GroupChatError("stale_call", changed_message)
 
+    async def file_delivery_scope(self, origin: CallOrigin) -> MessageScope:
+        """
+        核验文件交付的当前原生对话, 不允许模型改变目标
+
+        参数:
+        - origin: 宿主冻结的真实来源
+
+        返回:
+        - 当前仍有效的群, 私聊或讨论身份
+        """
+        kind = origin.conversation_kind or {"GroupMessage": "group", "FriendMessage": "private"}.get(origin.chat_type, "")
+        if kind == "group":
+            return await self.group_chat_scope(origin)
+        if kind == "private":
+            return await self.group_chat_private_scope(origin)
+        if (kind != "discussion" or kind not in self.conversation_kinds or not self.config.enable
+                or origin.adapter_id != self.config.id or origin.self_id != self.client_self_id):
+            raise PermissionError("当前来源不支持文件交付或已经失效")
+        scope = MessageScope(self.config.id, origin.self_id, kind, origin.conversation_id or origin.chat_id)
+        await self._verify_group_chat_agent_route(origin, scope)
+        return scope
+
+    async def deliver_file(self, origin: CallOrigin, artifact: FileArtifact, check: Callable[[], None]) -> dict[str, object]:
+        """
+        交付受控文件, 未实现的平台明确返回不支持
+
+        参数:
+        - origin: 真实当前对话
+        - artifact: 当前会话复制的文件
+        - check: 每次外部副作用前的宿主复核
+
+        返回:
+        - 明确失败, 不使用未经验证的普通文件消息段兜底
+        """
+        check()
+        return {"ok": False, "status": "failed", "reason": "file_delivery_unsupported"}
+
     async def group_chat_scope(self, origin: CallOrigin) -> MessageScope:
         """
         为当前轮次核验群聊身份及路由代次, 不接受模型提供目标群
@@ -552,7 +606,7 @@ class PlatformAdapter(ABC):
         """
         raise NotImplementedError("适配器未实现群资料查询")
 
-    async def group_chat_set_nickname(self, scope: MessageScope, nickname: str) -> dict[str, Any]:
+    async def group_chat_set_nickname(self, scope: MessageScope, nickname: str) -> GroupActionRecord:
         """
         经宿主审批修改当前账号自身群昵称, 默认不支持
 
@@ -984,7 +1038,7 @@ class PlatformAdapter(ABC):
         返回:
         - bool: 入队成功返回 True, 队列满时返回 False
         """
-        event.queued_at = time.monotonic()
+        event.mark_queued()
         try:
             self._event_queue.put_nowait(event)
             return True

@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { groupApi, type GroupAction } from '@/api/groups';
@@ -42,7 +43,7 @@ export function GroupOverview() {
   const resetSend = () => { setSendId(''); setSendResult(null); setSendText(''); setError(''); };
   const submitSend = async () => {
     if (!canSend || busy || !sendText.trim()) return;
-    const id = sendId || crypto.randomUUID(); setSendId(id); setBusy('send'); setError('');
+    const id = sendId || createUuid(); setSendId(id); setBusy('send'); setError('');
     try {
       setSendResult(await groupApi.send(adapterId, groupId, {
         expected_self_id: account, action_id: id, message: sendText,
@@ -57,7 +58,7 @@ export function GroupOverview() {
   };
   const submitWake = async () => {
     if (!canWake || busy) return;
-    const id = wakeId || crypto.randomUUID(); setWakeId(id); setBusy('wake'); setError('');
+    const id = wakeId || createUuid(); setWakeId(id); setBusy('wake'); setError('');
     try {
       const result = await groupApi.wake(adapterId, groupId, {
         expected_self_id: account, request_id: id, prompt: wakeText,

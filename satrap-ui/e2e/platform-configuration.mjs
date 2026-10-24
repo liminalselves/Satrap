@@ -1,3 +1,5 @@
+import { conversationPageResponse } from './config-fixtures.mjs';
+import { emptyConfigResponse } from './runtime.mjs';
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -62,7 +64,7 @@ async function platform_policy(runtime) {
       const pathname = new URL(request.url()).pathname;
       const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS' };
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
-      if (pathname === '/config/versions') return route.fulfill({ status: 404, headers, json: { error: '此夹具模拟无版本接口的旧服务' } });
+      if (pathname === '/config/versions') return route.fulfill({ headers, json: { ok: true, resources: Object.fromEntries((new URL(request.url()).searchParams.get('resources') || '').split(',').map((name) => [name, { state: 'available', change_token: 'fixture-v1' }])) } });
       if (pathname.startsWith('/config/platforms') && ['POST', 'PUT'].includes(request.method())) {
         if (new URL(request.url()).searchParams.get("expected_revision") !== String(revision)) {
           return route.fulfill({ status: 409, json: { ok: false, error: "配置已被其他操作修改" }, headers });
@@ -143,12 +145,12 @@ async function platform_policy(runtime) {
         '/config/session-classes': {}, '/config/edictum/sessions': {},
         '/api/sessions': { sessions: [] }, '/config/session-instances': { sessions: [] },
         // /chat 直达所需的聊天接口空数据 (聊天页自身行为由 chat-reconnect 脚本覆盖)
-        '/api/chat/health': { ok: true, conversations: 0, preloaded: 0 }, '/api/chat/conversations': { conversations: [] },
+        '/api/chat/health': { ok: true, conversations: 0, preloaded: 0 }, '/api/chat/conversations/page': conversationPageResponse(route.request().url(), []),
         '/api/chat/turns': { turns: [] }, '/api/chat/models': { models: [] }, '/api/chat/models/detail': { ok: true, models: {} },
         '/api/chat/plugins': { plugins: [] }, '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
         '/api/projects': { projects: [] },
       };
-      return route.fulfill({ json: pathname.startsWith('/config/platforms') ? { ok: true, platforms, revision: String(revision) } : responses[pathname] ?? { ok: true }, headers });
+      return route.fulfill({ json: pathname.startsWith('/config/platforms') ? { ok: true, platforms, revision: String(revision) } : responses[pathname] ?? emptyConfigResponse(route.request().url()), headers });
     });
     const page = await context.newPage();
     const errors = [];

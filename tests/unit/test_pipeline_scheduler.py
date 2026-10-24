@@ -304,15 +304,46 @@ async def test_empty_message_dropped():
 
 
 @pytest.mark.asyncio
-async def test_llm_timeout_sends_feedback():
-    """LLM 调用超时发送超时反馈"""
+async def test_session_timeout_sends_feedback():
+    """整轮会话执行超时发送明确反馈"""
     sm = _FakeSessionManager(response="", delay=5)
-    sched = PipelineScheduler(_as_session_manager(sm), llm_timeout=0.05, error_feedback=True)
+    sched = PipelineScheduler(_as_session_manager(sm), session_timeout=0.05, error_feedback=True)
 
     adapter = RecorderAdapter()
     await sched.execute(_message_event(adapter))
     assert len(adapter.sent) == 1
     assert "超时" in getattr(adapter.sent[0][1].components[0], "text", "")
+
+
+@pytest.mark.asyncio
+async def test_unlimited_session_completes_and_still_accepts_cancellation():
+    """不限时允许慢会话完成, 同时保留宿主取消能力"""
+    sm = _FakeSessionManager(response="完成", delay=0.03)
+    scheduler = PipelineScheduler(_as_session_manager(sm), session_timeout=None)
+    adapter = RecorderAdapter()
+    await scheduler.execute(_message_event(adapter))
+    assert sm.calls and len(adapter.sent) == 1
+    sm.delay = 100
+    task = asyncio.create_task(scheduler.execute(_message_event(adapter)))
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.parametrize("limit", [None, 0.05])
+@pytest.mark.asyncio
+async def test_inner_timeout_is_not_reported_as_session_deadline(limit):
+    """网络或工具主动报超时时不冒充外层会话限时到期"""
+    from unittest.mock import AsyncMock
+
+    sm = _FakeSessionManager()
+    sm.handle_call_async = AsyncMock(side_effect=TimeoutError("upstream timeout"))
+    scheduler = PipelineScheduler(_as_session_manager(sm), session_timeout=limit)
+    adapter = RecorderAdapter()
+    await scheduler.execute(_message_event(adapter))
+    assert len(adapter.sent) == 1
+    assert "处理失败" in getattr(adapter.sent[0][1].components[0], "text", "")
 
 
 @pytest.mark.asyncio

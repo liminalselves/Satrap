@@ -42,6 +42,8 @@ class BackendInstanceLock:
         返回:
         - bool: 尝试获取锁, 成功返回 True
         """
+        if self._fh is not None:
+            return True
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = self.path.open("a+", encoding="utf-8")
 
@@ -51,13 +53,17 @@ class BackendInstanceLock:
             self._close()
             return False
 
-        self._fh.seek(0)
-        self._fh.truncate()
-        self._fh.write(f"pid={os.getpid()}\napi={host}:{port}\n")
-        self._fh.flush()
+        try:
+            self._fh.seek(0)
+            self._fh.truncate()
+            self._fh.write(f"pid={os.getpid()}\napi={host}:{port}\n")
+            self._fh.flush()
+        except BaseException:
+            self.release()
+            raise
         return True
 
-    def release(self):
+    def release(self) -> None:
         """释放锁并关闭文件句柄"""
         if self._fh is None:
             return
@@ -67,15 +73,17 @@ class BackendInstanceLock:
         finally:
             self._close()
 
-    def _lock_file(self):
+    def _lock_file(self) -> None:
+        """使用本机非阻塞文件锁, 竞争失败时不修改已有实例信息"""
         assert self._fh is not None
 
         self._fh.seek(0)
 
         if os.name == "nt":
-            # Windows 的 msvcrt.locking 需要至少存在 1 字节可供锁定
-            self._fh.write(" ")
-            self._fh.flush()
+            self._fh.seek(0, os.SEEK_END)
+            if self._fh.tell() == 0:
+                self._fh.write(" ")   # 空文件为 Windows 字节锁预留位置
+                self._fh.flush()
             self._fh.seek(0)
             msvcrt.locking(
                 self._fh.fileno(),
@@ -88,7 +96,8 @@ class BackendInstanceLock:
                 fcntl.LOCK_EX | fcntl.LOCK_NB,
             )
 
-    def _unlock_file(self):
+    def _unlock_file(self) -> None:
+        """释放当前文件上的本机锁"""
         assert self._fh is not None
 
         self._fh.seek(0)
@@ -105,7 +114,8 @@ class BackendInstanceLock:
                 fcntl.LOCK_UN,
             )
 
-    def _close(self):
+    def _close(self) -> None:
+        """关闭本次锁句柄"""
         if self._fh is not None:
             self._fh.close()
             self._fh = None

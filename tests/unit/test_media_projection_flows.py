@@ -1377,6 +1377,37 @@ def test_plaintext_http_policy_must_be_boolean(settings: dict[str, object]):
     with pytest.raises(ValueError, match="media_plaintext_http"):
         validate_wake_policy(settings)
 
+@pytest.mark.asyncio
+async def test_qq_http_image_resolves_over_https_without_relaxing_network_policy(monkeypatch: pytest.MonkeyPatch):
+    """QQ 图片升级 HTTPS 后进入正常投影, 保留参数和下载边界且不回退明文"""
+    original = "http://gchat.qpic.cn:80/gchatpic_new/0/example/0?term=2&key=a%2Fb"
+    secure = "https://gchat.qpic.cn/gchatpic_new/0/example/0?term=2&key=a%2Fb"
+    download, calls = fake_download({secure: PNG})
+    monkeypatch.setattr(_attachments_module, "safe_async_get", download)
+    adapter, event = await _media_resolve_make_event({}, [
+        {"type": "image", "data": {"file": "native.image", "url": original}},
+    ])
+    try:
+        results = await resolve_media(event, select_media(event, "none"))
+        assert results[0].status == "resolved"
+        assert Path(cast(Image, event.get_messages()[0]).resolved_path).read_bytes() == PNG
+        assert len(calls) == 1 and calls[0][0] == secure and calls[0][2:] == (True, True)
+        adapter._bot.get_image.assert_not_awaited()
+    finally:
+        event.cleanup_temporary_local_files()
+    for blocked in ["http://gchat.qpic.cn.attacker.example/a", "http://user@gchat.qpic.cn/a", "http://gchat.qpic.cn:8080/a"]:
+        with pytest.raises(UnsafeOutboundURLError):
+            await _attachments_module._download(blocked, 100, ())
+    denied = AsyncMock(side_effect=UnsafeOutboundURLError("禁止访问非公网地址"))
+    monkeypatch.setattr(_attachments_module, "safe_async_get", denied)
+    with pytest.raises(UnsafeOutboundURLError):
+        await _attachments_module._download(original, 100, (), verify_tls=False)
+    assert denied.await_count == 1
+    assert denied.call_args.args[0] == secure
+    assert denied.call_args.kwargs["trusted_hosts"] == ()
+    assert denied.call_args.kwargs["ssl_verify"] is True
+
+
 def _wav_bytes(seconds: float = 0.5, rate: int = 8000) -> bytes:
     frames = int(seconds * rate)
     samples = array("h", (int(12000 * math.sin(2 * math.pi * 440 * i / rate)) for i in range(frames)))

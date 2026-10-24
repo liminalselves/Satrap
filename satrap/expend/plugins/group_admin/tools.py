@@ -27,13 +27,13 @@ from satrap.edictum import AsyncSimpleSession
 
 from satrap.core.log import logger
 
-_ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
+_ACTION_RESULT_DESCRIPTION = "; pending 表示待批准，succeeded 表示已执行，其他结果不要当成成功"
 
-_DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool]] = {
+_DEFINITIONS: dict[str, tuple[str, dict[str, Any], list[str], bool]] = {
     # 工具名: (描述, 参数, 必填参数, 是否写操作)
-    "group_admin_get_honors": ("查看群里的龙王, 群聊之火等荣誉及对应成员; 不指定荣誉类型时查询全部类型", {
+    "group_admin_get_honors": ("查看群荣誉及对应成员；honor_type 省略时查询全部", {
         "group_id": ("string", "要查看的群号, 不填则查看当前群"),
-        "honor_type": ("string", "荣誉类型: all 全部, talkative 龙王, performer 群聊之火, legend 群聊炽焰, strong_newbie 冒尖小春笋, emotion 快乐源泉; 不填默认 all"),
+        "honor_type": {"type": "string", "enum": ["all", "talkative", "performer", "legend", "strong_newbie", "emotion"], "default": "all", "description": "荣誉类型"},
     }, [], False),
     "group_admin_recall_message": ("撤回群里的一条指定消息, 需要填写该消息的 ID; 能否撤回取决于机器人权限和平台限制" + _ACTION_RESULT_DESCRIPTION, {
         "message_id": ("string", "要撤回的消息 ID, 从聊天上下文或消息查询结果中取得"), "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
@@ -43,14 +43,14 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool]]
         "reject_add_request": ("boolean", "是否拒绝对方之后的加群申请; true 拒绝, false 允许重新申请, 不填默认 false"),
     }, ["user_id"], True),
     "group_admin_ban": ("禁言指定群成员, 或解除该成员的禁言; duration 填 0 表示解除禁言" + _ACTION_RESULT_DESCRIPTION, {
-        "user_id": ("string", "要禁言或解除禁言的成员 QQ 号, 从已确认的成员资料中取得"), "duration": ("number", "禁言时长, 单位为秒; 600 表示十分钟, 0 表示解除禁言. 不填默认 1800, 最长 2592000 秒 (30 天)"),
+        "user_id": ("string", "要禁言或解除禁言的成员 QQ 号, 从已确认的成员资料中取得"), "duration": {"type": "integer", "minimum": 0, "maximum": 2592000, "default": 1800, "description": "禁言秒数，0 表示解除"},
         "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["user_id"], True),
     "group_admin_whole_ban": ("开启或关闭整个群的全员禁言, 与对单个成员禁言不同" + _ACTION_RESULT_DESCRIPTION, {
         "enable": ("boolean", "true 开启全员禁言, false 关闭全员禁言"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["enable"], True),
     "group_admin_ban_anonymous": ("禁言群里某条匿名消息的发送者; 需要消息中提供的匿名身份标识, 不能用昵称代替" + _ACTION_RESULT_DESCRIPTION, {
-        "flag": ("string", "匿名消息里的 anonymous flag, 必须使用平台提供的原值"), "duration": ("number", "禁言时长, 单位为秒; 不填默认 1800, 最长 2592000 秒 (30 天)"),
+        "flag": ("string", "匿名消息里的 anonymous flag, 必须使用平台提供的原值"), "duration": {"type": "integer", "minimum": 0, "maximum": 2592000, "default": 1800, "description": "禁言秒数，0 表示解除"},
         "group_id": ("string", "匿名消息所在的群号, 不填则使用当前群"),
     }, ["flag"], True),
     "group_admin_set_admin": ("将指定成员设为群管理员, 或取消其管理员身份; 需要机器人具有群主权限" + _ACTION_RESULT_DESCRIPTION, {
@@ -75,13 +75,13 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool]]
         "group_id": ("string", "机器人要退出或解散的群号, 不填则使用当前群"),
         "dismiss": ("boolean", "false 只退出群聊, true 解散整个群; 不填默认 false"),
     }, [], True),
-    "group_admin_list_group_requests": ("查看别人申请加入机器人所在群的申请; 不包含邀请机器人加入新群的邀请. view=archived 查看归档历史, 本地归档不代表平台申请失效. 返回申请 ID, revision 和 can_handle; 管理者私聊查询时需指定群号", {
+    "group_admin_list_group_requests": ("查看成员申请加入本群的记录，不包含邀请机器人入群的邀请；管理者私聊查询时需指定群号", {
         "group_id": ("string", "申请所属群号, 群聊中不填则查询当前群"),
-        "limit": ("integer", "最多查看多少条, 不填默认 20, 最大 100"),
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "最多返回多少条"},
         "cursor": ("string", "继续查看时填写上次返回的 next_cursor, 沿用相同群号"),
-        "view": ("string", "active 待处理, archived 归档历史, all 全部; 默认 active"),
+        "view": {"type": "string", "enum": ["active", "archived", "all"], "default": "active", "description": "待处理、归档或全部"},
     }, [], False),
-    "group_admin_handle_group_request": ("同意或拒绝别人加入本群的申请; 不处理邀请机器人加入新群的邀请. 目标群由原申请确定, 不需要填写平台 flag" + _ACTION_RESULT_DESCRIPTION, {
+    "group_admin_handle_group_request": ("同意或拒绝成员入群申请，目标群由原申请确定，不需要平台 flag" + _ACTION_RESULT_DESCRIPTION, {
         "request_id": ("string", "加群申请查询返回的申请 ID"),
         "expected_revision": ("integer", "当前申请的 revision; 处理归档申请必须填写, 并等待人工批准"),
         "approve": ("boolean", "true 同意成员入群申请, false 拒绝"), "reason": ("string", "拒绝时填写的理由, 可不填"),
@@ -158,8 +158,10 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any], *,
         raise ValueError("当前不是群聊上下文, 必须显式指定 group_id")
     if allowed and group_id not in allowed:
         raise PermissionError("目标群不在插件允许范围内")
-    if tool is not None and _uses_platform_group_admin(tool) and group_id != origin.chat_id:
-        raise PermissionError("QQ 群管理员只能管理当前群")
+    if tool is not None:
+        decision = require_plugin_entry_permission(tool._plugin_entry_binding, refresh=True)
+        if group_id != origin.chat_id and any(grant.source in {"platform_group_admin", "administrator_chat"} for grant in decision.grants):
+            raise PermissionError("群聊授权的管理员只能管理当前群")
     return group_id
 
 

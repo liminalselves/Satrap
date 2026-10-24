@@ -1,3 +1,6 @@
+import { createUuid } from '@/utils/uuid';
+import { Link } from 'react-router-dom';
+import { approvalLink } from '@/api/platformActions';
 import { groupActionStateLabels as actionStateLabels } from './groupActionLabels';
 import { useEffect, useState } from 'react';
 import { groupApi, GROUP_PAGE_SIZE, type GroupAction, type GroupMember } from '@/api/groups';
@@ -64,7 +67,7 @@ export function GroupMembers() {
   const open = (member: GroupMember, action: string) => {
     if (result?.state === 'unknown' || result?.state === 'executing') return;
     setSelected({ member, action }); setResult(null); setCard(member.card || ''); setDuration('1800');
-    setEnable('true'); setReject(false); setError(''); setOperationId(crypto.randomUUID()); setSubmitted(null);
+    setEnable('true'); setReject(false); setError(''); setOperationId(createUuid()); setSubmitted(null);
   };
   const submit = async () => {
     if (!selected || busy) return;
@@ -150,6 +153,7 @@ export function GroupMembers() {
         <Button variant="subtle" onClick={inspect} disabled={!operationId}>按操作 ID 查询</Button>
         <Button variant="subtle" onClick={() => setSelected(null)} disabled={result?.state === 'unknown' || result?.state === 'executing'}>关闭</Button></div>
       <p className="break-all text-xs text-text-secondary">操作 ID: {operationId}</p>
+      {result?.state === 'pending' && <Link className="text-accent" to={approvalLink({ platform: adapterId, account, source: 'group', target: groupId, action: result.action_id })}>已提交, 前往审批中心</Link>}
       {result && <p role="status" className="text-sm">操作 {result.action_id}: {actionStateLabels[result.state] || result.state}{result.state === 'unknown' ? ', 结果未知, 请先核实平台状态' : ''}</p>}
       {result?.state === 'unknown' && <Button variant="subtle" onClick={() => {
         setSelected(null); setResult(null); setSubmitted(null); setOperationId('');

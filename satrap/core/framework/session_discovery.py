@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Type, cast
 from types import ModuleType
 import sys
+import os
 
 from satrap.core.framework.Base import AsyncSession, Session
 
@@ -114,7 +115,7 @@ class SessionClassDiscoveryService:
         参数:
         - paths: 默认扫描路径
         """
-        self.paths = tuple(str(path) for path in (paths or [DEFAULT_SESSION_SCAN_PATH]))
+        self.paths = tuple(str(path) for path in ([DEFAULT_SESSION_SCAN_PATH] if paths is None else paths))
 
     def discover(
         self,
@@ -129,7 +130,7 @@ class SessionClassDiscoveryService:
         返回:
         - list[DiscoveredSessionClass]: 扫描到的 Session 类信息
         """
-        scan_paths = ensure_session_scan_paths(paths or self.paths)
+        scan_paths = ensure_session_scan_paths(self.paths if paths is None else paths)
         discovered: list[DiscoveredSessionClass] = []
         for scan_path in scan_paths:
             if not scan_path.exists():
@@ -180,7 +181,7 @@ def normalize_scan_paths(paths: list[str] | tuple[str, ...] | None = None) -> li
     返回:
     - list[Path]: 归一化扫描目录, 保留顺序并去重
     """
-    raw_paths = list(paths or [DEFAULT_SESSION_SCAN_PATH])
+    raw_paths = list([DEFAULT_SESSION_SCAN_PATH] if paths is None else paths)
     result: list[Path] = []
     seen: set[str] = set()
     for item in raw_paths:
@@ -191,7 +192,7 @@ def normalize_scan_paths(paths: list[str] | tuple[str, ...] | None = None) -> li
         if not path.is_absolute():
             path = Path.cwd() / path
         resolved = path.resolve()
-        key = str(resolved).lower()
+        key = os.path.normcase(str(resolved))
         if key in seen:
             continue
         seen.add(key)
@@ -254,7 +255,10 @@ def create_default_session_dir(paths: list[str] | tuple[str, ...] | None = None)
     返回:
     - Path: 创建默认 Session 扫描目录
     """
-    target = normalize_scan_paths(paths)[0]
+    normalized = normalize_scan_paths(paths)
+    if not normalized:
+        raise ValueError("未配置 Session 扫描目录")
+    target = normalized[0]
     target.mkdir(parents=True, exist_ok=True)
     init_file = target / "__init__.py"
     if not init_file.exists():

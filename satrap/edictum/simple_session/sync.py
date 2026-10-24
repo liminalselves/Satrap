@@ -55,9 +55,11 @@ class SimpleSession(Session, _SessionFeatures):
         llm: LLM,
         *,
         system_prompt: str | None = None,
+        default_agent_prompt_enabled: bool = False,
         thinking: str = "off",
         command_history_enabled: bool = False,
         model_params: dict[str, Any] | None = None,
+        max_iterations: int = 10,
         tools: Iterable[Tool] | None = None,
         content_callback: Callable[[str], None] | None = None,
         db_path: str = get_db_path(),
@@ -75,9 +77,11 @@ class SimpleSession(Session, _SessionFeatures):
         - session_id: 会话 ID
         - llm: 主模型实例
         - system_prompt: 系统提示词, 默认 None 保留已有系统提示词, 提供时在初始化阶段重置
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
         - thinking: 默认思考强度, 默认 off; run 可逐次覆盖
         - command_history_enabled: 是否记录命令及回复到模型上下文, 默认 False
         - model_params: temperature/top_p/max_tokens 的会话覆盖, 默认 None 继承模型配置
+        - max_iterations: 默认最大工具迭代次数, 默认 10; run 可逐次覆盖
         - tools: 初始工具列表, 默认 None 表示不预注册工具
         - content_callback: 内容回调, 用于模型与命令输出, 默认 None 表示不回调
         - db_path: 上下文, 检查点与执行记录数据库路径, 默认使用 get_db_path() 返回的路径
@@ -96,9 +100,13 @@ class SimpleSession(Session, _SessionFeatures):
         if type(command_history_enabled) is not bool:
             raise ValueError("command_history_enabled 必须是布尔值")
         self.command_history_enabled = command_history_enabled
+        self.default_agent_prompt_enabled = default_agent_prompt_enabled
         self.recoverable = recoverable
-        settings = normalize_session_settings({"thinking": thinking, "model_params": {} if model_params is None else model_params})
+        settings = normalize_session_settings({"thinking": thinking, "max_iterations": max_iterations,
+                                               "model_params": {} if model_params is None else model_params})
         self.default_thinking: str = thinking
+        self.default_max_iterations: int = settings["max_iterations"]
+        self.configured_max_iterations: int = settings["max_iterations"]
         self._model_params: dict[str, Any] = settings["model_params"]
         if self._model_params:
             llm.set_parameters(**self._model_params)
@@ -116,6 +124,7 @@ class SimpleSession(Session, _SessionFeatures):
             tools_manager=ToolsManager(),
             recoverable=recoverable,
             system_prompt=system_prompt,
+            default_agent_prompt_enabled=self.default_agent_prompt_enabled,
             content_callback=content_callback,
             return_thinking=return_thinking,
             thinking_callback=thinking_callback,
@@ -197,7 +206,7 @@ class SimpleSession(Session, _SessionFeatures):
         img_urls: list[str] | None = None,
         *,
         thinking: str | None = None,
-        max_iterations: int = 10,
+        max_iterations: int | None = None,
         video_urls: list[str] | None = None,
         request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str | CommandAction:
@@ -208,7 +217,7 @@ class SimpleSession(Session, _SessionFeatures):
         - user_input: 用户输入
         - img_urls: 附加图片 URL 列表, 默认 None
         - thinking: 模型思考强度, 默认 None 使用会话配置, 流式和非流式均支持
-        - max_iterations: 最大工具迭代次数, 默认 10
+        - max_iterations: 最大工具迭代次数, 默认 None 使用会话配置
         - video_urls: 视频来源列表, 默认 None
 
         返回:
@@ -219,7 +228,8 @@ class SimpleSession(Session, _SessionFeatures):
                 user_input,
                 img_urls,
                 thinking=self.default_thinking if thinking is None else thinking,
-                max_iterations=max_iterations, video_urls=video_urls, request_blocks=request_blocks,
+                max_iterations=self.default_max_iterations if max_iterations is None else max_iterations,
+                video_urls=video_urls, request_blocks=request_blocks,
             )
 
     def _run_once(

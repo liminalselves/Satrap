@@ -1,8 +1,9 @@
 """空窗补偿计时, 到期仅向已有平台队列提交轻量事件"""
 from dataclasses import dataclass
 from weakref import WeakKeyDictionary
-from time import monotonic
+from time import get_clock_info, monotonic
 from copy import copy, deepcopy
+from collections import OrderedDict
 import asyncio
 
 from satrap.core.pipeline.wake_window import WakeWindow, PendingMessage
@@ -37,6 +38,7 @@ class WakeTimers:
         self.window = window
         self.tasks: dict[tuple[str, ...], asyncio.Task[None]] = {}
         self.tickets: WeakKeyDictionary[MessageEvent, DeadlineTicket] = WeakKeyDictionary()
+        self._sources: OrderedDict[tuple[str, ...], MessageEvent] = OrderedDict()
 
     def schedule(self, event: MessageEvent, *, earliest: float | None = None) -> None:
         """
@@ -52,7 +54,7 @@ class WakeTimers:
         key = self.window.key(event)
         adapter = event.adapter
         snapshot = self.window.peek(event)
-        if not snapshot or key in self.tasks or len(self.tasks) >= self.window.max_routes:
+        if not snapshot:
             return
         message = copy(event.platform_message)
         message.raw_message = {}
@@ -64,6 +66,14 @@ class WakeTimers:
                                    event.adapter, event.session_provider, event.session_type)
         lightweight.policy_settings = deepcopy(event.policy_settings)
         lightweight._call_origin = event.call_origin
+        lightweight.queued_at = event.queued_at
+        lightweight.queued_sequence = event.queued_sequence
+        self._sources[key] = lightweight
+        self._sources.move_to_end(key)
+        while len(self._sources) > self.window.max_routes:
+            self._sources.popitem(last=False)
+        if key in self.tasks or len(self.tasks) >= self.window.max_routes:
+            return
         ticket = DeadlineTicket()
         self.tickets[lightweight] = ticket
         due = snapshot[0].received_at + wait
@@ -73,7 +83,10 @@ class WakeTimers:
         async def enqueue() -> None:
             """到期后回到平台队列, 不直接调用模型"""
             try:
-                await asyncio.sleep(max(0, due - monotonic()))
+                resolution = get_clock_info("monotonic").resolution
+                while (remaining := due - monotonic()) > 0:
+                    await asyncio.sleep(max(remaining, resolution))
+                # 事件循环允许计时略微提前返回, 必须复核到期且避免低精度时钟下零延迟忙循环
                 ticket.snapshot = self.window.peek(lightweight)
                 if ticket.snapshot and not ticket.cancelled and adapter.config.enable:
                     adapter.commit_event(lightweight)
@@ -86,6 +99,8 @@ class WakeTimers:
             finally:
                 if self.tasks.get(key) is asyncio.current_task():
                     self.tasks.pop(key, None)
+                if not self.window.peek(lightweight):
+                    self._sources.pop(key, None)
 
         self.tasks[key] = asyncio.create_task(enqueue())
 
@@ -100,6 +115,8 @@ class WakeTimers:
         task = self.tasks.pop(self.window.key(event), None)
         if task is not None:
             task.cancel()
+        if not self.window.peek(event):
+            self._sources.pop(self.window.key(event), None)
         if invalidate_tickets:
             key = self.window.key(event)
             for queued, ticket in list(self.tickets.items()):
@@ -119,11 +136,27 @@ class WakeTimers:
         for event, ticket in list(self.tickets.items()):
             if event.call_origin.adapter_id == adapter_id:
                 ticket.cancelled = True
+        for key in list(self._sources):
+            if key[0] == adapter_id:
+                del self._sources[key]
+
+    def reset_route(self, event: MessageEvent) -> None:
+        """
+        窗口重置后撤销旧补偿, 仅用仍在窗口中的真实消息来源安排新补偿
+
+        参数:
+        - event: 用于定位范围的重置命令, 不把其操作者当作后续消息发送者
+        """
+        source = self._sources.pop(self.window.key(event), None)
+        self.cancel_route(event, invalidate_tickets=True)
+        if source is not None and any(row.request_id == source.call_origin.request_id for row in self.window.peek(event)):
+            self.schedule(source)
 
     async def close(self) -> None:
         """取消并等待所有剩余计时, 使排队补偿失效"""
         tasks = list(self.tasks.values())
         self.tasks.clear()
+        self._sources.clear()
         for task in tasks:
             task.cancel()
         for ticket in self.tickets.values():

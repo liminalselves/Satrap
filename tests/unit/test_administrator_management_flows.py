@@ -526,7 +526,7 @@ def test_update_common_fields_parse_platforms_and_configured_types():
         default_session_type="misskey",
         max_sessions=100,
         idle_timeout=60,
-        llm_timeout=30.0,
+        session_timeout=30.0,
         rate_limit=1.5,
         rate_burst=3,
         platforms=platforms,
@@ -673,3 +673,61 @@ def test_save_config_document_validates_platforms(tmp_path: Path):
         assert "id 不能为空" in str(e)
     else:
         raise AssertionError("应拒绝空平台 id")
+
+
+@pytest.mark.asyncio
+async def test_chat_administrator_configuration_save_preview_apply_and_rebind(tmp_path, monkeypatch):
+    """同一设置流程保存群授权, 规范群号, 预览, 应用及显式重绑, 拒绝伪造平台代次"""
+    from satrap.core.config.administrator_groups import AdministratorService
+    from satrap.core.call_context import CallOrigin
+    from satrap.core.backend import control_server as control
+
+    path = tmp_path / "config.json"
+    saved = save_config_document(path, document())
+    config = BackendConfig.from_dict(saved)
+    config.source_path = str(path)
+    backend = BackendManager(config)
+    origin = CallOrigin("ob", "10000", "GroupMessage", "456", "789", "message", "request")
+    assert not backend.administrator_service.resolve(origin, "group_admin").allowed
+    proposed = draft()
+    proposed[0]["members"] = []
+    proposed[0]["chats"] = [{"platform_id": "ob", "chat_id": "000456", "platform_instance_id": "forged"}]
+    preview = preview_administrator_groups(saved, proposed, overrides=[])
+    assert preview["chats"][0]["chat_id"] == "456" and preview["members"] == []
+    assert next(item for item in preview["chats"][0]["plugins"] if item["name"] == "group_admin")["allowed"]
+    assert load_config_document(path) == saved
+    monkeypatch.setattr(control, "CONFIG_PATH", path)
+    monkeypatch.setattr(control, "_administrator_runtime_request", lambda *args, **kwargs: {"status": "next_start"})
+    status, response = await control._route_administrator_settings(context(control, "PUT", "/config/administrator-groups", {
+        "groups": proposed, "overrides": [], "expected_revision": config_document_revision(saved),
+    }))
+    assert status == 200
+    saved = load_config_document(path)
+    chat = saved["administrator_groups"][0]["chats"][0]
+    assert chat == {"platform_id": "ob", "platform_instance_id": "a" * 32, "chat_id": "456"}
+    api = BackendHTTPServer(backend)
+    status, applied = await api._route("POST", "/api/administrators/apply", json.dumps({"section_revision": response["section_revision"]}).encode())
+    assert status == 200 and applied["section_revision"] == response["section_revision"]
+    assert backend.administrator_service.resolve(origin, "group_admin").allowed
+    assert backend.administrator_service.protected_users("ob") == []
+    saved["platforms"][0]["instance_id"] = "b" * 32
+    saved = save_config_document(path, saved)
+    submitted = deepcopy(saved["administrator_groups"])
+    submitted[0]["chats"][0]["platform_instance_id"] = "b" * 32
+    assert prepare_administrator_groups(saved, submitted)[0]["chats"][0]["platform_instance_id"] == "a" * 32
+    assert len(administrator_settings_snapshot(saved)["invalid_chats"]) == 1
+    status, response = await control._route_administrator_settings(context(control, "POST", "/config/administrator-groups/preview", {
+        "groups": submitted, "overrides": [], "rebind_chats": [{"group_id": "admins", "platform_id": "ob", "chat_id": "456"}],
+    }))
+    assert status == 200 and response["groups"][0]["chats"][0]["platform_instance_id"] == "b" * 32
+    assert load_config_document(path) == saved
+    rebound = save_administrator_groups(path, submitted, overrides=[], expected_revision=config_document_revision(saved),
+                                       rebind_chats=[{"group_id": "admins", "platform_id": "ob", "chat_id": "456"}])
+    assert not administrator_settings_snapshot(rebound)["invalid_chats"]
+    service = AdministratorService(lambda: rebound["platforms"], rebound["administrator_groups"])
+    assert service.resolve(origin, "group_admin").allowed
+    for invalid in ("not-a-group", "0", "-1"):
+        bad = deepcopy(submitted); bad[0]["chats"][0]["chat_id"] = invalid
+        with pytest.raises(ValueError): prepare_administrator_groups(rebound, bad)
+    with pytest.raises(ValueError):
+        prepare_administrator_groups(rebound, submitted, rebind_chats=[{"group_id": "missing", "platform_id": "ob", "chat_id": "456"}])

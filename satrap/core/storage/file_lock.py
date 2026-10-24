@@ -23,6 +23,69 @@ class _HeldLock:
     depth: int = 1
 
 _HELD_LOCKS = threading.local()
+_LEASE_LOCK = threading.RLock()
+_FILE_LEASES: dict[Path, tuple[BinaryIO, int]] = {}
+
+
+class FileLease:
+    """使用同一维护锁保护在途文件, 允许跨线程释放和同进程并行下载"""
+
+    def __init__(self, path: Path) -> None:
+        """
+        取得非阻塞租约, 维护已占用时明确拒绝
+
+        参数:
+        - path: 与 FileLock 共用的稳定锁文件路径
+        """
+        self.path = path.resolve()
+        self.released = False
+        with _LEASE_LOCK:
+            previous = _FILE_LEASES.get(self.path)
+            if previous is not None:
+                _FILE_LEASES[self.path] = (previous[0], previous[1] + 1)
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            stream = self.path.open("a+b")
+            try:
+                stream.seek(0, 2)
+                if stream.tell() == 0:
+                    stream.write(b"\0")
+                    stream.flush()
+                stream.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BaseException:
+                stream.close()
+                raise
+            _FILE_LEASES[self.path] = (stream, 1)
+
+    def close(self) -> None:
+        """幂等释放租约, 最后一个持有者结束后允许维护移动或删除会话"""
+        with _LEASE_LOCK:
+            if self.released:
+                return
+            self.released = True
+            stream, count = _FILE_LEASES[self.path]
+            if count > 1:
+                _FILE_LEASES[self.path] = (stream, count - 1)
+            else:
+                del _FILE_LEASES[self.path]
+                stream.close()
+
+    def __enter__(self) -> FileLease:
+        """返回已取得的租约"""
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        """
+        在正常结束或异常时释放
+
+        参数:
+        - args: 上下文退出信息
+        """
+        self.close()
 
 
 class FileLock:

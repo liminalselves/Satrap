@@ -7,6 +7,7 @@ from typing import Any
 import json
 import pytest
 from satrap.cli import cmd_edictum
+from satrap.cli import common as cli_common
 from satrap.cli.output import CliError
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.cli import cmd_plugin
@@ -19,6 +20,153 @@ from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.storage import StorageLayout
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
+from satrap.core.config.loader import ConfigLoader, ConfigLoadError
+
+
+def test_session_timeout_null_legacy_and_environment_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """不限时与旧字段经文件读写保持语义, 新环境变量可显式覆盖为不限时"""
+    from satrap.core.config.document import validate_config_document, save_config_document
+
+    assert BackendConfig.from_dict({}).session_timeout == 120
+    assert BackendConfig.from_dict({"llm_timeout": 35}).session_timeout == 35
+    normalized = validate_config_document({"llm_timeout": 35, "session_timeout": None})
+    assert normalized["session_timeout"] is None and "llm_timeout" not in normalized
+    path = tmp_path / "config.json"
+    save_config_document(path, normalized)
+    loaded = ConfigLoader.from_json(path)
+    assert loaded.session_timeout is None
+    assert ConfigLoader.default_config_document(loaded)["session_timeout"] is None
+    assert "llm_timeout" not in ConfigLoader.default_config_document(loaded)
+    monkeypatch.setenv("SATRAP_LLM_TIMEOUT", "25")
+    monkeypatch.delenv("SATRAP_SESSION_TIMEOUT", raising=False)
+    assert ConfigLoader.merge_env(loaded).session_timeout == 25
+    monkeypatch.setenv("SATRAP_SESSION_TIMEOUT", "none")
+    assert ConfigLoader.merge_env(loaded).session_timeout is None
+    for invalid in [True, 0, -1, float("nan"), float("inf")]:
+        with pytest.raises(ValueError):
+            BackendConfig.from_dict({"session_timeout": invalid})
+
+
+@pytest.mark.parametrize("format", ["yaml", "json"])
+def test_backend_file_null_collections_and_empty_scan_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, format: str):
+    """真实文件加载兼容空节点, 管理员校验与扫描目录保持同一空值语义"""
+    from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
+
+    monkeypatch.chdir(tmp_path)
+    document = {"max_sessions": 37, "session_classes": None, "platforms": None, "api": None,
+                "session_scan_paths": None, "administrator_groups": [{"id": "ops", "name": "管理组", "members": [],
+                "plugin_scope": {"mode": "all", "included": [], "excluded": []}}]}
+    path = tmp_path / f"config.{format}"
+    if format == "yaml":
+        path.write_text("max_sessions: 37\nsession_classes:\n  # only comment\nplatforms:\n  # only comment\napi:\nsession_scan_paths:\n", encoding="utf-8")
+        loaded = ConfigLoader.from_yaml(path)
+    else:
+        path.write_text(json.dumps(document), encoding="utf-8")
+        loaded = ConfigLoader.from_json(path)
+    assert loaded.source_path == str(path.resolve()) and loaded.max_sessions == 37
+    assert loaded.session_classes == {} and loaded.platforms == []
+    assert loaded.session_scan_paths == [".satrap/session"] and loaded.api_port == 19870
+    document["session_scan_paths"] = []
+    explicit = ConfigLoader.from_dict(document)
+    manager = SessionClassConfigManager(storage_path=tmp_path / "classes.json", session_scan_paths=explicit.session_scan_paths)
+    assert manager.session_scan_paths == []
+    assert SessionClassDiscoveryService(explicit.session_scan_paths).discover() == []
+    assert not (tmp_path / ".satrap/session").exists()
+    with pytest.raises(ValueError, match="未配置"):
+        create_default_session_dir([])
+
+
+@pytest.mark.parametrize("text", ["session_classes: []", "platforms: text", "api: []", "session_scan_paths: abc",
+                                  "workspace_roots: [3]", "max_sessions: wrong", "- root-list", "api: ["])
+def test_invalid_backend_file_fails_without_default_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str):
+    """自动探测失败必须停止, 不能返回默认配置或打印成功"""
+    from satrap.core.config import loader
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "config.yaml"
+    path.write_text(text, encoding="utf-8")
+    messages: list[str] = []
+    monkeypatch.setattr(loader.logger, "info", messages.append)
+    with pytest.raises(ConfigLoadError) as caught:
+        ConfigLoader.autodetect()
+    assert caught.value.path == str(path.resolve())
+    assert not any("已加载" in message for message in messages)
+    assert not (tmp_path / ".satrap/config.yaml").exists()
+
+
+def test_explicit_config_precedes_autodetect_and_client_never_masks_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """显式路径不受其它坏配置干扰, 地址探测不吞掉配置错误"""
+    from satrap.cli.common import load_cli_config
+    from satrap.cli.cmd_run import load_run_config
+    from satrap.cli.client import DaemonInfo
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text("api: [", encoding="utf-8")
+    selected = tmp_path / "selected.yaml"
+    selected.write_text("max_sessions: 37\nsession_scan_paths: []\n", encoding="utf-8")
+    args = Namespace(config=str(selected), api_host=None, api_port=None)
+    for load in (load_cli_config, load_run_config):
+        assert load(args).source_path == str(selected.resolve())
+        assert load(args).session_scan_paths == []
+    with pytest.raises(ConfigLoadError):
+        DaemonInfo.detect()
+    with pytest.raises(ConfigLoadError):
+        ConfigLoader.from_yaml(tmp_path / "missing.yaml")
+
+
+def test_yaml_empty_document_example_and_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """空文档和仓库示例可以直接加载, 缺少解析依赖不改读相邻 JSON"""
+    from satrap.core.config import loader
+
+    example = Path(__file__).resolve().parents[2] / "config.example.yaml"
+    loaded = ConfigLoader.from_yaml(example)
+    assert loaded.session_classes == {} and loaded.platforms == []
+    monkeypatch.chdir(tmp_path)
+    generated = ConfigLoader.autodetect()
+    assert generated.source_path == str((tmp_path / ".satrap/config.yaml").resolve())
+    path = tmp_path / "empty.yaml"
+    path.write_text("# no values\n", encoding="utf-8")
+    assert ConfigLoader.from_yaml(path).source_path == str(path.resolve())
+    path.with_suffix(".json").write_text('{"max_sessions":37}', encoding="utf-8")
+
+    def missing_parser(*args: object) -> object:
+        raise ImportError("PyYAML missing")
+
+    monkeypatch.setattr(loader, "safe_yaml_load", missing_parser)
+    with pytest.raises(ConfigLoadError, match="PyYAML missing"):
+        ConfigLoader.from_yaml(path)
+
+
+def test_backend_instance_lock_excludes_then_releases(tmp_path: Path):
+    """真实系统文件锁拒绝第二个实例并允许释放后重新启动"""
+    from satrap.cli.backend_lock import BackendInstanceLock
+    import subprocess
+    import sys
+
+    first = BackendInstanceLock(tmp_path / "backend.lock")
+    second = BackendInstanceLock(tmp_path / "backend.lock")
+    try:
+        assert first.acquire("127.0.0.1", 19870)
+        assert first._fh is not None
+        first._fh.seek(0)
+        before = first._fh.read()
+        assert not second.acquire("127.0.0.1", 19870)
+        first._fh.seek(0)
+        assert first._fh.read() == before
+        probe = (
+            "from satrap.cli.backend_lock import BackendInstanceLock; import sys; "
+            "lock=BackendInstanceLock(sys.argv[1]); "
+            "acquired=lock.acquire('127.0.0.1',19870); lock.release(); "
+            "sys.exit(0 if acquired else 3)"
+        )
+        options = dict(capture_output=True, text=True, encoding="utf-8", timeout=20)
+        assert subprocess.run([sys.executable, "-X", "utf8", "-c", probe, str(first.path)], **options).returncode == 3
+        first.release()
+        assert subprocess.run([sys.executable, "-X", "utf8", "-c", probe, str(first.path)], **options).returncode == 0
+        assert second.acquire("127.0.0.1", 19870)
+    finally:
+        first.release()
+        second.release()
 
 class _cmd_edictum_DeadClient:
     def __init__(self, *args: Any, **kwargs: Any):
@@ -37,6 +185,8 @@ def _cmd_edictum_offline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         session_scan_paths=[],
     )
     monkeypatch.setattr(cmd_edictum, "daemon_client_from_args", _cmd_edictum_DeadClient)
+    monkeypatch.setattr(cli_common, "daemon_client_from_args", _cmd_edictum_DeadClient)
+    # 离线写入守卫也使用离线客户端, 不连接宿主机后端
     monkeypatch.setattr(cmd_edictum, "load_cli_config", lambda args: config)
     return config
 
@@ -228,6 +378,8 @@ def _cmd_session_instance_offline_env(tmp_path: Path, monkeypatch: pytest.Monkey
         session_scan_paths=[],
     )
     monkeypatch.setattr(cmd_session_instance, "daemon_client_from_args", _cmd_session_instance_DeadClient)
+    monkeypatch.setattr(cli_common, "daemon_client_from_args", _cmd_session_instance_DeadClient)
+    # 保留真实守卫逻辑, 仅替换被调用模块内的客户端工厂
     monkeypatch.setattr(cmd_session_instance, "load_cli_config", lambda args: config)
 
     scm = SessionClassConfigManager(storage_path=config.session_class_config_path, session_scan_paths=[])

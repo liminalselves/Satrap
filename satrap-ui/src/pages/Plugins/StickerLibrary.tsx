@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { ConfirmModal } from '@/components/common/ConfirmModal';
 import { useEffect, useRef, useState } from 'react';
 import { errorText } from '@/utils/errorText';
@@ -65,7 +66,7 @@ export function StickerLibrary({ onDirty }: { onDirty: (dirty: boolean) => void 
     setBusy(true); setFormError('');
     try {
       const tags = draft.tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
-      const metadata = { name: draft.name.trim(), tags, collection: draft.collection.trim(), idempotency_key: intent.current || (intent.current = crypto.randomUUID()) };
+      const metadata = { name: draft.name.trim(), tags, collection: draft.collection.trim(), idempotency_key: intent.current || (intent.current = createUuid()) };
       if (!metadata.name || !metadata.collection) throw new Error('请填写表情名称和集合');
       if (draft.original) {
         await controlApi.updateSticker(draft.original.sticker_id, { ...metadata, enabled: draft.enabled, expected_revision: draft.original.content_revision });
@@ -113,7 +114,7 @@ export function StickerLibrary({ onDirty }: { onDirty: (dirty: boolean) => void 
       <p className="break-words font-medium">{item.name} · {item.enabled ? '已启用' : '已停用'}</p>
       <p className="break-words text-xs text-text-secondary">集合：{item.collection} · {item.kind === 'image' ? '图片' : `${item.adapter_type} 平台表情`}</p>
       <p className="break-words text-xs">标签：{item.tags.join('、') || '无'}</p>
-      <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => inspect(item)}>预览</Button><Button size="sm" onClick={() => { intent.current = ''; setFormError(''); setDraft({ ...emptyDraft(), original: item, mode: item.kind, name: item.name, tags: item.tags.join(', '), collection: item.collection, enabled: item.enabled }); }}>编辑</Button><Button size="sm" variant="danger" onClick={() => { deleteKey.current = crypto.randomUUID(); setFormError(''); setDeleting(item); }}>删除</Button></div>
+      <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => inspect(item)}>预览</Button><Button size="sm" onClick={() => { intent.current = ''; setFormError(''); setDraft({ ...emptyDraft(), original: item, mode: item.kind, name: item.name, tags: item.tags.join(', '), collection: item.collection, enabled: item.enabled }); }}>编辑</Button><Button size="sm" variant="danger" onClick={() => { deleteKey.current = createUuid(); setFormError(''); setDeleting(item); }}>删除</Button></div>
     </div>)}</div>
     <div className="flex justify-between gap-2"><Button disabled={!cursors.length || loading} onClick={() => setCursors((values) => values.slice(0, -1))}>上一页</Button><Button disabled={!data?.has_more || !data.next_cursor || loading} onClick={() => { if (data?.next_cursor) setCursors((values) => [...values, data.next_cursor!]); }}>下一页</Button></div>
     <Modal open={!!draft} title={draft?.original ? '编辑表情' : draft?.mode === 'native' ? '添加平台表情' : '添加图片表情'} onClose={closeDraft}>

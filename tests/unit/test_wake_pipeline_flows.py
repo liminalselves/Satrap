@@ -169,6 +169,47 @@ async def test_max_wait_applies_to_necessity_mode():
     assert timed.get_extra("wake_decision").rule == "max_wait"
     await scheduler.wake_timers.close()
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["frequency", "necessity"])
+async def test_deadline_rechecks_clock_after_early_sleep(mode: str, monkeypatch: pytest.MonkeyPatch):
+    """提前返回不能提交尚未到期的补偿, 再次等待后只触发一次模型调用"""
+    from satrap.core.pipeline import wake_timers as timers_module, wake_window as window_module
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": mode, "wake_message_threshold": 32, "wake_score_threshold": 1.0, "wake_max_wait": 10,
+    }))
+    manager = AsyncMock()
+    manager.provider_registry = RunnableRegistry()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(manager)
+    original = await event(adapter, "early", text="普通正文")
+    clock = [original.queued_at]
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def early_sleep(delay: float, result: object = None) -> object:
+        sleeps.append(delay)
+        if len(sleeps) > 1:
+            clock[0] += delay
+        else:
+            assert adapter._event_queue.empty()
+        await real_sleep(0)
+        return result
+
+    monkeypatch.setattr(timers_module, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(window_module, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(timers_module.asyncio, "sleep", early_sleep)
+    try:
+        await scheduler.execute(original)
+        manager.handle_call_async.assert_not_awaited()
+        timed = await asyncio.wait_for(adapter._event_queue.get(), 1)
+        assert len(sleeps) == 2 and clock[0] >= original.queued_at + 10
+        await scheduler.execute(timed)
+        manager.handle_call_async.assert_awaited_once()
+        assert adapter._event_queue.empty()
+    finally:
+        await scheduler.wake_timers.close()
+
 @pytest.mark.asyncio
 async def test_max_wait_cancelled_on_close_and_queued_ticket_revoked():
     adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
@@ -724,12 +765,12 @@ async def test_all_competing_events_claim_once_and_do_not_consume_rich_event() -
     original_turn = scheduler._session_turn
 
     @asynccontextmanager
-    async def delayed_turn(manager, session_id):
+    async def delayed_turn(manager, session_id, **kwargs):
         """确定性让纯文本与语音事件先入窗, 最后事件先持锁认领"""
         if not gate.is_set():
             lock_entered.set()
             await gate.wait()
-        async with original_turn(manager, session_id):
+        async with original_turn(manager, session_id, **kwargs):
             yield
 
     scheduler._session_turn = delayed_turn
@@ -883,8 +924,10 @@ async def test_all_empty_current_event_does_not_submit_previous_window() -> None
     assert any(item["reason_code"] == "empty_input" for item in scheduler.request_diagnostics.list())
 
 @pytest.mark.asyncio
-async def test_all_budget_overflow_survives_final_projection_diagnostics() -> None:
+async def test_all_budget_overflow_survives_final_projection_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """容量截断的诊断不被随后完成的附件投影覆盖, 仍保留来源标签"""
+    from satrap.core.pipeline import scheduler as scheduler_module
+    monkeypatch.setattr(scheduler_module, "time", lambda: 1_700_000_000.0)
     adapter, manager, scheduler = _runtime({"context_scope": "group"})
     scheduler.wake_window = WakeWindow(max_messages=1)
     scheduler.wake_window.observe(_event(adapter, "evicted", actor="31"))

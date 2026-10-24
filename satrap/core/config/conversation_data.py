@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from satrap.core.storage.context_catalog import BACKUP_INDEX
+
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -98,12 +100,13 @@ class ConversationDataService:
         matched = filter_records(items, query)
         return {"items": matched[max(0, offset):max(0, offset) + min(100, max(1, limit))], "total": len(matched)}
 
-    def catalog_records(self, platform: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def catalog_records(self, platform: dict[str, Any] | None = None, requested: str = '') -> list[dict[str, Any]]:
         """
         读取完整分类目录, 不创建平台文件或激活运行时
 
         参数:
         - platform: 动态平台类型和实例描述
+        - requested: 可选精确对话或上下文 ID
 
         返回:
         - 全部对话分类记录, 缺少数据库时返回空列表
@@ -111,7 +114,7 @@ class ConversationDataService:
         if not self.database.is_file():
             return []
         with closing(self._connect()) as connection:
-            return conversation_records(connection, platform)
+            return conversation_records(connection, platform, requested)
 
     def _context(self, connection: sqlite3.Connection, conversation: str) -> list[dict[str, Any]]:
         """
@@ -370,6 +373,7 @@ class ConversationDataService:
                     else:
                         raise ValueError("未知编辑操作")
             connection.execute("CREATE TABLE IF NOT EXISTS conversation_data_backups (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, layer TEXT NOT NULL, payload TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL)")
+            connection.execute(BACKUP_INDEX)
             backup_id = uuid.uuid4().hex
             connection.execute("INSERT INTO conversation_data_backups VALUES (?, ?, ?, ?, ?, ?)", (backup_id, conversation, layer, json.dumps(previous, ensure_ascii=False, allow_nan=False), str(action), time.time()))
             if layer == "context":

@@ -232,7 +232,7 @@ def prepare_structured_messages(
     processed = [message.copy() for message in messages]
     if format:
         format_str = json.dumps(format, ensure_ascii=False, indent=2)
-        instruction = f"\n请严格按照以下 JSON 格式输出结果, 不要包含 Markdown 标记或其他多余文本:\n{format_str}"
+        instruction = f"\n只输出符合以下结构的 JSON，不要 Markdown 或额外解释:\n{format_str}"
         if processed and processed[0].get("role") == "system":
             processed[0]["content"] += f"\n\n{instruction}"
         else:

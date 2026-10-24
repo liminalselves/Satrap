@@ -15,6 +15,8 @@ from satrap.core.config.agent_routing import AgentRouteStore
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.service import GroupChatService
 from satrap.core.group_chat.types import GroupChatLimits
+from satrap.core.conversation import HistoryWindow, bind_conversation_route
+from satrap.core.group_chat.service import HISTORY_OPERATIONS
 from satrap.core.platform import PlatformAdapter, PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig
 from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
 from satrap.core.platform.onebot.adapter import OneBotAdapter
@@ -44,6 +46,92 @@ from support.group_models import AsyncModel, Invoker, Model, PLUGIN, Script, ses
 
 _group_chat_service_SCOPE = MessageScope("ob", "10000", "group", "456")
 
+
+@pytest.mark.usefixtures('_manager_scope')
+@pytest.mark.asyncio
+async def test_history_scope_enforces_receipt_boundary_across_queries_ids_and_assets(tmp_path: Path) -> None:
+    """同秒消息、延迟入库和回源记录不穿透新会话, 分页及覆盖范围在 SQL 内筛选"""
+    service, adapter, origin = _setup(tmp_path)
+    store = adapter.message_archive
+    assert store is not None
+    scope = _group_chat_service_SCOPE
+    start = NOW - 1
+    rows = [("old", start - .1, NOW, "event"), ("delayed", start - .2, NOW + 1, "event"),
+            ("current-a", start, NOW, "event"), ("current-b", start + .1, NOW, "event"),
+            ("backfill", start + .2, NOW, "adapter_lookup")]
+    for mid, received, timestamp, source in rows:
+        store.record(scope, ArchiveMessage(mid, "123", timestamp, "讨论 " + mid, source=source, received_at=received))
+    with bind_call_origin(origin), bind_conversation_route(None, HistoryWindow("new", start)):
+        first = await service.execute("group_chat_recent_messages", {"limit": 1})
+        assert [item["message_id"] for item in first["items"]] == ["current-b"]
+        assert first["has_more"] and first["coverage"]["archived_to"] == NOW
+        page = await service.execute("group_chat_recent_messages", {"limit": 1, "cursor": first["next_cursor"]})
+        assert [item["message_id"] for item in page["items"]] == ["current-a"] and not page["has_more"]
+        found = await service.execute("group_chat_search_messages", {"keyword": "讨论"})
+        assert {item["message_id"] for item in found["items"]} == {"current-a", "current-b"}
+        for mid in ("old", "delayed", "backfill"):
+            for name in ("group_chat_get_message", "group_chat_get_message_assets"):
+                result = await service.execute(name, {"message_id": mid})
+                assert result["error"]["code"] == "history_out_of_scope"
+        before = await service.execute("group_chat_recent_messages", {"before_message_id": "old"})
+        assert before["error"]["code"] == "history_out_of_scope"
+        missing = await service.execute("group_chat_get_message", {"message_id": "unknown"})
+        assert missing["error"]["code"] == "history_scope_unavailable"
+        assert (await service.execute("group_chat_get_message", {"message_id": "current-a"}))["ok"]
+    adapter._bot.get_msg.assert_not_awaited()
+    with bind_call_origin(origin), bind_conversation_route(None, HistoryWindow("another", start)):
+        stale = await service.execute("group_chat_recent_messages", {"cursor": first["next_cursor"]})
+        assert stale["error"]["code"] == "invalid_argument"
+    with bind_call_origin(origin):
+        unavailable = await service.execute("group_chat_recent_messages", {})
+        assert unavailable["error"]["code"] == "history_scope_unavailable"
+        broad = await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive"))
+        assert {item["message_id"] for item in broad["items"]} == {row[0] for row in rows}
+        for name in HISTORY_OPERATIONS:
+            denied = await service.execute(name, {}, limits=GroupChatLimits(history_scope="disabled"))
+            assert denied["error"]["code"] == "history_disabled"
+    with pytest.raises(ValueError):
+        GroupChatLimits(history_scope="invalid")
+
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+async def test_history_tools_hide_when_disabled_and_discard_inflight_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实工具实例在热收紧后拒绝旧结果, 隐藏群史工具而保留群资料与回复"""
+    adapter, event, _ = setup(tmp_path)
+    instance = await session(tmp_path, Script([]), True, False)
+    tool = instance.tools_manager.tools["group_chat_recent_messages"]
+    entered, release = threading.Event(), threading.Event()
+    archive = adapter.message_archive
+    assert archive is not None
+    query = archive.query
+
+    def delayed(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return query(*args, **kwargs)
+
+    monkeypatch.setattr(archive, "query", delayed)
+    with owner(event):
+        assert "全部保留档案" in tool.get_tool_defined()["function"]["description"]
+        task = asyncio.create_task(tool.execute())
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            for entry in instance.tools_manager.tools.values():
+                if entry.tool_name.startswith("group_chat_"):
+                    entry.config["history_scope"] = "disabled"
+        finally:
+            release.set()
+        result = await task
+        assert result["error"]["code"] == "stale_call"
+        available = {item["function"]["name"] for item in instance.tools_manager.get_tools_definitions()}
+        assert not available.intersection(HISTORY_OPERATIONS)
+        assert {"group_chat_reply", "group_chat_get_group_info", "group_chat_get_member"}.issubset(available)
+        denied = await tool.execute()
+        assert denied["error"]["code"] == "history_disabled"
+        tool.config["history_scope"] = "current_session"
+        assert "本次会话起点" in tool.get_tool_defined()["function"]["description"]
+
 @pytest.fixture()
 def _manager_scope():
     """恢复进程级管理器, 各测试不依赖其它测试留下的适配器"""
@@ -69,9 +157,9 @@ async def test_local_queries_preserve_sender_ids_and_never_use_model_history(tmp
         connection.execute("CREATE TABLE chat_history(content TEXT)")
         connection.execute("INSERT INTO chat_history VALUES('模型历史不能伪造平台出处')")
     with bind_call_origin(origin):
-        result = await service.execute("group_chat_recent_messages", {})
-        search = await service.execute("group_chat_search_messages", {"keyword": "讨论", "sender_id": "789"})
-        message = await service.execute("group_chat_get_message", {"message_id": "a"})
+        result = await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive"))
+        search = await service.execute("group_chat_search_messages", {"keyword": "讨论", "sender_id": "789"}, limits=GroupChatLimits(history_scope="group_archive"))
+        message = await service.execute("group_chat_get_message", {"message_id": "a"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert [item["message_id"] for item in result["items"]] == ["a", "b"]
     assert result["coverage"]["complete"] is False
     assert [item["message_id"] for item in search["items"]] == ["b"]
@@ -105,10 +193,10 @@ async def test_search_automatically_uses_backend_timezone_and_preserves_cursor(
     plain = {"start_time": start.replace(tzinfo=None).isoformat(), "end_time": end.replace(tzinfo=None).isoformat()}
     explicit = {"start_time": start.astimezone(timezone.utc).isoformat(), "end_time": end.isoformat()}
     with bind_call_origin(origin):
-        first = await service.execute("group_chat_search_messages", {**plain, "limit": 1})
-        second = await service.execute("group_chat_search_messages", {**explicit, "cursor": first["next_cursor"]})
-        all_messages = await service.execute("group_chat_search_messages", {})
-        null_bounds = await service.execute("group_chat_search_messages", {"start_time": None, "end_time": None})
+        first = await service.execute("group_chat_search_messages", {**plain, "limit": 1}, limits=GroupChatLimits(history_scope="group_archive"))
+        second = await service.execute("group_chat_search_messages", {**explicit, "cursor": first["next_cursor"]}, limits=GroupChatLimits(history_scope="group_archive"))
+        all_messages = await service.execute("group_chat_search_messages", {}, limits=GroupChatLimits(history_scope="group_archive"))
+        null_bounds = await service.execute("group_chat_search_messages", {"start_time": None, "end_time": None}, limits=GroupChatLimits(history_scope="group_archive"))
     assert first["ok"] and second["ok"]
     assert [item["message_id"] for item in first["items"]] == ["c"]
     assert [item["message_id"] for item in second["items"]] == ["a", "b"]
@@ -128,8 +216,8 @@ async def test_invalid_search_times_are_rejected_without_breaking_next_query(tmp
     assert store is not None
     store.record(_group_chat_service_SCOPE, ArchiveMessage("a", "123", NOW - 20, "讨论"))
     with bind_call_origin(origin):
-        invalid = await service.execute("group_chat_search_messages", bad_bounds)
-        next_query = await service.execute("group_chat_search_messages", {})
+        invalid = await service.execute("group_chat_search_messages", bad_bounds, limits=GroupChatLimits(history_scope="group_archive"))
+        next_query = await service.execute("group_chat_search_messages", {}, limits=GroupChatLimits(history_scope="group_archive"))
     assert invalid["ok"] is False and invalid["error"]["code"] == "invalid_argument"
     assert next_query["ok"] and [item["message_id"] for item in next_query["items"]] == ["a"]
 
@@ -140,17 +228,17 @@ async def test_invalid_search_times_are_rejected_without_breaking_next_query(tmp
 async def test_private_foreign_or_inconsistent_origins_cannot_read_archive(tmp_path: Path, change: dict) -> None:
     service, _, origin = _setup(tmp_path)
     with bind_call_origin(replace(origin, **change)):
-        result = await service.execute("group_chat_recent_messages", {})
+        result = await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["ok"] is False
 
 @pytest.mark.usefixtures('_manager_scope')
 @pytest.mark.asyncio
 async def test_missing_and_ended_call_scope_returns_stale_call(tmp_path: Path) -> None:
     service, _, origin = _setup(tmp_path)
-    assert (await service.execute("group_chat_recent_messages", {}))["error"]["code"] == "stale_call"
+    assert (await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive")))["error"]["code"] == "stale_call"
     with bind_call_origin(origin):
         pass
-    assert (await service.execute("group_chat_recent_messages", {}))["error"]["code"] == "stale_call"
+    assert (await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive")))["error"]["code"] == "stale_call"
 
 @pytest.mark.usefixtures('_manager_scope')
 @pytest.mark.asyncio
@@ -167,7 +255,7 @@ async def test_missing_and_ended_call_scope_returns_stale_call(tmp_path: Path) -
 async def test_bad_or_cross_group_arguments_are_explicit_errors(tmp_path: Path, operation: str, args: dict) -> None:
     service, adapter, origin = _setup(tmp_path)
     with bind_call_origin(origin):
-        result = await service.execute(operation, args)
+        result = await service.execute(operation, args, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["error"]["code"] == "invalid_argument"
     adapter._bot.get_msg.assert_not_awaited()
     adapter._bot.get_group_member_list.assert_not_awaited()
@@ -181,7 +269,7 @@ async def test_read_failure_is_logged_archive_unavailable_not_empty_success(tmp_
         raise OSError("模拟文件不可读")
     monkeypatch.setattr(adapter.message_archive, "query", fail)
     with bind_call_origin(origin), caplog.at_level(logging.ERROR):
-        result = await service.execute("group_chat_recent_messages", {})
+        result = await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["error"]["code"] == "archive_unavailable"
     assert "items" not in result
     assert any("存储操作失败" in record.getMessage() for record in caplog.records)
@@ -194,7 +282,7 @@ async def test_corrupt_message_json_is_archive_failure_not_invalid_model_argumen
     with sqlite3.connect(adapter.message_archive.database) as connection:
         connection.execute("UPDATE platform_messages SET mentions_json='{' WHERE message_id='a'")
     with bind_call_origin(origin):
-        result = await service.execute("group_chat_get_message", {"message_id": "a"})
+        result = await service.execute("group_chat_get_message", {"message_id": "a"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["error"]["code"] == "archive_unavailable"
 
 @pytest.mark.usefixtures('_manager_scope')
@@ -292,8 +380,8 @@ async def test_verified_message_backfill_then_archive_hit_preserves_sender_and_b
     service, adapter, origin = _setup(tmp_path)
     adapter._bot.get_msg.return_value = _raw(text="长" * 1000)
     with bind_call_origin(origin):
-        first = await service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(text_budget=128))
-        second = await service.execute("group_chat_get_message", {"message_id": "77"})
+        first = await service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(text_budget=128, history_scope="group_archive"))
+        second = await service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert first["source"] == "adapter_verified" and first["item"]["sender_id"] == "123"
     assert first["item"]["mentions"] == ["789"] and first["truncated"] is True
     assert len(first["item"]["text"]) == 128
@@ -308,7 +396,7 @@ async def test_message_backfill_rejects_cross_scope_id_and_unverified_time(tmp_p
     service, adapter, origin = _setup(tmp_path)
     adapter._bot.get_msg.return_value = {**_raw(), **change}
     with bind_call_origin(origin):
-        result = await service.execute("group_chat_get_message", {"message_id": "77"})
+        result = await service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["error"]["code"] == "unverified_target"
     assert not adapter.message_archive.database.exists()
 
@@ -323,7 +411,7 @@ async def test_deleted_recalled_and_expired_messages_do_not_trigger_backfill(tmp
     store.record(_group_chat_service_SCOPE, ArchiveMessage("expired", "123", NOW - 31 * 86400, "过期"))
     with bind_call_origin(origin):
         for message_id in ("deleted", "recalled", "expired"):
-            result = await service.execute("group_chat_get_message", {"message_id": message_id})
+            result = await service.execute("group_chat_get_message", {"message_id": message_id}, limits=GroupChatLimits(history_scope="group_archive"))
             assert result["error"]["code"] == "message_" + message_id
     adapter._bot.get_msg.assert_not_awaited()
 
@@ -334,7 +422,7 @@ async def test_clear_horizon_blocks_missing_old_message_after_remote_time_verifi
     adapter.message_archive.delete(_group_chat_service_SCOPE, expected_revision=0)
     adapter._bot.get_msg.return_value = _raw()
     with bind_call_origin(origin):
-        result = await service.execute("group_chat_get_message", {"message_id": "77"})
+        result = await service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["error"]["code"] == "message_deleted_or_expired"
     assert adapter.message_archive.get(_group_chat_service_SCOPE, "77") is None
 
@@ -350,7 +438,7 @@ async def test_inflight_message_lookup_revalidates_before_releasing_or_saving_bo
         return _raw()
     adapter._bot.get_msg.side_effect = lookup
     with bind_call_origin(origin):
-        task = asyncio.create_task(service.execute("group_chat_get_message", {"message_id": "77"}))
+        task = asyncio.create_task(service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(history_scope="group_archive")))
         await entered.wait()
         if change == "account":
             adapter.bot_self_id = adapter.client_self_id = "20000"
@@ -405,7 +493,7 @@ async def test_enabling_first_type_binding_invalidates_legacy_frozen_origin(tmp_
     assert event.call_origin.agent_route_generation == 0
     adapter.config.session_bindings = {"group": {"mode": "inherit"}}
     with bind_call_origin(event.call_origin):
-        result = await service.execute("group_chat_recent_messages", {})
+        result = await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["error"]["code"] == "stale_call"
 
 @pytest.mark.usefixtures('_manager_scope')
@@ -418,7 +506,7 @@ async def test_cancellation_propagates_and_does_not_store_unfinished_lookup(tmp_
         await asyncio.Event().wait()
     adapter._bot.get_msg.side_effect = lookup
     with bind_call_origin(origin):
-        task = asyncio.create_task(service.execute("group_chat_get_message", {"message_id": "77"}))
+        task = asyncio.create_task(service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(history_scope="group_archive")))
         await entered.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -441,9 +529,9 @@ async def test_misskey_room_can_query_archive_and_reports_unsupported_member_rea
     service = GroupChatService()
     origin = CallOrigin("mk", "bot", "GroupMessage", "room", "member", "id", "request")
     with bind_call_origin(origin):
-        history = await service.execute("group_chat_recent_messages", {})
+        history = await service.execute("group_chat_recent_messages", {}, limits=GroupChatLimits(history_scope="group_archive"))
         members = await service.execute("group_chat_find_members", {"query": "成员"})
-        missing = await service.execute("group_chat_get_message", {"message_id": "missing"})
+        missing = await service.execute("group_chat_get_message", {"message_id": "missing"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert history["items"][0]["message_id"] == "id"
     assert members["error"]["code"] == missing["error"]["code"] == "unsupported"
 
@@ -489,7 +577,7 @@ async def test_waiting_for_read_slot_has_total_timeout_and_logs_failure(tmp_path
         return await wait_for(awaitable, 0.02)
     monkeypatch.setattr("satrap.core.platform.onebot.group_chat.asyncio.wait_for", short_wait)
     with bind_call_origin(origin), caplog.at_level(logging.WARNING):
-        result = await service.execute("group_chat_get_message", {"message_id": "77"})
+        result = await service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["error"]["code"] == "unavailable" and result["error"]["retryable"] is True
     assert any("平台读取暂不可用" in record.getMessage() for record in caplog.records)
     adapter._bot.get_msg.assert_not_awaited()
@@ -505,7 +593,7 @@ async def test_reconnect_while_waiting_for_slot_does_not_submit_old_request(tmp_
             return await super().acquire()
     adapter._message_lookup_slots = ObservedSemaphore(0)
     with bind_call_origin(origin):
-        task = asyncio.create_task(service.execute("group_chat_get_message", {"message_id": "77"}))
+        task = asyncio.create_task(service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(history_scope="group_archive")))
         await entered.wait()
         adapter._connection_generation += 1
         adapter._message_lookup_slots.release()
@@ -519,7 +607,7 @@ async def test_zero_platform_time_cannot_be_replaced_by_fresh_local_time_on_back
     service, adapter, origin = _setup(tmp_path)
     adapter._bot.get_msg.return_value = {**_raw(), "time": 0}
     with bind_call_origin(origin):
-        result = await service.execute("group_chat_get_message", {"message_id": "77"})
+        result = await service.execute("group_chat_get_message", {"message_id": "77"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert result["error"]["code"] == "message_deleted_or_expired"
     assert not adapter.message_archive.database.exists()
 
@@ -539,7 +627,7 @@ async def test_new_platform_with_unicode_string_ids_requires_no_host_branch_chan
     with bind_call_origin(origin):
         members = await service.execute("group_chat_find_members", {"query": "名片"})
         member = await service.execute("group_chat_get_member", {"user_id": "user:甲"})
-        message = await service.execute("group_chat_get_message", {"message_id": "message:甲"})
+        message = await service.execute("group_chat_get_message", {"message_id": "message:甲"}, limits=GroupChatLimits(history_scope="group_archive"))
     assert members["items"][0]["user_id"] == member["item"]["user_id"] == message["item"]["sender_id"] == "user:甲"
     assert message["item"]["message_id"] == "message:甲"
 
@@ -912,6 +1000,11 @@ def test_plugin_catalog_schema_and_declared_capabilities():
     assert set(meta["tools"]) == set(DEFINITIONS)
     schema = parse_config_schema(meta)
     assert schema["member_limit"].validate_strict(10) == 10
+    assert schema["history_scope"].default == "current_session"
+    assert schema["history_scope"].label == "群消息查询范围"
+    assert schema["history_scope"].option_labels["group_archive"] == "当前群全部保留记录"
+    with pytest.raises(ValueError):
+        schema["history_scope"].validate("invalid")
     with pytest.raises(ValueError):
         schema["member_limit"].validate_strict(51)
     catalog = PluginCatalog(preset_dir=PLUGIN.parent, user_dir=PLUGIN / "absent")
@@ -938,7 +1031,8 @@ async def test_named_backend_agent_first_load_restart_and_plugin_disable(tmp_pat
     configs = EdictumConfigManager(registry, tmp_path / "edictum.json")
     configs.plugin_catalog = catalog
     configs.create("group-agent", {"edictum_type": "async_simple" if asynchronous else "simple", "model_name": "test",
-                                   "params": {"system_prompt": "群基础提示词", "stream": True}, "plugins": ["group_chat"]})
+                                   "params": {"system_prompt": "群基础提示词", "stream": True},
+                                   "plugins": [{"name": "group_chat", "config": {"history_scope": "group_archive"}}]})
     manager = SessionManager(db_path=tmp_path / "agent.db", platform_id="ob")
     manager.plugin_environment = PluginEnvironment(session_type="platform", platform_type="onebot")
     provider = EdictumProvider(configs, registry, default_checkpoint_db=str(tmp_path / "agent.db"))

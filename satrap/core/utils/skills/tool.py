@@ -19,8 +19,8 @@ class _SkillReader:
 
     tool_name = "load_skill"
     recovery_policy = "retry"
-    description = "读取可用技能的完整说明; 任务匹配或用户指定技能时先调用, 不改变工具权限"
-    params_dict = {"skill": ("string", "技能目录中的精确标识")}
+    description = "按目录中的精确标识读取技能完整说明；任务匹配或用户点名某个技能时先调用"
+    params_dict = {"skill": {"type": "string", "minLength": 1, "description": "技能目录中的精确标识"}}
 
     def __init__(self, skills_manager: SkillsManager, workflow: SkillWorkflowProtocol | None = None):
         """

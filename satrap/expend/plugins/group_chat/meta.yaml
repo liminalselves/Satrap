@@ -20,6 +20,17 @@ version: 0.4.0
 author: Satrap Team
 description: "查询群资料, 成员和记录, 写带出处的摘要, 组合引用, @, 图片和表情回复, 可选修改机器人自己的群昵称"
 config_schema:
+  history_scope:
+    type: select
+    label: 群消息查询范围
+    strict: true
+    default: current_session
+    options: [current_session, group_archive, disabled]
+    option_labels:
+      current_session: 仅当前会话
+      group_archive: 当前群全部保留记录
+      disabled: 禁止查询群记录
+    description: "群消息查询范围: current_session 仅当前会话, group_archive 当前群全部保留记录, disabled 禁止群记录与摘要查询; 收紧后请 /new, 已读内容不会自动从上下文撤回"
   reminders_enabled:
     type: bool
     default: false

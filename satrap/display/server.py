@@ -39,9 +39,10 @@ WebSocket:
 """
 from __future__ import annotations
 
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlsplit, quote
 import argparse
 import asyncio
+import math
 import base64
 import signal
 from typing import Any, cast
@@ -52,22 +53,24 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.config.conversation_data import ConversationDataConflict
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
-from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS
+from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS, BoundedAsyncWorker
 from satrap.edictum.plugin_settings import model_options
 from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.config.loader import ConfigLoader
-from satrap.display.recorder import list_conversations
+from satrap.display.recorder import list_conversations, query_conversations
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
 from satrap.core.storage import StorageMaintenanceService
 from satrap.core.rag import RagService
 
 from satrap.core.log import logger
+from satrap.core.file_access.artifacts import CHUNK_BYTES
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 19872
+CHAT_READ_WORKERS = BoundedAsyncWorker('chat-read', workers=4, capacity=32)
 
 
 class ChatHTTPServer(MiniHTTPServer):
@@ -137,7 +140,9 @@ class ChatHTTPServer(MiniHTTPServer):
 
         queue = self.service.subscribe(conversation_id)
         try:
-            snapshot = self.service.runtime_snapshot(conversation_id)
+            raw_limit = self._query_param(path, 'history_limit')
+            history_limit = min(100, max(1, int(raw_limit))) if raw_limit else None
+            snapshot = self.service.runtime_snapshot(conversation_id, history_limit=history_limit)
             await asyncio.wait_for(self._ws_send(writer, snapshot), timeout=5.0)
             while True:
                 if reader.at_eof():
@@ -182,6 +187,58 @@ class ChatHTTPServer(MiniHTTPServer):
             return DEFAULT_MAX_FILE_SIZE
         return super()._request_body_limit(method, path)
 
+    async def _stream_response(self, writer: asyncio.StreamWriter, method: str, path: str, headers: dict[str, str]) -> bool:
+        """
+        经统一鉴权后下载当前会话附件, 路径只接受会话和不透明 ID
+
+        参数:
+        - writer: 当前 HTTP 连接
+        - method: HTTP 方法
+        - path: 请求路径
+        - headers: 已验证来源的请求头
+
+        返回:
+        - 下载路由已处理时为 True, 其它请求返回 False
+        """
+        clean = urlsplit(path).path
+        prefix = "/api/chat/files/"
+        if method != "GET" or not clean.startswith(prefix):
+            return False
+        parts = clean[len(prefix):].split("/")
+        origin = headers.get("origin")
+        if len(parts) != 2 or not all(parts):
+            self._send_json(writer, 404, {"error": "文件不存在"}, origin)
+            return True
+        task = asyncio.create_task(asyncio.to_thread(self.service.open_output_file, unquote(parts[0]), unquote(parts[1])))
+        try:
+            opened = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            result = await asyncio.gather(task, return_exceptions=True)
+            if result and isinstance(result[0], tuple):
+                result[0][0].close()
+                result[0][2].close()
+            raise
+        except (OSError, ValueError):
+            self._send_json(writer, 404, {"error": "文件不存在、正在维护或已不可用"}, origin)
+            return True
+        stream, artifact, lease = opened
+        try:
+            cors = {**self._cors, **self.auth.cors_headers(origin)}
+            response = {**cors, "Content-Type": "application/octet-stream", "Content-Length": str(artifact.size),
+                        "Content-Disposition": "attachment; filename=download; filename*=UTF-8''" + quote(artifact.name, safe=""),
+                        "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "Connection": "close"}
+            writer.write(("HTTP/1.1 200 OK\r\n" + "".join(f"{key}: {value}\r\n" for key, value in response.items()) + "\r\n").encode("ascii"))
+            async with asyncio.timeout(60):
+                while chunk := await asyncio.to_thread(stream.read, CHUNK_BYTES):
+                    writer.write(chunk)
+                    await asyncio.wait_for(writer.drain(), timeout=5)
+        except (OSError, TimeoutError):
+            writer.transport.abort()
+        finally:
+            stream.close()
+            lease.close()
+        return True
+
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
         operation_status = self.application_status(method, path)
@@ -222,6 +279,22 @@ class ChatHTTPServer(MiniHTTPServer):
                 logger.error(f"[对话数据] Chat/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
                 return 500, {"error": "对话数据操作失败, 请查看 Chat 日志"}
 
+        if clean == "/api/chat/default-agent-prompt" and method in {"GET", "PUT"}:
+            conversation_id = self._query_param(path, "conversation")
+            try:
+                if not conversation_id:
+                    raise ValueError("缺少 conversation")
+                if method == "GET":
+                    return 200, await svc.get_default_agent_prompt(conversation_id)
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or set(payload) != {"default_agent_prompt_enabled"}:
+                    raise ValueError("内置提示设置参数无效")
+                result = await svc.set_default_agent_prompt(conversation_id, payload["default_agent_prompt_enabled"])
+                return (200 if result.get("ok") else 409), result
+            except (OSError, TypeError, ValueError) as error:
+                logger.warning(f"[内置提示] 设置读取或更新失败: {error}")
+                return 400, {"error": str(error)}
+
         if clean == "/api/chat/command-history" and method in {"GET", "PUT"}:
             conversation_id = self._query_param(path, "conversation")
             try:
@@ -236,6 +309,22 @@ class ChatHTTPServer(MiniHTTPServer):
                 return (200 if result.get("ok") else 409), result
             except (OSError, TypeError, ValueError) as error:
                 logger.warning(f"[命令历史] 设置读取或更新失败: {error}")
+                return 400, {"error": str(error)}
+
+        if clean == "/api/chat/max-iterations" and method in {"GET", "PUT"}:
+            conversation_id = self._query_param(path, "conversation")
+            try:
+                if not conversation_id:
+                    raise ValueError("缺少 conversation")
+                if method == "GET":
+                    return 200, await svc.get_max_iterations(conversation_id)
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or set(payload) != {"max_iterations"}:
+                    raise ValueError("最大迭代设置参数无效")
+                result = await svc.set_max_iterations(conversation_id, payload["max_iterations"])
+                return (200 if result.get("ok") else 409), result
+            except (OSError, TypeError, ValueError) as error:
+                logger.warning(f"[最大迭代] 设置读取或更新失败: {error}")
                 return 400, {"error": str(error)}
 
         if clean == "/api/chat/approval" and method in {"GET", "PUT"}:
@@ -331,6 +420,7 @@ class ChatHTTPServer(MiniHTTPServer):
                     model=str(payload.get("model") or "default"),
                     think=str(payload.get("think") or "off"),
                     system_prompt=str(payload.get("system_prompt") or "") or None,
+                    default_agent_prompt_enabled=payload.get("default_agent_prompt_enabled", False),
                     project_id=str(payload.get("project_id") or "") or None,
                 )
             except ValueError as e:
@@ -345,6 +435,7 @@ class ChatHTTPServer(MiniHTTPServer):
                     model=str(payload.get("model") or "default"),
                     think=str(payload.get("think") or "off"),
                     system_prompt=str(payload.get("system_prompt") or "") or None,
+                    default_agent_prompt_enabled=payload.get("default_agent_prompt_enabled", False),
                     project_id=str(payload.get("project_id") or "") or None,
                     temperature=float(temperature) if temperature is not None else None,
                 )
@@ -353,7 +444,23 @@ class ChatHTTPServer(MiniHTTPServer):
             return 200, {"ok": True, "conversation_id": cid}
 
         if method == "GET" and clean == "/api/chat/conversations":
-            return 200, {"conversations": list_conversations(db_path=svc._display_db_path)}
+            return 200, {"conversations": await CHAT_READ_WORKERS.run(list_conversations, db_path=svc._display_db_path)}
+
+        if method == 'GET' and clean == '/api/chat/conversations/page':
+            try:
+                limit = max(1, min(100, int(self._query_param(path, 'limit') or '50')))
+                raw_cursor = self._query_param(path, 'cursor')
+                cursor = json.loads(raw_cursor) if raw_cursor else None
+                if cursor is not None and (not isinstance(cursor, list) or len(cursor) != 2 or type(cursor[0]) not in (int, float) or not math.isfinite(float(cursor[0])) or not isinstance(cursor[1], str)):
+                    raise ValueError('无效的会话分页游标')
+                before = (float(cursor[0]), cursor[1]) if cursor is not None else None
+                result = await CHAT_READ_WORKERS.run(query_conversations, db_path=svc._display_db_path, search=self._query_param(path, 'search'), project_id=self._query_param(path, 'project_id') or None, page_size=limit + 1, before=before, identity=self._query_param(path, 'conversation_id'))
+                rows = result['items']
+                selected = [{**row, 'title': str(row['title'])[:100]} for row in rows[:limit]]
+                next_cursor = json.dumps([selected[-1]['last_at'], selected[-1]['conversation_id']]) if len(rows) > limit else None
+                return 200, {'conversations': selected, 'has_more': next_cursor is not None, 'next_cursor': next_cursor}
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                return 400, {'error': str(error)}
 
         if method == "GET" and clean == "/api/chat/history":
             raw_days = self._query_param(path, "older_than_days")
@@ -467,11 +574,26 @@ class ChatHTTPServer(MiniHTTPServer):
                 return 409, {"error": str(error)}
         # 接口: DELETE /api/chat/conversations/{id}
 
+        if method == 'GET' and clean == '/api/chat/turns/page':
+            conversation = self._query_param(path, 'conversation')
+            if not conversation:
+                return 400, {'error': '缺少 conversation 参数'}
+            try:
+                limit = max(1, min(100, int(self._query_param(path, 'limit') or '50')))
+                before_text = self._query_param(path, 'before')
+                before = int(before_text) if before_text else None
+                rows = await CHAT_READ_WORKERS.run(svc.list_turns, conversation, limit=limit + 1, before=before, latest=True, all_variants=False)
+                selected = rows[-limit:]
+                return 200, {'turns': selected, 'has_more': len(rows) > limit,
+                             'next_before': selected[0]['turn_index'] if selected else None}
+            except (TypeError, ValueError) as error:
+                return 400, {'error': str(error)}
+
         if method == "GET" and clean == "/api/chat/turns":
             conv = self._query_param(path, "conversation")
             if not conv:
                 return 400, {"error": "缺少 conversation 参数"}
-            return 200, {"turns": svc.list_turns(conv)}
+            return 200, {"turns": await CHAT_READ_WORKERS.run(svc.list_turns, conv)}
 
         if method == "POST" and clean == "/api/chat/send":
             payload = json.loads(body or b"{}")
@@ -485,7 +607,7 @@ class ChatHTTPServer(MiniHTTPServer):
             think = str(think) if think is not None else None
             preload_settings = {
                 key: payload[key]
-                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled")
+                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled", "max_iterations", "default_agent_prompt_enabled")
                 if key in payload
             }
             result = await svc.send(

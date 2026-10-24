@@ -1,5 +1,6 @@
+import { createUuid } from '@/utils/uuid';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { administratorsApi, administratorError, administratorRuntimeLabel, type AdministratorGroup, type AdministratorOverride, type AdministratorOverrideRebind, type AdministratorPreview, type AdministratorRebind, type AdministratorPlugin, type AdministratorSnapshot } from '@/api/administrators';
+import { administratorsApi, administratorError, administratorRuntimeLabel, type AdministratorChatRebind, type AdministratorGroup, type AdministratorOverride, type AdministratorOverrideRebind, type AdministratorPreview, type AdministratorRebind, type AdministratorPlugin, type AdministratorSnapshot } from '@/api/administrators';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
@@ -64,6 +65,7 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
   const [groups, setGroups] = useState<AdministratorGroup[]>([]);
   const [overrides, setOverrides] = useState<AdministratorOverride[]>([]);
   const [rebind, setRebind] = useState<AdministratorRebind[]>([]);
+  const [rebindChats, setRebindChats] = useState<AdministratorChatRebind[]>([]);
   const [rebindOverrides, setRebindOverrides] = useState<AdministratorOverrideRebind[]>([]);
   const [preview, setPreview] = useState<AdministratorPreview | null>(null);
   const [error, setError] = useState('');
@@ -78,13 +80,14 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
   const dirty = snapshot !== null
     && (JSON.stringify(groups) !== JSON.stringify(snapshot.groups)
       || JSON.stringify(overrides) !== JSON.stringify(snapshot.overrides)
-      || rebind.length > 0 || rebindOverrides.length > 0);
+      || rebind.length > 0 || rebindOverrides.length > 0 || rebindChats.length > 0);
   const dirtyRef = useRef(dirty);
   const busyRef = useRef(busy);
   const requests = useRef(0);
   dirtyRef.current = dirty;
   busyRef.current = busy;
   const currentRebind = rebind.filter(item => groups.some(group => group.id === item.group_id && group.members.some(member => member.platform_id === item.platform_id && member.user_id === item.user_id)));
+  const currentRebindChats = rebindChats.filter(item => groups.some(group => group.id === item.group_id && group.chats?.some(chat => chat.platform_id === item.platform_id && chat.chat_id === item.chat_id)));
   const currentRebindOverrides = rebindOverrides.filter(item => overrides.some(entry => entry.id === item.override_id && entry.platform_id === item.platform_id && entry.user_id === item.user_id));
 
   const load = useCallback(async () => {
@@ -106,7 +109,7 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
         setGroups(value.groups);
         setOverrides(value.overrides);
         setRebind([]);
-        setRebindOverrides([]);
+        setRebindOverrides([]); setRebindChats([]);
         setConflict(false);
         setComparison(false);
       }
@@ -152,12 +155,12 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
     setLoading(false);
     setError('');
     try {
-      const value = await administratorsApi.save(groups, overrides, snapshot.revision, currentRebind, currentRebindOverrides);
+      const value = await administratorsApi.save(groups, overrides, snapshot.revision, currentRebind, currentRebindOverrides, currentRebindChats);
       setSnapshot(value);
       setGroups(value.groups);
       setOverrides(value.overrides);
       setRebind([]);
-      setRebindOverrides([]);
+      setRebindOverrides([]); setRebindChats([]);
       setConflict(false);
       setComparison(false);
       setPreview(null);
@@ -181,7 +184,7 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
     setCheckingRuntime(false);
     setError('');
     try {
-      if (action === 'preview') setPreview(await administratorsApi.preview(groups, overrides, currentRebind, currentRebindOverrides));
+      if (action === 'preview') setPreview(await administratorsApi.preview(groups, overrides, currentRebind, currentRebindOverrides, currentRebindChats));
       else if (action === 'apply') {
         const value = await administratorsApi.apply(snapshot.section_revision);
         setSnapshot(current => current && { ...current, runtime: value.runtime });
@@ -207,13 +210,13 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
     <div className="flex flex-wrap gap-2">
       <Button disabled={busy || loading} onClick={() => void load()}>刷新目录与状态</Button>
       <Button disabled={!snapshot || busy} onClick={() => {
-        const id = crypto.randomUUID();
+        const id = createUuid();
         setGroups(current => [...current, { id, name: '', enabled: true, protect: true, members: [], plugin_scope: { mode: 'selected', included: [], excluded: [] } }]);
         setOpenCard(id);
         setPreview(null);
       }}>新增管理组</Button>
       <Button disabled={!snapshot || busy} onClick={() => {
-        const id = crypto.randomUUID();
+        const id = createUuid();
         setOverrides(current => [...current, { id, enabled: true, protect: false, platform_id: '', user_id: '', allow: [], deny: [] }]);
         setOpenCard(id);
         setPreview(null);
@@ -230,14 +233,14 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
       <p className="text-text-secondary">迁移按当前成员展开, 之后新加入该组的成员不会自动继承这条否决。</p>
     </div>}
     {!!snapshot?.migration_pending?.length && <div role="alert" className="rounded-md border border-border-glass p-3 text-sm">
-      <p>{snapshot.migration_pending.length} 个组的旧排除与现有例外的启用状态冲突, 未自动迁移; 请调整对应例外条目的启用状态后保存。</p>
+      <p>{snapshot.migration_pending.length} 个组的旧排除无法安全展开为成员例外, 未自动迁移; 请检查群聊授权或对应例外条目的启用状态。</p>
       <p className="text-text-secondary">涉及管理组: {snapshot.migration_pending.join(', ')}。未迁移期间这些旧排除仍按原规则生效, 可原样保留。</p>
     </div>}
     {(conflict || comparison) && <div className="space-y-2 rounded-md border border-border-glass p-3 text-sm">
       <p>{conflict ? '配置已被其他操作修改, 草稿已保留。请读取最新版本, 比较差异后再保存。' : '已读取最新版本, 以下显示已保存的配置。编辑区仍是你的草稿, 请比较后再保存。'}</p>
       {conflict && <Button disabled={busy} onClick={() => void run('rebase')}>保留草稿并读取最新版本</Button>}
       <details open={comparison}><summary>最近读取的管理组与成员例外</summary>
-        <ul className="space-y-2">{snapshot?.groups.map(group => <li key={group.id}><p>{group.name} · {group.enabled ? '启用' : '停用'} · {group.protect === false ? '不保护账号' : '保护账号'}</p><p>成员: {group.members.map(member => `${member.platform_id} / ${member.user_id}`).join(', ') || '无'}</p><p>适用插件: {group.plugin_scope.mode === 'all' ? `所有已接入插件, 排除 ${group.plugin_scope.excluded.join(', ') || '无'}` : group.plugin_scope.included.join(', ') || '无'}</p></li>)}</ul>
+        <ul className="space-y-2">{snapshot?.groups.map(group => <li key={group.id}><p>{group.name} · {group.enabled ? '启用' : '停用'} · {group.protect === false ? '不保护账号' : '保护账号'}</p><p>成员: {group.members.map(member => `${member.platform_id} / ${member.user_id}`).join(', ') || '无'}</p><p>授权群聊: {group.chats?.map(chat => `${chat.platform_id} / ${chat.chat_id}`).join(', ') || '无'}</p><p>适用插件: {group.plugin_scope.mode === 'all' ? `所有已接入插件, 排除 ${group.plugin_scope.excluded.join(', ') || '无'}` : group.plugin_scope.included.join(', ') || '无'}</p></li>)}</ul>
         {!!snapshot?.overrides.length && <ul className="space-y-2">{snapshot.overrides.map(entry => <li key={entry.id}><p>{entry.platform_id} / {entry.user_id} · {entry.enabled ? '启用' : '停用'} · {entry.protect ? '保护账号' : '不保护账号'}</p><p>额外允许: {entry.allow.join(', ') || '无'}; 否决: {entry.deny.join(', ') || '无'}</p></li>)}</ul>}
       </details>
     </div>}
@@ -252,12 +255,12 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
       const scopeSummary = group.plugin_scope.mode === 'all'
         ? `所有插件, 排除 ${group.plugin_scope.excluded.length} 个`
         : `指定插件 ${group.plugin_scope.included.length} 个${group.plugin_scope.excluded.length ? ` · 旧版排除 ${group.plugin_scope.excluded.length} 个` : ''}`;
-      const groupInvalid = group.members.some(member => {
+      const groupInvalid = [...group.members, ...(group.chats || [])].some(member => {
         const platform = snapshot?.platforms.find(item => item.id === member.platform_id);
         return member.platform_instance_id && platform?.instance_id !== member.platform_instance_id;
       });
       // 插件选择器按成员所在平台过滤, 取有效成员平台的并集; 无有效成员时不按平台过滤
-      const groupPlatforms = [...new Set(group.members.map(member => member.platform_id)
+      const groupPlatforms = [...new Set([...group.members, ...(group.chats || [])].map(member => member.platform_id)
         .filter(id => snapshot?.platforms.some(item => item.id === id)))];
       return <div key={group.id} aria-label={`管理组卡片 ${group.name || '未命名'}`}
         className="rounded-md border border-border-glass p-4">
@@ -267,7 +270,7 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
           <span className="font-medium">{group.name || '未命名管理组'}</span>
           <span className="ml-auto shrink-0 text-text-secondary">配置 ▸</span>
         </span>
-        <span className="text-text-secondary">{group.enabled ? '启用' : '停用'} · {group.protect === false ? '不保护账号' : '保护账号'} · 成员 {group.members.length} 人 · {scopeSummary}{groupInvalid ? ' · 有失效身份' : ''}</span>
+        <span className="text-text-secondary">{group.enabled ? '启用' : '停用'} · {group.protect === false ? '不保护账号' : '保护账号'} · 成员 {group.members.length} 人 · 授权群聊 {group.chats?.length || 0} 个 · {scopeSummary}{groupInvalid ? ' · 有失效身份' : ''}</span>
       </button>
       <Modal open={openCard === group.id} onClose={() => setOpenCard(null)} title={group.name || '管理组'} size="3xl">
       <fieldset disabled={busy || loading} className="space-y-4">
@@ -282,12 +285,13 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
         </label>
         <div className="flex items-center gap-2 text-sm">
           <span id={`protect-${group.id}`}>账号保护</span>
-          <Toggle checked={group.protect !== false} title="组成员加入好友删除保护名单"
+          <Toggle checked={group.protect !== false} title="指定的个人成员加入好友删除保护名单, 不扩展到授权群聊的全体成员"
             onChange={value => change(group.id, current => ({ ...current, protect: value }))} />
         </div>
         <Button onClick={() => {
           setGroups(current => current.filter(item => item.id !== group.id));
           setRebind(current => current.filter(item => item.group_id !== group.id));
+          setRebindChats(current => current.filter(item => item.group_id !== group.id));
           setOpenCard(null);
           setPreview(null);
         }}>删除管理组</Button>
@@ -336,6 +340,37 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
           ...current,
           members: [...current.members, { platform_id: '', user_id: '' }],
         }))}>添加管理员成员</Button>
+      </div>
+      <div className="space-y-2" aria-label="授权群聊">
+        <p className="text-sm font-medium">授权群聊</p>
+        <p className="text-sm text-text-secondary">群内任何成员发起请求时都获得本组的插件管理权限, 私聊和其他群不继承。账号保护仅适用于上方指定的个人成员。</p>
+        {(group.chats || []).map((chat, index) => {
+          const platform = snapshot?.platforms.find(item => item.id === chat.platform_id);
+          const invalid = chat.platform_instance_id && platform?.instance_id !== chat.platform_instance_id;
+          const rebound = rebindChats.some(item => item.group_id === group.id && item.platform_id === chat.platform_id && item.chat_id === chat.chat_id);
+          return <div key={index} className="space-y-2 rounded-md bg-glass p-3">
+            <div className="grid items-end gap-2 md:grid-cols-[1fr_1fr_auto]">
+              <label className="text-sm">平台
+                <select aria-label="授权群聊平台" className={selectClass} value={chat.platform_id}
+                  onChange={event => change(group.id, current => ({ ...current, chats: (current.chats || []).map((item, at) => at === index ? { platform_id: event.target.value, chat_id: item.chat_id } : item) }))}>
+                  <option value="">选择已配置的平台</option>
+                  {!platform && chat.platform_id && <option value={chat.platform_id}>{chat.platform_id} · 平台已移除</option>}
+                  {snapshot?.platforms.map(item => <option key={item.id} value={item.id}>{item.name || item.id} · {item.type}{item.enabled ? '' : ' · 已停用'}</option>)}
+                </select>
+              </label>
+              <label className="text-sm">群聊识别号
+                <Input value={chat.chat_id} maxLength={256} placeholder="填写群号或群 ID, 不是群名"
+                  onChange={event => change(group.id, current => ({ ...current, chats: (current.chats || []).map((item, at) => at === index ? { ...item, chat_id: event.target.value } : item) }))} />
+              </label>
+              <Button onClick={() => change(group.id, current => ({ ...current, chats: (current.chats || []).filter((_, at) => at !== index) }))}>移除群聊</Button>
+            </div>
+            {invalid && <div className="text-sm text-warning">
+              {rebound ? '保存时将明确绑定到当前平台实例' : '原平台已移除或重建, 此群聊授权已失效'}
+              {platform && !rebound && <Button className="ml-2" onClick={() => { setRebindChats(current => [...current, { group_id: group.id, platform_id: chat.platform_id, chat_id: chat.chat_id }]); setPreview(null); }}>绑定到当前平台</Button>}
+            </div>}
+          </div>;
+        })}
+        <Button onClick={() => change(group.id, current => ({ ...current, chats: [...(current.chats || []), { platform_id: '', chat_id: '' }] }))}>添加授权群聊</Button>
       </div>
       <label className="block text-sm">适用插件
         <select aria-label="适用插件" className={selectClass} value={group.plugin_scope.mode}
@@ -462,6 +497,11 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
     </div>}
     {preview && <div className="space-y-3 rounded-md border border-border-glass p-4" aria-label="有效权限预览">
       <p className="font-medium">草稿的有效管理员权限, 尚未保存</p>
+      {!!preview.chats?.length && <p className="text-sm text-text-secondary">群聊预览展示全员的基础授权范围, 实际调用仍叠加该成员的例外否决和插件自身限制。</p>}
+      {preview.chats?.map(chat => <div key={`chat:${chat.platform_id}/${chat.chat_id}`} className="text-sm">
+        <p>{chat.platform_id} / 群 {chat.chat_id} · 群内全体成员</p>
+        <ul>{chat.plugins.map(plugin => <li key={plugin.name} className={plugin.allowed ? '' : 'text-error'}>{plugin.name} · {plugin.allowed ? '有效' : '无效'} · 允许来源: {plugin.sources?.allow.join(', ') || '无'} · 否决来源: {plugin.sources?.deny.join(', ') || '无'}</li>)}</ul>
+      </div>)}
       {preview.members.map(member => <div key={`${member.platform_id}/${member.user_id}`} className="text-sm">
         <p>{member.platform_id} / {member.user_id}{member.override_id ? ' · 成员例外' : ''}</p>
         {member.plugins.length ? <ul className="space-y-1">{member.plugins.map(plugin => <li key={plugin.name}>

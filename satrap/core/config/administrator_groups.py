@@ -1,7 +1,7 @@
 """
-系统管理员身份, 管理组与成员例外
+系统管理员身份, 管理组, 来源群授权与成员例外
 
-以平台持久实例和真实成员 ID 隔离身份, 合并管理组的授予范围与成员例外的允许与
+以平台持久实例和真实成员或来源群 ID 隔离身份, 合并管理组的授予范围与成员例外的允许与
 否决; 运行时使用不可变双快照, 原有插件名单与功能开关由调用方继续校验
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ import threading
 
 from satrap.core.utils.validation import is_bounded_text
 from satrap.core.config.platform_identity import platform_instance_id
-from satrap.core.call_context import CallOrigin
+from satrap.core.call_context import CallOrigin, is_group_origin
 
 from satrap.core.log import logger
 
@@ -89,7 +89,7 @@ def _binding_key(owner: str, platform_id: str, user_id: str) -> tuple[str, str, 
     参数:
     - owner: 管理组 ID 或例外条目 ID
     - platform_id: 平台实例 ID
-    - user_id: 平台用户识别号
+    - user_id: 平台成员或群聊识别号
 
     返回:
     - 三元元组查找键
@@ -102,9 +102,10 @@ def normalize_administrator_groups(
     previous: Sequence[Mapping[str, Any]] = (),
     normalize_user: Callable[[Mapping[str, Any], str], str] | None = None,
     strict_scope: bool = False,
+    normalize_chat: Callable[[Mapping[str, Any], str], str] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    校验管理组并为新成员绑定服务端平台代次
+    校验管理组并为新成员或群聊绑定服务端平台代次
 
     参数:
     - raw: 配置正文, 缺失时使用空列表
@@ -113,6 +114,7 @@ def normalize_administrator_groups(
     - previous: 已保存管理组, 保留旧身份绑定而不自动重新授权
     - normalize_user: 保存新身份时使用适配器的用户 ID 规范接口
     - strict_scope: 是否只接受已保存的旧排除子集, 保存与预览路径开启, 读取路径交给迁移
+    - normalize_chat: 保存新群聊授权时使用适配器的群 ID 规范接口
 
     返回:
     - 规范管理组, 无效结构抛出 ValueError; 已保存的失效平台身份保留
@@ -124,13 +126,14 @@ def normalize_administrator_groups(
     configured = {item["id"]: item for item in platforms if isinstance(item, Mapping)
                   and isinstance(item.get("id"), str) and item["id"]}
     # 无效平台由平台初始化边界记录并隔离, 不阻止其他实例与空管理员配置启动
-    old_members = {_binding_key(group["id"], member["platform_id"], member["user_id"]): member["platform_instance_id"]
-                   for group in previous for member in group.get("members", [])}
+    old_bindings = {field: {_binding_key(group["id"], member["platform_id"], member[identity]): member["platform_instance_id"]
+                            for group in previous for member in group.get(field, [])}
+                    for field, identity in (("members", "user_id"), ("chats", "chat_id"))}
     saved_excluded = {group["id"]: set(group["plugin_scope"]["excluded"]) for group in previous}
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for value in raw:
-        if not isinstance(value, dict) or set(value) - {"id", "name", "enabled", "protect", "members", "plugin_scope"}:
+        if not isinstance(value, dict) or set(value) - {"id", "name", "enabled", "protect", "members", "chats", "plugin_scope"}:
             raise ValueError("管理员组含有未知字段或结构错误")
         identity = _text(value.get("id"), "管理组 ID", 64)
         if not _GROUP_ID.fullmatch(identity) or identity in seen:
@@ -151,39 +154,48 @@ def normalize_administrator_groups(
             added = sorted(set(excluded) - saved_excluded.get(identity, set()))
             if added:
                 raise ValueError(f"指定插件模式不能新增排除插件: {added}; 旧有排除可原样保留, 新否决请使用成员例外")
-        members = value.get("members", [])
-        if not isinstance(members, list) or len(members) > 1000:
-            raise ValueError("管理员成员必须是列表且不超过 1000 项")
-        normalized: list[dict[str, str]] = []
-        member_keys: set[tuple[str, str]] = set()
-        for member in members:
-            if not isinstance(member, dict) or set(member) - {"platform_id", "platform_instance_id", "user_id"}:
-                raise ValueError("管理员成员字段无效")
-            platform_id = _text(member.get("platform_id"), "平台 ID", 128)
-            user_id = _text(member.get("user_id"), "平台用户识别号")
-            platform = configured.get(platform_id)
-            if bind_new and platform is not None and normalize_user is not None:
-                user_id = _text(normalize_user(platform, user_id), "平台用户识别号")
-            key = (platform_id, user_id)
-            if key in member_keys:
-                raise ValueError("同一管理组包含重复平台成员")
-            member_keys.add(key)
-            stored = old_members.get(_binding_key(identity, platform_id, user_id))
-            if bind_new:
-                if stored is not None:
-                    instance = stored   # 保留旧绑定, 同名平台重建不会自动恢复授权
-                elif platform is not None:
-                    instance = platform_instance_id(platform)
+        bindings: dict[str, list[dict[str, str]]] = {}
+        for field, identity_field, normalize, label in (
+            ("members", "user_id", normalize_user, "管理员成员"),
+            ("chats", "chat_id", normalize_chat, "授权群聊"),
+        ):
+            members = value.get(field, [])
+            if not isinstance(members, list) or len(members) > 1000:
+                raise ValueError(f"{label}必须是列表且不超过 1000 项")
+            normalized: list[dict[str, str]] = []
+            member_keys: set[tuple[str, str]] = set()
+            for member in members:
+                if not isinstance(member, dict) or set(member) - {"platform_id", "platform_instance_id", identity_field}:
+                    raise ValueError(f"{label}字段无效")
+                platform_id = _text(member.get("platform_id"), "平台 ID", 128)
+                subject_id = _text(member.get(identity_field), f"{label}识别号")
+                platform = configured.get(platform_id)
+                if bind_new and platform is not None and normalize is not None:
+                    subject_id = _text(normalize(platform, subject_id), f"{label}识别号")
+                key = (platform_id, subject_id)
+                if key in member_keys:
+                    raise ValueError(f"同一管理组包含重复{label}")
+                member_keys.add(key)
+                stored = old_bindings[field].get(_binding_key(identity, platform_id, subject_id))
+                if bind_new:
+                    if stored is not None:
+                        instance = stored   # 保留旧绑定, 同名平台重建不会自动恢复授权
+                    elif platform is not None:
+                        instance = platform_instance_id(platform)
+                    else:
+                        raise ValueError(f"新增{label}的平台不存在")
                 else:
-                    raise ValueError("新增管理员成员的平台不存在")
-            else:
-                instance = member.get("platform_instance_id")
-                if instance is None and platform is not None:
-                    instance = platform_instance_id(platform)   # 初次导入手写配置时绑定当前实例
-            instance = _text(instance, "平台实例绑定", 128)
-            normalized.append({"platform_id": platform_id, "platform_instance_id": instance, "user_id": user_id})
-        result.append({"id": identity, "name": name, "enabled": enabled, "protect": protect, "members": normalized,
-                       "plugin_scope": {"mode": scope["mode"], "included": included, "excluded": excluded}})
+                    instance = member.get("platform_instance_id")
+                    if instance is None and platform is not None:
+                        instance = platform_instance_id(platform)   # 初次导入手写配置时绑定当前实例
+                instance = _text(instance, "平台实例绑定", 128)
+                normalized.append({"platform_id": platform_id, "platform_instance_id": instance, identity_field: subject_id})
+            bindings[field] = normalized
+        entry = {"id": identity, "name": name, "enabled": enabled, "protect": protect, "members": bindings["members"],
+                 "plugin_scope": {"mode": scope["mode"], "included": included, "excluded": excluded}}
+        if bindings["chats"]:
+            entry["chats"] = bindings["chats"]   # 旧配置不新增空字段, 避免仅升级就改变授权修订
+        result.append(entry)
     return result
 
 
@@ -315,8 +327,9 @@ def migrate_legacy_scope_exclusions(
         conflicts = sorted({str(entry["id"]) for member in group["members"]
                             for entry in (index.get((member["platform_id"], member["user_id"])),)
                             if entry is not None and entry["enabled"] != group["enabled"]})
-        if conflicts:
-            logger.warning(f"[管理员设置] 旧排除未迁移: 组={group['id']}, 启用状态与例外条目冲突, 条目={conflicts}")
+        if conflicts or group.get("chats"):
+            reason = "群聊授权不能展开为固定成员例外" if group.get("chats") else f"启用状态与例外条目冲突, 条目={conflicts}"
+            logger.warning(f"[管理员设置] 旧排除未迁移: 组={group['id']}, {reason}")
             pending.append(str(group["id"]))
             result.append(dict(group))
             continue
@@ -367,6 +380,7 @@ class AdministratorGrant:
     allowed_overrides: tuple[str, ...] = ()
     denied_overrides: tuple[str, ...] = ()
     revision: str = ""
+    chat_scoped: bool = False
 
 
 def _freeze(value: object) -> object:
@@ -512,6 +526,26 @@ class AdministratorService:
         return [item for item in overrides if item["enabled"] and item["platform_id"] == platform_id
                 and item["platform_instance_id"] == instance and item["user_id"] == user_id]
 
+    def _matching_chats(self, origin: CallOrigin, groups: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        """
+        仅按可信群消息匹配群聊授权, 不把群成员升级为全局管理员
+
+        参数:
+        - origin: 入站边界冻结的来源身份
+        - groups: 当前管理组快照
+
+        返回:
+        - 匹配来源群与当前平台代次的启用管理组, 私聊或无账号来源返回空
+        """
+        if not is_group_origin(origin) or not origin.chat_id or not origin.self_id:
+            return []
+        instance = self._current_instance(origin.adapter_id)
+        if instance is None:
+            return []
+        return [group for group in groups if group["enabled"] and any(
+            chat["platform_id"] == origin.adapter_id and chat["platform_instance_id"] == instance and chat["chat_id"] == origin.chat_id
+            for chat in group.get("chats", ()))]
+
     def resolve(self, origin: CallOrigin | None, plugin_name: str) -> AdministratorGrant:
         """
         以否决优先规则合并当前平台成员的管理组与例外授权
@@ -527,7 +561,9 @@ class AdministratorService:
             groups, overrides, revision = self._frozen, self._frozen_overrides, self._revision
         if origin is None or origin.actor_kind != "platform_user" or not origin.actor_id:
             return AdministratorGrant(False, revision=revision)
-        matched = self._matching(origin.adapter_id, origin.actor_id, groups)
+        personal = self._matching(origin.adapter_id, origin.actor_id, groups)
+        chats = self._matching_chats(origin, groups)
+        matched = list({group["id"]: group for group in (*personal, *chats)}.values())
         matched_overrides = self._matching_overrides(origin.adapter_id, origin.actor_id, overrides)
         excluded = tuple(sorted(group["id"] for group in matched if plugin_name in group["plugin_scope"]["excluded"]))
         allowed = tuple(sorted(group["id"] for group in matched if group["plugin_scope"]["mode"] == "all"
@@ -535,7 +571,9 @@ class AdministratorService:
         allowed_overrides = tuple(sorted(item["id"] for item in matched_overrides if plugin_name in item["allow"]))
         denied_overrides = tuple(sorted(item["id"] for item in matched_overrides if plugin_name in item["deny"]))
         permitted = (bool(allowed) or bool(allowed_overrides)) and not excluded and not denied_overrides
-        return AdministratorGrant(permitted, allowed, excluded, allowed_overrides, denied_overrides, revision)
+        personal_allowed = any(group["plugin_scope"]["mode"] == "all" or plugin_name in group["plugin_scope"]["included"] for group in personal)
+        return AdministratorGrant(permitted, allowed, excluded, allowed_overrides, denied_overrides, revision,
+                                  chat_scoped=permitted and not personal_allowed and not allowed_overrides)
 
     def protected_users(self, platform_id: str) -> list[str]:
         """

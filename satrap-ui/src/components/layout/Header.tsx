@@ -7,6 +7,7 @@ import { Sun, Moon, MessageSquare, Menu } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
 import { useGlassReflect } from '@/hooks/useGlassReflect';
 import { cn } from '@/utils/cn';
+import { LogoutButton } from '@/components/common/LogoutButton';
 
 export function Header({ onOpenMenu }: { onOpenMenu?: () => void }) {
   const backend = useBackendStore(useShallow((state) => ({ runState: state.runState, operation: state.operation, isRunning: state.isRunning })));
@@ -29,6 +30,7 @@ export function Header({ onOpenMenu }: { onOpenMenu?: () => void }) {
       </div>
 
       <div className="flex items-center gap-2">
+        <LogoutButton />
         {/* 对话入口 */}
         <button
           onClick={() => navigate('/chat')}

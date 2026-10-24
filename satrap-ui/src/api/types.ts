@@ -50,6 +50,7 @@ export interface LLMConfig {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  network_timeout?: number;
   context_window?: number;
   history_ratio?: number;
   context_strategy?: 'sliding' | 'mid_truncate' | 'summarize';
@@ -132,6 +133,8 @@ export interface EdictumPluginConfig {
 }
 
 export interface EdictumPluginConfigField {
+  label?: string;
+  option_labels?: Record<string, string>;
   type: string;
   default: unknown;
   description: string;
@@ -452,6 +455,7 @@ export interface ConversationCatalog {
   facets?: Record<string, { value: string; label: string }[]>;
   warnings?: string[];
   facet_names?: Record<string, string>;
+  facets_scope?: 'platform' | 'result';
 }
 
 export interface ConversationDataItem {
@@ -515,7 +519,7 @@ export interface BackendConfig {
   default_session_type: string;
   max_sessions: number;
   idle_timeout: number;
-  llm_timeout: number;
+  session_timeout: number | null;
   rate_limit: number;
   rate_burst: number;
     platforms: PlatformConfig[];

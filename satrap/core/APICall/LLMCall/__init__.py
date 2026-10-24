@@ -68,6 +68,7 @@ def build_llm_from_config(cfg: LLMConfig, *, async_: bool = False) -> "LLM | Asy
         "api_key": safe_getattr_str(cfg, "api_key"),
         "base_url": safe_getattr_str(cfg, "base_url"),
         "model": safe_getattr_str(cfg, "model"),
+        "timeout": safe_getattr(cfg, "network_timeout", 60.0),
         "lock_api_key": safe_getattr(cfg, "lock_api_key", True),
         "allow_insecure_base_url": safe_getattr(cfg, "allow_insecure_base_url", False),
     }

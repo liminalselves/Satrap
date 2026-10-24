@@ -103,7 +103,7 @@ class LegacyContextCleanup:
         - 被引用的会话或上下文身份
         """
         references = set()
-        for table, column in (("session_configs", "session_id"), ("context_sessions", "session_id"), ("conversation_meta", "conversation_id"), ("display_turns", "conversation_id"), ("conversation_data_backups", "conversation_id"), ("agent_runs", "scope")):
+        for table, column in (("session_configs", "session_id"), ("context_sessions", "session_id"), ("context_session_history", "session_id"), ("conversation_meta", "conversation_id"), ("display_turns", "conversation_id"), ("conversation_data_backups", "conversation_id"), ("agent_runs", "scope")):
             if table in tables:
                 references.update(str(row[0]) for row in connection.execute(f"SELECT DISTINCT {column} FROM {table}"))
         if "context_catalog" in tables:

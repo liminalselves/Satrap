@@ -10,7 +10,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict
 import threading
 import hashlib
 import time
@@ -29,6 +29,20 @@ from satrap.core.log import logger
 RESOURCES = ('main_config', 'models', 'session_classes', 'edictum_configs', 'chat_plugins', 'plugin_catalog', 'plugin_defaults')
 _PATH_KEYS = ('model_config_path', 'session_class_config_path', 'edictum_config_path')
 _State = Literal['available', 'missing', 'damaged', 'unreadable']
+
+
+class ConfigVersion(TypedDict):
+    """配置来源的不透明版本及读取状态"""
+
+    change_token: str
+    state: _State
+
+
+class ConfigVersionsResult(TypedDict):
+    """一次版本探测的完整响应"""
+
+    ok: bool
+    resources: dict[str, ConfigVersion]
 
 
 def _token(value: object) -> str:
@@ -54,7 +68,7 @@ class _Probe:
     checked_at: float
     paths: dict[str, str] = field(default_factory=dict)
 
-    def payload(self) -> dict[str, str]:
+    def payload(self) -> ConfigVersion:
         """
         转换为不包含正文和路径的响应
 
@@ -173,7 +187,7 @@ class ConfigVersionService:
         legacy = self.project_root / '.satrap' / (legacy_name or name)
         return target if os.getenv('SATRAP_CONFIG_ROOT') or target.exists() or not legacy.exists() else legacy
 
-    def _directory(self, roots: Iterable[Path], kind: str, force: bool) -> dict[str, str]:
+    def _directory(self, roots: Iterable[Path], kind: str, force: bool) -> ConfigVersion:
         """
         探测目录集合, 不解析插件 YAML 或扫描会话实例
 
@@ -205,10 +219,10 @@ class ConfigVersionService:
         except OSError as error:
             logger.warning(f'[配置版本] 目录不可读, 类型={type(error).__name__}')
             return {'change_token': _token((records, type(error).__name__)), 'state': 'unreadable'}
-        state = 'unreadable' if 'unreadable' in states else 'damaged' if 'damaged' in states else 'available' if present else 'missing'
+        state: _State = 'unreadable' if 'unreadable' in states else 'damaged' if 'damaged' in states else 'available' if present else 'missing'
         return {'change_token': _token((records, state)), 'state': state}
 
-    def get(self, resources: Iterable[str] = RESOURCES, *, force: bool = False) -> dict[str, object]:
+    def get(self, resources: Iterable[str] = RESOURCES, *, force: bool = False) -> ConfigVersionsResult:
         """
         读取指定资源的版本, 主文档只用于选择独立配置来源
 
@@ -224,7 +238,7 @@ class ConfigVersionService:
             raise ValueError('未知或空配置版本资源')
         with self._lock:
             main = self._file(self.main_path, 'main', force)
-            result: dict[str, dict[str, str]] = {}
+            result: dict[str, ConfigVersion] = {}
             definitions = {'models': ('model_config_path', 'SATRAP_MODEL_CONFIG_PATH', 'model_config.json'),
                            'session_classes': ('session_class_config_path', 'SATRAP_SESSION_CLASS_CONFIG_PATH', 'session_class_config.json'),
                            'edictum_configs': ('edictum_config_path', 'SATRAP_EDICTUM_CONFIG_PATH', 'edictum_session_config.json')}

@@ -176,3 +176,9 @@ Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下
 | 数据管理 | RAG 知识库 (`RagManager`)、长期记忆 (`MemoryPanel`)、会话历史 (`ChatHistoryManager`) 三个入口, 均叠层打开不关闭设置弹窗 |
 
 其他要点: `ChatHistoryManager` 分**历史 / 回收站**两栏, 支持搜索过滤、批量回收、恢复与永久删除, Chat 服务停止时自动回落控制服务冷管理; 记忆面板按 `session:<conversation_id>` 作用域读写, 添加表单的作用域固定为"当前会话"。服务地址由 `src/utils/constants.ts` 的 `CHAT_API_URL` 控制 (默认 `http://127.0.0.1:19872`, 可用环境变量 `VITE_CHAT_API_URL` 覆盖)。开发时经 Vite 代理转发, 见前端迁移指南 `docs/archive/frontend-migration.md` (本地留档, 不入库) 与 `satrap-ui/DEVELOPMENT.md`。
+
+## 会话内置提示开关
+
+对话设置中的“使用内置 Agent 提示”默认关闭, 可与自定义系统提示词同时使用。开关只作用于当前会话, 首次发送前生效, 重启后恢复, Fork 继承后独立修改。生成期间不能切换。
+
+`GET/PUT /api/chat/default-agent-prompt?conversation=<id>` 读写 `default_agent_prompt_enabled` 布尔值; 新建、预加载和首次发送也接受同名字段。它不改变技能目录或迭代上限的收尾要求, 不将内置提示写入历史。

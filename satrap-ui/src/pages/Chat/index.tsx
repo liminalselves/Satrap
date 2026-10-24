@@ -3,11 +3,12 @@ import { useApprovalMode, type ApprovalControl } from './useApprovalMode';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { restoreConversation, type Conversation as ConversationState } from './conversations';
+import { conversationBoundaryReached, restoreConversation, sidebarConversationVisible, type Conversation as ConversationState } from './conversations';
 import { RunRecovery } from "./RunRecovery";
 import { LLMConfigModal } from '@/components/common/LLMConfigModal';
 import { RagManager } from '@/components/common/RagManager';
 import { MediaAttachment } from './MediaAttachment';
+import { OutputFiles } from './OutputFiles';
 import { useChatScroll } from './useChatScroll';
 import { ragApi } from '@/api/rag';
 import type { ConfigOption } from '@/components/common/PluginConfigFields';
@@ -41,6 +42,7 @@ import {
   chatApi,
   subscribeChat,
   type Attachment,
+  type OutputFile,
   type ApprovalMode,
   type CapabilityKind,
   type ChatEvent,
@@ -113,6 +115,8 @@ interface ChatSettings {
   think: string;   // 思考强度 (off/low/medium/high)
   temperature: number;   // 采样温度
   commandHistoryEnabled: boolean;   // 是否将已执行命令及回复写入模型上下文
+  defaultAgentPromptEnabled: boolean;   // 是否在本会话补充内置 Agent 提示
+  maxIterations?: number;   // 最大工具迭代次数, undefined 沿用会话定义默认
   systemPrompt: string;   // 系统提示词
 }
 
@@ -121,6 +125,8 @@ const DEFAULT_SETTINGS: ChatSettings = {
   think: 'off',
   temperature: 0.7,
   commandHistoryEnabled: false,
+  defaultAgentPromptEnabled: false,
+  maxIterations: undefined,
   systemPrompt: '',
 };
 
@@ -162,6 +168,7 @@ const COLOR_TEXT_CLASS: Record<GlassColor, string> = {
 type MessageRole = 'user' | 'assistant';
 
 interface LocalResponseVariant {
+  outputFiles?: OutputFile[];
   variantIndex: number;
   content: string;
   thinking?: string;
@@ -172,6 +179,7 @@ interface LocalResponseVariant {
 
 // 单条消息
 interface ChatMessage {
+  outputFiles?: OutputFile[];
   id: string;
   role: MessageRole;
   content: string;
@@ -192,6 +200,7 @@ interface ChatMessage {
   activeVariant?: number;
   // 已持久化的回复版本总数
   variantCount?: number;
+  variantIndices?: number[];
   // 分段内容 (按时间顺序, 用于流式渲染)
   segments?: LocalMessageSegment[];
   // 本回复版本对应的上下文准备和 API token 统计
@@ -237,6 +246,7 @@ function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
     toolCalls: variant.tool_calls ?? [],
     segments: convertSegments(variant),
     contextStats: variant.context_stats,
+    outputFiles: variant.output_files,
   };
 }
 
@@ -259,6 +269,7 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
       created_at: turn.created_at,
       tool_calls: turn.tool_calls,
       context_stats: turn.context_stats,
+      output_files: turn.output_files,
     };
     const segments = convertSegments(currentVariant);
     messages.push({
@@ -273,7 +284,9 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
       segments,
       activeVariant: turn.active_variant ?? 0,
       variantCount: turn.variant_count ?? 1,
+      variantIndices: turn.variant_indices,
       variants: (turn.variants?.length ? turn.variants : [currentVariant]).map(convertVariant),
+      outputFiles: turn.output_files,
       contextStats: turn.context_stats,
     });
   }
@@ -318,6 +331,18 @@ export function Chat() {
   const [historyOpen, setHistoryOpen] = useState(false);
   // 项目列表 (绑定的工作区文件夹)
   const [projects, setProjects] = useState<ProjectItem[]>([]);
+  const [nextConversations, setNextConversations] = useState<string | null>(null);
+  const [sidebarProject, setSidebarProject] = useState('');
+  const [listedConversations, setListedConversations] = useState<string[]>([]);
+  const [directoryLoading, setDirectoryLoading] = useState(false);
+  const directoryEpoch = useRef(0);
+  const directoryPages = useRef(1);   // 同一筛选下刷新已展开的分页范围
+  const directoryBoundary = useRef<ChatConversationItem | null>(null);
+  const directoryFilters = useRef({ search: search.trim(), project_id: sidebarProject });
+  directoryFilters.current = { search: search.trim(), project_id: sidebarProject };
+  const [pagingError, setPagingError] = useState('');
+  const pageBusy = useRef(false);
+  const olderBusy = useRef(new Set<string>());
   // 项目组折叠状态 (project_id -> 是否折叠)
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   // 新建项目对话框
@@ -333,6 +358,9 @@ export function Chat() {
   const modelReadVersion = useRef(0);
   // 模型详情 (设置弹窗管理用)
   const [modelsDetail, setModelsDetail] = useState<Record<string, ModelConfigItem>>({});
+  const modelDetailsSnapshot = useRef<Record<string, ModelConfigItem>>({});
+  const initialModelRead = useRef<Promise<void> | null>(null);
+  const initialPublishedModels = useRef(publishedModels);
   // 模型编辑弹窗: null=关闭, ''=新增, 否则为编辑的模型名
   const [editingModel, setEditingModel] = useState<string | null>(null);
   // 文件选择器 ref
@@ -412,21 +440,86 @@ export function Chat() {
       const drafts = current.filter((conversation) => (
         conversation.id === '__draft__' || conversation.preloaded
       ));
-      const next = [...drafts, ...restored];
-      setActiveId((currentId) => (
-        currentId && next.some((conversation) => conversation.id === currentId)
-          ? currentId
-          : next[0]?.id ?? ''
-      ));
+      const next = [...drafts, ...restored, ...current.filter((conversation) => !drafts.includes(conversation) && !items.some((item) => item.conversation_id === conversation.id))];
       return next;
     });
   }, []);
 
-  const refreshHistorySidebar = useCallback(async () => {
+  const refreshHistorySidebar = useCallback(async (removedIds: string[] = []) => {
+    if (removedIds.length) {
+      setConversations((current) => current.filter((item) => !removedIds.includes(item.id)));
+      setActiveId((current) => removedIds.includes(current) ? '' : current);
+    }
     if (backendOk === false) return;
-    const { conversations: items } = await chatApi.listConversations();
-    mergeHistoryItems(items);
+    const filters = directoryFilters.current;
+    const epoch = ++directoryEpoch.current;
+    const pageCount = directoryPages.current;
+    const boundary = directoryBoundary.current;
+    const isCurrent = () => epoch === directoryEpoch.current && JSON.stringify(filters) === JSON.stringify(directoryFilters.current);
+    setDirectoryLoading(true);
+    try {
+      const items: ChatConversationItem[] = [];
+      let cursor: string | null | undefined;
+      let loadedPages = 0;
+      do {
+        const page = await chatApi.listConversationPage(cursor ?? undefined, filters);
+        if (!isCurrent()) return;
+        items.push(...page.conversations);
+        cursor = page.next_cursor;
+        loadedPages += 1;
+      } while (cursor && (loadedPages < pageCount || !conversationBoundaryReached(items[items.length - 1], boundary)));
+      const refreshed = [...new Map(items.map((item) => [item.conversation_id, item])).values()];
+      mergeHistoryItems(refreshed);
+      setListedConversations(refreshed.map((item) => item.conversation_id));
+      setNextConversations(cursor ?? null);
+      directoryPages.current = loadedPages;
+      directoryBoundary.current = refreshed[refreshed.length - 1] ?? null;
+      const selected = activeIdRef.current;
+      if (selected && selected !== '__draft__' && !conversationsRef.current.find((item) => item.id === selected)?.preloaded
+        && !refreshed.some((item) => item.conversation_id === selected)) {
+        const exact = await chatApi.getConversation(selected);
+        if (isCurrent() && !exact.conversations.length) {
+          setConversations((current) => current.filter((item) => item.id !== selected));
+          setActiveId((current) => current === selected ? refreshed[0]?.conversation_id ?? '' : current);
+        }
+      }
+      if (isCurrent()) setPagingError('');
+    } catch (error) {
+      if (isCurrent()) throw error;
+    } finally {
+      if (isCurrent()) setDirectoryLoading(false);
+    }
   }, [backendOk, mergeHistoryItems]);
+
+  useEffect(() => {
+    if (backendOk !== true) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    const filters = directoryFilters.current;
+    const epoch = ++directoryEpoch.current;
+    const isCurrent = () => !cancelled && epoch === directoryEpoch.current && JSON.stringify(filters) === JSON.stringify(directoryFilters.current);
+    setDirectoryLoading(true);
+    directoryPages.current = 1;
+    directoryBoundary.current = null;
+    setListedConversations([]);
+    setNextConversations(null);
+    const timer = setTimeout(() => {
+      void chatApi.listConversationPage(undefined, filters, controller.signal).then((page) => {
+        if (!isCurrent()) return;
+        mergeHistoryItems(page.conversations);
+        setListedConversations(page.conversations.map((item) => item.conversation_id));
+        directoryBoundary.current = page.conversations[page.conversations.length - 1] ?? null;
+        setNextConversations(page.next_cursor);
+        setPagingError('');
+        if (!activeIdRef.current && !search.trim() && !sidebarProject && page.conversations.length) setShowEntryChoice(true);
+      }).catch((error: unknown) => {
+        if (isCurrent()) setPagingError(error instanceof Error ? error.message : '对话加载失败');
+      }).finally(() => {
+        if (isCurrent()) setDirectoryLoading(false);
+      });
+    }, search.trim() ? 250 : 0);
+    return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
+  }, [backendOk, search, sidebarProject, mergeHistoryItems]);
 
   // 更新指定会话
   const updateConversation = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
@@ -509,6 +602,14 @@ export function Chat() {
                 const localTurn = conversation.messages.filter((message) => message.turnIndex === pending.turnIndex);
                 messages = [...messages.filter((message) => message.turnIndex !== pending.turnIndex), ...localTurn];
               }
+            }
+            if (event.has_more !== undefined) {
+              const lower = event.turns[0]?.turn_index;
+              const overlapping = lower !== undefined && conversation.messages.some((message) => message.turnIndex !== undefined && message.turnIndex >= lower);
+              const earlier = event.has_more && overlapping ? conversation.messages.filter((message) => message.turnIndex !== undefined && message.turnIndex < lower!) : [];
+              return { ...conversation, messages: [...earlier, ...messages], loaded: true,
+                hasOlder: earlier.length ? conversation.hasOlder : event.has_more,
+                olderBefore: earlier.length ? conversation.olderBefore : event.next_before };
             }
             return { ...conversation, messages, loaded: true };
           });
@@ -645,6 +746,7 @@ export function Chat() {
               toolCalls: message.toolCalls ?? [],
               segments: message.segments,
               contextStats: event.context_stats,
+              outputFiles: event.output_files,
             };
             const variants = [
               ...(message.variants ?? []).filter(
@@ -660,6 +762,7 @@ export function Chat() {
               activeVariant: event.variant_index,
               variantCount: event.variant_count,
               variants,
+              outputFiles: event.output_files,
               contextStats: event.context_stats,
             };
           }, conversationId);
@@ -679,6 +782,7 @@ export function Chat() {
             activeVariant: event.variant_index ?? m.activeVariant,
             variantCount: event.variant_count ?? m.variantCount,
             contextStats: event.context_stats ?? m.contextStats,
+            outputFiles: event.output_files ?? m.outputFiles,
           }), conversationId);
           setPendingUserInputs((prev) => ({ ...prev, [conversationId]: [] }));
           streamingMsgIdRef.current = null;
@@ -696,19 +800,61 @@ export function Chat() {
   // 加载会话历史消息
   const loadTurns = useCallback(
     async (conversationId: string) => {
+      const epoch = snapshotEpochRef.current[conversationId] ?? 0;
       try {
-        const epoch = snapshotEpochRef.current[conversationId] ?? 0;
-        const { turns } = await chatApi.listTurns(conversationId);
+        const { turns, has_more, next_before } = await chatApi.listTurnPage(conversationId);
         if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch) return;
         const messages = turnsToMessages(turns);
-        updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true }));
+        updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true, hasOlder: has_more, olderBefore: next_before }));
       } catch (err) {
+        if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch) return;
         console.error('[Chat] 加载历史失败:', err);
+        setPagingError(err instanceof Error ? err.message : '历史加载失败');
         updateConversation(conversationId, (c) => ({ ...c, loaded: true }));
       }
     },
     [updateConversation]
   );
+
+  const loadOlder = useCallback(async (conversation: Conversation) => {
+    if (!conversation.hasOlder || conversation.olderBefore == null || olderBusy.current.has(conversation.id)) return;
+    const before = conversation.olderBefore;
+    const epoch = snapshotEpochRef.current[conversation.id] ?? 0;
+    olderBusy.current.add(conversation.id);
+    try {
+      const page = await chatApi.listTurnPage(conversation.id, before);
+      if ((snapshotEpochRef.current[conversation.id] ?? 0) !== epoch) return;
+      const messages = turnsToMessages(page.turns);
+      updateConversation(conversation.id, (current) => current.olderBefore !== before ? current : {
+        ...current, messages: [...messages.filter((message) => !current.messages.some((item) => item.id === message.id)), ...current.messages],
+        hasOlder: page.has_more, olderBefore: page.next_before,
+      });
+      setPagingError('');
+    } catch (error) {
+      if ((snapshotEpochRef.current[conversation.id] ?? 0) !== epoch) return;
+      setPagingError(error instanceof Error ? error.message : '历史加载失败');
+    }
+    finally { olderBusy.current.delete(conversation.id); }
+  }, [updateConversation]);
+
+  const loadConversationPage = async () => {
+    if (!nextConversations || pageBusy.current) return;
+    pageBusy.current = true;
+    const epoch = directoryEpoch.current;
+    const filters = directoryFilters.current;
+    const isCurrent = () => epoch === directoryEpoch.current && JSON.stringify(filters) === JSON.stringify(directoryFilters.current);
+    try {
+      const page = await chatApi.listConversationPage(nextConversations, filters);
+      if (!isCurrent()) return;
+      directoryPages.current += 1;
+      directoryBoundary.current = page.conversations[page.conversations.length - 1] ?? directoryBoundary.current;
+      setListedConversations((current) => [...new Set([...current, ...page.conversations.map((item) => item.conversation_id)])]);
+      setConversations((current) => [...current, ...page.conversations.filter((item) => !current.some((entry) => entry.id === item.conversation_id)).map((item) => restoreConversation<ChatMessage>(item))]);
+      setNextConversations(page.next_cursor);
+      setPagingError('');
+    } catch (error) { if (isCurrent()) setPagingError(error instanceof Error ? error.message : '对话加载失败'); }
+    finally { pageBusy.current = false; }
+  };
 
   // 订阅当前会话 WS (草稿态不订阅)
   useEffect(() => {
@@ -729,44 +875,26 @@ export function Chat() {
       const names = Object.keys(detail);
       setModels(names);
       setModelsDetail(detail);
+      modelDetailsSnapshot.current = detail;
       if (names.length) setSettings((previous) => names.includes(previous.model) ? previous : { ...previous, model: names[0] });
     } catch (error) {
       if (!signal?.aborted) console.error('[Chat] 刷新模型列表失败:', error);
     }
   }, []);
 
-  useEffect(() => {
-    if (!settingsOpen && !Object.keys(publishedModels).length) return;
-    const controller = new AbortController();
-    void handleModelSaved(controller.signal);
-    return () => controller.abort();
-  }, [publishedModels, settingsOpen, handleModelSaved]);   // 配置版本变化或打开设置时刷新, Chat 仍从自己的服务读取模型详情
-
   // 初始化: 健康检查 + 加载模型/插件/会话列表
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        await chatApi.health();
-        if (cancelled) return;
-        setBackendOk(true);
-        const [{ plugins: pluginList }, { conversations: convList }, { projects: projectList }] =
-          await Promise.all([
-            chatApi.listPlugins(),
-            chatApi.listConversations(),
-            chatApi.listProjects(),
-            handleModelSaved(),
-          ]);
-        if (cancelled) return;
-        setPlugins(pluginList);
-        setProjects(projectList);
-        // 恢复历史会话
-        const restored = convList.map((item) => restoreConversation<ChatMessage>(item));
-        setConversations(restored);
-        if (restored.length > 0) {
-          // 有历史会话时展示入口选择, 不自动选中
-          setShowEntryChoice(true);
-        }
+        void chatApi.health().then(() => { if (!cancelled) setBackendOk(true); }).catch((error) => {
+          console.error('[Chat] 健康检查失败:', error);
+          if (!cancelled) setBackendOk(false);
+        });
+        void chatApi.listPlugins().then(({ plugins }) => { if (!cancelled) setPlugins(plugins); }).catch((error) => console.error('[Chat] 插件读取失败:', error));
+        void chatApi.listProjects().then(({ projects }) => { if (!cancelled) setProjects(projects); }).catch((error) => console.error('[Chat] 项目读取失败:', error));
+        initialModelRead.current = handleModelSaved();
+
       } catch (err) {
         console.error('[Chat] 后端连接失败:', err);
         if (!cancelled) setBackendOk(false);
@@ -776,6 +904,23 @@ export function Chat() {
       cancelled = true;
     };
   }, [handleModelSaved]);
+
+  useEffect(() => {
+    if (!settingsOpen && !Object.keys(publishedModels).length && publishedModels === initialPublishedModels.current) return;
+    const controller = new AbortController();
+    void (async () => {
+      await initialModelRead.current;
+      if (controller.signal.aborted) return;
+      const details = modelDetailsSnapshot.current;
+      const matching = Object.keys(details).length === Object.keys(publishedModels).length && Object.entries(publishedModels).every(([name, config]) => {
+        const actual = details[name] as unknown as Record<string, unknown> | undefined;
+        return actual && Object.entries(config).every(([key, value]) => JSON.stringify(actual[key]) === JSON.stringify(value));
+      });
+      if (settingsOpen || !matching) await handleModelSaved(controller.signal);
+    })();
+    return () => controller.abort();
+  }, [publishedModels, settingsOpen, handleModelSaved]);
+  // 等待首次详情后比较实际配置, 初始化期间来源变化仍会刷新, 不盲目忽略首次发布
 
   // 切换会话时按需加载历史
   useEffect(() => {
@@ -824,10 +969,24 @@ export function Chat() {
 
   // 更新单项设置
   const updateSettings = useCallback(<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
+    if (key === 'defaultAgentPromptEnabled' && activeId && activeId !== '__draft__') {
+      void chatApi.setDefaultAgentPrompt(activeId, value === true).then((result) => {
+        if (!result.ok) throw new Error(result.error || '保存失败');
+        if (activeIdRef.current === activeId) setSettings((prev) => ({ ...prev, defaultAgentPromptEnabled: result.default_agent_prompt_enabled }));
+      }).catch((error: unknown) => toast('error', String(error)));
+      return;
+    }
     if (key === 'commandHistoryEnabled' && activeId && activeId !== '__draft__') {
       void chatApi.setCommandHistory(activeId, value === true).then((result) => {
         if (!result.ok) throw new Error(result.error || '保存失败');
         if (activeIdRef.current === activeId) setSettings((prev) => ({ ...prev, commandHistoryEnabled: result.command_history_enabled }));
+      }).catch((error: unknown) => toast('error', String(error)));
+      return;
+    }
+    if (key === 'maxIterations' && activeId && activeId !== '__draft__') {
+      void chatApi.setMaxIterations(activeId, typeof value === 'number' ? value : null).then((result) => {
+        if (!result.ok) throw new Error(result.error || '保存失败');
+        if (activeIdRef.current === activeId) setSettings((prev) => ({ ...prev, maxIterations: result.max_iterations }));
       }).catch((error: unknown) => toast('error', String(error)));
       return;
     }
@@ -837,8 +996,14 @@ export function Chat() {
   useEffect(() => {
     if (!activeId || activeId === '__draft__') return;
     let cancelled = false;
+    void chatApi.getDefaultAgentPrompt(activeId).then((result) => {
+      if (!cancelled) setSettings((prev) => ({ ...prev, defaultAgentPromptEnabled: result.default_agent_prompt_enabled === true }));
+    }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     void chatApi.getCommandHistory(activeId).then((result) => {
       if (!cancelled) setSettings((prev) => ({ ...prev, commandHistoryEnabled: result.command_history_enabled }));
+    }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
+    void chatApi.getMaxIterations(activeId).then((result) => {
+      if (!cancelled) setSettings((prev) => ({ ...prev, maxIterations: result.max_iterations }));
     }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     return () => { cancelled = true; };
   }, [activeId]);
@@ -848,11 +1013,13 @@ export function Chat() {
     model: settings.model,
     temperature: settings.temperature,
     commandHistoryEnabled: settings.commandHistoryEnabled,
+    defaultAgentPromptEnabled: settings.defaultAgentPromptEnabled,
+    maxIterations: settings.maxIterations,
     systemPrompt: settings.systemPrompt,
     modelConfig: modelsDetail[settings.model] ?? null,
     plugins,
     pluginConfigRevision,
-  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, modelsDetail, plugins, pluginConfigRevision]);
+  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.defaultAgentPromptEnabled, settings.maxIterations, modelsDetail, plugins, pluginConfigRevision]);
 
   const preloadKeyFor = useCallback(
     (projectId: string | null | undefined) => `${preloadBaseKey}:${projectId ?? ''}`,
@@ -865,10 +1032,12 @@ export function Chat() {
       think: settings.think,
       temperature: settings.temperature,
       commandHistoryEnabled: settings.commandHistoryEnabled,
+      defaultAgentPromptEnabled: settings.defaultAgentPromptEnabled,
+      maxIterations: settings.maxIterations,
       systemPrompt: settings.systemPrompt,
       projectId: projectId ?? null,
     }),
-    [settings.model, settings.think, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled]
+    [settings.model, settings.think, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.defaultAgentPromptEnabled, settings.maxIterations]
   );
 
   // 启动或复用当前设置对应的预加载请求
@@ -928,9 +1097,10 @@ export function Chat() {
 
   // 过滤 + 分组会话列表 (项目分组 + 最近区; 颜色按全局排序位置稳定分配)
   const grouped = useMemo(() => {
-    const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
+    const visible = new Set(listedConversations);
+    const sorted = conversations.filter((c) => sidebarConversationVisible(c, visible, activeId, search, sidebarProject)).sort((a, b) => b.updatedAt - a.updatedAt);
     const kw = search.trim().toLowerCase();
-    const matched = kw ? sorted.filter((c) => c.title.toLowerCase().includes(kw)) : sorted;
+    const matched = sorted;
     const colorIndex = new Map<string, number>();
     matched.forEach((c, i) => colorIndex.set(c.id, i));
     const knownProject = new Set(projects.map((p) => p.project_id));
@@ -949,9 +1119,9 @@ export function Chat() {
     // 搜索时只展示有匹配的分组; 非搜索时展示全部项目 (含空项目, 便于新建)
     const groups = projects
       .map((p) => ({ project: p, conversations: byProject.get(p.project_id) ?? [] }))
-      .filter((g) => g.conversations.length > 0 || !kw);
+      .filter((g) => (!sidebarProject || g.project.project_id === sidebarProject) && (g.conversations.length > 0 || !kw));
     return { groups, recent, colorIndex, total: matched.length };
-  }, [conversations, search, projects]);
+  }, [conversations, search, projects, listedConversations, sidebarProject, activeId]);
 
   // 自动调整输入框高度
   useEffect(() => {
@@ -1073,13 +1243,23 @@ export function Chat() {
   const handleDeleteProject = useCallback(async (projectId: string) => {
     const project = projects.find((p) => p.project_id === projectId);
     if (!(await confirm(`确定删除项目 "${project?.name ?? projectId}" 吗？\n其下会话将移入"最近", 磁盘文件不受影响。`))) return;
-    chatApi.deleteProject(projectId).catch((err) => {
-      console.error('[Chat] 删除项目失败:', err);
+    try {
+      const result = await chatApi.deleteProject(projectId);
+      if (!result.ok) throw new Error(result.error || '服务拒绝删除项目');
+    }
+    catch (err) {
       alert(`删除项目失败: ${err instanceof Error ? err.message : String(err)}`);
-    });
+      return;
+    }
     setProjects((prev) => prev.filter((p) => p.project_id !== projectId));
     setConversations((prev) => prev.map((c) => (c.projectId === projectId ? { ...c, projectId: null } : c)));
-  }, [projects, confirm]);
+    if (directoryFilters.current.project_id === projectId) {
+      setSidebarProject('');
+    } else {
+      try { await refreshHistorySidebar(); }
+      catch (error) { setPagingError(`项目已删除, 侧栏刷新失败: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+  }, [projects, confirm, refreshHistorySidebar]);
 
   // 会话改绑项目 (null = 移出项目归入"最近"; 仅影响之后的工具调用)
   const handleMoveConversation = useCallback(async (projectId: string | null) => {
@@ -1087,13 +1267,17 @@ export function Chat() {
     if (!cid) return;
     setMovingConvId(null);
     try {
-      await chatApi.setConversationProject(cid, projectId);
+      const result = await chatApi.setConversationProject(cid, projectId);
+      if (!result.ok) throw new Error(result.error || '服务拒绝移动会话');
       updateConversation(cid, (c) => ({ ...c, projectId }));
     } catch (err) {
       console.error('[Chat] 会话改绑项目失败:', err);
       alert(`移动会话失败: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
-  }, [movingConvId, updateConversation]);
+    try { await refreshHistorySidebar(); }
+    catch (error) { setPagingError(`会话已移动, 侧栏刷新失败: ${error instanceof Error ? error.message : String(error)}`); }
+  }, [movingConvId, updateConversation, refreshHistorySidebar]);
 
   // 发送消息
   const handleSend = useCallback(async () => {
@@ -1200,6 +1384,7 @@ export function Chat() {
       updateConversation(realConvId, (conversation) => ({
         ...conversation,
         preloaded: false,
+        locallyOpened: true,
         preloadKey: undefined,
         messages: conversation.messages.map((message) => (
           message.id === assistantId || message.id === userMsg.id
@@ -1319,6 +1504,7 @@ export function Chat() {
         toolCalls: previousAssistant.toolCalls ?? [],
         segments: previousAssistant.segments,
         contextStats: previousAssistant.contextStats,
+        outputFiles: previousAssistant.outputFiles,
       }];
     const assistantId = genId();
     const assistantMsg: ChatMessage = {
@@ -1389,8 +1575,10 @@ export function Chat() {
               segments: convertSegments(selected),
               activeVariant: turn.active_variant,
               variantCount: turn.variant_count,
+              variantIndices: turn.variants.map((variant) => variant.variant_index),
               variants: turn.variants.map(convertVariant),
               contextStats: selected.context_stats,
+              outputFiles: selected.output_files,
             }
             : message
         )),
@@ -1405,20 +1593,26 @@ export function Chat() {
   const handleFork = useCallback(async (turnIndex: number) => {
     const currentActive = activeRef.current;
     if (!currentActive || currentActive.id === '__draft__' || currentActive.preloaded) return;
+    let result: Awaited<ReturnType<typeof chatApi.fork>>;
     try {
-      const result = await chatApi.fork(currentActive.id, turnIndex);
-      if (result.ok && result.conversation_id) {
-        // 刷新会话列表并切换到新会话
-        const { conversations: convList } = await chatApi.listConversations();
-        const restored = convList.map((item) => restoreConversation<ChatMessage>(item));
-        setConversations(restored);
-        setActiveId(result.conversation_id);
-      }
+      result = await chatApi.fork(currentActive.id, turnIndex);
+      if (!result.ok || !result.conversation_id) throw new Error('服务未返回新分支');
     } catch (err) {
-      console.error('[Chat] Fork 失败:', err);
       alert(`Fork 失败: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
-  }, []);
+    const id = result.conversation_id;
+    setConversations((current) => [{ ...currentActive, id, title: `${currentActive.title} (分支)`,
+      messages: [], loaded: false, locallyOpened: true, updatedAt: Date.now() / 1000 }, ...current.filter((item) => item.id !== id)]);
+    setActiveId(id);
+    try {
+      const { conversations: items } = await chatApi.getConversation(id);
+      if (!items.some((item) => item.conversation_id === id)) throw new Error('新分支暂时不可读取');
+      mergeHistoryItems(items);
+    } catch (error) { setPagingError(`分支已创建 (${id}), 读取失败: ${error instanceof Error ? error.message : String(error)}`); }
+    try { await refreshHistorySidebar(); }
+    catch (error) { setPagingError(`分支已创建 (${id}), 侧栏刷新失败: ${error instanceof Error ? error.message : String(error)}`); }
+  }, [refreshHistorySidebar, mergeHistoryItems]);
 
   // 删除模型配置
   const handleDeleteModel = useCallback(async (name: string) => {
@@ -1629,9 +1823,15 @@ export function Chat() {
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-          {grouped.total === 0 && grouped.groups.length === 0 ? (
+              <select aria-label="筛选对话项目" className="glass-input w-full" value={sidebarProject} onChange={(event) => setSidebarProject(event.target.value)}>
+                <option value="">全部项目</option>
+                {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}
+              </select>
+              {directoryLoading && <p className="px-2 text-sm text-text-tertiary">正在查询对话…</p>}
+
+          {!directoryLoading && grouped.total === 0 && grouped.groups.length === 0 ? (
             <div className="text-center text-text-tertiary text-sm py-8">
-              {conversations.length === 0 && projects.length === 0 ? '暂无对话, 点击上方新建' : '无匹配对话'}
+              {pagingError ? '对话查询未完成, 请重试' : conversations.length === 0 && projects.length === 0 ? '暂无对话, 点击上方新建' : '无匹配对话'}
             </div>
           ) : (
             <>
@@ -1666,6 +1866,7 @@ export function Chat() {
                 </div>
               )}
               {/* 最近区: 无项目会话 (平铺, 保持原有形态) */}
+              {nextConversations && !directoryLoading && <Button className="w-full" onClick={() => void loadConversationPage()}>加载更多对话</Button>}
               {grouped.recent.length > 0 && (
                 <div className="space-y-1">
                   {grouped.groups.length > 0 && (
@@ -1692,6 +1893,7 @@ export function Chat() {
         </div>
       </Card>
 
+      {pagingError && <p role="alert" className="text-error">{pagingError}</p>}
       {/* 聊天主区 */}
       <Card className="glass-card-static flex-1 flex flex-col p-0 overflow-hidden min-w-0">
         {/* 头部 */}
@@ -1712,7 +1914,7 @@ export function Chat() {
         )}
 
         {/* 消息流 (输入区内嵌于底部, sticky 固定, 滚动不消失) */}
-        <div ref={messageScroll.containerRef} onScroll={messageScroll.onScroll} style={{ overflowAnchor: 'none' }} className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">
+        <div ref={messageScroll.containerRef} onScroll={() => { messageScroll.onScroll(); if ((messageScroll.containerRef.current?.scrollTop ?? 100) < 80 && active) void loadOlder(active); }} style={{ overflowAnchor: 'none' }} className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">
           {/* 内容区 */}
           <div ref={messageScroll.contentRef} className="flex-1 flex flex-col pb-4">
             {showEntryChoice ? (
@@ -1751,6 +1953,7 @@ export function Chat() {
               <EmptyWelcome onPromptClick={(text) => setInput(text)} />
             ) : (
               <div className="space-y-6">
+                {active.hasOlder && <Button onClick={() => void loadOlder(active)}>加载更早消息</Button>}
                 {active.messages.map((msg, idx) => (
                   <MessageBubble
                     key={msg.id}
@@ -1928,7 +2131,19 @@ export function Chat() {
         projects={projects}
         models={models}
         activeConversationId={activeId}
-        onOpenConversation={(conversationId) => {
+        onOpenConversation={async (conversationId) => {
+          if (!conversationsRef.current.some((item) => item.id === conversationId)) {
+            try {
+              const result = await chatApi.getConversation(conversationId);
+              const item = result.conversations.find((entry) => entry.conversation_id === conversationId);
+              if (!item) throw new Error('对话不存在或已移除');
+              setConversations((current) => current.some((entry) => entry.id === conversationId) ? current : [...current, { ...restoreConversation<ChatMessage>(item), locallyOpened: true }]);
+            } catch (error) {
+              setPagingError(error instanceof Error ? error.message : '对话读取失败');
+              return;
+            }
+          }
+          updateConversation(conversationId, (item) => ({ ...item, locallyOpened: true }));
           setActiveId(conversationId);
           setShowEntryChoice(false);
           setHistoryOpen(false);
@@ -2357,12 +2572,37 @@ function ChatSettingsModal({
 
                 <label className="flex items-center justify-between gap-4">
                   <div>
+                    <div className="text-sm font-medium text-text-primary">使用内置 Agent 提示</div>
+                    <div className="text-xs text-text-tertiary">补充工具调用与结果核实的通用规则, 可与自定义提示同时使用</div>
+                  </div>
+                  <input type="checkbox" checked={settings.defaultAgentPromptEnabled}
+                    onChange={(e) => onChange('defaultAgentPromptEnabled', e.target.checked)} />
+                </label>
+
+                <label className="flex items-center justify-between gap-4">
+                  <div>
                     <div className="text-sm font-medium text-text-primary">命令写入上下文</div>
                     <div className="text-xs text-text-tertiary">让 AI 在后续对话中看到已执行的命令及回复, 不会额外调用模型</div>
                   </div>
                   <input type="checkbox" checked={settings.commandHistoryEnabled}
                     onChange={(e) => onChange('commandHistoryEnabled', e.target.checked)} />
                 </label>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-text-primary">最大工具迭代</div>
+                    <div className="text-xs text-text-tertiary">单轮对话中模型最多调用工具的次数, 留空沿用会话配置默认</div>
+                  </div>
+                  <input type="number" min={1} step={1} placeholder="默认"
+                    value={settings.maxIterations ?? ''}
+                    onChange={(e) => {
+                      const raw = e.target.value.trim();
+                      const parsed = raw === '' ? undefined : Number(raw);
+                      if (parsed !== undefined && (!Number.isInteger(parsed) || parsed < 1)) return;
+                      onChange('maxIterations', parsed);
+                    }}
+                    className="w-20 rounded-md border border-border bg-transparent px-2 py-1 text-right text-sm" />
+                </div>
 
                 {/* 温度 */}
                 <div>
@@ -3047,7 +3287,7 @@ function ProjectGroup({
       {!collapsed && (
         <div className="ml-4 mt-1 space-y-1">
           {conversations.length === 0 ? (
-            <div className="px-2 py-1 text-xs text-text-tertiary">暂无对话</div>
+            <div className="px-2 py-1 text-xs text-text-tertiary">当前列表暂无对话</div>
           ) : (
             conversations.map((conv) => (
               <ConversationItem
@@ -3209,9 +3449,10 @@ const MessageBubble = memo(function MessageBubble({
     ),
     [message.variants],
   );
+  const variantOrder = message.variantIndices ?? variants.map((variant) => variant.variantIndex);
   const activeVariantPosition = Math.max(
     0,
-    variants.findIndex((variant) => variant.variantIndex === message.activeVariant),
+    variantOrder.indexOf(message.activeVariant ?? 0),
   );
 
   return (
@@ -3322,6 +3563,8 @@ const MessageBubble = memo(function MessageBubble({
             </>
           )}
 
+          {!isUser && Boolean(message.outputFiles?.length) && <OutputFiles conversationId={conversationId} files={message.outputFiles ?? []} />}
+
           {!isUser && message.contextStats && (
             <ContextStatsPanel stats={message.contextStats} />
           )}
@@ -3357,12 +3600,12 @@ const MessageBubble = memo(function MessageBubble({
                   <RotateCcw className="h-3.5 w-3.5" />
                 </button>
               )}
-              {!isUser && isLast && onSelectVariant && message.turnIndex !== undefined && variants.length > 1 && (
+              {!isUser && isLast && onSelectVariant && message.turnIndex !== undefined && variantOrder.length > 1 && (
                 <div className="flex items-center gap-0.5 px-1 text-xs text-text-tertiary">
                   <button
                     onClick={() => onSelectVariant(
                       message.turnIndex!,
-                      variants[Math.max(0, activeVariantPosition - 1)].variantIndex,
+                      variantOrder[Math.max(0, activeVariantPosition - 1)],
                     )}
                     disabled={activeVariantPosition <= 0}
                     className="rounded p-0.5 hover:text-accent disabled:opacity-30"
@@ -3370,13 +3613,13 @@ const MessageBubble = memo(function MessageBubble({
                   >
                     <ChevronLeft className="h-3.5 w-3.5" />
                   </button>
-                  <span>{activeVariantPosition + 1} / {variants.length}</span>
+                  <span>{activeVariantPosition + 1} / {variantOrder.length}</span>
                   <button
                     onClick={() => onSelectVariant(
                       message.turnIndex!,
-                      variants[Math.min(variants.length - 1, activeVariantPosition + 1)].variantIndex,
+                      variantOrder[Math.min(variantOrder.length - 1, activeVariantPosition + 1)],
                     )}
-                    disabled={activeVariantPosition >= variants.length - 1}
+                    disabled={activeVariantPosition >= variantOrder.length - 1}
                     className="rounded p-0.5 hover:text-accent disabled:opacity-30"
                     title="下一个回复"
                   >

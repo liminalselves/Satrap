@@ -139,6 +139,211 @@ async def _raw_request(port: int, request: bytes) -> bytes:
     return data
 
 
+# ==================== 访问密码门禁 ====================
+
+
+def _request_bytes(method: str, path: str, *, origin: str = "http://127.0.0.1:5173", body: bytes = b"", extra: str = "") -> bytes:
+    """构造最小 HTTP 请求字节"""
+    head = (f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: {origin}\r\n"
+            f"Content-Length: {len(body)}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra}\r\n")
+    return head.encode() + body
+
+
+def _status_code(response: bytes) -> int:
+    """提取响应状态码"""
+    return int(response.split(b" ", 2)[1])
+
+
+async def test_dashboard_password_gate_covers_bootstrap_login_change_and_clear(tmp_path, monkeypatch):
+    """免密回环引导, 设密码后按密码或 Bearer 进入, 改密即时生效, 清除后恢复, 非法存储报 500"""
+    from satrap.core.auth_password import update_dashboard_password
+    config = tmp_path / "config.yaml"
+    monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: config)
+    import threading
+    from satrap.core import auth_password
+    event_thread = threading.get_ident()
+    original_verify = auth_password.verify_dashboard_password
+    def verify_in_worker(stored, candidate):
+        assert threading.get_ident() != event_thread
+        return original_verify(stored, candidate)
+    monkeypatch.setattr(auth_password, "verify_dashboard_password", verify_in_worker)
+    original_hash = auth_password.dashboard_password_hash
+    def hash_in_worker():
+        assert threading.get_ident() != event_thread
+        return original_hash()
+    monkeypatch.setattr(auth_password, "dashboard_password_hash", hash_in_worker)
+    server = _EchoServer()
+    port = await _start_server(server)
+    try:
+        echo = "/api/echo?x=1"
+        bootstrap = await _raw_request(port, _request_bytes("POST", "/auth/session"))
+        assert _status_code(bootstrap) == 200
+        free_cookie = "Cookie: " + bootstrap.split(b"Set-Cookie: ", 1)[1].split(b";", 1)[0].decode() + "\r\n"
+        assert _status_code(await _raw_request(port, _request_bytes("GET", echo, extra=free_cookie))) == 200
+        status_response = await _raw_request(port, _request_bytes("GET", "/auth/password/status"))
+        assert _status_code(status_response) == 200 and b'"password_required": false' in status_response
+
+        update_dashboard_password("Secret-123")
+        status_response = await _raw_request(port, _request_bytes("GET", "/auth/password/status"))
+        assert b'"password_required": true' in status_response
+        assert _status_code(await _raw_request(port, _request_bytes("POST", "/auth/session"))) == 401
+        assert _status_code(await _raw_request(port, _request_bytes("GET", echo))) == 401
+        assert _status_code(await _raw_request(
+            port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"wrong-123"}'))) == 401
+        login = await _raw_request(
+            port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"Secret-123"}'))
+        assert _status_code(login) == 200
+        cookie = b"Cookie: " + login.split(b"Set-Cookie: ", 1)[1].split(b";", 1)[0] + b"\r\n"
+        assert _status_code(await _raw_request(port, _request_bytes("GET", echo, extra=cookie.decode()))) == 200
+        assert _status_code(await _raw_request(
+            port, _request_bytes("PUT", "/auth/password", extra=cookie.decode(),
+                                 body=b'{"current_password":"Secret-123","new_password":"Newer-456"}'))) == 200
+        relogin = await _raw_request(port, _request_bytes('POST', '/auth/password/login', body=b'{"password":"Newer-456"}'))
+        assert _status_code(relogin) == 200
+        assert _status_code(await _raw_request(port, _request_bytes('GET', echo, extra=cookie.decode()))) == 401
+        cookie = b'Cookie: ' + relogin.split(b'Set-Cookie: ', 1)[1].split(b';', 1)[0] + b'\r\n'
+        assert _status_code(await _raw_request(
+            port, _request_bytes("PUT", "/auth/password", extra=cookie.decode(),
+                                 body=b'{"current_password":"Secret-123","new_password":"Again-789"}'))) == 403
+        assert _status_code(await _raw_request(
+            port, _request_bytes("PUT", "/auth/password", extra=cookie.decode(),
+                                 body=b'{"current_password":"Newer-456","new_password":null}'))) == 200
+        assert b'"password_required": false' in await _raw_request(port, _request_bytes("GET", "/auth/password/status"))
+        assert _status_code(await _raw_request(port, _request_bytes("POST", "/auth/session"))) == 200
+
+        update_dashboard_password("Secret-123")
+        for _ in range(5):
+            await _raw_request(port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"nope-000"}'))
+        assert _status_code(await _raw_request(
+            port, _request_bytes("POST", "/auth/password/login", body=b'{"password":"Secret-123"}'))) == 429
+
+        config.write_text("api:\n  dashboard_password: not-a-pbkdf2-hash\n", encoding="utf-8")
+        assert _status_code(await _raw_request(port, _request_bytes("GET", "/auth/password/status"))) == 500
+        assert _status_code(await _raw_request(port, _request_bytes("POST", "/auth/session"))) == 401
+    finally:
+        await server.stop()
+
+
+async def test_remembered_login_restores_after_restart_and_rejects_revoked_versions(tmp_path, monkeypatch):
+    """真实 HTTP 覆盖持久登录, 重启恢复, 续期, 改密, 退出及服务范围隔离"""
+    import sqlite3
+    from satrap.core.auth_password import update_dashboard_password
+    from satrap.core.browser_sessions import PersistentBrowserSessions
+
+    config = tmp_path / 'config.yaml'
+    monkeypatch.setattr('satrap.core.auth_password.dashboard_password_path', lambda: config)
+    monkeypatch.setenv('SATRAP_CREDENTIALS_ROOT', str(tmp_path / 'credentials'))
+    update_dashboard_password('Secret-123')
+    server = _EchoServer()
+    port = await _start_server(server)
+    login = await _raw_request(port, _request_bytes('POST', '/auth/password/login', body=b'{"password":"Secret-123","remember":true}'))
+    assert _status_code(login) == 200 and b'Max-Age=2592000' in login
+    credential = login.split(b'Set-Cookie: ', 1)[1].split(b';', 1)[0]
+    cookie = 'Cookie: ' + credential.decode() + '\r\n'
+    session = credential.decode().split('=', 1)[1]
+    database = tmp_path / 'credentials/browser-sessions.db'
+    assert session.encode() not in database.read_bytes()
+    await server.stop()
+
+    server = _EchoServer()
+    port = await _start_server(server)
+    try:
+        restored = await _raw_request(port, _request_bytes('POST', '/auth/session', extra=cookie))
+        assert _status_code(restored) == 200 and b'Set-Cookie' not in restored
+        assert _status_code(await _raw_request(port, _request_bytes('GET', '/api/echo', extra=cookie))) == 200
+        assert server.auth.remembered_sessions is not None
+        store = server.auth.remembered_sessions
+        wrong_service = PersistentBrowserSessions(database, 'chat', store.scope)
+        assert not wrong_service.validate(session, server.auth._password_version())
+        wrong_deployment = PersistentBrowserSessions(database, store.namespace, 'other-deployment')
+        assert not wrong_deployment.validate(session, server.auth._password_version())
+        peer = ServerAuth.create('127.0.0.1', 0, token=server.auth.token, session_namespace='chat')
+        assert not peer.cookie_authorized({'cookie': credential.decode()})
+        shared = peer.restore_session('127.0.0.1', 'http://127.0.0.1:5173', {'cookie': credential.decode()})
+        assert shared and shared['Set-Cookie'].startswith('satrap_session_chat=p_')
+        peer_cookie = shared['Set-Cookie'].split(';', 1)[0]
+        assert peer.cookie_authorized({'cookie': peer_cookie})
+        with sqlite3.connect(database) as connection:
+            connection.execute('UPDATE browser_sessions SET renewed_at=renewed_at-86401')
+        renewed = await _raw_request(port, _request_bytes('POST', '/auth/session', extra=cookie))
+        assert _status_code(renewed) == 200 and b'Max-Age=2592000' in renewed
+        combined = 'Cookie: ' + credential.decode() + '; ' + peer_cookie + '\r\n'
+        assert _status_code(await _raw_request(port, _request_bytes('POST', '/auth/logout', extra=combined))) == 200
+        assert not peer.cookie_authorized({'cookie': peer_cookie})
+        assert _status_code(await _raw_request(port, _request_bytes('POST', '/auth/session', extra=cookie))) == 401
+
+        login = await _raw_request(port, _request_bytes('POST', '/auth/password/login', body=b'{"password":"Secret-123","remember":true}'))
+        cookie = 'Cookie: ' + login.split(b'Set-Cookie: ', 1)[1].split(b';', 1)[0].decode() + '\r\n'
+        update_dashboard_password('Changed-456')
+        assert _status_code(await _raw_request(port, _request_bytes('POST', '/auth/session', extra=cookie))) == 401
+    finally:
+        await server.stop()
+
+
+async def test_remembered_cookie_survives_real_browser_reopen(tmp_path, monkeypatch):
+    """关闭真实 Chromium 进程再以同一配置启动, 无需重输密码"""
+    import shutil
+    from satrap.core.auth_password import update_dashboard_password
+
+    node = shutil.which('node')
+    ui = Path(__file__).resolve().parents[2] / 'satrap-ui'
+    if node is None or not (ui / 'node_modules/playwright').is_dir():
+        pytest.skip('未安装 Node 或 Playwright')
+    monkeypatch.setattr('satrap.core.auth_password.dashboard_password_path', lambda: tmp_path / 'config.yaml')
+    monkeypatch.setenv('SATRAP_CREDENTIALS_ROOT', str(tmp_path / 'credentials'))
+    update_dashboard_password('Secret-123')
+    script = """
+const { chromium } = require('playwright');
+(async () => {
+  const context = await chromium.launchPersistentContext(process.argv[2], { headless: true });
+  try {
+    const login = process.argv[3] === 'login';
+    const response = await context.request.post('http://127.0.0.1:' + process.argv[1] + (login ? '/auth/password/login' : '/auth/session'), {
+      headers: { Origin: 'http://127.0.0.1:5173' }, ...(login ? { data: { password: 'Secret-123', remember: true } } : {})
+    });
+    console.log(JSON.stringify({ status: response.status(), cookies: (await context.cookies()).length }));
+  } finally { await context.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    for phase in ('login', 'restore'):
+        server = _EchoServer()
+        port = await _start_server(server)
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(node, '-e', script, str(port), str(tmp_path / 'browser'), phase,
+                                                          cwd=ui, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=45)
+            assert process.returncode == 0, stderr.decode('utf-8', errors='replace')
+            result = json.loads(stdout)
+            assert result['status'] == 200 and result['cookies'] == 1
+        finally:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            await server.stop()
+
+
+async def test_password_login_without_origin_and_bearer_still_works(tmp_path, monkeypatch):
+    """登录端点拒绝无来源请求, Bearer token 通道不受访问密码影响"""
+    from satrap.core.auth_password import update_dashboard_password
+    config = tmp_path / "config.yaml"
+    monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: config)
+    server = _EchoServer()
+    port = await _start_server(server)
+    try:
+        update_dashboard_password("Secret-123")
+        bearer = b"Authorization: Bearer test-token-that-is-at-least-thirty-two-characters\r\n"
+        no_origin = (b"POST /auth/password/login HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                     b"Content-Length: 24\r\nConnection: close\r\n\r\n{\"password\":\"Secret-123\"}")
+        assert _status_code(await _raw_request(port, no_origin)) == 403
+        assert _status_code(await _raw_request(
+            port, _request_bytes("GET", "/api/echo", extra=bearer.decode()))) == 200
+        assert _status_code(await _raw_request(
+            port, _request_bytes("POST", "/auth/session", extra=bearer.decode()))) == 200
+    finally:
+        await server.stop()
+
+
 def _websocket_request(path: str = "/ws/test", key: str = "dGhlIHNhbXBsZSBub25jZQ==") -> bytes:
     """构造带鉴权的 WebSocket 升级请求"""
     return (
@@ -247,30 +452,54 @@ async def test_untrusted_origin_is_rejected(echo_server: int):
 
 
 @pytest.mark.asyncio
-async def test_websocket_handshake_and_frame(echo_server: int):
-    """WS 握手返回 101, 随后收到文本帧与关闭帧"""
-    port = echo_server
-    request = (
-        b"GET /ws/test HTTP/1.1\r\n"
-        b"Host: 127.0.0.1\r\n"
-        b"Upgrade: websocket\r\n"
-        b"Connection: Upgrade\r\n"
-        b"Origin: http://localhost:5173\r\n"
-        b"Authorization: Bearer test-token-that-is-at-least-thirty-two-characters\r\n"
-        b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
-    )
-    resp = await _raw_request(port, request)
-    idx = resp.find(b"\r\n\r\n")
-    assert idx >= 0
-    head, rest = resp[:idx], resp[idx + 4:]
-    assert b"101 Switching Protocols" in head
+@pytest.mark.parametrize("deferred_frame", [False, True])
+async def test_websocket_handshake_and_frame(deferred_frame: bool, monkeypatch: pytest.MonkeyPatch):
+    """
+    握手与帧分批到达时仍完整读取文本帧和正常关闭帧
 
-    assert rest[0] == 0x81
-    # 第一帧: 文本帧 (0x81)
-    length = rest[1]
-    payload = json.loads(rest[2:2 + length])
-    assert payload["type"] == "subscribed"
-    assert payload["path"] == "/ws/test"
+    参数:
+    - deferred_frame: 是否等客户端读完握手后才发送帧
+    - monkeypatch: 临时替换测试服务器的帧分发入口
+    """
+    server = _EchoServer()
+    release = asyncio.Event()
+    dispatch = server._ws_dispatch
+
+    async def deferred_dispatch(path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """
+        等待客户端读完握手后再发送帧, 确定性覆盖 TCP 分批交付
+
+        参数:
+        - path: WebSocket 请求路径
+        - reader: 客户端输入流
+        - writer: 服务端输出流
+        """
+        await release.wait()
+        await dispatch(path, reader, writer)
+
+    if deferred_frame:
+        monkeypatch.setattr(server, "_ws_dispatch", deferred_dispatch)
+    port = await _start_server(server)
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            writer.write(_websocket_request())
+            await writer.drain()
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=2)
+            assert b"101 Switching Protocols" in head
+            release.set()
+            opcode, body = await asyncio.wait_for(_read_server_websocket_frame(reader), timeout=2)
+            assert opcode == 0x1
+            assert json.loads(body) == {"type": "subscribed", "path": "/ws/test"}
+            opcode, body = await asyncio.wait_for(_read_server_websocket_frame(reader), timeout=2)
+            assert opcode == 0x8
+            assert int.from_bytes(body[:2], "big") == 1000 and body[2:] == b"bye"
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        release.set()
+        await server.stop()
 
 
 @pytest.mark.asyncio
@@ -408,7 +637,7 @@ async def test_request_body_over_limit_returns_413():
             b"Content-Length: 9\r\n\r\n"
         )
         response = await _raw_request(port, request)
-        assert b"413 Content Too Large" in response
+        assert response.startswith(b"HTTP/1.1 413 ")
         assert b"request body too large" in response
     finally:
         await server.stop()
@@ -582,3 +811,49 @@ async def test_websocket_unexpected_failure_is_still_error(caplog: pytest.LogCap
         for level, message in messages
     )
     assert [message for level, message in messages if "[WebSocket] 连接已断开" in message] == []
+
+
+def test_short_cookie_with_persistent_prefix_authenticates_and_revokes(tmp_path, monkeypatch):
+    """短令牌碰巧以 p_ 开头时仍走短会话的认证, 恢复和撤销链路"""
+    from satrap.core.browser_sessions import PersistentBrowserSessions
+    from dataclasses import replace
+    monkeypatch.setattr(ServerAuth, "_password_version", staticmethod(lambda: "version"))
+    auth = replace(ServerAuth.create("127.0.0.1", 0, token="test-token-that-is-at-least-thirty-two-characters"),
+                   remembered_sessions=PersistentBrowserSessions(tmp_path / "sessions.db", "api", "scope"))
+    monkeypatch.setattr("satrap.core.server_auth.secrets.token_urlsafe", lambda size: "p_" + "a" * 41)
+    cookie = auth.session_cookie().split(";", 1)[0]
+    assert auth.cookie_authorized({"cookie": cookie})
+    assert auth.restore_session("127.0.0.1", "http://127.0.0.1:5173", {"cookie": cookie}) == {}
+    assert auth.revoke_cookie({"cookie": cookie})
+    assert not auth.cookie_authorized({"cookie": cookie})
+    persistent = auth.session_cookie(remember=True).split(";", 1)[0]
+    assert auth.cookie_authorized({"cookie": persistent})
+    assert auth.revoke_cookie({"cookie": persistent})
+    assert not auth.cookie_authorized({"cookie": persistent})
+
+
+async def test_no_password_login_race_retains_secure_cookie(tmp_path, monkeypatch):
+    """免密竞态登录与正常 HTTPS 来源使用相同的 Secure 策略"""
+    from dataclasses import replace
+    monkeypatch.setattr("satrap.core.auth_password.dashboard_password_path", lambda: tmp_path / "config.yaml")
+    import threading
+    from satrap.core import auth_password
+    event_thread = threading.get_ident()
+    hash_threads = []
+    original_hash = auth_password.dashboard_password_hash
+    def hash_in_worker():
+        hash_threads.append(threading.get_ident())
+        assert hash_threads[-1] != event_thread
+        return original_hash()
+    monkeypatch.setattr(auth_password, "dashboard_password_hash", hash_in_worker)
+    server = _EchoServer()
+    origin = "https://127.0.0.1:5173"
+    server.auth = replace(server.auth, allowed_origins=server.auth.allowed_origins | {origin})
+    port = await _start_server(server)
+    try:
+        response = await _raw_request(port, _request_bytes("POST", "/auth/password/login", origin=origin, body=b'{"password":"no-longer-required"}'))
+        assert _status_code(response) == 200
+        assert b"; Secure" in response.split(b"\r\n\r\n")[0]
+        assert len(hash_threads) >= 2
+    finally:
+        await server.stop()

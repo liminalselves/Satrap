@@ -210,6 +210,49 @@ def test_async_run_signature_forwards_media_params(tmp_path: Path):
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_run_max_iterations_falls_back_to_session_default(tmp_path: Path, asynchronous: bool):
+    """会话默认最大迭代生效, run 可逐次覆盖, 非法构造参数直接拒绝"""
+    captured: list[int] = []
+    if asynchronous:
+        session: Any = AsyncSimpleSession(
+            "conv-mi", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=False, max_iterations=3,
+        )
+        await session.initialize()
+        assert session.configured_max_iterations == 3
+        original = session._wf.full_agent
+
+        async def spy_async_full_agent(text, img_urls=None, *, thinking="off", max_iterations=10, video_urls=None, request_blocks=()):
+            captured.append(max_iterations)
+            return await original(text, img_urls, thinking=thinking, max_iterations=max_iterations,
+                                  video_urls=video_urls, request_blocks=request_blocks)
+
+        session._wf.full_agent = spy_async_full_agent
+        await session.run("hi")
+        await session.run("hi", max_iterations=7)
+        with pytest.raises(ValueError, match="max_iterations"):
+            AsyncSimpleSession("conv-mi-bad", _FakeAsyncLLM(), db_path=str(tmp_path / "chat2.db"), enable_checkpoint=False, max_iterations=0)
+    else:
+        session = SimpleSession(
+            "conv-mi", _FakeLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=False, max_iterations=3,
+        )
+        assert session.configured_max_iterations == 3
+        original = session._wf.full_agent
+
+        def spy_sync_full_agent(text, img_urls=None, *, thinking="off", max_iterations=10, video_urls=None, request_blocks=()):
+            captured.append(max_iterations)
+            return original(text, img_urls, thinking=thinking, max_iterations=max_iterations,
+                            video_urls=video_urls, request_blocks=request_blocks)
+
+        session._wf.full_agent = spy_sync_full_agent
+        session.run("hi")
+        session.run("hi", max_iterations=7)
+        with pytest.raises(ValueError, match="max_iterations"):
+            SimpleSession("conv-mi-bad", _FakeLLM(), db_path=str(tmp_path / "chat2.db"), enable_checkpoint=False, max_iterations=0)
+    assert captured == [3, 7]
+
+
 # ================= 工具管理 =================
 
 

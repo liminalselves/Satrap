@@ -107,3 +107,41 @@ describe('跨服务资源管理链路', () => {
     await expect(backendApi.reconcileEdictumPlugins(scope)).rejects.toThrow('deadline exceeded');
   });
 });
+
+
+describe('平台统一审批链路', () => {
+  it('带完整身份查询并将三类决策交还原业务, 保留拒绝申请的原意', async () => {
+    const { platformActionsApi, actionDescription, actionKey, approvalLink } = await import('@/api/platformActions');
+    const item: import('@/api/platformActions').PlatformAction = {
+      platform_id: 'bot/中文', self_id: '100', source: 'group', action_id: 'same', group_id: '888', action_type: 'ban_group_member',
+      params: { user_id: '42', duration: 43200 }, actor_kind: 'model', actor_id: 'sender', state: 'pending', created_at: 1,
+      expires_at: null, result: null, target: {}, can_decide: true, unavailable_reason: '',
+    };
+    respond = () => ({ state: 'succeeded' });
+    await platformActionsApi.list({ platform: 'bot/中文', account: 'old', source: 'friend', action: 'same', state: 'all' });
+    expect(requests[0].params).toMatchObject({ platform_id: 'bot/中文', account: 'old', source: 'friend', action_id: 'same', state: 'all', limit: 50 });
+    await platformActionsApi.summary();
+    expect(requests[1].url).toBe('/api/platform-actions/summary');
+    await platformActionsApi.decide(item, true);
+    const invitation = { ...item, source: 'invitation' as const, params: { approve: false }, action_type: 'handle_group_request' };
+    await platformActionsApi.decide(invitation, true);
+    await platformActionsApi.decide({ ...item, source: 'friend' }, false);
+    expect(requests.slice(2).map((request) => [request.url, body(request)])).toEqual([
+      ['/api/platforms/bot%2F%E4%B8%AD%E6%96%87/groups/888/actions/same/decision', { expected_self_id: '100', approve: true }],
+      ['/api/platforms/bot%2F%E4%B8%AD%E6%96%87/account-requests/group-invites/actions/same/decision', { expected_self_id: '100', approve: true }],
+      ['/api/platforms/bot%2F%E4%B8%AD%E6%96%87/friends/actions/same/decision', { expected_self_id: '100', approve: false }],
+    ]);
+    expect(actionDescription(invitation)).toContain('拒绝');
+    expect(actionDescription(item)).toContain('12 小时');
+    expect(actionKey(invitation)).not.toBe(actionKey(item));
+    expect(approvalLink({ platform: 'bot/中文', account: '100', source: 'invitation', action: 'same' })).toContain('source=invitation');
+    expect(approvalLink({ action: 'same' })).toContain('state=all');
+    await platformActionsApi.list({ action: 'same' });
+    expect(requests[requests.length - 1]?.params).toMatchObject({ state: 'all', action_id: 'same' });
+
+    respond = () => { throw new Error('connection lost'); };
+    const before = requests.length;
+    await expect(platformActionsApi.decide(item, true)).rejects.toThrow('connection lost');
+    expect(requests).toHaveLength(before + 1);
+  });
+});

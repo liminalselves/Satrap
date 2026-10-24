@@ -4,12 +4,14 @@ import { useBackendStore } from '@/stores/useBackendStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import { toast } from '@/components/ui/Toast';
+import { renewReadyApiSessions } from '@/api/auth';
 
 export function useBackendStatusSync() {
   useEffect(() => {
     const socket = new SatrapWebSocket('/ws/status');
     let active = true;
     let configError = '';
+    const authPoll = startVisiblePoll(() => renewReadyApiSessions(), { interval: 6 * 3600000, immediate: false });
     const statusPoll = startVisiblePoll(() => useBackendStore.getState().refreshAll(), {
       interval: () => useBackendStore.getState().statusConnected ? 30000 : 5000,
     });
@@ -38,6 +40,7 @@ export function useBackendStatusSync() {
       active = false;
       statusPoll.stop();
       configPoll.stop();
+      authPoll.stop();
       socket.disconnect();
       useBackendStore.getState().setStatusConnected(false);
     };

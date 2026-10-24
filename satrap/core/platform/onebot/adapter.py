@@ -19,6 +19,7 @@ import secrets
 import aiohttp
 from typing import Any, Literal, cast
 from time import monotonic, time
+from satrap.core.file_access.artifacts import FileArtifact
 import json
 
 from satrap.core.platform.onebot.onebot_utils import (
@@ -173,6 +174,22 @@ class OneBotAdapter(PlatformAdapter):
         if not isinstance(value, str) or not value.strip().isascii() or not value.strip().isdigit() or len(value.strip()) > 20 or int(value.strip()) <= 0:
             raise ValueError("此平台的用户识别号必须是有效 QQ 号")
         return str(int(value.strip()))
+    @staticmethod
+    def normalize_group_identifier(value: str) -> str:
+        """
+        将 QQ 群号规范为与入站事件一致的十进制身份
+
+        参数:
+        - value: 用户填写的 QQ 群号
+
+        返回:
+        - 正整数的十进制群号, 非法格式抛出 ValueError
+        """
+        try:
+            return OneBotAdapter.normalize_user_identifier(value)
+        except ValueError as error:
+            raise ValueError("此平台的群聊识别号必须是有效 QQ 群号") from error
+
     display_name = "OneBot"
     supports_scheduled_group_send = True
 
@@ -802,6 +819,21 @@ class OneBotAdapter(PlatformAdapter):
             raise GroupChatError("stale_call", "来源群已停用或机器人已离开")
         return scope
 
+    async def deliver_file(self, origin: CallOrigin, artifact: FileArtifact, check: Callable[[], None]) -> dict[str, object]:
+        """
+        通过分块上传交付当前会话文件
+
+        参数:
+        - origin: 宿主冻结来源
+        - artifact: 受控普通文件
+        - check: 等待后的宿主复核
+
+        返回:
+        - 实现端确认的上传状态或明确不可用原因
+        """
+        from .file_delivery import deliver
+        return await deliver(self, origin, artifact, check)
+
     def group_chat_media_formats(self) -> tuple[str, ...]:
         """OneBot 图片段支持的宿主已验证格式"""
         return ("image/png", "image/jpeg", "image/webp", "image/gif")
@@ -1278,6 +1310,7 @@ class OneBotAdapter(PlatformAdapter):
         参数:
         - event: 事件
         """
+        received_at = time()
         incoming_self = str(event.get("self_id") or "")
         if not incoming_self or (self.bot_self_id and incoming_self != self.bot_self_id):
             self._ingress_rejections["account"] += 1
@@ -1291,6 +1324,7 @@ class OneBotAdapter(PlatformAdapter):
             if self.message_archive is not None:
                 try:
                     echo = await self.convert_message(event)
+                    echo.received_at = received_at
                     if echo.group_id:
                         await self.archive_message(echo, direction="outbound")
                 except Exception as exc:
@@ -1314,6 +1348,7 @@ class OneBotAdapter(PlatformAdapter):
         accepted = False
         try:
             message = await self.convert_message(event)
+            message.received_at = received_at
             await self.archive_message(message)
             accepted = self._commit_platform_message(message)
         except Exception as e:
@@ -1874,11 +1909,27 @@ class OneBotAdapter(PlatformAdapter):
         except MediaSourcePermissionError as error:
             return self._failed_receipt(session_id, "file", "media_source_denied", error)
         name = (component.name or "").strip() or os.path.basename(source) or "file"
+        return await self._send_uploaded_file(session_id, source, name, fallback=component)
+
+    async def _send_uploaded_file(self, session_id: str, source: str, name: str, *, fallback: File | None = None) -> SendReceipt:
+        """
+        共用原生文件上传与回执, 来源必须已经过宿主验证
+
+        参数:
+        - session_id: 已核验当前对话
+        - source: 通过媒体路径校验的来源或实现端分块上传返回的路径
+        - name: 显示名称
+        - fallback: 仅原有 File 组件路径允许未确认兼容尝试, 新产物入口不兜底
+
+        返回:
+        - 上传回执, 新产物缺少文件 ID 时保留 unknown
+        """
 
         upload_action = "upload_group_file" if is_group_session(session_id) else "upload_private_file"
         learned = self._capability_states.get(upload_action)
         if learned is not None and learned[0] == self._connection_generation and learned[1] == "unsupported":
-            return await self._send_file_fallback(session_id, component)
+            return (await self._send_file_fallback(session_id, fallback) if fallback is not None
+                    else SendReceipt("failed", reason="file_upload_unsupported"))
         try:
             result = await self._dispatch_action(session_id, "upload_private_file", "upload_group_file", file=source, name=name)
         except ValueError:
@@ -1886,7 +1937,8 @@ class OneBotAdapter(PlatformAdapter):
         except _action_failures as error:
             if is_missing_action_error(error):
                 self.note_action_outcome(upload_action, False)
-                return await self._send_file_fallback(session_id, component)
+                return (await self._send_file_fallback(session_id, fallback) if fallback is not None
+                        else SendReceipt("failed", reason="file_upload_unsupported"))
             return self._failed_receipt(session_id, "file", "action_rejected", error)
         except Exception as error:
             return self._failed_receipt(session_id, "file", "action_unconfirmed", error, status="unknown")
@@ -1894,6 +1946,8 @@ class OneBotAdapter(PlatformAdapter):
         payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
         raw_file_id = payload.get("file_id")
         file_ids = (str(raw_file_id),) if isinstance(raw_file_id, (str, int)) and not isinstance(raw_file_id, bool) and str(raw_file_id) else ()
+        if fallback is None and not file_ids:
+            return SendReceipt("unknown", reason="file_upload_unconfirmed")
         return SendReceipt("success", file_ids, reason="file_uploaded")
 
     async def _send_file_fallback(self, session_id: str, component: File) -> SendReceipt:

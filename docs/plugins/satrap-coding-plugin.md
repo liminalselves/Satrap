@@ -38,7 +38,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 | --- | --- | --- |
 | 文件 | read_file / write_file / edit_file / search_replace / list_dir / glob_files / grep_files | 工作区内操作, 外部单文件读取与写类按下表审批 |
 | 询问 | ask_user | 获取缺失信息, 建议提供 2-3 个推荐选项, 未配置输入通道时返回占位说明 |
-| 执行 | shell | 本机 PowerShell/cmd, 按三档模式审批, 计划模式禁用 |
+| 执行 | shell | 本机 Windows PowerShell/cmd 或 POSIX bash/sh, 默认按系统选择, 按三档模式审批, 计划模式禁用 |
 | 任务 | todo_write | 会话级任务清单: add / done / list / clear |
 | 子代理 | subagent | 独立上下文, 继承主会话工具与审批策略 |
 | 命令 | /goal /plan | 目标与计划模式的用户侧接口 |
@@ -46,6 +46,16 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 | 处理器 | satrap_coding.inject | 用户消息进入模型前注入目标块 |
 
 > `ask_user` 需要宿主特殊适配: 宿主必须设置 `session.user_input_provider`, 展示工具提出的问题, 等待用户回答并把回答回填到当前工具调用。未适配时工具只返回占位说明, 不会自动暂停并跨消息恢复
+
+### Shell 平台选择与生命周期
+
+`shell` 参数默认 `auto`: Windows 使用 PowerShell, POSIX 优先 bash, 缺少 bash 时使用 sh。也可显式选择 `powershell`、`cmd`、`bash` 或 `sh`; 不支持的系统组合和缺少解释器会明确报错。审批记录包含实际解释器绝对路径、完整 argv 和工作目录, 执行使用同一份参数。
+
+bash/sh 非交互运行, 不读取个人登录配置或继承 `BASH_ENV`/`ENV` 启动脚本。输出使用 UTF-8, stdin 关闭, stdout/stderr 分别持续排空且每路只保留最多 80 KB 的尾部, 返回正文最多 20,000 字符, 另附状态和截断说明。POSIX 执行使用独立进程组, 超时和取消会回收该组内后代; Shell 提前退出但后代仍持有输出管道时也受总超时限制。异步取消会等待实际回收后再结束调用。主动脱离进程组的程序不在此清理保证内。
+
+命令分级支持 POSIX 引号、换行和常见嵌套 Shell, 动态展开保守按高风险处理。它提供审批辅助, 不是操作系统沙箱; 已批准的本机命令仍具有运行进程的系统权限。
+
+工具的 `required` 与 `execute` 默认值一致：`read_file` 只需 `path`，`list_dir` 可空参数，`todo_write` 只需 `operation`。数组、枚举和数值范围直接写入 JSON Schema，例如 `search_replace.replacements` 的每项必须包含 `old` 和 `new`。
 
 ## 三档审批
 

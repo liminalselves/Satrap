@@ -103,6 +103,51 @@ def test_session_config_register_update_and_list(tmp_path: Path):
     assert "echo" in types
     assert "extra" in types
 
+
+@pytest.mark.parametrize("async_entry", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("failure", ["initialization", "route_changed"])
+async def test_new_failure_keeps_original_route_and_never_publishes_reset(tmp_path, monkeypatch, async_entry, failure):
+    """目标初始化失败或并发路由变化时, 不发布成功回执或清窗信号"""
+    from satrap.core.conversation import ConversationRoute
+    from satrap.core.framework.UserManager import UserManager
+    from satrap.core.type import CommandAction, UserCall
+    sm = _make_sm(tmp_path)
+    users = UserManager(sm, db_path=tmp_path / "users.db")
+    sm._user_mgr = users
+    route = ConversationRoute("user", "test", "echo", scope="group", self_id="bot", group_id="group")
+    initial = users.resolve_session("user", "test", "echo", route=route)
+    target = initial + ":new"
+    other = initial + ":concurrent"
+    monkeypatch.setattr(sm, "_invoke_sync_session", lambda *args: CommandAction("new_session", target, "不应出现的成功回执"))
+    prepare_sync, prepare_async = sm._prepare_session_sync, sm._prepare_session_async
+
+    def check(instance):
+        if instance.session_id == target:
+            if failure == "initialization":
+                raise ValueError("模拟初始化失败")
+            sm._resolve_or_create_session_config(UserCall(session_id=other, session_type="echo"))
+            users.store.upsert_context_session(route.owner, route.platform, route.session_type, other, route.provider, context_key=route.key)
+
+    def prepare(instance, **kwargs):
+        check(instance)
+        return prepare_sync(instance, **kwargs)
+
+    async def prepare_later(instance, **kwargs):
+        check(instance)
+        return await prepare_async(instance, **kwargs)
+
+    monkeypatch.setattr(sm, "_prepare_session_sync", prepare)
+    monkeypatch.setattr(sm, "_prepare_session_async", prepare_later)
+    call = UserCall(session_id=initial, session_type="echo", route=route, message="/new")
+    result = await sm.handle_call_async(call) if async_entry else sm.handle_call(call)
+    assert "切换失败" in result and "不应出现" not in result
+    assert call.context_reset_at is None and call.session_id == initial
+    assert users.resolve_session("user", "test", "echo", route=route) == (initial if failure == "initialization" else other)
+    assert target not in users.store.list_context_history(route)
+    assert sm.store.get(target) is None
+    assert target not in sm.pool.list_entries()
+
+
 def test_register_session_from_class_config(tmp_path: Path):
     """从类级配置派生实例配置 (extra_params 覆盖)"""
     sm = _make_sm(tmp_path)
@@ -1315,3 +1360,108 @@ def test_cleanup_idle_sessions(tmp_path: Path):
 
     manager.cleanup_idle_sessions(max_idle_seconds=1)
     assert call.session_id not in manager.pool.list_entries()
+
+
+def test_legacy_history_migrates_verified_bindings_and_batches_existence(tmp_path, monkeypatch):
+    """旧用户绑定补齐到同 Provider 和类型的历史, 大量悬空关联只使用一个会话连接"""
+    from satrap.core.framework.UserManager import UserManager
+    from satrap.core.conversation import ConversationRoute, bind_conversation_route
+    from satrap.expend.command.session_commands import _get_user_contexts_list
+    from types import SimpleNamespace
+    sm = _make_sm(tmp_path)
+    users = UserManager(sm, db_path=tmp_path / "users.db")
+    route = ConversationRoute("user", "test", "echo")
+    current = users.resolve_session("user", "test", "echo", route=route)
+    old = sm.register_session(_EchoSession, "echo", session_id="previous").session_id
+    assert old is not None
+    users.bind_session("user", old)
+    assert users.store.list_context_history(route) == [current]
+    assert set(users.context_history(route)) == {current, old}
+    with users.store._connect() as conn:
+        conn.executemany("INSERT OR IGNORE INTO context_session_history VALUES(?, ?, ?, ?)",
+                         [(users.store._context_key(route.owner, route.platform, route.session_type, route.provider), f"missing-{index}", 1, 1) for index in range(1200)])
+    session = SimpleNamespace(_user_manager=users)
+    calls = []
+    connect = sm.store._connect
+    def tracked_connection():
+        calls.append(True)
+        return connect()
+    monkeypatch.setattr(sm.store, "_connect", tracked_connection)
+    with bind_conversation_route(route):
+        assert set(_get_user_contexts_list(session)) == {current, old}
+    assert len(calls) == 1
+
+
+def test_user_managed_transition_requires_explicit_route_without_owner_guessing(tmp_path, monkeypatch):
+    """独立宿主绑定 UserManager 后也必须传路由, 不能从旧 ID 猜测归属"""
+    from satrap.core.framework.UserManager import UserManager
+    from satrap.core.conversation import ConversationRoute
+    sm = _make_sm(tmp_path)
+    users = UserManager(sm, db_path=tmp_path / "users.db")
+    sm.user_manager = users
+    route = ConversationRoute("user", "test", "echo")
+    initial = users.resolve_session("user", "test", "echo", route=route)
+    monkeypatch.setattr(sm, "_invoke_sync_session", lambda *args: CommandAction("new_session", "must-not-exist", "不应成功"))
+    result = sm.handle_call(UserCall(session_id=initial, session_type="echo", message="/new"))
+    assert "缺少可信路由" in result and sm.store.get("must-not-exist") is None
+
+
+@pytest.mark.parametrize("async_entry", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("failure", ["upsert", "directory", "history_start", "reference", "archive"])
+async def test_new_persistence_and_cleanup_faults_keep_original_receipt(tmp_path, monkeypatch, async_entry, failure):
+    """覆盖配置提交后异常与回收异常, 原路由不变且失败原因不被 finally 覆盖"""
+    from satrap.core.conversation import ConversationRoute
+    from satrap.core.framework.UserManager import UserManager
+    sm = _make_sm(tmp_path)
+    users = UserManager(sm, db_path=tmp_path / "users.db")
+    sm._user_mgr = users
+    route = ConversationRoute("user", "test", "echo")
+    initial = users.resolve_session("user", "test", "echo", route=route)
+    source = sm.store.get(initial)
+    target = initial + ":failed-new"
+    action = CommandAction("new_session", target, "不应成功")
+    fired = False
+    original_bind, original_start = sm.storage_layout.bind_session, sm.store.ensure_history_start
+    def bind(scope):
+        nonlocal fired
+        if failure == "directory" and scope.session_id == target and not fired:
+            fired = True
+            raise OSError("模拟目录失败")
+        return original_bind(scope)
+    def history(session_id, *args):
+        nonlocal fired
+        if failure == "history_start" and session_id == target and not fired:
+            fired = True
+            raise OSError("模拟历史起点失败")
+        return original_start(session_id, *args)
+    monkeypatch.setattr(sm.storage_layout, "bind_session", bind)
+    monkeypatch.setattr(sm.store, "ensure_history_start", history)
+    if failure == "upsert":
+        def fail_upsert(*args):
+            raise sqlite3.OperationalError("模拟提交失败")
+        monkeypatch.setattr(sm.store, "upsert", fail_upsert)
+    if failure in {"reference", "archive"}:
+        def broken(*args):
+            raise ValueError("原始初始化失败")
+        async def broken_async(*args):
+            raise ValueError("原始初始化失败")
+        monkeypatch.setattr(sm, "_acquire_or_create_entry", broken)
+        monkeypatch.setattr(sm, "_acquire_or_create_entry_async", broken_async)
+        if failure == "reference":
+            monkeypatch.setattr(users.store, "has_context_reference", lambda *_: (_ for _ in ()).throw(sqlite3.OperationalError("模拟引用读取失败")))
+        else:
+            monkeypatch.setattr(sm, "remove_session", lambda *_, **kw: False)
+            async def not_removed(*args, **kwargs):
+                return False
+            monkeypatch.setattr(sm, "remove_session_async", not_removed)
+    call = UserCall(session_id=initial, session_type="echo", route=route, message="/new")
+    result = await sm._handle_transition_async(call, source, action) if async_entry else sm._handle_transition_sync(call, source, action)
+    assert "切换失败" in result and "不应成功" not in result
+    assert call.session_id == initial and call.context_reset_at is None
+    assert users.resolve_session("user", "test", "echo", route=route) == initial
+    if failure in {"upsert", "directory", "history_start"}:
+        assert sm.store.get(target) is None
+        assert "新会话清理失败" not in result
+    else:
+        assert "原始初始化失败" in result and "新会话清理失败" in result
+        assert sm.store.get(target) is not None

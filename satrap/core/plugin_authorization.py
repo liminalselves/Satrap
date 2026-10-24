@@ -138,7 +138,7 @@ def evaluate_plugin_permissions(
             override_ids: tuple[str, ...] = ()
             if not local and rule.system_admin and admin and admin.allowed:
                 # 组允许优先标记来源组, 只由成员例外授予时标记例外条目
-                source = "administrator_group" if admin.group_ids else "administrator_override"
+                source = "administrator_chat" if admin.chat_scoped else "administrator_group" if admin.group_ids else "administrator_override"
                 allowed = True
                 group_ids, override_ids = admin.group_ids, admin.allowed_overrides
             if (not allowed and rule.platform_group_admin and config.get(rule.platform_group_admin) is True
@@ -150,7 +150,7 @@ def evaluate_plugin_permissions(
     except (KeyError, ValueError, TypeError):
         return AuthorizationDecision("denied", *identity, required, reason_code="invalid_permission_config")
     permitted = all(grant.allowed for grant in grants)
-    fingerprint = hashlib.sha256(json.dumps([origin.adapter_id, origin.self_id, origin.actor_id, identity, definitions,
+    fingerprint = hashlib.sha256(json.dumps([origin.adapter_id, origin.self_id, origin.actor_id, origin.chat_type, origin.chat_id, origin.conversation_kind, identity, definitions,
         [(grant.permission, grant.allowed, grant.source, grant.group_ids, grant.override_ids) for grant in grants]], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     return AuthorizationDecision("allowed" if permitted else "denied", *identity, required, tuple(grants),
                                  "" if permitted else "permission_denied", admin.revision if admin else "", fingerprint)

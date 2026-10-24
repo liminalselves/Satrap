@@ -1,3 +1,6 @@
+import { createUuid } from '@/utils/uuid';
+import { Link } from 'react-router-dom';
+import { approvalLink } from '@/api/platformActions';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { accountRequestsApi, type GroupInvitation, type InvitationAction } from '@/api/accountRequests';
@@ -66,7 +69,7 @@ export function AccountInvitations({ adapterId, account, open, onClose }: {
     const generation = epoch.current;
     setBusy(true); setError(''); setResult('');
     let actionId = operationIds.current.get(key);
-    if (!actionId) { actionId = crypto.randomUUID(); operationIds.current.set(key, actionId); }
+    if (!actionId) { actionId = createUuid(); operationIds.current.set(key, actionId); }
     try {
       const record = await task(actionId);
       if (generation !== epoch.current) return;
@@ -93,7 +96,7 @@ export function AccountInvitations({ adapterId, account, open, onClose }: {
         <Button variant="subtle" disabled={busy || loading} onClick={() => void load()}>刷新</Button>
       </div>
       {error && <p role="alert" className="text-error">{error}</p>}
-      {result && <p role="status">{result}</p>}
+      {result && <p role="status">{result} <Link className="text-accent" to={approvalLink({ platform: adapterId, account, source: 'invitation', state: 'all' })}>查看审批与执行结果</Link></p>}
       {unavailable > 0 && <p className="text-warning">有 {unavailable} 条邀请缺少可读取的原记录, 无法处理</p>}
       {loading ? <p role="status">正在读取邀请...</p> : invitations.length === 0 && <p>当前范围没有可展示的邀请</p>}
       {invitations.map((invitation) => <div key={invitation.request_id} className="rounded-xl border border-glass-border p-3 space-y-2">
@@ -115,13 +118,7 @@ export function AccountInvitations({ adapterId, account, open, onClose }: {
       {actions.map((action) => <div key={action.action_id} className="rounded-xl border border-glass-border p-3 space-y-2">
         <p>{action.params.approve ? '接受' : '拒绝'}群 {action.group_id} 的邀请 · {states[action.state] || action.state}</p>
         <p className="text-sm text-text-secondary">ID: {action.action_id}{action.result?.reason ? ` · ${action.result.reason}` : ''}</p>
-        {action.state === 'pending' && <div className="flex gap-2">
-          <Button disabled={busy || loading} onClick={async () => {
-            if ((await confirm(`确认批准机器人${action.params.approve ? '接受' : '拒绝'}群 ${action.group_id} 的邀请?`)))
-              void operate(action.action_id, () => accountRequestsApi.decide(adapterId, account, action.action_id, true));
-          }}>批准执行</Button>
-          <Button variant="subtle" disabled={busy || loading} onClick={() => void operate(action.action_id, () => accountRequestsApi.decide(adapterId, account, action.action_id, false))}>拒绝执行</Button>
-        </div>}
+        {action.state === 'pending' && <Link className="text-accent" to={approvalLink({ platform: adapterId, account, source: 'invitation', action: action.action_id })}>前往审批中心</Link>}
       </div>)}
       <div className="flex items-center gap-3">
         <Button variant="subtle" disabled={busy || loading || page === 1} onClick={() => setPage(page - 1)}>上一页记录</Button>

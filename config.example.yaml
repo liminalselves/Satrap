@@ -15,19 +15,21 @@ session_checkpoint: false             # 会话实例化时默认启用状态检�
 # --- 管线参数 ---
 rate_limit: 1.0                       # 限流速率
 rate_burst: 5                         # 限流突发容量
-llm_timeout: 120.0                    # LLM 调用超时, 单位秒
+session_timeout: 120.0                # 单轮会话执行限时秒数, null 表示无限制
 error_feedback: true                  # 出错或限流时是否通知用户
 
 # --- HTTP API ---
 # 回环监听会自动生成 .satrap/api-token, CLI 和管理前端会自动使用
 # 绑定非回环地址时必须显式设置至少 32 字符的 SATRAP_API_TOKEN
+# dashboard_password: 前端访问密码的 PBKDF2 哈希, 不设置表示免密进入
+# 由管理界面"访问密码"设置写入, 不建议手工生成
 api:
   host: 127.0.0.1
   port: 19870
 
 # --- Session 类注册, name -> class_path ---
 # 在此注册的 Session 子类会在启动时自动导入并注册到 SessionClassConfigManager
-session_classes:
+session_classes: {}
   # default: my_module.MySession
   # assistant: my_module.AssistantSession
 
@@ -49,7 +51,7 @@ workspace_roots:
 media_allowed_roots: null
 
 # --- 平台适配器配置 ---
-platforms:
+platforms: []
   # 可以配置多个同类型适配器实例, 只要 id 唯一即可
   # 会话默认按消息来源自动绑定, 例如 misskey1 的用户会进入 misskey:misskey1:<user_id>
   # 手动创建会话时也可以通过 adapter_id 绑定到指定实例

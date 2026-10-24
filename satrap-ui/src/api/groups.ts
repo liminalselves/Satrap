@@ -114,7 +114,7 @@ const path = (adapterId: string) => `/platforms/${encodeURIComponent(adapterId)}
 
 async function controlGet<T>(url: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   try {
-    const response = await controlClient.get<T>(url, { params, signal });
+    const response = await controlClient.get<T>(`/api${url}`, { params, signal });
     return response.data;
   } catch (error) {
     if (isAxiosError(error)) throw toApiError(error);
@@ -124,7 +124,7 @@ async function controlGet<T>(url: string, params?: Record<string, unknown>, sign
 
 async function controlPatch<T>(url: string, data: unknown): Promise<T> {
   try {
-    const response = await controlClient.patch<T>(url, data);
+    const response = await controlClient.patch<T>(`/api${url}`, data);
     return response.data;
   } catch (error) {
     if (isAxiosError(error)) throw toApiError(error);

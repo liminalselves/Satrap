@@ -18,6 +18,24 @@ beforeEach(() => { vi.resetAllMocks(); scope = 'http://control-a'; vi.mocked(con
 afterEach(() => vi.useRealTimers());
 
 describe('配置版本读取', () => {
+  it('快照冷读只取一次正文, 热读核验版本, 保存失效及来源切换不回灌', async () => {
+    const snapshot = vi.fn().mockResolvedValue({ data: { model: 'current' }, versions: versions().data.resources });
+    const legacy = vi.fn();
+    const resource = new VersionedConfigRead(['models'], legacy, () => scope, snapshot);
+    const [first, joined] = await Promise.all([resource.read(), resource.read()]);
+    expect(first).toBe(joined);
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(controlClient.get).not.toHaveBeenCalled();
+    expect(await resource.read()).toBe(first);
+    expect(controlClient.get).toHaveBeenCalledOnce();
+    await resource.read({ force: true });
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    expect(legacy).not.toHaveBeenCalled();
+    scope = 'http://control-b';
+    await resource.read();
+    expect(snapshot).toHaveBeenCalledTimes(3);
+  });
+
   it('拒绝损坏来源和错误信封, 不把它们变成空配置', async () => {
     vi.mocked(controlClient.get).mockResolvedValueOnce(versions('bad', 'damaged')).mockResolvedValueOnce({ data: '<html>' });
     await expect(getConfigVersions(['models'])).rejects.toThrow('损坏');
@@ -47,13 +65,13 @@ describe('配置版本读取', () => {
     expect(loader).toHaveBeenCalledTimes(2);
   });
 
-  it('只兼容 404 旧版本服务, 每次读取正文且不持久缓存', async () => {
+  it('版本或快照接口缺失时明确失败, 不静默降级为旧读取协议', async () => {
     vi.mocked(controlClient.get).mockRejectedValue(failed(404));
-    const loader = vi.fn().mockResolvedValueOnce('first').mockResolvedValueOnce('second');
-    const resource = new VersionedConfigRead(['models'], loader);
-    expect(await resource.read()).toBe('first');
-    expect(await resource.read()).toBe('second');
-    expect(loader).toHaveBeenCalledTimes(2);
+    const loader = vi.fn().mockResolvedValue('legacy');
+    await expect(new VersionedConfigRead(['models'], loader).read()).rejects.toBeInstanceOf(AxiosError);
+    const snapshot = vi.fn().mockRejectedValue(failed(404));
+    await expect(new VersionedConfigRead(['models'], loader, () => scope, snapshot).read()).rejects.toBeInstanceOf(AxiosError);
+    expect(loader).not.toHaveBeenCalled();
   });
 
   it('单个消费者取消不影响其它消费者, 全部取消释放共享读取', async () => {

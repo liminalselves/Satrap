@@ -597,7 +597,7 @@ class TestDiagnosticCollection:
     @pytest.mark.asyncio
     async def test_model_timeout_stage_is_recorded(self, tmp_path: Path):
         scheduler, _, adapter = _scheduler(tmp_path)
-        scheduler.llm_timeout = 0.01
+        scheduler.session_timeout = 0.01
         scheduler.error_feedback = False
 
         async def slow(*args: Any, **kwargs: Any) -> str:
@@ -610,9 +610,40 @@ class TestDiagnosticCollection:
         detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
         assert detail is not None
         stages = _stages(detail)
-        assert stages["model"]["status"] == "unknown" and stages["model"]["reason_code"] == "llm_timeout"
+        assert stages["model"]["status"] == "unknown" and stages["model"]["reason_code"] == "session_timeout"
 
 class TestDiagnosticBounds:
+    def test_equal_timestamps_keep_append_order_in_lists_and_summary(self):
+        """跨请求和跨适配器的同刻记录按追加序号排序, 汇总仍选最终阶段"""
+        from dataclasses import replace
+        log = RequestDiagnosticLog()
+        initial = RequestDiagnostic(
+            adapter_id="ob", session_id="s", actor_id="a", stage="projection", decision="partial",
+            reason="窗口截断", recorded_at=_NOW, request_id="r1", reason_code="wake_window_budget",
+        )
+        log.record(initial)
+        final = replace(initial, reason_code="none", notes="wake_window_budget:1")
+        log.record(replace(initial, adapter_id="other", request_id="r2"))
+        log.record(final)
+        records = log.list()
+        assert [(row["request_id"], row["reason_code"]) for row in records] == [
+            ("r1", "none"), ("r2", "wake_window_budget"), ("r1", "wake_window_budget"),
+        ]
+        summaries = log.list_requests()
+        assert [row["request_id"] for row in summaries] == ["r1", "r2"]
+        assert summaries[0]["notes"] == "wake_window_budget:1"
+        detail = log.get_request("r1")
+        assert detail is not None
+        assert [row["reason_code"] for row in detail["records"]] == ["wake_window_budget", "none"]
+        assert all("_sequence" not in row for row in records)
+        log.record(initial)
+        assert log.list()[0]["reason_code"] == "wake_window_budget"
+        log.clear_adapter("ob")
+        log.clear_adapter("other")
+        log.record(replace(initial, request_id="earlier", recorded_at=_NOW + 0.25))
+        log.record(replace(initial, request_id="later", recorded_at=_NOW + 0.75))
+        assert [row["request_id"] for row in log.list_requests()] == ["later", "earlier"]
+
     def test_capacity_keeps_newest_requests_and_drops_oldest(self):
         log = RequestDiagnosticLog(per_adapter=2)
         for index in range(3):
@@ -863,3 +894,113 @@ class TestDiagnosticRoutes:
         summaries = cast(list[dict[str, Any]], loop_preset[1]["records"])
         assert len(summaries) == 1 and summaries[0]["request_id"] == "req-loop"
         assert summaries[0]["reason_codes"] == ["frequency", "cooldown"]
+
+
+@pytest.mark.asyncio
+async def test_platform_approval_catalog_preserves_sources_pagination_and_storage(tmp_path, monkeypatch):
+    """统一入口跨表分页, 保留业务身份并以只读方式处理过期和部分失败"""
+    from contextlib import closing
+    from types import SimpleNamespace
+    import time
+    from satrap.core.config.platform_schema import ensure_platform_tables
+    from satrap.core.platform.action_catalog import ActionScope, platform_action_catalog
+    from satrap.core.config.group_actions import GroupActionStore
+    from satrap.core.friends.store import FriendStore
+    from satrap.core.platform import PlatformAdapterManager
+
+    database = tmp_path / 'platform.db'
+    now = time.time()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        ensure_platform_tables(connection)
+        def group(identity, action='ban_group_member', params=None, account='10000', expires=None):
+            connection.execute('INSERT INTO group_actions(action_id,self_id,group_id,action_type,params_json,fingerprint,actor_kind,policy_revision,state,created_at,expires_at) VALUES(?,?,?,?,?,?,?,0,?,?,?)',
+                               (identity, account, '888', action, json.dumps(params or {'user_id': '42', 'duration': 43200}), 'fp', 'model', 'pending', now, expires if expires is not None else now + 600))
+        group('same-id')
+        group('invite', 'handle_group_request', {'sub_type': 'invite', 'approve': False, 'flag': 'private-credential'})
+        group('member-add', 'handle_group_request', {'sub_type': 'add', 'approve': True})
+        group('expired', expires=now - 1)
+        for index in range(60):
+            group(f'group-{index:03}')
+        for identity, account, state in (('same-id', '10000', 'pending'), ('historical', 'old', 'pending'), ('ready', '10000', 'ready'), ('unknown', '10000', 'unknown')):
+            connection.execute('INSERT INTO friend_actions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                               (account, identity, 'delete_friend', json.dumps({'user_id': '42'}), 'model', state, now, now + 600, None, None, None, json.dumps({'user_id': '42', 'nickname': '测试目标'}), 'author'))
+    before = database.read_bytes()
+    monkeypatch.setattr(GroupActionStore, '__init__', lambda *args, **kwargs: pytest.fail('汇总读取不能恢复群动作'))
+    monkeypatch.setattr(FriendStore, '__init__', lambda *args, **kwargs: pytest.fail('汇总读取不能恢复好友动作'))
+    scope = ActionScope('ob', database, '10000', True)
+    result = await platform_action_catalog([scope])
+    assert result['total'] == 64 and result['pending_count'] == 64
+    assert result['has_more'] and len(result['items']) == 50
+    all_items = result['items'] + (await platform_action_catalog([scope], cursor=result['next_cursor']))['items']
+    assert len({(item['source'], item['action_id']) for item in all_items}) == 64
+    assert len([item for item in all_items if item['action_id'] == 'same-id']) == 2
+    invitation = next(item for item in all_items if item['action_id'] == 'invite')
+    assert invitation['source'] == 'invitation' and invitation['params']['approve'] is False
+    assert 'flag' not in invitation['params']
+    member = next(item for item in all_items if item['action_id'] == 'member-add')
+    assert member['source'] == 'group'
+    expired = await platform_action_catalog([scope], state='expired')
+    assert [item['action_id'] for item in expired['items']] == ['expired']
+    historical = await platform_action_catalog([scope], account='old')
+    assert not historical['items'][0]['can_decide'] and '历史账号' in historical['items'][0]['unavailable_reason']
+    offline = await platform_action_catalog([ActionScope('ob', database, '10000', False)], source='friend')
+    assert not offline['items'][0]['can_decide']
+    assert (await platform_action_catalog([scope], state='ready'))['items'][0]['state'] == 'ready'
+    unknown = await platform_action_catalog([scope], state='unknown')
+    assert not unknown['items'][0]['can_decide']
+    for kwargs in ({'source': 'other'}, {'limit': 101}, {'cursor': 'bad'}, {'cursor': result['next_cursor'], 'state': 'all'}):
+        with pytest.raises(ValueError):
+            await platform_action_catalog([scope], **kwargs)
+    damaged = tmp_path / 'damaged.db'
+    damaged.write_bytes(b'not a sqlite database')
+    missing = tmp_path / 'missing.db'
+    partial = await platform_action_catalog([scope, ActionScope('broken', damaged, '10000', True), ActionScope('empty', missing, '10000', True)])
+    assert not partial['complete'] and partial['pending_count'] == 64 and partial['warnings']
+    assert not missing.exists()
+    summary = await platform_action_catalog([scope], summary=True)
+    assert not summary['items'] and summary['pending_count'] == 64
+    assert database.read_bytes() == before
+
+    backend = BackendManager()
+    backend.config.platforms = [{'id': 'ob', 'type': 'onebot', 'settings': {}}]
+    backend._storage = SimpleNamespace(platform_db=lambda identity: database)
+    backend._adapter_mgr = PlatformAdapterManager()
+    backend._adapter_mgr._adapters['ob'] = _adapter()
+    server = BackendHTTPServer(backend, port=0)
+    status, page = await server._route('GET', '/api/platform-actions?source=invitation', b'')
+    assert status == 200 and page['total'] == 1
+    assert (await server._route('GET', '/api/platform-actions/summary', b''))[1]['pending_count'] == 64
+    historical_page = (await server._route('GET', '/api/platform-actions?platform_id=ob&account=old', b''))[1]
+    assert historical_page['total'] == 1 and historical_page['items'][0]['self_id'] == 'old'
+    assert not historical_page['items'][0]['can_decide']
+    second_adapter = _adapter()
+    second_adapter.bot_self_id = 'different-account'
+    backend._adapter_mgr._adapters['second'] = second_adapter
+    backend.config.platforms.append({'id': 'second', 'type': 'onebot', 'settings': {}})
+    current_page = (await server._route('GET', '/api/platform-actions', b''))[1]
+    assert current_page['total'] == 64 and current_page['pending_count'] == 64
+    assert {item['platform_id'] for item in current_page['items']} == {'ob'}
+    for query in ('?limit=0', '?source=invalid', '?platform_id=not-configured', '?cursor=bad', '?flag=private', '?state=pending&state=all'):
+        assert (await server._route('GET', '/api/platform-actions' + query, b''))[0] == 400
+    assert (await server._route('POST', '/api/platform-actions', b'{}'))[0] == 405
+    assert database.read_bytes() == before
+
+    empty = await platform_action_catalog([ActionScope('unsupported', missing, '', False)])
+    assert empty['complete'] and empty['pending_count'] == 0 and not empty['warnings']
+    assert not missing.exists()
+    unsupported = tmp_path / 'unsupported.db'
+    with closing(sqlite3.connect(unsupported)) as connection, connection:
+        ensure_platform_tables(connection)
+    empty = await platform_action_catalog([ActionScope('unsupported', unsupported, '', False)])
+    assert empty['complete'] and empty['pending_count'] == 0 and not empty['warnings']
+    for table, column in [('group_actions', 'params_json'), ('group_actions', 'result_json'), ('friend_actions', 'target_json')]:
+        with closing(sqlite3.connect(database)) as connection, connection:
+            original = connection.execute(f"SELECT {column} FROM {table} WHERE action_id='same-id'").fetchone()[0]
+            connection.execute(f"UPDATE {table} SET {column}='broken-json' WHERE action_id='same-id'")
+        page = await platform_action_catalog([scope])
+        summary = await platform_action_catalog([scope], summary=True)
+        assert page['total'] == page['pending_count'] == summary['pending_count'] == 63
+        assert not page['complete'] and not summary['complete']
+        assert page['platforms'][0]['invalid_count'] == 1 and page['warnings']
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute(f"UPDATE {table} SET {column}=? WHERE action_id='same-id'", (original,))

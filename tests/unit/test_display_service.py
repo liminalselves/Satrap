@@ -47,6 +47,60 @@ async def _wait_conversation_task(service: ChatService, conversation_id: str) ->
 
 
 @pytest.mark.asyncio
+async def test_chat_paged_history_preserves_variants_tools_and_stable_cursor(tmp_path: Path, monkeypatch: Any) -> None:
+    """生产路由覆盖目录分页, 最新轮次分页, 变体按需读取及全量接口兼容"""
+    import json
+    from urllib.parse import urlencode
+    from satrap.display.recorder import query_conversations
+
+    service = _make_service(tmp_path, monkeypatch)
+    recorder = DisplayRecorder(service._display_db_path, 'paged')
+    recorder.save_meta('default')
+    for index in range(123):
+        recorder.start_turn(f'问题 {index}')
+        recorder.on_tool_start({'name': 'example', 'arguments': {'index': index}, 'call_id': f'call-{index}'})
+        recorder.on_tool_end({'name': 'example', 'success': True, 'call_id': f'call-{index}'})
+        recorder.end_turn(f'回答 {index}')
+    assert recorder.start_retry_variant() is not None
+    recorder.end_turn('最新变体')
+    recorder.close()
+    server = ChatHTTPServer(service)
+    try:
+        status, page = await server._route('GET', '/api/chat/turns/page?conversation=paged&limit=50', b'')
+        assert status == 200 and len(page['turns']) == 50 and page['has_more']
+        indexes = [turn['turn_index'] for turn in page['turns']]
+        last = page['turns'][-1]
+        assert last['variant_count'] == 2 and len(last['variants']) == 1
+        assert last['variant_indices'] == [0, 1] and last['answer'] == '最新变体'
+        snapshot = service.runtime_snapshot('paged', history_limit=50)
+        assert len(snapshot['turns']) == 50 and snapshot['has_more']
+        assert snapshot['next_before'] == page['next_before']
+        assert len(service.runtime_snapshot('paged')['turns']) == 123
+        before = page['next_before']
+        status, older = await server._route('GET', f'/api/chat/turns/page?conversation=paged&limit=50&before={before}', b'')
+        assert status == 200 and max(turn['turn_index'] for turn in older['turns']) < min(indexes)
+        assert older['turns'][0]['tool_calls'][0]['name'] == 'example'
+        full = service.list_turns('paged')
+        assert len(full) == 123 and len(full[-1]['variants']) == 2
+        status, empty = await server._route('GET', '/api/chat/turns/page?conversation=paged&before=0', b'')
+        assert status == 200 and empty['turns'] == [] and empty['has_more'] is False
+        for identity in ('a', 'b', 'c'):
+            item = DisplayRecorder(service._display_db_path, identity)
+            item.save_meta('default')
+            item.close()
+        first = query_conversations(service._display_db_path, page_size=2)
+        cursor = (first['items'][-1]['last_at'], first['items'][-1]['conversation_id'])
+        second = query_conversations(service._display_db_path, page_size=2, before=cursor)
+        assert not {row['conversation_id'] for row in first['items']} & {row['conversation_id'] for row in second['items']}
+        status, exact = await server._route('GET', '/api/chat/conversations/page?' + urlencode({'conversation_id': 'paged'}), b'')
+        assert status == 200 and [row['conversation_id'] for row in exact['conversations']] == ['paged']
+        assert len(list_conversations(service._display_db_path)) == 4
+        status, error = await server._route('GET', '/api/chat/conversations/page?' + urlencode({'cursor': json.dumps([float('nan'), 'a'])}), b'')
+        assert status == 400
+    finally:
+        await service.close()
+
+
 async def test_actual_chat_application_reports_lock_and_partial_failure(tmp_path: Path, monkeypatch: Any) -> None:
     """实际 Chat 会话等待原锁, 来源撤销时任务显示失败并保留原部分失败结果"""
     manager = PluginConfigManager(tmp_path / "plugin_config")
@@ -240,7 +294,108 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
         storage_layout=StorageLayout(tmp_path / "data"),
+        workspace_roots=[tmp_path],   # 业务测试使用隔离工作区, 不探测宿主机磁盘
     )
+
+
+@pytest.mark.asyncio
+async def test_generated_file_chat_download_retry_fork_and_cross_conversation_rejection(tmp_path: Path, monkeypatch: Any):
+    """真实沙箱与插件产物贯通 Chat、鉴权 HTTP、回复版本、分支及租约"""
+    import aiohttp
+    from satrap.core.server_auth import ServerAuth
+    from satrap.core.utils.minihttp import MiniHTTPServer
+    from satrap.core.storage.file_lock import FileLock
+    from satrap.core.file_access.artifacts import artifact_lease
+    from support.group_models import Script, AsyncModel
+    configs = PluginConfigManager(tmp_path / "plugin-config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: configs)
+    from satrap.edictum import simple_session as ss_mod
+    monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: configs)
+    service = _make_service(tmp_path, monkeypatch)
+    script = Script([
+        LLMCallResponse("tools_call", "", tool_calls=[{"id": "write", "name": "code_sandbox", "arguments": {
+            "operation": "run", "code": "with open('report.csv', 'w', encoding='utf-8') as f:\n    f.write('项目,数量\\n中文,42\\n')"}}]),
+        LLMCallResponse("tools_call", "", tool_calls=[{"id": "file", "name": "send_file", "arguments": {"path": "report.csv", "name": "报告.csv"}}]),
+        LLMCallResponse("message", "文件已准备好"), LLMCallResponse("message", "重试版本没有文件"),
+    ])
+    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: AsyncModel(script))
+    assert (await service.set_plugin_enabled("base_take", True))["ok"]
+    cid = await service.create_conversation()
+    token = "file-download-test-token-with-at-least-32-characters"
+    server = ChatHTTPServer.__new__(ChatHTTPServer)
+    MiniHTTPServer.__init__(server, host="127.0.0.1", port=0, auth=ServerAuth.create("127.0.0.1", 0, token=token))
+    server.service = service
+    await server.start()
+    port = cast(Any, server._server).sockets[0].getsockname()[1]
+    try:
+        assert (await service.send(cid, "生成报告并发送"))["ok"]
+        await _wait_conversation_task(service, cid)
+        turns = service.list_turns(cid)
+        assert turns[0]["answer"] == "文件已准备好"
+        assert len(turns[0]["output_files"]) == 1, script.requests[-1][0]
+        file = turns[0]["output_files"][0]
+        root = service._storage.session_artifacts(service._platform_id, cid)
+        original = _must_conversation(service, cid).session
+        from satrap.core.plugin_interop.environment import environment_snapshot
+        generated = cast(Path, environment_snapshot(original).sandbox_root) / "report.csv"
+        expected = generated.read_bytes()
+        generated.unlink()
+        url = f"http://127.0.0.1:{port}/api/chat/files/{cid}/{file['file_id']}"
+        async with aiohttp.ClientSession() as anonymous:
+            async with anonymous.get(url) as response:
+                assert response.status == 401
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as browser:
+            async with browser.post(f"http://127.0.0.1:{port}/auth/session", headers={"Authorization": f"Bearer {token}"}) as response:
+                assert response.status == 200
+                await response.read()
+            async with browser.get(url) as response:
+                assert response.status == 200 and await response.read() == expected
+        async with aiohttp.ClientSession(headers={"Authorization": f"Bearer {token}"}) as client:
+            async with client.get(url) as response:
+                assert response.status == 200 and await response.read() == expected
+                assert response.headers["Content-Type"] == "application/octet-stream"
+                assert response.headers["Content-Disposition"].startswith("attachment;")
+            async with client.get(url.replace(cid, "other-conversation")) as response:
+                assert response.status == 404
+            with artifact_lease(root):
+                with pytest.raises(TimeoutError):
+                    with FileLock(root.parent.parent.parent / "locks" / (root.parent.name + ".lock"), timeout=.02):
+                        pass
+            assert (await service.retry(cid))["ok"]
+            await _wait_conversation_task(service, cid)
+            turns = service.list_turns(cid)
+            assert turns[0]["output_files"] == []
+            assert turns[0]["variants"][0]["output_files"] == [file]
+            assert (await service.select_variant(cid, 0, 0))["ok"]
+            forked = await service.fork(cid, 1)
+            assert forked["ok"]
+            fork_id = forked["conversation_id"]
+            assert service.list_turns(fork_id)[0]["output_files"] == [file]
+            deleted = await service.delete_conversation(cid)
+            fork_url = f"http://127.0.0.1:{port}/api/chat/files/{fork_id}/{file['file_id']}"
+            async with client.get(fork_url) as response:
+                assert response.status == 200 and await response.read() == expected
+            async with client.get(url) as response:
+                assert response.status == 404
+            from satrap.core.storage.maintenance import StorageMaintenanceService
+            restored = StorageMaintenanceService(service._storage).restore_archive(service._platform_id, deleted["archive_id"], database_path=service._display_db_path)
+            assert restored["ok"]
+            await service.close()
+            resumed = _make_service(tmp_path, monkeypatch)
+            server.service = resumed
+            try:
+                async with client.get(url) as response:
+                    assert response.status == 200 and await response.read() == expected
+                assert resumed.list_turns(cid)[0]["output_files"] == [file]
+                cached = resumed._storage.session_artifacts(resumed._platform_id, cid) / file["file_id"]
+                cached.write_bytes(b"tampered")
+                async with client.get(url) as response:
+                    assert response.status == 404
+            finally:
+                await resumed.close()
+    finally:
+        await server.stop()
+        await service.close()
 
 
 @pytest.mark.asyncio
@@ -272,6 +427,70 @@ async def test_command_history_setting_survives_preload_restart_and_fork(tmp_pat
         empty_fork = await resumed.fork(excluded, 1)
         assert empty_fork["ok"] is True
         assert _must_conversation(resumed, empty_fork["conversation_id"]).session.ctx.get_context() == []
+    finally:
+        await resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_default_agent_prompt_preload_isolation_restart_and_fork(tmp_path, monkeypatch):
+    """内置提示在首次调用前生效, 持久化和分支继承且不影响其他会话"""
+    from satrap.core.utils.context.request import BASE_AGENT_PROMPT
+    service = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(service)
+    cid = await service.preload_conversation(default_agent_prompt_enabled=True)
+    assert (await service.get_default_agent_prompt(cid))["default_agent_prompt_enabled"] is True
+    assert (await service.send(cid, "测试"))["ok"] is True
+    await _wait_conversation_task(service, cid)
+    assert _must_conversation(service, cid).session._wf.default_agent_prompt_enabled is True
+    assert BASE_AGENT_PROMPT not in str(_must_conversation(service, cid).session.ctx.get_context())
+    other = await service.create_conversation()
+    assert (await service.get_default_agent_prompt(other))["default_agent_prompt_enabled"] is False
+    fork = await service.fork(cid, 1)
+    assert fork["ok"]
+    fork_id = fork["conversation_id"]
+    assert (await service.get_default_agent_prompt(fork_id))["default_agent_prompt_enabled"] is True
+    status, _ = await server._route("PUT", f"/api/chat/default-agent-prompt?conversation={cid}",
+                                    b'{"default_agent_prompt_enabled":"false"}')
+    assert status == 400
+    await service.close()
+    resumed = _make_service(tmp_path, monkeypatch)
+    try:
+        assert (await resumed.get_default_agent_prompt(cid))["default_agent_prompt_enabled"] is True
+        assert (await resumed.get_default_agent_prompt(fork_id))["default_agent_prompt_enabled"] is True
+        status, body = await ChatHTTPServer(resumed)._route(
+            "PUT", f"/api/chat/default-agent-prompt?conversation={fork_id}", b'{"default_agent_prompt_enabled":false}',
+        )
+        assert status == 200 and body["default_agent_prompt_enabled"] is False
+        assert (await resumed.get_default_agent_prompt(cid))["default_agent_prompt_enabled"] is True
+    finally:
+        await resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_max_iterations_setting_survives_preload_restart_fork_and_clear(tmp_path, monkeypatch):
+    """Chat 最大迭代在首条消息前生效, 持久化/重启/分支继承, null 还原定义默认, HTTP 拒绝非法值"""
+    service = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(service)
+    cid = await service.preload_conversation()
+    result = await service.send(cid, "hi", preload_settings={"max_iterations": 3})
+    assert result["ok"] is True
+    await _wait_conversation_task(service, cid)
+    session = _must_conversation(service, cid).session
+    assert session.default_max_iterations == 3 and session.configured_max_iterations == 10
+    assert (await service.get_max_iterations(cid))["max_iterations"] == 3
+    assert (await service.set_max_iterations(cid, 5))["max_iterations"] == 5
+    fork = await service.fork(cid, 1)
+    assert fork["ok"] is True
+    assert (await service.get_max_iterations(fork["conversation_id"]))["max_iterations"] == 5
+    status, _ = await server._route("PUT", f"/api/chat/max-iterations?conversation={cid}", b'{"max_iterations":"5"}')
+    assert status == 400
+    await service.close()
+    resumed = _make_service(tmp_path, monkeypatch)
+    try:
+        assert (await resumed.get_max_iterations(cid))["max_iterations"] == 5
+        assert (await resumed.get_max_iterations(fork["conversation_id"]))["max_iterations"] == 5
+        assert (await resumed.set_max_iterations(cid, None))["ok"] is True
+        assert (await resumed.get_max_iterations(cid))["max_iterations"] == 10
     finally:
         await resumed.close()
 
@@ -1743,3 +1962,19 @@ async def test_visual_attachments_rejected_before_turn_creation(tmp_path, monkey
         assert server._request_body_limit("POST", "/api/chat/upload") > 32 * 1024 * 1024 * 4 // 3
     finally:
         await service.close()
+
+
+def test_retry_snapshot_exposes_registered_files_before_variant_completion(tmp_path):
+    """新回复变体生成期间的分页恢复包含已登记文件, 不串入旧变体"""
+    recorder = DisplayRecorder(tmp_path / "display.db", "retry-files")
+    try:
+        recorder.start_turn("问题")
+        recorder.end_turn("原回答")
+        assert recorder.start_retry_variant() is not None
+        file = {"file_id": "sf_" + "a" * 32, "name": "chart.png", "size": 10, "sha256": "a" * 64, "mime": "image/png"}
+        recorder.add_output_file(file, recorder.recovery_origin())
+        page = recorder.snapshot_turns(limit=50)
+        assert page[0]["generating"] and page[0]["output_files"] == [file]
+        assert next(variant for variant in page[0]["variants"] if variant["variant_index"] == 0)["output_files"] == []
+    finally:
+        recorder.close()

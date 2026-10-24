@@ -10,7 +10,7 @@ from typing import (
 )
 import re
 
-from satrap.core.utils import safe_parse_arguments
+from satrap.core.utils import parse_tool_arguments
 from satrap.core.type import (
     LLMCallResponse,
     TokenUsage,
@@ -212,14 +212,16 @@ def parse_call_response(
 
         # Step.3 提取第一条回复的消息对象
         first_choice = choices[0]
+        finish_reason = safe_getattr_str(first_choice, "finish_reason") or None
         if isinstance(first_choice, dict):
             first_choice = cast(Dict[str, Any], first_choice)
             message: Any = first_choice.get("message")
+            finish_reason = first_choice.get("finish_reason") or finish_reason
         else:
             message = safe_getattr(first_choice, "message")
 
         if not message:
-            return LLMCallResponse(type="message", content="")
+            return LLMCallResponse(type="message", content="", finish_reason=finish_reason)
 
         content = safe_getattr(message, "content")
         if content is None and isinstance(message, dict):
@@ -267,19 +269,14 @@ def parse_call_response(
                         args_str = function_data.get("arguments", "{}")
                         # 提取参数字符串并解析
 
-                    # 确保参数是字符串后再进行 JSON 解析
-                    if isinstance(args_str, str):
-                        args_dict = safe_parse_arguments(args_str)
-                    elif isinstance(args_str, dict):
-                        args_dict = cast(dict[str, Any], args_str)
-                    else:
-                        args_dict = cast(dict[str, Any], {})
-
+                    args_dict, argument_error = parse_tool_arguments(args_str)
                     call_info: dict[str, Any] = {
                         "name": func_name,
                         "id": call_id,
                         "arguments": args_dict,
                     }
+                    if argument_error is not None:
+                        call_info["argument_error"] = argument_error
                     tool_calls_list.append(call_info)
                     # 封装单个工具调用信息并添加到列表
 
@@ -290,11 +287,13 @@ def parse_call_response(
                     tool_calls=tool_calls_list,
                     thinking=reasoning,
                     usage=usage,
+                    finish_reason=finish_reason,
                 )
 
         # Step.5 默认返回普通消息类型
         return LLMCallResponse(
-            type="message", content=text_content, thinking=reasoning, usage=usage
+            type="message", content=text_content, thinking=reasoning, usage=usage,
+            finish_reason=finish_reason,
         )
 
     # Step.6 异常处理

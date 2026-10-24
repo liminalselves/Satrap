@@ -1,6 +1,8 @@
 """平台数据库中的会话级数据清理操作"""
 from __future__ import annotations
 
+from satrap.core.storage.context_catalog import BACKUP_INDEX, ensure_conversation_indexes
+
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
@@ -30,6 +32,7 @@ _RESTORABLE_TABLES = frozenset({
     "state_snapshots",
     "memories",
     "context_sessions",
+    "context_session_history",
     "context_catalog",
     "user_info",
 })
@@ -172,6 +175,7 @@ def snapshot_session_domain(database: str | Path, session_id: str) -> dict[str, 
                 (f"session:{session_id}", f"session:{related_pattern}"),
             ),
             "context_sessions": ("session_id = ?", (session_id,)),
+            "context_session_history": ("session_id = ?", (session_id,)),
         }
         if "context_catalog" in tables:
             selectors["context_catalog"] = ("session_id=? OR (session_id IS NULL AND (context_id=? OR context_id LIKE ? ESCAPE '\\'))", (session_id, session_id, related_pattern))
@@ -254,9 +258,22 @@ def restore_session_domain(
             ensure_rag_tables(connection)
         if "context_catalog" in records:
             connection.execute(CATALOG_SCHEMA)
+        if "context_session_history" in records:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS context_session_history ("
+                "context_key TEXT NOT NULL, session_id TEXT NOT NULL, first_used_at REAL NOT NULL, "
+                "last_used_at REAL NOT NULL, PRIMARY KEY(context_key, session_id))"
+            )
         if "conversation_data_backups" in records:
             connection.execute("CREATE TABLE IF NOT EXISTS conversation_data_backups (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, layer TEXT NOT NULL, payload TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL)")
+            connection.execute(BACKUP_INDEX)
         tables = _table_names(connection)
+        if "session_configs" in records and "session_configs" in tables and "history_started_at" not in _table_columns(connection, "session_configs"):
+            connection.execute("ALTER TABLE session_configs ADD COLUMN history_started_at REAL")
+            # 恢复可早于 SessionManager 初始化, 保留新版归档中的会话起点
+        if "display_turn_variants" in records and "display_turn_variants" in tables and "output_files" not in _table_columns(connection, "display_turn_variants"):
+            connection.execute("ALTER TABLE display_turn_variants ADD COLUMN output_files TEXT NOT NULL DEFAULT '[]'")
+        ensure_conversation_indexes(connection)
         schemas: dict[str, set[str]] = {}
         for table in records:
             if table not in _RESTORABLE_TABLES:
@@ -283,7 +300,7 @@ def restore_session_domain(
                     "session_configs": "session_id", "conversation_meta": "conversation_id",
                     SESSION_OVERRIDE_TABLE: "session_id",
                     "rag_knowledge_bases": "session_id",
-                    "display_turns": "conversation_id", "context_sessions": "session_id",
+                    "display_turns": "conversation_id", "context_sessions": "session_id", "context_session_history": "session_id",
                 }.get(table)
                 if identity_column and row.get(identity_column) != session_id:
                     raise ValueError(f"归档表 {table} 的会话身份不匹配")
@@ -500,6 +517,8 @@ def delete_session_domain_rows(database: str | Path, session_id: str, *, orphan_
                 "DELETE FROM context_sessions WHERE session_id = ?",
                 (session_id,),
             )
+        if "context_session_history" in tables:
+            connection.execute("DELETE FROM context_session_history WHERE session_id=?", (session_id,))
         if "user_info" in tables:
             rows = connection.execute(
                 "SELECT user_id, user_session FROM user_info"

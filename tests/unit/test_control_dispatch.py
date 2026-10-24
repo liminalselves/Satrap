@@ -487,6 +487,22 @@ async def test_control_lifecycle_start_stop_restart_side_effects(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["/start", "/restart"])
+async def test_control_bad_config_does_not_spawn_or_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, endpoint: str):
+    """配置预检失败返回具体路径, 重启前也不停止尚在运行的实例"""
+    path = tmp_path / "invalid.yaml"
+    path.write_text("platforms: wrong\n", encoding="utf-8")
+    monkeypatch.setattr(control_server, "CONFIG_PATH", path)
+    monkeypatch.setattr(control_server.subprocess, "Popen", lambda *a, **k: pytest.fail("坏配置不得启动"))
+    monkeypatch.setattr(control_server, "_cleanup_backend", lambda: pytest.fail("坏配置不得停止现有后端"))
+    response = await _request(endpoint, "POST")
+    body = _json_body(response)
+    assert response.startswith(b"HTTP/1.1 400")
+    assert body["code"] == "config_invalid" and body["config_path"] == str(path.resolve())
+    assert "platforms" in body["error"]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_start_spawns_single_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -735,6 +751,10 @@ async def test_conversation_cold_data_routes_auth_and_timeout_never_falls_back(t
         assert [item["conversation_id"] for item in exact["items"]] == ["test-conversation"]
         absent = _json_body(await _request("/config/conversations?platform_id=test-platform&conversation_id=missing"))
         assert absent["items"] == []
+        from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH
+        oversized = await _request("/config/conversations?platform_id=test-platform&conversation_id=" + "_" * (MAX_CONVERSATION_ID_LENGTH + 1))
+        assert oversized.startswith(b"HTTP/1.1 400")
+        assert "conversation_id" in _json_body(oversized)["error"]
         assert catalog["items"][0]["conversation_id"] == "test-conversation"
         request = {"platform_id": "test-platform", "conversation_id": "test-conversation", "layer": "context"}
         current = _json_body(await _request("/config/conversations/data", "POST", json.dumps(request).encode("utf-8")))
@@ -795,10 +815,10 @@ async def test_dynamic_conversation_platform_types_aggregate_same_ids_and_isolat
         filtered = _json_body(await _request("/config/conversations?scope=all&platform_type=custom-b&filter.source=unknown"))
         assert [row["platform_id"] for row in filtered["items"]] == ["instance-b"]
         read = ConversationDataService.catalog_records
-        def fail_one(self, platform=None):
+        def fail_one(self, platform=None, requested=''):
             if self.database == layout.platform_db("instance-b"):
                 raise sqlite3.OperationalError("平台数据库不可读")
-            return read(self, platform)
+            return read(self, platform, requested)
         monkeypatch.setattr(ConversationDataService, "catalog_records", fail_one)
         partial = _json_body(await _request("/config/conversations?scope=all"))
         assert [row["platform_id"] for row in partial["items"]] == ["instance-a"]

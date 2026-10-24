@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 import pytest
 from typing import Any, cast
 from satrap.core.platform.event import MessageChain
@@ -16,6 +17,78 @@ import json
 from satrap.core.platform.misskey import client as client_module
 from satrap.core.platform.misskey.client import APIError, APIRateLimitError, AuthenticationError, MisskeyAPI
 from satrap.core.platform.misskey.client import StreamingClient
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["private", "group", "discussion"])
+async def test_file_delivery_streams_to_drive_then_publishes_once_to_original_conversation(tmp_path, kind):
+    """真实 multipart 传输与原生发布, 上传或发布失败不能被文字回复掩盖"""
+    from aiohttp import web
+    from satrap.core.call_context import CallOrigin
+    from satrap.core.file_access.artifacts import freeze_file
+    body = bytes(range(256)) * 1100
+    posted, transferred = [], []
+    mode = ["success"]
+    async def upload(request):
+        from urllib.parse import unquote
+        reader = await request.multipart()
+        data = bytearray()
+        while part := await reader.next():
+            if part.name == "file":
+                assert unquote(part.filename) == "文档.zip"
+                while chunk := await part.read_chunk():
+                    data.extend(chunk)
+        transferred.append(bytes(data))
+        if mode[0] == "upload_failed":
+            return web.json_response({"error": {"code": "INVALID_FILE", "message": "rejected"}}, status=400)
+        return web.json_response({"id": "drive-file"})
+    async def publish(request):
+        data = await request.json()
+        posted.append((request.path, data))
+        if mode[0] == "publish_failed":
+            return web.json_response({"error": {"code": "INVALID_PARAM", "message": "rejected"}}, status=400)
+        return web.json_response({"createdNote": {"id": "message"}} if kind == "discussion" else {"id": "message"})
+    app = web.Application()
+    app.router.add_post("/api/drive/files/create", upload)
+    for endpoint in ("chat/messages/create-to-user", "chat/messages/create-to-room", "notes/create"):
+        app.router.add_post("/api/" + endpoint, publish)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = cast(Any, site._server).sockets[0].getsockname()[1]
+    adapter = make_adapter()
+    adapter._running = True
+    client = MisskeyAPI(f"http://127.0.0.1:{port}", "local-test-token")
+    adapter._client = client
+    source = tmp_path / "file.zip"
+    source.write_bytes(body)
+    artifact = freeze_file(source, tmp_path / "artifacts", "文档.zip")
+    origin = CallOrigin("mk", "bot-id", "GroupMessage" if kind == "group" else "FriendMessage" if kind == "private" else "OtherMessage",
+                        "room" if kind == "group" else "user", "user", "source-note", "delivery", conversation_kind=kind)
+    try:
+        result = await adapter.deliver_file(origin, artifact, lambda: None)
+        assert result["ok"] and result["status"] == "published", result
+        assert transferred == [body] and len(posted) == 1
+        endpoint, payload = posted[0]
+        if kind == "discussion":
+            assert endpoint.endswith("notes/create") and payload["replyId"] == "source-note"
+            assert payload["fileIds"] == ["drive-file"]
+        else:
+            field = "toRoomId" if kind == "group" else "toUserId"
+            assert payload[field] == origin.chat_id and payload["fileId"] == "drive-file"
+        mode[0] = "upload_failed"
+        result = await adapter.deliver_file(origin, artifact, lambda: None)
+        assert not result["ok"] and len(posted) == 1
+        mode[0] = "publish_failed"
+        result = await adapter.deliver_file(origin, artifact, lambda: None)
+        assert not result["ok"] and result["status"] == "failed" and len(posted) == 2
+        adapter.enable_file_upload = False
+        assert (await adapter.deliver_file(origin, artifact, lambda: None))["status"] == "failed"
+        assert len(transferred) == 3
+    finally:
+        await client.close()
+        await runner.cleanup()
 
 def test_config_frontend_aliases():
     adapter = make_adapter({"base_url": "https://misskey.example", "api_token": "token", "chat_enabled": False, "room_enabled": False})

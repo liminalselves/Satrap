@@ -59,7 +59,7 @@ class SessionClassConfigManager:
         """
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
-        self.session_scan_paths = list(session_scan_paths or [".satrap/session"])
+        self.session_scan_paths = list([".satrap/session"] if session_scan_paths is None else session_scan_paths)
         ensure_session_scan_paths(self.session_scan_paths)
         self._builtin_package_root = Path(__file__).resolve().parents[2]
 

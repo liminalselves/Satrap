@@ -9,6 +9,7 @@ const Plugins = lazy(() => import('@/pages/Plugins').then((module) => ({ default
 const PluginDetail = lazy(() => import('@/pages/Plugins').then((module) => ({ default: module.PluginDetail })));
 const Sessions = lazy(() => import('@/pages/Sessions').then((module) => ({ default: module.Sessions })));
 const Platforms = lazy(() => import('@/pages/Platforms').then((module) => ({ default: module.Platforms })));
+const Approvals = lazy(() => import('@/pages/Platforms/Approvals').then((module) => ({ default: module.Approvals })));
 const Friends = lazy(() => import('@/pages/Friends').then((module) => ({ default: module.Friends })));
 const Groups = lazy(() => import('@/pages/Groups').then((module) => ({ default: module.Groups })));
 const GroupLayout = lazy(() => import('@/pages/Groups/GroupLayout').then((module) => ({ default: module.GroupLayout })));
@@ -68,6 +69,7 @@ export const router = createBrowserRouter([
       { path: 'conversations/versions', element: lazyRoute(<Checkpoints />) },
       { path: 'sessions', element: <LegacyAdminRoute destination="/agents" /> },
       { path: 'platforms', element: lazyRoute(<Platforms />) },
+      { path: 'platforms/approvals', element: lazyRoute(<Approvals />) },
       { path: 'platforms/:adapterId/friends', element: lazyRoute(<Friends />) },
       { path: 'platforms/:adapterId/groups', element: lazyRoute(<Groups />) },
       { path: 'platforms/:adapterId/groups/:groupId', element: lazyRoute(<GroupLayout />), children: [

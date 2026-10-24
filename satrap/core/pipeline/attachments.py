@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Callable, cast
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 import asyncio
 import os
 import tempfile
@@ -110,26 +110,31 @@ async def _download(
     url: str, limit: int, trusted_hosts: tuple[str, ...], verify_tls: bool = True, allow_plaintext: bool = False,
 ) -> bytes:
     """
-    经出站防护下载远端附件, 只接受 http/https
+    经出站防护下载远端附件, QQ 群图片的明文 CDN 地址可升级为 HTTPS
 
     参数:
     - url: 平台上报的下载地址
     - limit: 最大字节数
     - trusted_hosts: 允许访问私网的显式主机名
     - verify_tls: 是否校验证书; 用户开启 media_insecure_tls 时为 False, 且仅对 trusted_hosts 登记的主机生效, 公网下载始终校验
-    - allow_plaintext: 用户开启 media_plaintext_http 时为 True, 放行公网明文 http; 登记主机不受此限
+    - allow_plaintext: 是否放行公网明文 HTTP, 默认 False; QQ 群图片先升级 HTTPS, 登记主机不受此限
 
     返回:
     - bytes: 响应正文, 超限或不安全地址时抛出异常
     """
     if not url.lower().startswith(("http://", "https://")):
         raise UnsafeOutboundURLError("附件地址不是 http/https URL")
-    host = normalize_hostname(urlsplit(url).hostname or "")
+    parsed = urlsplit(url)
+    host = normalize_hostname(parsed.hostname or "")
     trusted = {normalize_hostname(item) for item in trusted_hosts}
     if url.lower().startswith("http://") and host not in trusted:
         if not allow_plaintext:
-            raise UnsafeOutboundURLError("公网附件地址必须使用 https, 或显式开启 media_plaintext_http")
-        logger.debug(f"[attachments] 公网明文 http 下载已由用户开启: host={host}")
+            if parsed.netloc.lower() not in {"gchat.qpic.cn", "gchat.qpic.cn:80"}:
+                raise UnsafeOutboundURLError("公网附件地址必须使用 https, 或显式开启 media_plaintext_http")
+            url = urlunsplit(parsed._replace(scheme="https", netloc="gchat.qpic.cn"))
+            # 仅升级已验证支持 HTTPS 的 QQ 群图片来源, 不放行私网解析或回退明文
+        else:
+            logger.debug(f"[attachments] 公网明文 http 下载已由用户开启: host={host}")
     effective_verify = verify_tls or host not in trusted
     response = await safe_async_get(
         url, timeout=FETCH_TIMEOUT, max_response_bytes=limit, trusted_hosts=trusted_hosts,

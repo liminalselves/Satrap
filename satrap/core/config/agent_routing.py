@@ -94,7 +94,7 @@ class AgentRouteStore:
         - enabled: 是否显式启用按对话类型路由
 
         返回:
-        - 路由代次, 未启用且无既有记录时为 0; 存储失败记录日志并抛出异常
+        - 路由代次, 签名未变时只读返回; 未启用且无既有记录时为 0, 存储失败抛出异常
         """
         if not self_id or not kind or not chat_id:
             if enabled:
@@ -106,23 +106,35 @@ class AgentRouteStore:
         try:
             if enabled:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
+            encoded = json.dumps(signature, ensure_ascii=True, separators=(",", ":"))
             with closing(sqlite3.connect(self.path, timeout=5)) as connection, connection:
-                if not enabled and not connection.execute(
+                has_table = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_route_versions'",
-                ).fetchone():
+                ).fetchone() is not None
+                if not has_table and not enabled:
                     self._has_routes = False
                     return 0
-                connection.execute("CREATE TABLE IF NOT EXISTS agent_route_versions ("
-                                   "self_id TEXT NOT NULL, kind TEXT NOT NULL, chat_id TEXT NOT NULL, "
-                                   "signature TEXT NOT NULL, revision INTEGER NOT NULL, "
-                                   "PRIMARY KEY (self_id, kind, chat_id))")
-                self._has_routes = True
+                if has_table:
+                    row = connection.execute("SELECT signature, revision FROM agent_route_versions "
+                                             "WHERE self_id=? AND kind=? AND chat_id=?", (self_id, kind, chat_id)).fetchone()
+                    self._has_routes = True
+                    if row is None and not enabled:
+                        return 0
+                    if row is not None and row[0] == encoded:
+                        return int(row[1])
+                # 普通消息只读取已提交代次, 不与上下文保存等无关写事务争抢写锁
                 connection.execute("BEGIN IMMEDIATE")
+                if not has_table:
+                    connection.execute("CREATE TABLE IF NOT EXISTS agent_route_versions ("
+                                       "self_id TEXT NOT NULL, kind TEXT NOT NULL, chat_id TEXT NOT NULL, "
+                                       "signature TEXT NOT NULL, revision INTEGER NOT NULL, "
+                                       "PRIMARY KEY (self_id, kind, chat_id))")
+                self._has_routes = True
                 row = connection.execute("SELECT signature, revision FROM agent_route_versions "
                                          "WHERE self_id=? AND kind=? AND chat_id=?", (self_id, kind, chat_id)).fetchone()
+                # 获得写锁后重新读取, 防止并发创建或切换重复递增及覆盖新代次
                 if row is None and not enabled:
                     return 0
-                encoded = json.dumps(signature, ensure_ascii=True, separators=(",", ":"))
                 if row is not None and row[0] == encoded:
                     return int(row[1])
                 if row is not None and len(signature) == 7:

@@ -39,6 +39,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         db_path: str | None = None,
         recoverable: bool = False,
         persist_context: bool = True,
+        default_agent_prompt_enabled: bool = False,
     ):
         """
         模型工作流框架, 负责管理模型的调用和工作流的执行
@@ -62,6 +63,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         - db_path: 上下文与执行记录数据库路径, 默认使用 get_db_path() 返回的路径
         - recoverable: 是否启用可恢复 Agent 执行, 默认 False; 为 True 时将模型与工具步骤持久化到 db_path
         - persist_context: 是否保存消息和运行状态, 子代理使用 False
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
 
         恢复边界:
         - full_agent 和 stream_full_agent 共用执行循环, recoverable 仅控制步骤记录与恢复
@@ -98,6 +100,10 @@ class ModelWorkflowFramework(_WorkflowCore):
         if recoverable and not persist_context:
             logger.warning("纯内存工作流不能启用持久化执行恢复")
             raise ValueError("纯内存工作流不能启用持久化执行恢复")
+        if type(default_agent_prompt_enabled) is not bool:
+            logger.warning("[工作流] default_agent_prompt_enabled 必须是布尔值")
+            raise ValueError("default_agent_prompt_enabled 必须是布尔值")
+        self.default_agent_prompt_enabled = default_agent_prompt_enabled
         self.recoverable = recoverable
         self.last_run_id: str | None = None
         self.llm = llm

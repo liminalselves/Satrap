@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
 import asyncio
 from time import monotonic, time
@@ -60,6 +60,7 @@ from satrap.core.group_chat.reply import bind_reply_turn
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
+from satrap.core.utils.validation import positive_timeout
 
 
 _RECEIPT_TO_REQUEST_STATUS = {"success": "sent", "partial": "partial", "failed": "failed", "unknown": "unknown"}
@@ -81,14 +82,14 @@ class PipelineScheduler:
     来源范围与 preprocessor 链
     停止状态与权限检查
     唤醒词/@ 检查与模型调用限流
-    会话路由与 LLM 请求 (超时保护)
+    会话路由与整轮执行 (可选会话限时)
     后处理: 兜底发送回复
     """
     def __init__(
         self,
         session_manager: SessionManager,
         rate_limiter: RateLimiter | None = None,
-        llm_timeout: float = 120.0,
+        session_timeout: float | None = 120.0,
         error_feedback: bool = True,
         user_manager: UserManager | None = None,
     ):
@@ -96,17 +97,17 @@ class PipelineScheduler:
         参数:
         - session_manager: 会话管理器实例
         - rate_limiter: 可选的限流器, 传 None 禁用限流
-        - llm_timeout: LLM 调用超时(秒), 默认 120
+        - session_timeout: 单轮会话执行限时秒数, 默认 120, None 表示不限时
         - error_feedback: 出错/限流时是否发送反馈消息给用户
         - user_manager: 用户管理器, 传 None 禁用上下文路由
         """
         self.session_manager = session_manager
         self.rate_limiter = rate_limiter
-        self.llm_timeout = llm_timeout
+        self.session_timeout = None if session_timeout is None else positive_timeout(session_timeout, "session_timeout")
         self.error_feedback = error_feedback
         self.user_manager = user_manager
         self.preprocessors: List[Callable[[MessageEvent], Awaitable[bool] | bool]] = []
-        self._session_turns: dict[tuple[int, str], tuple[asyncio.Lock, int]] = {}
+        self._session_turns: dict[tuple[int, str, str], tuple[asyncio.Lock, int]] = {}
         self.platform_runtimes: dict[str, tuple[SessionManager, UserManager]] = {}
         self.wake_window = WakeWindow()
         self.wake_timers = WakeTimers(self.wake_window)
@@ -599,7 +600,7 @@ class PipelineScheduler:
                 manual_detail = "operator_required"
                 return
 
-            # Step.5 通过 UserManager 解析目标会话 (路由不依赖投影, 仍在会话锁外)
+            # Step.5 先取得稳定路由执行权, 再解析当前会话并取得目标会话执行权
             session_id = event.session_id
             route: ConversationRoute | None = None
             settings = event.policy_settings
@@ -619,39 +620,24 @@ class PipelineScheduler:
                     conversation_kind=event.conversation_kind, conversation_id=event.conversation_id,
                     binding_generation=event.agent_route_generation,
                 )
-                route_args = {"route": route} if scope != "legacy_user" or generation > 0 else {}
-                resolved = user_manager.resolve_session(
-                    user_id=event.get_sender_id(),
-                    platform=platform_id,
-                    session_provider=event.session_provider,
-                    session_type=event.session_type,
-                    class_cfg_mgr=safe_getattr(session_manager, 'class_cfg_mgr'),
-                    extra_params=extra_params,
-                    **route_args,
-                )
-                if not resolved:
-                    logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
-                    return
-                session_id = resolved
-
-            async with self._session_turn(session_manager, session_id):
-                if not event.agent_route_is_current():
-                    logger.debug(f"[PipelineScheduler] 丢弃旧 Agent 路由事件: {event.session_id}")
-                    if all_wake:
-                        self.wake_window.discard(event)
-                        self._record_rejection(event, "wake_decision", "等待期间 Agent 路由已变化", reason_code="binding_changed")
-                    return
-
-                if (not event.is_private_chat() and isinstance(event.adapter, OneBotAdapter)
-                        and event.adapter.group_route(event.get_group_id())[1] != event.group_route_generation):
-                    if all_wake:
-                        self.wake_window.discard(event)
-                        self._record_rejection(event, "wake_decision", "等待期间群路由已变化", reason_code="binding_changed")
-                    return
-                if event.is_stopped() or not event.call_llm or not self._allows_source(event) or not await self._check_permission(event):
-                    if all_wake:
-                        self.wake_window.discard(event)
-                        self._record_rejection(event, "wake_decision", "排队期间来源或权限已失效", reason_code="source_or_permission_revoked")
+            async with AsyncExitStack() as turn:
+                if route is not None and user_manager is not None:
+                    await turn.enter_async_context(self._session_turn(session_manager, route.lock_key, namespace="route"))
+                    if not await self._queued_source_current(event, session_manager):
+                        return
+                    route_args = {"route": route} if route.key is not None else {}
+                    resolved = user_manager.resolve_session(
+                        user_id=event.get_sender_id(), platform=route.platform,
+                        session_provider=event.session_provider, session_type=event.session_type or "",
+                        class_cfg_mgr=safe_getattr(session_manager, 'class_cfg_mgr'),
+                        extra_params=extra_params, **route_args,
+                    )
+                    if not resolved:
+                        logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
+                        return
+                    session_id = resolved
+                await turn.enter_async_context(self._session_turn(session_manager, session_id))
+                if not await self._queued_source_current(event, session_manager):
                     return
                 if automatic and not self._automatic_policy_current(event):
                     return
@@ -724,6 +710,8 @@ class PipelineScheduler:
                     group_config_revision=event.group_config_revision if not event.is_private_chat() else None,
                     group_route_generation=event.group_route_generation if not event.is_private_chat() else None,
                     request_blocks=projected.request_blocks if projected is not None else (),
+                    received_at=event.queued_at,
+                    received_wall_at=event.platform_message.received_at,
                 )
                 # Step.6 执行会话并限制等待时间
                 if manual_ticket is not None:
@@ -731,20 +719,21 @@ class PipelineScheduler:
                     event.set_extra("require_send_tracking", True)
                     await self._update_manual_request(event, manual_ticket, "executing", "")
                 with bind_reply_turn(event) as reply_turn:
+                    session_deadline = asyncio.timeout(self.session_timeout)
                     try:
-                        response = await asyncio.wait_for(
-                            session_manager.handle_call_async(user_call),
-                            timeout=self.llm_timeout,
-                        )
+                        async with session_deadline:
+                            response = await session_manager.handle_call_async(user_call)
                     except asyncio.TimeoutError:
-                        logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
+                        if not session_deadline.expired():
+                            raise   # 网络或工具自身抛出的超时不是会话限时到期
+                        logger.error(f"[PipelineScheduler] 会话执行超时: {event.session_id}, 限时={self.session_timeout}s")
                         self._record_diagnostic(
-                            event, "model", "unknown", reason_code="llm_timeout", reason="模型调用超时",
+                            event, "model", "unknown", reason_code="session_timeout", reason="会话执行超时",
                             turn_id=self._request_turn_ids(event),
                         )
                         if self.error_feedback:
-                            await self._send_feedback(event, "请求超时, 请稍后重试")
-                        manual_detail = "llm_timeout"
+                            await self._send_feedback(event, "本轮会话执行超时, 请缩小任务范围或调整会话限时")
+                        manual_detail = "session_timeout"
                         return
                     if reply_turn.failed:
                         if command_text is None:
@@ -752,6 +741,8 @@ class PipelineScheduler:
                                                     reason="会话执行失败, 已撤销本轮回复草稿", turn_id=self._request_turn_ids(event))
                         manual_detail = "session_execution_failed"
                         return
+                    if user_call.context_reset_at is not None:
+                        self._reset_context_window(event, user_call.context_reset_at)
                     if command_text is None:
                         self._record_diagnostic(
                             event, "model", "ok", reason_code="completed",
@@ -794,18 +785,19 @@ class PipelineScheduler:
     # ---------- 可覆写钩子 ----------
 
     @asynccontextmanager
-    async def _session_turn(self, manager: SessionManager, session_id: str) -> AsyncIterator[None]:
+    async def _session_turn(self, manager: SessionManager, session_id: str, *, namespace: str = "session") -> AsyncIterator[None]:
         """
         按最终会话串行执行模型和回复, 不保留空闲锁
 
         参数:
         - manager: 隔离的会话管理器
         - session_id: 路由解析后的最终会话 ID
+        - namespace: session 表示实际会话, route 表示切换前后稳定的来源范围
 
         返回:
         - 持有本轮执行权的异步上下文
         """
-        key = (id(manager), session_id)
+        key = (id(manager), namespace, session_id)
         existing = self._session_turns.get(key)
         if existing is None:
             lock, users = asyncio.Lock(), 0
@@ -822,6 +814,51 @@ class PipelineScheduler:
                 del self._session_turns[key]
             else:
                 self._session_turns[key] = (lock, users - 1)
+
+    async def _queued_source_current(self, event: MessageEvent, manager: SessionManager) -> bool:
+        """
+        在路由与会话等待之后复核来源, 拒绝旧事件创建会话或回灌正文
+
+        参数:
+        - event: 已通过首轮准入的事件
+        - manager: 绑定本平台的会话管理器
+
+        返回:
+        - 来源、绑定及权限仍有效时为 True, 否则撤销当前窗口行并记录拒绝
+        """
+        route_current = event.agent_route_is_current() and (
+            event.is_private_chat() or not isinstance(event.adapter, OneBotAdapter)
+            or event.adapter.group_route(event.get_group_id())[1] == event.group_route_generation
+        )
+        if not route_current:
+            stage, code, reason = "wake_decision", "binding_changed", "等待期间对话路由已变化"
+        elif event.session_type and manager.provider_registry.binding_status(event.session_type, event.session_provider).state is not BindingState.RUNNABLE:
+            stage, code, reason = "projection", "binding_changed", "等待期间会话绑定已不可用"
+        elif event.is_stopped() or not event.call_llm or not self._allows_source(event) or not await self._check_permission(event):
+            stage, code, reason = "wake_decision", "source_or_permission_revoked", "排队期间来源或权限已失效"
+        else:
+            return True
+        self.wake_window.discard(event)
+        self._record_rejection(event, stage, reason, reason_code=code)
+        return False
+
+    def _reset_context_window(self, event: MessageEvent, cutoff: float) -> None:
+        """
+        撤销旧窗口及旧补偿, 再为边界之后保留的消息安排唤醒
+
+        参数:
+        - event: 新会话实际生效的命令事件
+        - cutoff: 宿主发布的成功边界
+        """
+        self.wake_window.reset(event, cutoff)
+        self.wake_timers.reset_route(event)
+        key = self.wake_window.key(event)
+        for queued, ticket in list(self.manual_wakes.tickets.items()):
+            if self.wake_window.key(queued) == key and any(
+                (row.received_at, row.received_sequence) <= (cutoff, event.queued_sequence) for row in ticket.snapshot
+            ):
+                ticket.cancelled = True
+                ticket.status = "cancelled"
 
     @staticmethod
     def _allows_source(event: MessageEvent) -> bool:

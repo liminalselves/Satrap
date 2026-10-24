@@ -1,7 +1,7 @@
 """Misskey 平台事件与消息收发适配器"""
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 import asyncio
 import random
 from typing import Any, cast
@@ -54,11 +54,28 @@ DEFAULT_UPLOAD_CONCURRENCY = 3
 from satrap.core.group_chat.types import GroupChatError
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.call_context import current_call_origin
+from satrap.core.call_context import CallOrigin
+from satrap.core.file_access.artifacts import FileArtifact
 
 
 @register_platform_adapter("misskey")
 class MisskeyAdapter(PlatformAdapter):
     """Misskey 平台适配器"""
+
+    async def deliver_file(self, origin: CallOrigin, artifact: FileArtifact, check: Callable[[], None]) -> dict[str, object]:
+        """
+        上传并发布本轮普通文件
+
+        参数:
+        - origin: 宿主固定来源
+        - artifact: 受控文件
+        - check: 等待后的宿主复核
+
+        返回:
+        - 真实上传及发布结果
+        """
+        from .file_delivery import deliver
+        return await deliver(self, origin, artifact, check)
 
     adapter_type = "misskey"
     conversation_kinds = {"private": "私聊", "group": "房间群聊", "discussion": "帖子讨论"}

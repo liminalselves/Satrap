@@ -293,6 +293,206 @@ async def test_command_skips_window_observe_in_frequency_mode():
     for index in range(3):
         assert f"闲聊 {index}" in merged
 
+
+@pytest.mark.parametrize("scope", ["group", "group_member"])
+async def test_new_success_boundary_preserves_later_window_and_cancels_old_tickets(scope: str, monkeypatch: pytest.MonkeyPatch):
+    """宿主确认重置后只清旧窗口, 旧快照撤销, 后到正文仍能继续提交"""
+    from satrap.core.pipeline.wake_timers import DeadlineTicket
+    from satrap.core.pipeline.manual_wake import ManualWakeTicket
+    from satrap.core.platform import event as event_module
+    stamp = event_module.monotonic()
+    monkeypatch.setattr(event_module, "monotonic", lambda: stamp)
+    adapter = RecorderAdapter(settings={"context_scope": scope, "wake_mode": "frequency", "wake_message_threshold": 100, "wake_max_wait": 30})
+    scheduler = PipelineScheduler(_as_session_manager(_FakeSessionManager()), user_manager=cast(Any, _FakeUserManager()))
+    old = _scheduler_event(adapter, [Plain(text="重置前")], sender_id="u1", request_id_note="old")
+    another = _scheduler_event(adapter, [Plain(text="另一位成员")], sender_id="u2", request_id_note="other")
+    command = _scheduler_event(adapter, [At(qq="bot"), Plain(text=" /new")], sender_id="u1", request_id_note="command")
+    scheduler.wake_window.observe(old)
+    scheduler.wake_window.observe(another)
+    scheduler.wake_timers.schedule(old)
+    old_snapshot = scheduler.wake_window.peek(command)
+    deadline_event = _scheduler_event(adapter, [Plain(text="old deadline")], sender_id="u1", request_id_note="deadline")
+    manual_event = _scheduler_event(adapter, [Plain(text="old manual")], sender_id="u1", request_id_note="manual")
+    scheduler.wake_timers.tickets[deadline_event] = DeadlineTicket(snapshot=old_snapshot)
+    scheduler.manual_wakes.tickets[manual_event] = ManualWakeTicket("manual", snapshot=old_snapshot)
+
+    class Manager(_FakeSessionManager):
+        async def handle_call_async(self, call):
+            self.calls.append(call)
+            if call.message == "/new":
+                call.context_reset_at = call.received_at
+                after = _scheduler_event(adapter, [Plain(text="重置后")], sender_id="u3" if scope == "group" else "u1", request_id_note="after")
+                assert after.queued_at == command.queued_at and after.queued_sequence > command.queued_sequence
+                scheduler.wake_window.observe(after)
+                scheduler.wake_timers.schedule(after)
+                return "已开始新对话"
+            return "已回复"
+
+    manager = Manager()
+    scheduler.session_manager = _as_session_manager(manager)
+    await scheduler.execute(command)
+    assert [row.text for row in scheduler.wake_window.peek(command)] == ["重置后"]
+    assert scheduler.wake_timers.tickets[deadline_event].cancelled
+    assert scheduler.manual_wakes.tickets[manual_event].cancelled
+    key = scheduler.wake_window.key(command)
+    assert key in scheduler.wake_timers.tasks
+    assert scheduler.wake_timers._sources[key].call_origin.actor_id == ("u3" if scope == "group" else "u1")
+    if scope == "group_member":
+        assert [row.text for row in scheduler.wake_window.peek(another)] == ["另一位成员"]
+    await scheduler.execute(deadline_event)
+    await scheduler.execute(manual_event)
+    assert len(manager.calls) == 1
+    await scheduler.wake_timers.close()
+
+
+@pytest.mark.parametrize("mode", ["mention", "all"])
+async def test_new_failure_keeps_window_and_waiting_message_re_resolves_route(mode: str, monkeypatch: pytest.MonkeyPatch):
+    """失败没有重置信号, 并发等待的普通消息必须使用切换后的实际路由"""
+    import asyncio
+    from satrap.core.platform import event as event_module
+    stamp = event_module.monotonic()
+    monkeypatch.setattr(event_module, "monotonic", lambda: stamp)
+    adapter = RecorderAdapter(settings={"context_scope": "group", "wake_mode": mode})
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Users(_FakeUserManager):
+        current = "old"
+        def resolve_session(self, **kwargs):
+            return self.current
+
+    users = Users()
+
+    class Manager(_FakeSessionManager):
+        async def handle_call_async(self, call):
+            self.calls.append(call)
+            if call.message == "/new":
+                entered.set()
+                await release.wait()
+                users.current = "new"
+                call.session_id = "new"
+                call.context_reset_at = call.received_at
+            return "回执"
+
+    manager = Manager()
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=cast(Any, users))
+    pending = _scheduler_event(adapter, [Plain(text="旧窗口")], request_id_note="old")
+    command = _scheduler_event(adapter, [At(qq="bot"), Plain(text=" /new")], request_id_note="new")
+    scheduler.wake_window.observe(pending)
+    # Step.1 无成功信号的失败回复不能撤销已有窗口
+    scheduler.session_manager = _as_session_manager(_FakeSessionManager(response="切换失败"))
+    await scheduler.execute(command)
+    assert [row.text for row in scheduler.wake_window.peek(command)] == ["旧窗口"]
+    scheduler.session_manager = _as_session_manager(manager)
+    task = asyncio.create_task(scheduler.execute(command))
+    await entered.wait()
+    next_event = _scheduler_event(adapter, [At(qq="bot"), Plain(text=" 后续消息")], message_str="@bot 后续消息", request_id_note="next")
+    following = asyncio.create_task(scheduler.execute(next_event))
+    await asyncio.sleep(0)
+    assert len(manager.calls) == 1
+    release.set()
+    await asyncio.gather(task, following)
+    assert len(manager.calls) == 2, scheduler.request_diagnostics.list()[-8:]
+    assert manager.calls[1].session_id == "new"
+    assert "旧窗口" not in manager.calls[1].message
+    assert not scheduler._session_turns
+
+
+@pytest.mark.asyncio
+async def test_queue_order_uses_actual_enqueue_when_clock_is_equal(monkeypatch: pytest.MonkeyPatch):
+    """事件构造顺序可以不同于入队顺序, 同刻窗口排序仍按实际入队顺序"""
+    from satrap.core.platform import event as event_module
+    from satrap.core.pipeline.wake_window import WakeWindow
+    monkeypatch.setattr(event_module, "monotonic", lambda: 100.0)
+    adapter = RecorderAdapter(settings={"context_scope": "group"})
+    first = _scheduler_event(adapter, [Plain(text="后入队")], request_id_note="first")
+    second = _scheduler_event(adapter, [Plain(text="先入队")], request_id_note="second")
+    assert first.queued_sequence < second.queued_sequence
+    assert adapter.commit_event(second) and adapter.commit_event(first)
+    assert second.queued_sequence < first.queued_sequence
+    window = WakeWindow()
+    window.observe(first, now=100.0)
+    snapshot = window.observe(second, now=100.0)
+    assert [row.text for row in snapshot] == ["先入队", "后入队"]
+
+
+@pytest.mark.parametrize("scope", ["legacy_user", "group_member", "group"])
+@pytest.mark.parametrize(("asynchronous", "async_entry"), [(False, False), (False, True), (True, True)], ids=["sync-entry", "sync-session-async-entry", "async-simple"])
+async def test_real_edictum_new_history_switch_and_route_isolation(tmp_path, monkeypatch, scope, asynchronous, async_entry):
+    """真实会话及命令插件完成新建、上下文重置、历史持久化与范围隔离"""
+    from satrap.core.conversation import ConversationRoute
+    from satrap.core.framework.UserManager import UserManager, UserInfoStore
+    from satrap.core.framework.providers import EdictumProvider
+    from satrap.edictum.registry import create_default_edictum_type_registry
+    from satrap.edictum.config import EdictumConfigManager
+    from satrap.edictum.plugin_compatibility import PluginEnvironment
+    from satrap.core.type import LLMCallResponse, UserCall
+    from support.group_models import Script, Model, AsyncModel
+
+    registry = create_default_edictum_type_registry()
+    configs = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    configs.create("chat", {"edictum_type": "async_simple" if asynchronous else "simple",
+                            "plugins": [{"name": "session_commands"}], "params": {"enable_checkpoint": False}})
+    database = tmp_path / "platform.db"
+    provider = EdictumProvider(configs, registry, default_checkpoint_db=str(database))
+    script = Script([LLMCallResponse(type="text", content=text) for text in ("旧回复", "新回复", "恢复回复")])
+    model = AsyncModel(script) if asynchronous else Model(script)
+    create = provider.create_session
+    monkeypatch.setattr(provider, "create_session", lambda config, llm=None, **kwargs: create(config, llm=cast(Any, model), **kwargs))
+    manager = SessionManager(db_path=database, default_checkpoint_db=str(database))
+    manager.plugin_environment = PluginEnvironment("platform", "onebot")
+    manager.register_provider(provider)
+    users = UserManager(manager, db_path=database)
+    manager._user_mgr = users
+    route = ConversationRoute("user", "qq", "chat", provider="edictum", scope=scope, self_id="bot", group_id="group")
+
+    async def invoke(text, current_route=route):
+        sid = users.resolve_session(current_route.user_id, "qq", "chat", session_provider="edictum", route=current_route)
+        call = UserCall(session_id=sid, session_provider="edictum", session_type="chat", message=text, route=current_route)
+        result = await manager.handle_call_async(call) if async_entry else manager.handle_call(call)
+        return call, result
+
+    try:
+        old, response = await invoke("旧轮唯一内容")
+        assert response == "旧回复"
+        assert old.history_window is not None
+        old_window = old.history_window
+        new, response = await invoke("/new")
+        assert "已开始新对话" in response and new.session_id != old.session_id
+        assert new.context_reset_at is not None
+        new_config = manager.store.get(new.session_id)
+        assert new_config is not None and new_config.history_started_at == new.received_wall_at
+        fresh, response = await invoke("新轮唯一内容")
+        assert fresh.history_window is not None and fresh.history_window.started_at == new.received_wall_at
+        assert response == "新回复"
+        assert "旧轮唯一内容" not in str(script.requests[-1][0])
+        assert "旧回复" not in str(script.requests[-1][0])
+        _, history = await invoke("/history")
+        assert old.session_id in history and new.session_id in history
+        assert set(UserInfoStore(database).list_context_history(route)) == {old.session_id, new.session_id}
+        if scope != "legacy_user":
+            other = replace(route, group_id="another-group")
+            outsider = users.resolve_session("user", "qq", "chat", session_provider="edictum", route=other)
+            _, denied = await invoke(f"/switch {outsider}")
+            assert "对话不存在" in denied
+            assert users.resolve_session("user", "qq", "chat", session_provider="edictum", route=route) == new.session_id
+        if scope == "group":
+            peer = replace(route, user_id="other-member")
+            assert UserInfoStore(database).list_context_history(peer) == users.store.list_context_history(route)
+        switched, response = await invoke(f"/switch {old.session_id}")
+        assert "已切换至" in response and switched.session_id == old.session_id
+        assert switched.context_reset_at is None
+        restored, _ = await invoke("回到旧轮")
+        assert restored.history_window == old_window
+        from satrap.core.framework.SessionManager import SessionConfigStore
+        persisted = SessionConfigStore(database).get(old.session_id)
+        assert persisted is not None and persisted.history_started_at == old_window.started_at
+        assert "旧轮唯一内容" in str(script.requests[-1][0])
+        assert "新轮唯一内容" not in str(script.requests[-1][0])
+        assert len(script.requests) == 3
+    finally:
+        for entry in list(manager.pool.list_entries().values()):
+            await manager._release_session_memory_async(entry.session)
+
 @pytest.mark.asyncio
 async def test_body_with_media_is_not_a_command_and_still_resolves(monkeypatch: pytest.MonkeyPatch):
     """正文含媒体组件时按普通消息处理: 保守拒绝不改变媒体链路"""
@@ -760,7 +960,7 @@ async def test_session_command_contract(asynchronous: bool, monkeypatch: pytest.
         assert is_command is True
         assert result == "custom"
 
-def test_sync_new_command_creates_action_and_binds_user(monkeypatch: pytest.MonkeyPatch):
+def test_sync_new_command_defers_binding_until_host_success(monkeypatch: pytest.MonkeyPatch):
     session = Session("chat:misskey:user1:old")
     user_manager = FakeUserManager(["chat:misskey:user1:old"])
     monkeypatch.setattr(session, "_user_manager", user_manager)
@@ -773,7 +973,7 @@ def test_sync_new_command_creates_action_and_binds_user(monkeypatch: pytest.Monk
     assert result.target_session_id.startswith("chat:misskey:user1:")
     assert result.target_session_id != session.session_id
     assert result.message == "已开始新对话（旧对话可通过 /history 查看和切换）"
-    assert user_manager.bound == [("user1", result.target_session_id)]
+    assert user_manager.bound == []
 
 def test_sync_switch_validates_bound_contexts(monkeypatch: pytest.MonkeyPatch):
     session = Session("chat:misskey:user1")
@@ -972,7 +1172,7 @@ async def test_tools_manager_structured_errors_and_exception_isolated(asynchrono
     assert counting.calls == 0
 
     none_args = await call(name_c, None)
-    assert none_args["error_type"] == "execution_error"
+    assert none_args["error_type"] == "invalid_arguments"
     assert counting.calls == 0
 
     boom = await call(name_r, {"value": 3})

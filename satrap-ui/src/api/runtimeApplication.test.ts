@@ -29,6 +29,29 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('运行时应用任务', () => {
+  it('HTTP 环境缺少 randomUUID 时仍以安全随机 UUID 提交并按同一 ID 核查', async () => {
+    const crypto = globalThis.crypto;
+    vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    const apps = Array.from({ length: 100 }, application);
+    expect(new Set(apps.map((app) => app.id)).size).toBe(100);
+    expect(apps.every((app) => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(app.id))).toBe(true);
+    const app = apps[0];
+    adapter.mockImplementation(async (config) => {
+      if (config.method === 'post') throw new AxiosError('Network Error', 'ERR_NETWORK', config);
+      return response(config, snapshot(app.id, 'completed', result));
+    });
+    expect(await app.start(vi.fn())).toEqual(result);
+    expect(adapter.mock.calls.map(([config]) => config.method)).toEqual(['post', 'get']);
+    expect(JSON.parse(adapter.mock.calls[0][0].data).operation_id).toBe(app.id);
+    expect(adapter.mock.calls[1][0].url).toBe('/api/runtime-operations/' + app.id);
+  });
+
+  it('没有安全随机数时明确拒绝创建任务, 不发出写请求', () => {
+    vi.stubGlobal('crypto', undefined);
+    expect(application).toThrow('不支持安全随机数');
+    expect(adapter).not.toHaveBeenCalled();
+  });
+
   it('用预先生成的 ID 提交一次, 真阶段查询至完成, 再次 start 不能重放', async () => {
     const app = application(), progress = vi.fn();
     adapter.mockImplementation(async (config) => response(config, snapshot(app.id,

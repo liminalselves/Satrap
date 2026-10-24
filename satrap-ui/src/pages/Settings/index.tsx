@@ -14,6 +14,7 @@ import * as yaml from 'js-yaml';
 import { DataMaintenancePanel } from './DataMaintenancePanel';
 import { LogRetentionPanel } from './LogRetentionPanel';
 import { AdministratorsPanel } from './AdministratorsPanel';
+import { AccessPasswordPanel } from './AccessPasswordPanel';
 import { administratorError } from '@/api/administrators';
 
 interface ConfigData {
@@ -24,7 +25,7 @@ interface ConfigData {
   default_session_type?: string;
   max_sessions?: number;
   idle_timeout?: number;
-  llm_timeout?: number;
+  session_timeout?: number | null;
   rate_limit?: number;
   rate_burst?: number;
   platforms?: unknown[];
@@ -51,9 +52,12 @@ export function Settings() {
     try {
       const result = await controlApi.getConfig();
       if (result.ok && result.config) {
-        setConfig(result.config);
+        const loaded = { ...result.config } as ConfigData;
+        if (!('session_timeout' in loaded) && 'llm_timeout' in loaded) loaded.session_timeout = loaded.llm_timeout as number | null;
+        delete loaded.llm_timeout;
+        setConfig(loaded);
         setConfigRevision(result.revision);
-        setRawConfig(yaml.dump(result.config, { indent: 2 }));
+        setRawConfig(yaml.dump(loaded, { indent: 2 }));
         setConfigPath(result.path || '');
         setConfigExists(result.exists !== false);
         setControlAvailable(true);
@@ -236,6 +240,7 @@ export function Settings() {
           <TabsList>
             <TabsTrigger value="general">常用配置</TabsTrigger>
             <TabsTrigger value="administrators">管理员</TabsTrigger>
+            <TabsTrigger value="access">访问密码</TabsTrigger>
             <TabsTrigger value="raw">原始配置</TabsTrigger>
             <TabsTrigger value="data">数据维护</TabsTrigger>
             <TabsTrigger value="logging">日志保留</TabsTrigger>
@@ -255,6 +260,10 @@ export function Settings() {
                 } catch { return current; }
               });
             }} />
+          </TabsContent>
+
+          <TabsContent value="access" forceMount>
+            <AccessPasswordPanel active={settingsTab === 'access'} />
           </TabsContent>
 
           <TabsContent value="logging" forceMount>
@@ -318,14 +327,18 @@ export function Settings() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-text-secondary mb-1">
-                  LLM 超时（秒）
+                  单轮会话限时（秒）
                 </label>
                 <Input
                   type="number"
-                  value={config.llm_timeout || 60}
-                  onChange={(e) => updateConfig('llm_timeout', Number(e.target.value))}
+                  min={0.1}
+                  step="any"
+                  placeholder="无限制"
+                  value={config.session_timeout === null ? '' : config.session_timeout ?? 120}
+                  onChange={(e) => updateConfig('session_timeout', e.target.value === '' ? null : Number(e.target.value))}
                   disabled={!controlAvailable || !configExists}
                 />
+                <p className="mt-1 text-xs text-text-tertiary">留空表示无限制; 包含本轮模型调用、工具执行和审批等待。网络超时在模型配置中单独调整。</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-text-secondary mb-1">

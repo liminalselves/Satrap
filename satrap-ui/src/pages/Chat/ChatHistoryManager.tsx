@@ -24,7 +24,7 @@ interface ChatHistoryManagerProps {
   activeConversationId?: string;
   preferCold?: boolean;
   onOpenConversation: (conversationId: string) => void;
-  onChanged: () => void | Promise<void>;
+  onChanged: (removedIds?: string[]) => void | Promise<void>;
 }
 
 const EMPTY_RESULT: ChatHistoryResult = {
@@ -168,7 +168,8 @@ export function ChatHistoryManager({
       }
       setSelected(new Set());
       await loadHistory();
-      await onChanged();
+      try { await onChanged(response.results.filter((item) => item.ok).map((item) => item.conversation_id)); }
+      catch (reason) { setError(`${response.deleted_count} 个会话已回收, 侧栏刷新失败: ${reason instanceof Error ? reason.message : String(reason)}`); }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '删除失败');
     } finally {
@@ -186,7 +187,8 @@ export function ChatHistoryManager({
         await chatApi.restoreHistory(archiveId);
       }
       await loadTrash();
-      await onChanged();
+      try { await onChanged(); }
+      catch (reason) { setError(`会话已恢复, 侧栏刷新失败: ${reason instanceof Error ? reason.message : String(reason)}`); }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '恢复失败');
     } finally {

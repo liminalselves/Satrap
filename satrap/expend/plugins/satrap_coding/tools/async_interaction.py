@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 
 from satrap.core.approval.policy import PermissionEngine
@@ -27,14 +28,10 @@ class AsyncAskUserTool(AsyncTool):
     """向用户询问请求 (异步)"""
 
     tool_name = "ask_user"
-    description = (
-        "向用户提出一个问题并等待回复, 用于获取缺失信息或确认意图; "
-        "建议提供 2-3 个推荐选项 (options), 用户可直接输入序号选择; "
-        "需要宿主通过 session.user_input_provider 适配用户输入通道"
-    )
+    description = "缺少必要信息或需要用户确认时，提出一个问题并等待回答；可提供 2-3 个常用选项"
     params_dict = {
-        "question": ("string", "要询问的问题"),
-        "options": ("array", "推荐回答选项 (2-3 个), 如 ['方案A', '方案B']"),
+        "question": {"type": "string", "minLength": 1, "description": "要问用户的问题"},
+        "options": {"type": "array", "maxItems": 3, "items": {"type": "string", "minLength": 1}, "description": "可选回答；不需要选项时省略"},
     }
 
     def __init__(self) -> None:
@@ -79,10 +76,10 @@ class AsyncShellTool(AsyncTool):
     tool_name = "shell"
     description = ShellTool.description
     params_dict = {
-        "command": ("string", "要执行的命令"),
-        "cwd": ("string", "工作目录, 默认当前会话工作区"),
-        "timeout": ("number", "超时秒数, 范围 1-3600, 默认 120"),
-        "shell": ("string", "shell 类型: powershell / cmd, 默认 powershell"),
+        "command": {"type": "string", "minLength": 1, "description": "要执行的完整命令"},
+        "cwd": {"type": "string", "default": "", "description": "工作目录；省略表示当前会话工作区"},
+        "timeout": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 120, "description": "超时秒数"},
+        "shell": {"type": "string", "enum": ["auto", "powershell", "cmd", "bash", "sh"], "default": "auto", "description": "命令解释器"},
     }
 
     def __init__(
@@ -101,7 +98,7 @@ class AsyncShellTool(AsyncTool):
         self.engine = engine
         self.allowed_env = allowed_env
         self.default_timeout = default_timeout
-        self.params_dict = {**self.params_dict, "timeout": ("number", f"超时秒数, 范围 1-3600, 默认 {default_timeout}")}
+        self.params_dict = {**self.params_dict, "timeout": {"type": "integer", "minimum": 1, "maximum": 3600, "default": default_timeout, "description": "超时秒数"}}
         self._session: AsyncSimpleSession | None = None
 
     def get_tool_defined(self) -> dict[str, Any]:
@@ -118,7 +115,7 @@ class AsyncShellTool(AsyncTool):
         command: str,
         cwd: str = "",
         timeout: int | float | str | None = None,
-        shell: str = "powershell",
+        shell: str = "auto",
     ) -> str:
         """
         异步审批并执行 Shell 命令
@@ -127,7 +124,7 @@ class AsyncShellTool(AsyncTool):
         - command: 待审批的 Shell 命令
         - cwd: 工作目录, 默认空字符串表示工作区根目录
         - timeout: 超时秒数, None 表示使用实例配置, 范围 1-3600
-        - shell: Shell 类型, 默认 powershell
+        - shell: Shell 类型, 默认 auto 按系统选择
 
         返回:
         - 执行结果, 参数错误或审批拒绝说明; 未绑定会话时抛出 RuntimeError
@@ -163,15 +160,27 @@ class AsyncShellTool(AsyncTool):
         if not allowed:
             return message
         # Step.3 在实际执行线程内核验来源与权限后运行固定参数
+        cancelled = threading.Event()
+
         def run() -> str:
             """紧邻启动本机进程执行最终复核"""
             try:
                 check()
-                return _run_shell(args, workdir_path, timeout_value, allow=allowed_env)
+                return _run_shell(args, workdir_path, timeout_value, allow=allowed_env, cancelled=cancelled)
             except (OSError, ValueError) as error:
                 logger.warning(f"[satrap_coding] Shell 执行取消: {error}")
                 return f"执行已取消: {error}"
-        return await asyncio.to_thread(run)
+        task = asyncio.create_task(asyncio.to_thread(run))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled.set()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled.set()
+            raise
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """
@@ -187,12 +196,12 @@ class AsyncSubAgentTool(AsyncTool):
     """子代理 (异步): 独立上下文, 继承主会话工具与审批策略"""
 
     tool_name = "subagent"
-    description = "在独立上下文中运行子代理处理任务, 返回结果; 用于并行调研/独立子任务"
+    description = "把可独立完成的子任务交给独立上下文并返回结果摘要；任务说明需包含必要背景和预期输出"
     params_dict = {
-        "task": ("string", "子代理要完成的任务描述"),
-        "tools": ("array", "允许使用的工具名白名单, 缺省使用全部工具"),
-        "system_prompt": ("string", "自定义子代理系统提示词"),
-        "max_turns": ("number", "最大工具迭代轮数, 范围 1-100, 默认 20"),
+        "task": {"type": "string", "minLength": 1, "description": "完整的子任务说明"},
+        "tools": {"type": "array", "items": {"type": "string"}, "description": "允许使用的工具名白名单；省略表示继承全部工具"},
+        "system_prompt": {"type": "string", "description": "需要覆盖默认行为时填写的子代理系统提示"},
+        "max_turns": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "最大工具迭代轮数"},
     }
 
     def __init__(self, llm: AsyncLLM, tools_manager: AsyncToolsManager) -> None:

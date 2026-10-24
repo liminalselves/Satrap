@@ -1,3 +1,4 @@
+import { emptyConfigResponse, conversationPageResponse, turnPageResponse } from '../e2e/config-fixtures.mjs';
 const FIXED_NOW = 1_788_100_000;
 
 function createTurn(index) {
@@ -79,9 +80,15 @@ export function responseFor(request, fixture) {
   if (path === '/api/chat/models') return { models: ['benchmark-model'] };
   if (path === '/api/chat/plugins') return { plugins: [] };
   if (path === '/api/chat/runs') return { runs: [] };
+  if (path === '/api/chat/approval') return { ok: true, available: false, mode: 'user', revision: 0, plan_mode: false };
+  if (path === '/api/chat/command-history') return { ok: true, command_history_enabled: false };
+  if (path === '/api/chat/default-agent-prompt' && method === 'GET') return { ok: true, default_agent_prompt_enabled: false };
+  if (path === '/api/chat/max-iterations') return { ok: true, max_iterations: 100 };
   if (path === '/api/chat/conversations' && method === 'GET') return { conversations: fixture.conversations };
+  if (path === '/api/chat/conversations/page') return conversationPageResponse(request.url(), fixture.conversations);
   if (path === '/api/chat/conversations/preload') return { ok: true, conversation_id: 'benchmark-preloaded' };
   if (path === '/api/chat/turns') return { turns: fixture.turns };
+  if (path === '/api/chat/turns/page') return turnPageResponse(request.url(), fixture.turns);
   if (path === '/api/chat/send') {
     return {
       ok: true,
@@ -101,9 +108,15 @@ export function responseFor(request, fixture) {
     };
   }
   if (path === '/status') return { running: true, managed: true };
+  if (path === '/config/overview') return { model_counts: { llm: 1, embedding: 0, rerank: 0, asr: 0 }, session_count: 1 };
   if (path === '/config/versions') return { ok: true, resources: Object.fromEntries(
     (new URL(request.url()).searchParams.get('resources') || '').split(',').map((name) => [name, { change_token: 'fixture-v1', state: 'available' }]),
   ) };
+  if (path === '/config/snapshot') {
+    const snapshot = emptyConfigResponse(request.url());
+    for (const version of Object.values(snapshot.versions)) version.change_token = 'fixture-v1';
+    return snapshot;
+  }
   if (path === '/config/models/options') return { llm: ['benchmark-model'], embedding: [], rerank: [], asr: [] };
   if (path === '/config/models' && method === 'GET') return {};
   if (/^\/config\/models\/(llm|embedding|rerank|asr)$/.test(path)) return {};
@@ -140,11 +153,15 @@ export async function installHttpMocks(context, appOrigin, fixture) {
 }
 
 /** 为页面安装可由测试脚本驱动的固定 WebSocket 夹具 */
-export async function installWebSocketMocks(page, chatSockets) {
+export async function installWebSocketMocks(page, chatSockets, fixture) {
   await page.routeWebSocket('ws://127.0.0.1:19872/ws/chat**', (socket) => {
     chatSockets.add(socket);
     socket.onClose(() => chatSockets.delete(socket));
-    socket.send(JSON.stringify({ type: 'subscribed', conversation_id: 'benchmark-active' }));
+    const turns = fixture?.turns.slice(-50);
+    socket.send(JSON.stringify(fixture ? { type: 'snapshot', conversation_id: 'benchmark-active',
+      stream_id: 'benchmark-stream', seq: 0, state: 'idle', active_turn_id: null,
+      turns, has_more: fixture.turns.length > 50, next_before: turns[0]?.turn_index ?? null, pending_user_inputs: [] }
+      : { type: 'subscribed', conversation_id: 'benchmark-active' }));
   });
   await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', (socket) => {
     socket.send(JSON.stringify({

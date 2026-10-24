@@ -112,6 +112,7 @@ class GroupChatLimits:
     max_reply_images: int = 4
     max_reply_stickers: int = 4
     allowed_groups: tuple[str, ...] = ()
+    history_scope: str = "current_session"
 
     def __post_init__(self) -> None:
         """拒绝无界条数, 非整数预算和无法失效的成员缓存"""
@@ -124,3 +125,5 @@ class GroupChatLimits:
                 raise ValueError("群聊工具查询配置超出允许范围")
         if type(self.summary_enabled) is not bool or type(self.media_reply_enabled) is not bool:
             raise ValueError("摘要开关必须是布尔值")
+        if self.history_scope not in {"current_session", "group_archive", "disabled"}:
+            raise ValueError("群消息查询范围无效")

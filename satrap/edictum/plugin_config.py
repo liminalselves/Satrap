@@ -59,6 +59,9 @@ class ConfigField:
     maximum: float | None = None
     integer: bool = False
     scope: str = ""
+    label: str = ""
+    option_labels: dict[str, str] = field(default_factory=dict[str, str])
+    strict: bool = False
 
     def validate_strict(self, value: Any) -> Any:
         """管理接口严格校验显式值, 不以默认值吞掉非法输入"""
@@ -101,6 +104,8 @@ class ConfigField:
         返回:
         - Any: 校验并归一化一个值, 非法时回退默认值并警告
         """
+        if self.strict:
+            return self.validate_strict(value)
         if value is None:
             if self.nullable:
                 return None
@@ -171,6 +176,9 @@ def parse_config_schema(meta: dict[str, Any]) -> dict[str, ConfigField]:
                 ftype = "string"
             options_raw = spec_dict.get("options")
             options = [str(o) for o in cast(list[Any], options_raw)] if isinstance(options_raw, list) else []
+            labels_raw: object = spec_dict.get("option_labels")
+            labels = {key: value for key, value in cast(dict[object, object], labels_raw).items()
+                      if isinstance(key, str) and isinstance(value, str)} if isinstance(labels_raw, dict) else {}
             fields[name] = ConfigField(
                 name=name,
                 type=ftype,
@@ -184,6 +192,9 @@ def parse_config_schema(meta: dict[str, Any]) -> dict[str, ConfigField]:
                 maximum=spec_dict.get("maximum"),
                 integer=bool(spec_dict.get("integer", False)),
                 scope=str(spec_dict.get("scope") or ""),
+                label=str(spec_dict.get("label") or ""),
+                option_labels=labels,
+                strict=spec_dict.get("strict") is True,
             )
         else:
             fields[name] = ConfigField(name=name, type="string", default=spec)
@@ -376,6 +387,8 @@ def schema_to_payload(schema: dict[str, ConfigField]) -> dict[str, dict[str, Any
             "maximum": fld.maximum,
             "integer": fld.integer,
             "scope": fld.scope,
+            **({"label": fld.label} if fld.label else {}),
+            **({"option_labels": fld.option_labels} if fld.option_labels else {}),
         }
         for key, fld in schema.items()
     }

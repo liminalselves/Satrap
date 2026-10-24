@@ -27,6 +27,24 @@ CATALOG_SCHEMA = """CREATE TABLE IF NOT EXISTS context_catalog (
     workflow_name TEXT, source_kind TEXT NOT NULL DEFAULT 'unknown',
     created_at REAL, last_message_at REAL, modified_at REAL
 )"""
+CATALOG_INDEX = "CREATE INDEX IF NOT EXISTS idx_context_catalog_session ON context_catalog(session_id)"
+BACKUP_INDEX = "CREATE INDEX IF NOT EXISTS idx_conversation_backups_identity ON conversation_data_backups(conversation_id)"
+
+
+def ensure_conversation_indexes(connection: sqlite3.Connection) -> None:
+    """
+    在写入初始化阶段补齐已有会话辅助表的查询索引
+
+    参数:
+    - connection: 可写连接, 由调用方提交; 不创建尚未使用的领域表
+    """
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table, statement in (("context_catalog", CATALOG_INDEX),
+                             ("context_sessions", "CREATE INDEX IF NOT EXISTS idx_cs_session ON context_sessions(session_id)"),
+                             ("context_session_history", "CREATE INDEX IF NOT EXISTS idx_csh_session ON context_session_history(session_id)"),
+                             ("conversation_data_backups", BACKUP_INDEX)):
+        if table in tables:
+            connection.execute(statement)
 
 CATALOG_WRITE = """INSERT INTO context_catalog
     (context_id, session_id, context_kind, workflow_name, source_kind, created_at, last_message_at, modified_at)
@@ -87,6 +105,7 @@ def bind_context(context: ContextManager | AsyncContextManager, session_id: str,
     try:
         with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=rw", uri=True, timeout=5)) as connection, connection:
             connection.execute(CATALOG_SCHEMA)
+            connection.execute(CATALOG_INDEX)
             connection.execute(CATALOG_WRITE, catalog_values(context))
     except Exception as error:
         logger.error(f"[上下文目录] 登记归属失败: {session_id}/{context.conversation_id}, {error}\n{traceback.format_exc()}")

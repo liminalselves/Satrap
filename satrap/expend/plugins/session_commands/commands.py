@@ -63,7 +63,7 @@ def build_commands(
             return await cmd_new_async(session)
 
         async def async_history_command() -> Any:
-            """查看当前用户的历史对话"""
+            """查看当前对话范围的历史会话"""
             return await cmd_history_async(session)
 
         async def async_switch_command(target_id: str = "") -> Any:
@@ -86,7 +86,7 @@ def build_commands(
         return cmd_new(session)
 
     def history_command() -> Any:
-        """查看当前用户的历史对话"""
+        """查看当前对话范围的历史会话"""
         return cmd_history(session)
 
     def switch_command(target_id: str = "") -> Any:

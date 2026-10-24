@@ -14,8 +14,16 @@ let token: string;
 
 beforeEach(async () => {
   vi.resetModules(); vi.resetAllMocks(); token = 'a';
-  vi.mocked(controlClient.get).mockImplementation(async (_url, options) => ({ data: { ok: true,
-    resources: Object.fromEntries(String((options?.params as { resources?: string }).resources).split(',').map((name) => [name, { change_token: token, state: 'available' }])) } }));
+  vi.mocked(controlClient.get).mockImplementation(async (url, options) => {
+    const params = options?.params as { resources?: string; resource?: string; type?: string };
+    const resources = params.resource === 'edictum_configs' ? ['edictum_configs', 'plugin_catalog'] : [params.resource || ''];
+    const versions = Object.fromEntries((params.resource ? resources : String(params.resources).split(',')).map((name) => [name, { change_token: token, state: 'available' }]));
+    if (url === '/config/snapshot') {
+      const data = params.resource === 'session_classes' ? await sessionApi.list() : params.resource === 'edictum_configs' ? await edictumApi.list() : await modelApi.list('llm');
+      return { data: { data, versions } };
+    }
+    return { data: { ok: true, resources: versions } };
+  });
   vi.mocked(sessionApi.list).mockResolvedValue({ demo: { class_path: 'Demo', enabled: true } });
   vi.mocked(edictumApi.list).mockResolvedValue({});
   vi.mocked(modelApi.list).mockResolvedValue({});

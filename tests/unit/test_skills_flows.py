@@ -766,3 +766,82 @@ def test_exporter_registers_sync_tools():
     assert list(inspect.signature(handler).parameters) == ["msg"]
     assert handler(msg="hi") == {"echo": "hi"}
     assert inspect.signature(handler).parameters["msg"].annotation is str
+
+
+@pytest.mark.asyncio
+async def test_exporter_preserves_rich_parameters_and_optional_defaults():
+    class RichTool(Tool):
+        tool_name = "rich"
+        description = "处理文字列表"
+        params_dict = {
+            "options": {"type": "array", "items": {"type": "string"}},
+            "mode": {"type": "string", "enum": ["auto", "text"], "default": "auto"},
+        }
+
+        def execute(self, options: list[str], mode: str = "auto"):
+            return {"options": options, "mode": mode}
+
+    manager = ToolsManager()
+    manager.register_tool(RichTool())
+    server = export_tools_to_mcp(manager)
+    tools = await server.list_tools()
+    assert len(tools) == 1
+    schema = tools[0].input_schema
+    assert schema["required"] == ["options"]
+    assert schema["properties"]["options"]["items"] == {"type": "string"}
+    assert schema["properties"]["mode"]["enum"] == ["auto", "text"]
+    assert schema["properties"]["mode"]["default"] == "auto"
+    result = await server.call_tool("rich", {"options": ["one"]})
+    assert not result.is_error
+    assert '"mode": "auto"' in str(result.content)
+
+
+@pytest.mark.asyncio
+async def test_exporter_preserves_combined_root_schema_and_original_arguments():
+    """MCP 保留组合类型, 根条件和局部引用, 合法参数与本地执行一致"""
+    from mcp.server.mcpserver.exceptions import ToolError
+    calls = []
+
+    class ContractTool(Tool):
+        tool_name = "contract"
+        description = "测试完整输入契约"
+        params_dict = {
+            "text": {"type": "string"},
+            "path": {"type": "string"},
+            "value": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "null"}]},
+            "items": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+        }
+
+        def get_tool_defined(self):
+            definition = super().get_tool_defined()
+            schema = definition["function"]["parameters"]
+            schema.update(required=[], oneOf=[
+                {"required": ["text"], "not": {"required": ["path"]}},
+                {"required": ["path"], "not": {"required": ["text"]}},
+            ])
+            schema["$defs"] = {"entry": {"type": "object", "properties": {"label": {"type": "string"}},
+                                         "required": ["label"], "additionalProperties": False}}
+            return definition
+
+        def execute(self, **kwargs):
+            calls.append(kwargs)
+            return kwargs
+
+    tool = ContractTool()
+    manager = ToolsManager()
+    manager.register_tool(tool)
+    server = export_tools_to_mcp(manager)
+    schema = (await server.list_tools())[0].input_schema
+    assert schema == tool.get_tool_defined()["function"]["parameters"]
+    schema["required"].append("value")
+    assert (await server.list_tools())[0].input_schema["required"] == []
+    for arguments in [{"text": "hello", "value": 7, "items": [{"label": "ok"}]},
+                      {"path": "document.txt", "value": None}, {"text": "no optional fields"}]:
+        await server.call_tool("contract", arguments)
+        assert calls[-1] == arguments
+    count = len(calls)
+    for invalid in [{}, {"text": "a", "path": "b"}, {"text": "a", "value": 1.5},
+                    {"text": "a", "items": [{}]}, {"text": "a", "extra": True}]:
+        with pytest.raises(ToolError):
+            await server.call_tool("contract", invalid)
+        assert len(calls) == count

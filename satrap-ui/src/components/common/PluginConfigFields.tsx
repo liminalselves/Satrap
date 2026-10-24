@@ -35,12 +35,12 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
     const missingLabel = optionState === 'loading' ? '正在读取选项' : optionState === 'error' ? '选项读取失败' : '引用失效';
     const options = modelField ? modelOptions[field.type] || [] : knowledgeField
       ? knowledgeBases.filter((item) => !field.scope || item.scope === field.scope)
-      : (field.options || []).map((item) => ({ value: item, label: item }));
+      : (field.options || []).map((item) => ({ value: item, label: field.option_labels?.[item] || item }));
     const selections = Array.isArray(value) ? value.map(String) : value ? [String(value)] : [];
     const missing = selections.filter((item) => !options.some((option) => option.value === item));
     return <div key={key}>
       <div className="flex items-center justify-between gap-3">
-        <label htmlFor={fieldId} className="text-sm font-medium text-text-primary">{key}{field.required ? ' *' : ''}</label>
+        <label htmlFor={fieldId} className="text-sm font-medium text-text-primary">{field.label || key}{field.required ? ' *' : ''}</label>
         {(sessionMode || namedMode) && <div className="flex items-center gap-2 text-xs text-text-tertiary">
           <span>{overridden ? namedMode ? '命名配置' : '会话自定义' : `继承${sources[key] === 'named' ? '命名配置' : sources[key] === 'global' ? '全局配置' : '默认值'}`}</span>
           {overridden && onReset && <button type="button" disabled={locked} className="text-accent" onClick={() => onReset(key)}>恢复继承</button>}

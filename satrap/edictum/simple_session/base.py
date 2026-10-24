@@ -8,13 +8,41 @@ from satrap.edictum.plugin import Plugin
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from .handlers import _HandlerRegistryMixin
 
+from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession
+    from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
 
 
 class _SessionFeatures(_HandlerRegistryMixin):
     _plugin_interop_runtime: PluginInterop | None = None
+
+    @property
+    def default_agent_prompt_enabled(self) -> bool:
+        """
+        读取本会话的内置 Agent 提示开关
+
+        返回:
+        - 是否在模型请求副本中补充内置提示, 默认 False
+        """
+        return getattr(self, "_default_agent_prompt_enabled", False)
+
+    @default_agent_prompt_enabled.setter
+    def default_agent_prompt_enabled(self, enabled: bool) -> None:
+        """
+        同步更新会话与已初始化主工作流的提示开关
+
+        参数:
+        - enabled: 布尔开关, 不接受字符串或数字
+        """
+        if type(enabled) is not bool:
+            logger.warning("[会话] default_agent_prompt_enabled 必须是布尔值")
+            raise ValueError("default_agent_prompt_enabled 必须是布尔值")
+        self._default_agent_prompt_enabled = enabled
+        workflow: ModelWorkflowFramework | AsyncModelWorkflowFramework | None = getattr(self, "_wf", None)
+        if workflow is not None:
+            workflow.default_agent_prompt_enabled = enabled
 
     @property
     def _plugin_interop(self) -> PluginInterop:

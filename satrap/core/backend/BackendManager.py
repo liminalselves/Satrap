@@ -35,6 +35,7 @@ from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_actions import GroupActionStore
+from satrap.core.platform.action_catalog import ActionCatalog, ActionScope, platform_action_catalog
 from satrap.core.config.group_action_origin import (
     ModelActionAuthorization, ModelActionAuthorizationError, bind_group_action_preflight,
     current_group_request_occupancy, current_model_action_authorization,
@@ -70,6 +71,7 @@ from satrap.core.platform import (
     set_current_adapter_manager,
 )
 from satrap.core.utils.paths import set_media_allowed_roots, set_media_storage_root
+from satrap.core.utils.validation import positive_timeout
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 
@@ -134,7 +136,8 @@ class BackendConfig:
     rate_limit: float = 1.0
     # 调度管线配置
     rate_burst: int = 5
-    llm_timeout: float = 120.0
+    session_timeout: float | None = 120.0
+    """单轮会话执行限时, None 表示不限时, 不影响模型网络超时"""
     error_feedback: bool = True
 
     session_classes: Dict[str, str] = field(default_factory=dict[str, str])
@@ -148,6 +151,8 @@ class BackendConfig:
     api_host: str = "127.0.0.1"
     # HTTP API 配置
     api_port: int = 19870
+    dashboard_password: str | None = None
+    # 前端访问密码的 PBKDF2 自描述哈希, None 表示免密进入
 
     platforms: List[Dict[str, Any]] = field(default_factory=list[Dict[str, Any]])
     # 平台适配器配置
@@ -196,11 +201,32 @@ class BackendConfig:
             )
         from satrap.core.approval.migration import migrate_approval_admin_config
         data = migrate_approval_admin_config(data)
+        classes = data.get("session_classes")
+        if classes is None:
+            classes = {}
+        if not isinstance(classes, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in cast(dict[object, object], classes).items()
+        ):
+            raise ValueError("session_classes 必须是名称到类路径的对象或 null")
+        classes = cast(dict[str, str], classes)
+        platforms = data.get("platforms")
+        if platforms is None:
+            platforms = []
+        if not isinstance(platforms, list):
+            raise ValueError("platforms 必须是列表或 null")
+        platforms = cast(list[dict[str, Any]], platforms)
+        api = data.get("api")
+        if api is None:
+            api = {}
+        if not isinstance(api, dict):
+            raise ValueError("api 必须是对象或 null")
+        api = cast(dict[str, Any], api)
         media_roots = data.get("media_allowed_roots")
         from satrap.core.config.administrator_groups import (normalize_administrator_overrides, migrate_legacy_scope_exclusions,
                                                              normalize_administrator_groups)
-        administrators = normalize_administrator_groups(data.get("administrator_groups"), data.get("platforms", []))
-        exceptions = normalize_administrator_overrides(data.get("administrator_overrides"), data.get("platforms", []))
+        administrators = normalize_administrator_groups(data.get("administrator_groups"), platforms)
+        exceptions = normalize_administrator_overrides(data.get("administrator_overrides"), platforms)
         administrators, exceptions, _pending = migrate_legacy_scope_exclusions(administrators, exceptions)
         if media_roots is not None and (
             not isinstance(media_roots, list)
@@ -218,18 +244,60 @@ class BackendConfig:
             session_checkpoint=cls._as_bool(data.get("session_checkpoint", False)),
             rate_limit=float(data.get("rate_limit", 1.0)),
             rate_burst=int(data.get("rate_burst", 5)),
-            llm_timeout=float(data.get("llm_timeout", 120.0)),
+            session_timeout=(None if data.get("session_timeout", data.get("llm_timeout", 120.0)) is None
+                             else positive_timeout(data.get("session_timeout", data.get("llm_timeout", 120.0)), "session_timeout")),
             error_feedback=cls._as_bool(data.get("error_feedback", True)),
-            session_classes=dict(data.get("session_classes", {})),
-            session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
-            workspace_roots=list(data.get("workspace_roots") or []),
+            session_classes=dict(classes),
+            session_scan_paths=cls._path_list(data, "session_scan_paths", [".satrap/session"]),
+            workspace_roots=cls._path_list(data, "workspace_roots", []),
             media_allowed_roots=list(media_roots) if media_roots else None,
-            api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
-            api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
-            platforms=list(data.get("platforms", [])),
+            api_host=str(api.get("host", data.get("api_host", "127.0.0.1"))),
+            api_port=int(api.get("port", data.get("api_port", 19870))),
+            dashboard_password=cls._dashboard_password(api),
+            platforms=list(platforms),
             administrator_groups=administrators,
             administrator_overrides=exceptions,
         )
+
+    @staticmethod
+    def _dashboard_password(api: dict[str, Any]) -> str | None:
+        """
+        解析前端访问密码的 PBKDF2 哈希, 空值表示免密
+
+        参数:
+        - api: 已校验的 api 配置段
+
+        返回:
+        - 哈希字符串或 None; 非字符串非空值明确报错
+        """
+        value: object = api.get("dashboard_password")
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str):
+            raise ValueError("api.dashboard_password 必须是字符串或 null")
+        if not value.startswith("pbkdf2_sha256$"):
+            raise ValueError("api.dashboard_password 必须是 pbkdf2_sha256 格式哈希")
+        return value
+
+    @staticmethod
+    def _path_list(data: dict[str, Any], name: str, default: list[str]) -> list[str]:
+        """
+        读取路径列表, 区分 null 默认值与显式空列表
+
+        参数:
+        - data: 配置文档
+        - name: 路径列表字段名
+        - default: 缺省或 null 时复制的默认值
+
+        返回:
+        - 独立字符串列表, 非列表或非字符串项明确报错
+        """
+        value: object = data.get(name)
+        if value is None:
+            return list(default)
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in cast(list[object], value)):
+            raise ValueError(f"{name} 必须是字符串列表或 null")
+        return list(cast(list[str], value))
 
 
 class BackendManager:
@@ -1442,6 +1510,40 @@ class BackendManager:
         if result.get("target") != f"group:{group_id}":
             raise LookupError("群手动唤醒记录不存在")
         return result
+
+    async def platform_actions(self, *, summary: bool = False, platform_id: str = '', account: str = 'current',
+                               source: str = 'all', state: str = 'pending', target: str = '', action_id: str = '',
+                               limit: int = 50, cursor: str = '') -> ActionCatalog:
+        """
+        从已配置平台读取动作目录, 不初始化会触发恢复的业务存储
+
+        参数:
+        - summary: 是否只查询待审批计数
+        - platform_id: 可选平台筛选
+        - account: 当前或指定历史账号
+        - source: 动作来源
+        - state: 状态筛选
+        - target: 群或用户 ID
+        - action_id: 原动作 ID
+        - limit: 每页数量
+        - cursor: 同筛选范围的分页游标
+
+        返回:
+        - 平台动作列表及读取覆盖情况
+        """
+        scopes = []
+        for config in self.config.platforms:
+            identity = config.get('id', '')
+            if not isinstance(identity, str) or not identity:
+                continue
+            adapter = self._adapter_mgr.get_adapter(identity) if self._adapter_mgr else None
+            current_account = adapter.friend_account() if adapter else ''
+            online = bool(adapter and adapter.config.enable and current_account)
+            if isinstance(adapter, OneBotAdapter):
+                online = online and adapter.get_client() is not None
+            scopes.append(ActionScope(identity, self._storage.platform_db(identity), current_account, online))
+        return await platform_action_catalog(scopes, summary=summary, platform_id=platform_id, account=account,
+                                             source=source, state=state, target=target, action_id=action_id, limit=limit, cursor=cursor)
 
     async def group_actions(
         self, adapter_id: str, self_id: str, group_id: str, *,
@@ -3258,7 +3360,7 @@ class BackendManager:
         self._scheduler = PipelineScheduler(
             session_manager=self._session_mgr,
             rate_limiter=self._rate_limiter,
-            llm_timeout=self.config.llm_timeout,
+            session_timeout=self.config.session_timeout,
             error_feedback=self.config.error_feedback,
             user_manager=self._user_mgr,
         )

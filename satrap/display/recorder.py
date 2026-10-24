@@ -275,6 +275,7 @@ class DisplayRecorder:
                 " ON display_turn_variants (turn_id, variant_index)"
             )
             _ensure_column_locked(conn, "display_turn_variants", "context_stats", "TEXT")
+            _ensure_column_locked(conn, "display_turn_variants", "output_files", "TEXT NOT NULL DEFAULT '[]'")
             # 既有展示轮次按第 0 个回复版本登记
             conn.execute(
                 """
@@ -379,6 +380,49 @@ class DisplayRecorder:
         with self._lock:
             return {"turn_id": self._turn_id, "variant_index": self._variant_index} if self._turn_id is not None else {}
 
+    def add_output_file(self, metadata: dict[str, object], expected: dict[str, int]) -> None:
+        """
+        立即持久化本轮文件, 不绑定后来的重试版本
+
+        参数:
+        - metadata: 不包含服务器路径的受控文件资料
+        - expected: 宿主冻结的轮次与回复版本
+        """
+        with self._lock:
+            if not expected or expected != self.recovery_origin():
+                raise ValueError("文件所属回复已经结束或切换")
+            conn = self._get_conn()
+            row = conn.execute("SELECT output_files FROM display_turn_variants WHERE turn_id=? AND variant_index=?",
+                               (self._turn_id, self._variant_index)).fetchone()
+            files = json.loads(row[0]) if row else []
+            if len(files) >= 16:
+                raise ValueError("单次回复最多交付 16 个文件")
+            files.append(metadata)
+            conn.execute("INSERT INTO display_turn_variants(turn_id, variant_index, created_at, output_files) VALUES(?, ?, ?, ?) "
+                         "ON CONFLICT(turn_id, variant_index) DO UPDATE SET output_files=excluded.output_files",
+                         (self._turn_id, self._variant_index, time.time(), json.dumps(files, ensure_ascii=False)))
+            conn.commit()
+
+    def find_output_file(self, file_id: str) -> dict[str, object] | None:
+        """
+        仅从当前会话的真实回复版本解析可下载附件
+
+        参数:
+        - file_id: 不透明文件 ID, 不接受路径
+
+        返回:
+        - 已登记文件资料或 None, 不跨会话查找
+        """
+        with self._lock:
+            row = self._get_conn().execute("SELECT item.value FROM display_turn_variants v JOIN display_turns t ON t.id=v.turn_id "
+                                          "JOIN json_each(v.output_files) item WHERE t.conversation_id=? AND json_extract(item.value, '$.file_id')=? LIMIT 1",
+                                          (self.conversation_id, file_id)).fetchone()
+            if row is not None:
+                item: object = json.loads(row[0])
+                if isinstance(item, dict):
+                    return cast(dict[str, object], item)
+        return None
+
     def resume_turn(self, turn_id: int, variant_index: int) -> dict[str, Any]:
         """恢复原轮次的记录通道, 不创建新回复版本"""
         with self._lock:
@@ -472,6 +516,8 @@ class DisplayRecorder:
                 "turn_index": int(turn_row[0]) if turn_row else -1,
                 "variant_index": self._variant_index,
                 "variant_count": int(count_row[0]) if count_row else 0,
+                "output_files": json.loads(conn.execute("SELECT output_files FROM display_turn_variants WHERE turn_id=? AND variant_index=?",
+                                                         (turn_id, self._variant_index)).fetchone()[0]),
             }
             self._turn_id = None
             self._segments = []
@@ -655,10 +701,18 @@ class DisplayRecorder:
 
     # ---------- 查询 (供前端) ----------
 
-    def snapshot_turns(self) -> list[dict[str, Any]]:
-        """在持久化轮次上叠加当前生成缓冲, 供断线恢复"""
+    def snapshot_turns(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """
+        在持久化轮次上叠加当前生成缓冲, 供断线恢复
+
+        参数:
+        - limit: 可选最新轮次数量上限
+
+        返回:
+        - 按时间排列且包含当前生成缓冲的轮次
+        """
         with self._lock:
-            turns = self.list_turns()
+            turns = self.list_turns(limit=limit, latest=limit is not None, all_variants=limit is None)
             active_turn_id = self._turn_id
             if active_turn_id is None:
                 return turns
@@ -671,30 +725,45 @@ class DisplayRecorder:
                     tool_calls=self._list_tool_calls_locked(self._get_conn(), active_turn_id, self._variant_index),
                 )
                 active = {key: turn[key] for key in ("answer", "thinking", "segments", "tool_calls", "created_at", "context_stats")}
+                files = self._get_conn().execute("SELECT output_files FROM display_turn_variants WHERE turn_id=? AND variant_index=?",
+                                                 (active_turn_id, self._variant_index)).fetchone()
+                active["output_files"] = json.loads(files[0]) if files else []
+                turn["output_files"] = active["output_files"]
                 active["variant_index"] = self._variant_index
                 turn["variants"] = [item for item in turn["variants"] if item["variant_index"] != self._variant_index] + [active]
                 turn["variant_count"] = len(turn["variants"])
+                if limit is not None:
+                    indices = sorted(set(turn.get('variant_indices', []) + [self._variant_index]))
+                    turn['variant_indices'] = indices
+                    turn['variant_count'] = len(indices)
             return turns
 
-    def list_turns(self, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    def list_turns(self, limit: int | None = None, offset: int = 0, *, before: int | None = None, latest: bool = False, all_variants: bool = True) -> list[dict[str, Any]]:
         """
         列出当前会话的对话轮次 (按 turn_index 升序), 每轮含工具调用明细和 segments 时间顺序
 
         参数:
         - limit: 数量上限
         - offset: 偏移量
+        - before: 仅读取此轮次之前的消息
+        - latest: 从最新轮次选取, 返回仍按时间正序排列
+        - all_variants: 是否读取非当前回答变体的完整内容
 
         返回:
         - list[dict[str, Any]]: 列出当前会话的对话轮次 (按 turn_index 升序), 每轮含工具调用明细和 segments 时间顺序
         """
         conn = self._get_conn()
         with self._lock:
-            selection = "SELECT id FROM display_turns WHERE conversation_id = ? ORDER BY turn_index ASC"
+            selection = "SELECT id FROM display_turns WHERE conversation_id = ?"
             params: list[Any] = [self.conversation_id]
+            if before is not None:
+                selection += ' AND turn_index < ?'
+                params.append(before)
+            selection += ' ORDER BY turn_index ' + ('DESC' if latest else 'ASC')
             if limit is not None:
                 selection += " LIMIT ? OFFSET ?"
                 params += [limit, offset]
-            conn.execute("SAVEPOINT display_history_read")   # 三次查询共用快照, 避免拼接跨时刻数据
+            conn.execute("SAVEPOINT display_history_read")   # 轮次, 变体与工具查询共用快照
             try:
                 rows = conn.execute(
                     "SELECT id, turn_index, user_input, thinking, answer, attachments, segments,"
@@ -702,13 +771,18 @@ class DisplayRecorder:
                     f" WHERE id IN ({selection}) ORDER BY turn_index ASC", params,
                 ).fetchall()
                 variant_rows = conn.execute(
-                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at"
-                    f" FROM display_turn_variants WHERE turn_id IN ({selection}) ORDER BY variant_index ASC", params,
+                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at, output_files"
+                    f" FROM display_turn_variants WHERE turn_id IN ({selection})"
+                    + ('' if all_variants else ' AND variant_index=(SELECT active_variant FROM display_turns WHERE id=display_turn_variants.turn_id)')
+                    + ' ORDER BY variant_index ASC', params,
                 ).fetchall()
                 tool_rows = conn.execute(
                     "SELECT turn_id, variant_index, seq, name, arguments, success, call_id, created_at"
-                    f" FROM display_tool_calls WHERE turn_id IN ({selection}) ORDER BY seq ASC", params,
+                    f" FROM display_tool_calls WHERE turn_id IN ({selection})"
+                    + ('' if all_variants else ' AND variant_index=(SELECT active_variant FROM display_turns WHERE id=display_tool_calls.turn_id)')
+                    + ' ORDER BY seq ASC', params,
                 ).fetchall()
+                variant_indices = {row[0]: sorted(int(value) for value in row[1].split(',')) for row in conn.execute(f'SELECT turn_id, GROUP_CONCAT(variant_index) FROM display_turn_variants WHERE turn_id IN ({selection}) GROUP BY turn_id', params)} if not all_variants else {}
             finally:
                 conn.execute("RELEASE display_history_read")
             tools: dict[tuple[int, int], list[dict[str, Any]]] = {}
@@ -725,6 +799,7 @@ class DisplayRecorder:
                     "segments": json.loads(row[4]) if row[4] else None,
                     "context_stats": json.loads(row[5]) if row[5] else None,
                     "created_at": row[6], "tool_calls": tools.get((row[0], int(row[1])), []),
+                    "output_files": json.loads(row[7]),
                 })
             turns: list[dict[str, Any]] = [
                 {
@@ -738,9 +813,11 @@ class DisplayRecorder:
                     "context_stats": json.loads(r[7]) if r[7] else None,
                     "created_at": r[8],
                     "active_variant": int(r[9] or 0),
-                    "variant_count": len(variants.get(r[0], [])),
+                    "variant_count": len(variant_indices.get(r[0], variants.get(r[0], []))),
+                    **({'variant_indices': variant_indices.get(r[0], [])} if not all_variants else {}),
                     "tool_calls": tools.get((r[0], int(r[9] or 0)), []),
                     "variants": variants.get(r[0], []),
+                    "output_files": next((item["output_files"] for item in variants.get(r[0], []) if item["variant_index"] == int(r[9] or 0)), []),
                 }
                 for r in rows
             ]
@@ -798,7 +875,7 @@ class DisplayRecorder:
         - list[dict[str, Any]]: 按版本索引排序的回复版本
         """
         rows = conn.execute(
-            "SELECT variant_index, thinking, answer, segments, context_stats, created_at"
+            "SELECT variant_index, thinking, answer, segments, context_stats, created_at, output_files"
             " FROM display_turn_variants WHERE turn_id = ? ORDER BY variant_index ASC",
             (turn_id,),
         ).fetchall()
@@ -810,6 +887,7 @@ class DisplayRecorder:
                 "segments": json.loads(row[3]) if row[3] else None,
                 "context_stats": json.loads(row[4]) if row[4] else None,
                 "created_at": row[5],
+                "output_files": json.loads(row[6]),
                 "tool_calls": cls._list_tool_calls_locked(conn, turn_id, int(row[0])),
             }
             for row in rows
@@ -916,7 +994,7 @@ class DisplayRecorder:
         - dict[str, Any] | None: 匹配轮次
         """
         return next(
-            (turn for turn in self.list_turns() if int(turn["turn_index"]) == turn_index),
+            (turn for turn in self.list_turns(limit=1, before=turn_index + 1, latest=True) if int(turn["turn_index"]) == turn_index),
             None,
         )
 
@@ -927,7 +1005,7 @@ class DisplayRecorder:
         返回:
         - dict[str, Any] | None: 最后轮次
         """
-        turns = self.list_turns()
+        turns = self.list_turns(limit=1, latest=True)
         return turns[-1] if turns else None
 
     def has_context_deltas_before(self, up_to_index: int) -> bool:
@@ -1031,7 +1109,7 @@ class DisplayRecorder:
             conn = self._get_conn()
             rows = conn.execute(
                 "SELECT t.id, t.turn_index, t.user_input, t.thinking, t.answer, t.attachments,"
-                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages"
+                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages, v.output_files"
                 " FROM display_turns t LEFT JOIN display_turn_variants v"
                 " ON v.turn_id = t.id AND v.variant_index = t.active_variant"
                 " WHERE t.conversation_id = ? AND t.turn_index < ? ORDER BY t.turn_index ASC",
@@ -1072,8 +1150,8 @@ class DisplayRecorder:
                 new_turn_id = int(cur.lastrowid or 0)
                 tconn.execute(
                     "INSERT INTO display_turn_variants"
-                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at)"
-                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
+                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at, output_files)"
+                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         new_turn_id,
                         row[3],
@@ -1082,6 +1160,7 @@ class DisplayRecorder:
                         row[10],
                         row[7],
                         row[8],
+                        row[11] or "[]",
                     ),
                 )
                 for tool in tools:
@@ -1112,6 +1191,9 @@ def query_conversations(
     older_than_days: float | None = None,
     page: int = 1,
     page_size: int = 50,
+    before: tuple[float, str] | None = None,
+    _all: bool = False,
+    identity: str = '',
 ) -> dict[str, Any]:
     """
     查询 Chat 历史会话并返回分页结果
@@ -1127,6 +1209,9 @@ def query_conversations(
     - older_than_days: 仅返回超过指定未使用天数的会话
     - page: 页码, 从 1 开始
     - page_size: 每页数量
+    - before: 可选稳定游标, 由活动时间和会话 ID 组成
+    - _all: 内部全量读取, 避免通过循环分页重复聚合全部轮次
+    - identity: 可选精确会话 ID
 
     返回:
     - dict[str, Any]: 会话列表、总数和分页信息
@@ -1143,6 +1228,7 @@ def query_conversations(
         }
     conn = sqlite3.connect(str(path), check_same_thread=False)
     try:
+        conn.execute('BEGIN')   # 计数与当前页共享同一只读快照
         tables = {
             str(r[0])
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -1156,48 +1242,118 @@ def query_conversations(
                 "page": normalized_page,
                 "page_size": normalized_page_size,
             }
+        fast_total: int | None = None
+
+        def read_rows(sql: str) -> list[Any]:
+            """
+            对可直接表达的查询执行 SQL 分页, Unicode 文本搜索保留原 casefold 语义
+
+            参数:
+            - sql: 归一化列名后的只读目录查询
+
+            返回:
+            - 当前页或兼容搜索所需的行
+            """
+            nonlocal fast_total
+
+            def fetch_rows(query: str, parameters: list[object]) -> list[Any]:
+                """
+                仅为选中的会话读取标题, 避免聚合全部历史时读取正文
+
+                参数:
+                - query: 已完成筛选和分页的目录 SQL
+                - parameters: SQL 绑定参数
+
+                返回:
+                - 补齐首条输入的目录行
+                """
+                if not has_turns:
+                    return conn.execute(query, parameters).fetchall()
+                titled = conn.execute(
+                    'SELECT directory.*, (SELECT user_input FROM display_turns first_turn '
+                    'WHERE first_turn.conversation_id=directory.conversation_id '
+                    f'ORDER BY first_turn.turn_index ASC LIMIT 1) FROM ({query}) directory', parameters,
+                ).fetchall()
+                return [(*row[:3], row[-1] if row[-1] is not None else row[3], *row[4:-1]) for row in titled]
+
+            if search.strip():
+                return fetch_rows(sql, [])
+            conditions: list[str] = []
+            arguments: list[object] = []
+            if identity:
+                conditions.append('conversation_id=?')
+                arguments.append(identity)
+            if project_id == '__none__':
+                conditions.append("(project_id IS NULL OR project_id='')")
+            elif project_id:
+                conditions.append('project_id=?')
+                arguments.append(project_id)
+            if model.strip():
+                conditions.append("COALESCE(NULLIF(model, ''), 'default')=?")
+                arguments.append(model.strip())
+            if turn_count in {'empty', 'single'}:
+                conditions.append('turn_count=?')
+                arguments.append(0 if turn_count == 'empty' else 1)
+            if older_than_days is not None:
+                conditions.append('last_at<=?')
+                arguments.append(time.time() - max(float(older_than_days), 0) * 86400)
+            selected = f'SELECT * FROM ({sql}) directory' + (' WHERE ' + ' AND '.join(conditions) if conditions else '')
+            count_query, count_arguments = selected, list(arguments)
+            counted = not _all or before is not None
+            if counted:
+                selected = f'SELECT directory.*, COUNT(*) OVER () AS directory_total FROM ({selected}) directory'
+            if before is not None:
+                selected = f'SELECT * FROM ({selected}) filtered WHERE (last_at<? OR (last_at=? AND conversation_id>?))'
+                arguments.extend((before[0], before[0], before[1]))
+            selected += ' ORDER BY last_at DESC, conversation_id ASC'
+            if not _all:
+                selected += ' LIMIT ? OFFSET ?'
+                arguments.extend((normalized_page_size, (normalized_page - 1) * normalized_page_size))
+            rows = fetch_rows(selected, arguments)
+            if counted:
+                fast_total = int(rows[0][8]) if rows else int(conn.execute(f'SELECT COUNT(*) FROM ({count_query})', count_arguments).fetchone()[0])
+                rows = [row[:8] for row in rows]
+            if fast_total is None:
+                fast_total = len(rows)
+            return rows
+
         if has_turns and has_meta:
-            rows = conn.execute(
+            rows = read_rows(
                 """
                 WITH turn_stats AS (
                     SELECT t.conversation_id,
                            COUNT(*) AS turn_count,
-                           MAX(t.created_at) AS last_at,
-                           (SELECT user_input FROM display_turns first_turn
-                            WHERE first_turn.conversation_id = t.conversation_id
-                            ORDER BY first_turn.turn_index ASC LIMIT 1) AS first_input
+                           MAX(t.created_at) AS last_at
                     FROM display_turns t
                     GROUP BY t.conversation_id
                 )
-                SELECT m.conversation_id, COALESCE(s.turn_count, 0),
-                       COALESCE(s.last_at, m.created_at), COALESCE(s.first_input, '新对话'),
+                SELECT m.conversation_id, COALESCE(s.turn_count, 0) AS turn_count,
+                       COALESCE(s.last_at, m.created_at, 0) AS last_at, '新对话' AS first_input,
                        m.project_id, m.model, m.think, m.created_at
                 FROM conversation_meta m
                 LEFT JOIN turn_stats s ON s.conversation_id = m.conversation_id
                 UNION ALL
-                SELECT s.conversation_id, s.turn_count, s.last_at, s.first_input,
+                SELECT s.conversation_id, s.turn_count, s.last_at, '新对话',
                        NULL, 'default', 'off', s.last_at
                 FROM turn_stats s
                 WHERE s.conversation_id NOT IN (SELECT conversation_id FROM conversation_meta)
                 """
-            ).fetchall()
+            )
         elif has_meta:
-            rows = conn.execute(
-                "SELECT conversation_id, 0, created_at, '新对话', project_id, model, think, created_at "
+            rows = read_rows(
+                "SELECT conversation_id, 0 AS turn_count, COALESCE(created_at, 0) AS last_at, '新对话' AS first_input, project_id, model, think, created_at "
                 "FROM conversation_meta"
-            ).fetchall()
+            )
         else:
-            rows = conn.execute(
+            rows = read_rows(
                 """
                 SELECT conversation_id, COUNT(*) AS turn_count, MAX(created_at) AS last_at,
-                       (SELECT user_input FROM display_turns t2
-                         WHERE t2.conversation_id = t.conversation_id
-                         ORDER BY turn_index ASC LIMIT 1) AS first_input,
-                       NULL AS project_id, 'default', 'off', MIN(created_at)
+                       '新对话' AS first_input,
+                       NULL AS project_id, 'default' AS model, 'off' AS think, MIN(created_at) AS created_at
                 FROM display_turns
                 GROUP BY conversation_id
                 """
-            ).fetchall()
+            )
         items: list[dict[str, Any]] = [
             {
                 "conversation_id": str(r[0]),
@@ -1211,8 +1367,12 @@ def query_conversations(
             }
             for r in rows
         ]
+        if fast_total is not None:
+            return {'items': items, 'total': fast_total, 'page': normalized_page, 'page_size': normalized_page_size}
 
         keyword = search.strip().casefold()
+        if identity:
+            items = [item for item in items if item['conversation_id'] == identity]
         if keyword:
             items = [
                 item
@@ -1233,11 +1393,14 @@ def query_conversations(
         if older_than_days is not None:
             cutoff = time.time() - max(float(older_than_days), 0) * 86400
             items = [item for item in items if float(item["last_at"]) <= cutoff]
-        items.sort(key=lambda item: float(item["last_at"]), reverse=True)
+        items.sort(key=lambda item: (-float(item['last_at']), str(item['conversation_id'])))
         total = len(items)
+        if before is not None:
+            timestamp, identity = before
+            items = [item for item in items if (-float(item['last_at']), str(item['conversation_id'])) > (-timestamp, identity)]
         offset = (normalized_page - 1) * normalized_page_size
         return {
-            "items": items[offset:offset + normalized_page_size],
+            "items": items if _all else items[offset:offset + normalized_page_size],
             "total": total,
             "page": normalized_page,
             "page_size": normalized_page_size,
@@ -1256,14 +1419,7 @@ def list_conversations(db_path: str | None = None) -> list[dict[str, Any]]:
     返回:
     - list[dict[str, Any]]: 按最近使用时间倒序的全部会话
     """
-    page = 1
-    items: list[dict[str, Any]] = []
-    while True:
-        result = query_conversations(db_path, page=page, page_size=200)
-        items.extend(cast(list[dict[str, Any]], result["items"]))
-        if len(items) >= int(result["total"]):
-            return items
-        page += 1
+    return cast(list[dict[str, Any]], query_conversations(db_path, _all=True)['items'])
 
 
 # ---------- 项目 (工作区文件夹绑定) ----------

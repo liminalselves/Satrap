@@ -68,6 +68,8 @@ class PendingMessage:
     omitted_images: int = 0
     window_complete: bool = True
     """快照是否足以代表完整事件, 语音/文件等必须留给原事件处理"""
+    received_sequence: int = 0
+    """来源事件的入队序号, 时间戳相同时仍能确定重置边界"""
 
     @property
     def image_count(self) -> int:
@@ -109,7 +111,7 @@ class WakeWindow:
         self._last_sweep = float("-inf")
         self._pending: OrderedDict[tuple[str, ...], list[PendingMessage]] = OrderedDict()
         self._submitted: OrderedDict[tuple[str, ...], float] = OrderedDict()
-        self._activity: OrderedDict[tuple[str, ...], list[tuple[float, bool]]] = OrderedDict()
+        self._activity: OrderedDict[tuple[str, ...], list[tuple[float, bool, int]]] = OrderedDict()
 
     @staticmethod
     def key(event: MessageEvent) -> tuple[str, ...]:
@@ -140,6 +142,7 @@ class WakeWindow:
         返回:
         - tuple[PendingMessage, ...]: 当前路由有效消息, 入窗不触发下载
         """
+        received_at = event.queued_at if now is None else now
         now = monotonic() if now is None else now
         self._sweep(now)
         key = self.key(event)
@@ -171,9 +174,11 @@ class WakeWindow:
         rows = self._pending.setdefault(key, [])
         if not any(item.request_id == origin.request_id or (origin.source_message_id and item.message_id == origin.source_message_id) for item in rows):
             complete = all(item.type in {PlatformComponentType.Plain, PlatformComponentType.Image, PlatformComponentType.At} for item in event.get_messages())
-            rows.append(PendingMessage(origin.request_id, origin.actor_id, origin.source_message_id, text, now,
-                                       display_label(event.get_sender_name()), tuple(parts), omitted_images, complete))
-            self._record_activity(key, now, False)
+            rows.append(PendingMessage(origin.request_id, origin.actor_id, origin.source_message_id, text, received_at,
+                                       display_label(event.get_sender_name()), tuple(parts), omitted_images, complete,
+                                       event.queued_sequence))
+            rows.sort(key=lambda item: (item.received_at, item.received_sequence))
+            self._record_activity(key, now, False, event.queued_sequence)
         evicted = 0
         while (len(rows) > self.max_messages or sum(item.text_size for item in rows) > self.max_chars
                or sum(item.image_count for item in rows) > self.max_images):
@@ -221,7 +226,7 @@ class WakeWindow:
         for key in list(self._pending):
             self._expire_route(key, now)
 
-    def _record_activity(self, key: tuple[str, ...], now: float, submitted: bool) -> None:
+    def _record_activity(self, key: tuple[str, ...], now: float, submitted: bool, sequence: int) -> None:
         """
         记录有限的近期正文与机器人提交比例
 
@@ -229,10 +234,11 @@ class WakeWindow:
         - key: 来源路由
         - now: 单调时钟
         - submitted: 是否为模型调用提交
+        - sequence: 来源事件的入队序号
         """
         rows = self._activity.setdefault(key, [])
         rows[:] = [item for item in rows if now - item[0] < self.ttl][-63:]
-        rows.append((now, submitted))
+        rows.append((now, submitted, sequence))
         self._activity.move_to_end(key)
         while len(self._activity) > self.max_routes:
             self._activity.popitem(last=False)
@@ -318,7 +324,7 @@ class WakeWindow:
             if not self._pending[key]:
                 del self._pending[key]
             self._submitted[key] = now
-            self._record_activity(key, now, True)
+            self._record_activity(key, now, True, event.queued_sequence)
             self._submitted.move_to_end(key)
             while len(self._submitted) > self.max_routes:
                 self._submitted.popitem(last=False)
@@ -333,6 +339,29 @@ class WakeWindow:
             self._pending[key] = retained
         else:
             self._pending.pop(key, None)
+
+    def reset(self, event: MessageEvent, cutoff: float) -> None:
+        """
+        成功开启新会话后撤销边界之前的窗口资料, 保留新收到的消息
+
+        参数:
+        - event: 已成功切换的真实路由事件
+        - cutoff: 宿主确认绑定成功后发布的命令接收时刻, 同刻消息按事件入队序号区分
+        """
+        key = self.key(event)
+        boundary = (cutoff, event.queued_sequence)
+        retained = [item for item in self._pending.get(key, []) if (item.received_at, item.received_sequence) > boundary]
+        if retained:
+            self._pending[key] = retained
+        else:
+            self._pending.pop(key, None)
+        activity = [item for item in self._activity.get(key, []) if (item[0], item[2]) > boundary and not item[1]]
+        if activity:
+            self._activity[key] = activity
+        else:
+            self._activity.pop(key, None)
+        self._submitted.pop(key, None)
+        # 提交时刻可能晚于命令入队, 成功切换后旧会话的冷却和提交计数统一失效
 
     def cooldown_remaining(self, event: MessageEvent, now: float | None = None) -> float:
         """

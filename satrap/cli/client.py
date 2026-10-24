@@ -52,15 +52,10 @@ class DaemonInfo:
         返回:
         - DaemonInfo: 从配置文件和环境变量检测 daemon 地址
         """
-        try:
-            from satrap.core.config.loader import ConfigLoader   # 探测失败时仍允许客户端退回默认连接信息
+        from satrap.core.config.loader import ConfigLoader
 
-            config = ConfigLoader.autodetect()
-            return cls.from_config(config)
-        except Exception:
-            host = os.getenv("SATRAP_API_HOST", "127.0.0.1")
-            port = int(os.getenv("SATRAP_API_PORT", str(DEFAULT_BACKEND_PORT)))
-            return cls(host=host, port=port)
+        config = ConfigLoader.autodetect()
+        return cls.from_config(config)
 
     @classmethod
     def from_config(cls, config: BackendConfig) -> DaemonInfo:

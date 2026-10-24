@@ -451,6 +451,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     { key: 'description', label: '描述', placeholder: '说明该命名会话的用途' },
     ...(['simple', 'async_simple'].includes(form.edictum_type) ? [
       { key: 'system_prompt_enabled', label: '配置系统提示词', type: 'checkbox' as const, placeholder: '启用后使用下方提示词, 空文本会清空已有提示词' },
+      { key: 'default_agent_prompt_enabled', label: '使用内置 Agent 提示', type: 'checkbox' as const, placeholder: '补充工具调用与结果核实的通用规则, 可与自定义提示同时使用' },
       { key: 'system_prompt', label: '系统提示词', type: 'textarea' as const, rows: 6, disabled: !form.system_prompt_enabled, placeholder: '填写 bot 的角色、行为要求和回复风格' },
       { key: 'thinking', label: '默认思考强度', type: 'select' as const,
         options: [{ value: '', label: '默认 (关闭)' }, ...getThinkingOptions(llmConfigs[form.model_name]),

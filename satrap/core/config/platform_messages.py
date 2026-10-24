@@ -15,6 +15,7 @@ import sqlite3
 import time
 import uuid
 
+from satrap.core.conversation import HistoryWindow
 from satrap.core.utils.validation import is_bounded_text
 from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION, ensure_platform_tables
 
@@ -95,6 +96,9 @@ class ArchiveMessage:
     verified: bool = True
     truncated: bool = False
     time_source: str = "platform"
+    received_at: float | None = None
+    """宿主首次接收时间, 在进入异步转换或写入等待之前冻结"""
+
 
 
 def archive_time(value: str | None) -> float | None:
@@ -296,6 +300,9 @@ class PlatformMessageStore:
         """
         self._check_scope(scope)
         values = self._message_values(message)
+        received = self._clock() if message.received_at is None else message.received_at
+        if type(received) not in {int, float} or not math.isfinite(received) or received < 0:
+            raise ValueError("消息接收时间无效")
         connection = self._connect(create=True)
         assert connection is not None
         with closing(connection), connection:
@@ -308,7 +315,7 @@ class PlatformMessageStore:
                 "INSERT INTO platform_messages(scope_key, message_id, sender_id, nickname, card, message_time, received_at, "
                 "direction, text, components_json, reply_to_message_id, mentions_json, media_json, source, truncated, time_source) "
                 "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(scope_key, message_id) DO NOTHING",
-                (scope.key, *values[:5], now, *values[5:]),
+                (scope.key, *values[:5], received, *values[5:]),
             )
             if result.rowcount == 0:
                 previous = connection.execute(
@@ -332,13 +339,14 @@ class PlatformMessageStore:
                 self._erase(connection, scope.key, [message.message_id], "expired", "retention")
             return True
 
-    def get(self, scope: MessageScope, message_id: str) -> dict[str, Any] | None:
+    def get(self, scope: MessageScope, message_id: str, *, history_window: HistoryWindow | None = None) -> dict[str, Any] | None:
         """
         读取一条消息, 返回删除状态供回源服务防止自动补回
 
         参数:
         - scope: 当前对话身份
         - message_id: 当前对话内的平台消息 ID
+        - history_window: 可选宿主会话范围, 范围外不返回正文
 
         返回:
         - 消息及状态, 未采集时返回 None
@@ -349,10 +357,15 @@ class PlatformMessageStore:
         if connection is None:
             return None
         with closing(connection):
+            boundary, args = history_window.sql() if history_window else ("1=1", [])
             row = connection.execute(
-                "SELECT * FROM platform_messages WHERE scope_key=? AND message_id=?", (scope.key, message_id),
+                "SELECT * FROM platform_messages WHERE scope_key=? AND message_id=? AND " + boundary, (scope.key, message_id, *args),
             ).fetchone()
             if row is None:
+                if history_window is not None and connection.execute(
+                    "SELECT 1 FROM platform_messages WHERE scope_key=? AND message_id=?", (scope.key, message_id),
+                ).fetchone() is not None:
+                    raise MessageArchiveError("history_out_of_scope", "消息位于当前会话范围之外")
                 return None
             return self._item(row)
 
@@ -408,7 +421,8 @@ class PlatformMessageStore:
 
     def query(self, scope: MessageScope, *, keyword: str | None = None, sender_id: str | None = None,
               start_time: str | None = None, end_time: str | None = None, limit: int = 20,
-              cursor: str | None = None, before_message_id: str | None = None, text_budget: int = 12000) -> dict[str, Any]:
+              cursor: str | None = None, before_message_id: str | None = None, text_budget: int = 12000,
+              history_window: HistoryWindow | None = None) -> dict[str, Any]:
         """
         按当前对话检索消息, 倒序分页并按时间正序展示每页
 
@@ -422,6 +436,7 @@ class PlatformMessageStore:
         - cursor: 与当前身份和筛选条件绑定的上一页游标
         - before_message_id: 排除该消息及其后续消息
         - text_budget: 本页正文的字符预算, 128 到 100000
+        - history_window: 宿主查询边界, None 用于已授权的全群档案查询
 
         返回:
         - 消息列表, 分页, 截断和实际采集范围
@@ -440,7 +455,7 @@ class PlatformMessageStore:
         if start is not None and end is not None and start > end:
             raise ValueError("查询起始时间不能晚于结束时间")
         fingerprint = hashlib.sha256(json.dumps(
-            [scope.key, keyword or "", sender_id, start, end, before_message_id], ensure_ascii=False,
+            [scope.key, keyword or "", sender_id, start, end, before_message_id, history_window.key if history_window else None], ensure_ascii=False,
         ).encode("utf-8")).hexdigest()
         anchor: tuple[float, str] | None = None
         if cursor is not None:
@@ -468,13 +483,14 @@ class PlatformMessageStore:
             connection.execute("BEGIN")
             chat = connection.execute("SELECT * FROM platform_message_chats WHERE scope_key=?", (scope.key,)).fetchone()
             cutoff = self._clock() - self.retention_days * 86400
+            boundary, boundary_args = history_window.sql() if history_window else ("1=1", [])
             coverage = connection.execute(
                 "SELECT MIN(message_time), MAX(message_time) FROM platform_messages "
-                "WHERE scope_key=? AND status='active' AND message_time>=?", (scope.key, cutoff),
+                "WHERE scope_key=? AND status='active' AND message_time>=? AND " + boundary, (scope.key, cutoff, *boundary_args),
             ).fetchone()
             empty["coverage"].update({"archived_from": coverage[0], "archived_to": coverage[1]})
             empty["revision"] = int(chat["revision"]) if chat else 0
-            where, args = ["scope_key=?", "status='active'", "message_time>=?"], [scope.key, cutoff]
+            where, args = ["scope_key=?", "status='active'", "message_time>=?", boundary], [scope.key, cutoff, *boundary_args]
             if keyword:
                 where.append("instr(text, ?)>0")
                 args.append(keyword)
@@ -488,10 +504,14 @@ class PlatformMessageStore:
             anchors = [anchor] if anchor else []
             if before_message_id is not None:
                 before = connection.execute(
-                    "SELECT message_time, message_id FROM platform_messages WHERE scope_key=? AND message_id=?",
-                    (scope.key, before_message_id),
+                    "SELECT message_time, message_id FROM platform_messages WHERE scope_key=? AND message_id=? AND " + boundary,
+                    (scope.key, before_message_id, *boundary_args),
                 ).fetchone()
                 if before is None:
+                    if history_window is not None and connection.execute(
+                        "SELECT 1 FROM platform_messages WHERE scope_key=? AND message_id=?", (scope.key, before_message_id),
+                    ).fetchone() is not None:
+                        raise MessageArchiveError("history_out_of_scope", "分页来源位于当前会话范围之外")
                     raise MessageArchiveError("message_not_found", "分页来源消息不在当前对话档案中")
                 anchors.append((float(before[0]), str(before[1])))
             for point in anchors:

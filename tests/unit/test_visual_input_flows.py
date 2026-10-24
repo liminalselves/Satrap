@@ -28,6 +28,20 @@ from satrap.expend.plugins.base_take.tools.sync import ReadDocumentTool
 from satrap.core.utils.pdf_pages import read_pdf_pages
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_document_schema_marks_only_path_required(tmp_path, asynchronous):
+    from satrap.expend.plugins.base_take.tools.async_ import AsyncReadMediaTool
+    from satrap.expend.plugins.base_take.tools.sync import ReadMediaTool
+
+    document = (AsyncReadDocumentTool if asynchronous else ReadDocumentTool)(tmp_path)
+    parameters = document.get_tool_defined()["function"]["parameters"]
+    assert parameters["required"] == ["path"]
+    assert parameters["properties"]["mode"]["enum"] == ["auto", "text", "visual"]
+    assert parameters["properties"]["page_count"]["maximum"] == 5
+    media = (AsyncReadMediaTool if asynchronous else ReadMediaTool)()
+    assert media.get_tool_defined()["function"]["parameters"]["required"] == ["media_id"]
+
+
 def _small_video(seconds=2):
     """生成可解码的 MP4, 用于验证完整视觉输入链路"""
     av = pytest.importorskip("av")
@@ -45,7 +59,8 @@ def _small_video(seconds=2):
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_video_sampling_history_cache_and_native_switch(tmp_path, monkeypatch, asynchronous):
+@pytest.mark.parametrize("prompt_enabled", [False, True])
+async def test_video_sampling_history_cache_and_native_switch(tmp_path, monkeypatch, asynchronous, prompt_enabled):
     """真实视频经过预算前抽帧, 历史保留引用, 缓存复用且切换后只发送原生视频"""
     from satrap.core.utils import media_frames
     from satrap.core.utils.media_store import REFERENCE_PREFIX, store_for
@@ -55,13 +70,15 @@ async def test_video_sampling_history_cache_and_native_switch(tmp_path, monkeypa
     model = AsyncVisualModel() if asynchronous else VisualModel()
     model.video_frame_interval = 0.5
     cls = AsyncSimpleSession if asynchronous else SimpleSession
-    session = cls("sample-video", model, db_path=str(tmp_path / "platform.db"), enable_checkpoint=False)
+    session = cls("sample-video", model, db_path=str(tmp_path / "platform.db"), enable_checkpoint=False,
+                  default_agent_prompt_enabled=prompt_enabled)
 
     async def run(text, **kwargs):
         return await session.run(text, **kwargs) if asynchronous else session.run(text, **kwargs)
 
     await run("查看画面", video_urls=[str(path)])
-    parts = model.requests[-1][0]["content"]
+    parts = next(message["content"] for message in model.requests[-1]
+                 if message["role"] == "user" and isinstance(message["content"], list))
     images = [part for part in parts if part["type"] == "image_url"]
     assert len(images) == 5
     assert "0.500 秒" in str(parts)
@@ -76,11 +93,14 @@ async def test_video_sampling_history_cache_and_native_switch(tmp_path, monkeypa
 
     monkeypatch.setattr(media_frames, "_decode", unexpected_decode)
     await run("继续解释")
-    assert sum(part["type"] == "image_url" for part in model.requests[-1][0]["content"]) == 5
+    cached_parts = next(message["content"] for message in model.requests[-1]
+                        if message["role"] == "user" and isinstance(message["content"], list))
+    assert sum(part["type"] == "image_url" for part in cached_parts) == 5
     model.supports_native_video_input = True
     model.supports_visual_input = False
     await run("再次查看")
-    native_parts = model.requests[-1][0]["content"]
+    native_parts = next(message["content"] for message in model.requests[-1]
+                        if message["role"] == "user" and isinstance(message["content"], list))
     assert sum(part["type"] == "video_url" for part in native_parts) == 1
     assert not any(part["type"] == "image_url" for part in native_parts)
     assert reference in str(session.ctx.get_context())

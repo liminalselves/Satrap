@@ -2,11 +2,12 @@
 迷你 asyncio HTTP + WebSocket 服务器基类
 
 零外部依赖, 基于 asyncio.start_server 实现. 供后端管理 API (http_api) 与
-聊天展示层 (display.server) 等服务复用; 子类只需实现三个钩子:
+聊天展示层 (display.server) 等服务复用; 子类按需实现以下钩子:
 
 - async _route(method, path, body) -> (status, dict): 普通 API 路由
 - async _ws_dispatch(path, reader, writer): WebSocket 端点分发 (未知端点自行关闭)
 - async _serve_static(writer, path, headers) -> bool: 非 API 静态路径钩子, 返回 True 表示已处理
+- async _stream_response(writer, method, path, headers) -> bool: 鉴权后的二进制流响应
 
 共享基础设施: 请求解析, CORS 预检, JSON 响应, WebSocket 握手与帧收发
 """
@@ -18,12 +19,14 @@ import asyncio
 import hashlib
 import base64
 import struct
+import time
 from typing import Any
 from typing import cast
 from http import HTTPStatus
 import json
 
 from satrap.core.server_auth import ServerAuth
+from satrap.core.utils.async_worker import WorkerBusyError
 from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError
 
 from satrap.core.log import logger
@@ -282,6 +285,8 @@ class MiniHTTPServer:
         self._active_connections = 0
         self._active_websockets = 0
         self._server: asyncio.Server | None = None
+        self._password_login_failures: dict[str, list[float]] = {}
+        """访问密码登录失败时间戳, 按客户端地址限速"""
         self.applications = ApplicationOperations()
 
     def application_status(self, method: str, path: str) -> tuple[int, dict[str, Any]] | None:
@@ -366,7 +371,8 @@ class MiniHTTPServer:
                 peer = writer.get_extra_info("peername")
                 peer_tuple = cast(tuple[object, ...], peer) if isinstance(peer, tuple) else ()
                 peer_host = str(peer_tuple[0]) if peer_tuple else ""
-                if not self.auth.can_bootstrap(peer_host, origin, headers):
+                restored = await asyncio.to_thread(self.auth.restore_session, peer_host, origin, headers, writer.get_extra_info('ssl_object') is not None)
+                if restored is None:
                     self._send_json(writer, 401, {"error": "unauthorized"}, origin)
                     return
                 self._send_json(
@@ -374,15 +380,12 @@ class MiniHTTPServer:
                     200,
                     {"ok": True},
                     origin,
-                    {"Set-Cookie": self.auth.session_cookie()},
+                    restored,
                 )
                 return
 
             if method == "POST" and urlsplit(path).path == "/auth/logout":
-                if not self.auth.cookie_authorized(headers):
-                    self._send_json(writer, 401, {"error": "unauthorized"}, origin)
-                    return
-                self.auth.revoke_cookie(headers)
+                await asyncio.to_thread(self.auth.revoke_cookie, headers)
                 self._send_json(
                     writer,
                     200,
@@ -392,13 +395,24 @@ class MiniHTTPServer:
                 )
                 return
 
+            clean = urlsplit(path).path
+            if clean in {"/auth/password/status", "/auth/password/login", "/auth/password"}:
+                peer = writer.get_extra_info("peername")
+                peer_tuple = cast(tuple[object, ...], peer) if isinstance(peer, tuple) else ()
+                peer_host = str(peer_tuple[0]) if peer_tuple else ""
+                if await self._password_routes(writer, method, clean, reader, raw_request, headers, origin, peer_host):
+                    return
+
             if await self._serve_static(writer, path, headers):
                 return
             # 静态文件 / SPA 钩子 (子类覆写, 默认不处理)
 
             public_ui_config = method == "GET" and urlsplit(path).path == "/ui-config.json"
-            if not public_ui_config and not self.auth.authorized(headers):
+            if not public_ui_config and not await asyncio.to_thread(self.auth.authorized, headers):
                 self._send_json(writer, 401, {"error": "unauthorized"}, origin)
+                return
+
+            if await self._stream_response(writer, method, path, headers):
                 return
 
             body = await read_request_body(
@@ -412,6 +426,8 @@ class MiniHTTPServer:
             self._send_json(writer, status, data, origin)
         except HTTPRequestError as error:
             self._send_json(writer, error.status, {"error": error.message}, origin)
+        except WorkerBusyError:
+            self._send_json(writer, 503, {'error': '查询队列已满, 请稍后重试'}, origin)
         except Exception as e:
             if self._log_errors:
                 logger.error(f"[HTTP] 请求处理异常: {e}")
@@ -437,6 +453,131 @@ class MiniHTTPServer:
         return self._max_body_bytes
 
     # ---------- 响应 ----------
+
+    async def _password_routes(
+        self,
+        writer: asyncio.StreamWriter,
+        method: str,
+        clean: str,
+        reader: asyncio.StreamReader,
+        raw_request: bytes,
+        headers: dict[str, str],
+        origin: str | None,
+        peer_host: str,
+    ) -> bool:
+        """
+        访问密码的状态查询, 登录签发与管理员改密端点
+
+        参数:
+        - writer: 当前 HTTP 连接
+        - method: HTTP 方法
+        - clean: 无查询参数的请求路径
+        - reader: 请求体读取器
+        - raw_request: 原始请求头
+        - headers: 已解析请求头
+        - origin: 浏览器 Origin
+        - peer_host: 客户端地址, 登录限速按它计数
+
+        返回:
+        - 已处理时为 True
+        """
+        from satrap.core.auth_password import (dashboard_password_hash, update_dashboard_password,
+                                               verify_dashboard_password)
+        if clean == "/auth/password/status" and method == "GET":
+            try:
+                required = await asyncio.to_thread(dashboard_password_hash) is not None
+            except ValueError as error:
+                self._send_json(writer, 500, {"error": str(error)}, origin)
+                return True
+            self._send_json(writer, 200, {"password_required": required}, origin)
+            return True
+
+        if clean == "/auth/password/login" and method == "POST":
+            if not (origin and self.auth.origin_allowed(origin)):
+                self._send_json(writer, 403, {"error": "forbidden_origin"}, origin)
+                return True
+            now = time.monotonic()
+            failures = [stamp for stamp in self._password_login_failures.get(peer_host, []) if now - stamp < 60]
+            if len(failures) >= 5:
+                self._send_json(writer, 429, {"error": "尝试过于频繁, 请稍后重试"}, origin)
+                return True
+            try:
+                body = await read_request_body(reader, raw_request, max_bytes=4096, timeout=self._body_timeout, required=True)
+                payload = json.loads(body)
+            except (HTTPRequestError, json.JSONDecodeError, ValueError):
+                self._send_json(writer, 400, {"error": "请求格式无效"}, origin)
+                return True
+            candidate = payload.get("password") if isinstance(payload, dict) else None
+            try:
+                stored = await asyncio.to_thread(dashboard_password_hash)
+            except ValueError as error:
+                self._send_json(writer, 500, {"error": str(error)}, origin)
+                return True
+            if stored is None:
+                cookie = await asyncio.to_thread(self.auth.session_cookie, False, self.auth.cookie_secure(origin, writer.get_extra_info('ssl_object') is not None))
+                self._send_json(writer, 200, {"ok": True}, origin, {"Set-Cookie": cookie})
+                return True
+            if not await asyncio.to_thread(verify_dashboard_password, stored, candidate):
+                failures.append(now)
+                self._password_login_failures[peer_host] = failures
+                self._send_json(writer, 401, {"error": "unauthorized"}, origin)
+                return True
+            self._password_login_failures.pop(peer_host, None)
+            remember = payload.get('remember') is True if isinstance(payload, dict) else False
+            try:
+                cookie = await asyncio.to_thread(self.auth.session_cookie, remember, self.auth.cookie_secure(origin, writer.get_extra_info('ssl_object') is not None))
+            except RuntimeError as error:
+                self._send_json(writer, 503, {'error': str(error)}, origin)
+                return True
+            self._send_json(writer, 200, {"ok": True}, origin, {"Set-Cookie": cookie})
+            return True
+
+        if clean == "/auth/password" and method == "PUT":
+            if not await asyncio.to_thread(self.auth.authorized, headers):
+                self._send_json(writer, 401, {"error": "unauthorized"}, origin)
+                return True
+            try:
+                body = await read_request_body(reader, raw_request, max_bytes=4096, timeout=self._body_timeout, required=True)
+                payload = json.loads(body)
+            except (HTTPRequestError, json.JSONDecodeError, ValueError):
+                self._send_json(writer, 400, {"error": "请求格式无效"}, origin)
+                return True
+            if not isinstance(payload, dict) or set(payload) != {"new_password", "current_password"}:
+                self._send_json(writer, 400, {"error": "参数必须是 current_password 与 new_password"}, origin)
+                return True
+            try:
+                stored = await asyncio.to_thread(dashboard_password_hash)
+            except ValueError as error:
+                self._send_json(writer, 500, {"error": str(error)}, origin)
+                return True
+            if stored is not None and not await asyncio.to_thread(verify_dashboard_password, stored, payload.get("current_password")):
+                self._send_json(writer, 403, {"error": "当前密码不正确"}, origin)
+                return True
+            new_password = payload.get("new_password")
+            try:
+                hashed = await asyncio.to_thread(update_dashboard_password, new_password if isinstance(new_password, str) else None)
+            except (OSError, ValueError) as error:
+                self._send_json(writer, 400, {"error": str(error)}, origin)
+                return True
+            self._send_json(writer, 200, {"ok": True, "password_required": hashed is not None}, origin)
+            return True
+
+        return False
+
+    async def _stream_response(self, writer: asyncio.StreamWriter, method: str, path: str, headers: dict[str, str]) -> bool:
+        """
+        鉴权后处理二进制流, 默认交给 JSON 路由
+
+        参数:
+        - writer: 当前连接
+        - method: HTTP 方法
+        - path: 原始请求路径
+        - headers: 已解析请求头
+
+        返回:
+        - 已处理时为 True
+        """
+        return False
 
     def _send_cors_preflight(self, writer: asyncio.StreamWriter, origin: str | None = None) -> None:
         """
@@ -525,7 +666,7 @@ class MiniHTTPServer:
         if not self.auth.origin_allowed(origin):
             self._send_json(writer, 403, {"error": "origin not allowed"})
             return
-        if not self.auth.authorized(headers):
+        if not await asyncio.to_thread(self.auth.authorized, headers):
             self._send_json(writer, 401, {"error": "unauthorized"}, origin)
             return
         ws_key = headers.get("sec-websocket-key", "")

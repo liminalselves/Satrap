@@ -1,9 +1,11 @@
+import { conversationPageResponse } from './config-fixtures.mjs';
+import { emptyConfigResponse } from './runtime.mjs';
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdir, readFile } from "node:fs/promises";
 import { load } from "js-yaml";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, waitForRequestEntry } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function plugins(runtime) {
@@ -100,12 +102,12 @@ async function plugins(runtime) {
         '/config/edictum/plugins': { plugins },
         '/config/models': { test_model: { model: 'model' } },
         '/config/platforms': { platforms: [] },
-        '/config/session-classes': { configs: {} },
+        '/config/session-classes': {},
         '/api/sessions': { sessions: [] },
         '/api/chat/health': { ok: true, conversations: 0, preloaded: 0 },
         '/api/chat/models': { models: ['test_model'] },
         '/api/chat/models/detail': { ok: true, models: {} },
-        '/api/chat/conversations': { conversations: [] },
+        '/api/chat/conversations/page': conversationPageResponse(route.request().url(), []),
         '/api/chat/conversations/preload': { ok: true, conversation_id: 'preload-probe' },
         '/api/chat/plugins': { plugins: [ { ...plugins[0], enabled: false, capabilities: Object.fromEntries(Object.entries(plugins[0].capabilities).map(([kind, items]) => [kind, Object.entries(items).map(([name, description]) => ({ name, description, enabled: true }))])) } ] },
         '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
@@ -128,6 +130,7 @@ async function plugins(runtime) {
       return route.fulfill({ json: pathname === '/config/plugins' ? { plugins } : { ok: true, running: false, adapters: {} }, headers: cors });
     });
     await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
+    await mockConfigVersions(page, origin, () => JSON.stringify(plugins));
     await page.goto(origin + '/plugins');
     await page.getByRole('link', { name: /builtin_probe/ }).waitFor();
     assert.equal(await page.getByRole('link', { name: /group_probe/ }).count(), 1);
@@ -143,6 +146,7 @@ async function plugins(runtime) {
     await page.getByText('group_skill', { exact: true }).waitFor();
     await page.goto(origin + '/plugins/missing');
     await page.getByRole('alert').filter({ hasText: '插件不存在' }).waitFor();
+    await mockConfigVersions(page, origin, () => JSON.stringify(plugins));
     await page.goto(origin + '/plugins');
     await page.getByRole('button', { name: '安装插件', exact: true }).click();
     const dialog = page.getByRole('dialog');
@@ -235,7 +239,7 @@ async function plugins(runtime) {
     const heldRuntimeStarted = new Promise((resolve) => { runtimeHeld = resolve; });
     holdRuntime = true;
     const beforeHeldPoll = runtimeReads;
-    await heldRuntimeStarted;
+    await waitForRequestEntry(heldRuntimeStarted);
     assert.equal(runtimeReads, beforeHeldPoll + 1);
     assert.equal(typeof releaseRuntime, 'function');
     await page.getByRole('button', { name: '重试实例应用', exact: true }).click();
@@ -465,7 +469,7 @@ async function edictum_settings(runtime) {
         '/config/plugin-model-options': { options: {} },
         '/config/rag': { knowledge_bases: [] },
       };
-      return route.fulfill({ json: responses[url.pathname] ?? { ok: true }, headers: cors });
+      return route.fulfill({ json: responses[url.pathname] ?? emptyConfigResponse(route.request().url()), headers: cors });
     });
     await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
     await mockConfigVersions(page, origin, () => JSON.stringify({configs}));
@@ -517,16 +521,21 @@ async function edictum_settings(runtime) {
     await dialog.waitFor({ state: 'hidden' });
     await page.getByTitle('编辑配置', { exact: true }).click();
     assert.equal(await dialog.getByLabel('系统提示词', { exact: true }).inputValue(), '旧提示词');
+    assert.equal(await dialog.getByLabel('使用内置 Agent 提示', { exact: true }).isChecked(), false);
+    await dialog.getByLabel('使用内置 Agent 提示', { exact: true }).check();
     assert.deepEqual(JSON.parse(await dialog.getByLabel('其他会话参数 (JSON 对象)', { exact: true }).inputValue()), { custom: '保留参数' });
     await dialog.getByLabel('系统提示词', { exact: true }).fill('你是群聊助手\n使用中文回复');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
-    assert.deepEqual(configs.assistant.params, { custom: '保留参数', system_prompt: '你是群聊助手\n使用中文回复' });
+    assert.deepEqual(configs.assistant.params, { custom: '保留参数', system_prompt: '你是群聊助手\n使用中文回复', command_history_enabled: false, default_agent_prompt_enabled: true });
     await page.getByTitle('编辑配置', { exact: true }).click();
+    assert.equal(await dialog.getByLabel('使用内置 Agent 提示', { exact: true }).isChecked(), true);
+    await dialog.getByLabel('使用内置 Agent 提示', { exact: true }).uncheck();
     await dialog.getByLabel('系统提示词', { exact: true }).fill('');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(configs.assistant.params.system_prompt, '');
+    assert.equal(configs.assistant.params.default_agent_prompt_enabled, false);
     await page.getByTitle('编辑配置', { exact: true }).click();
     await dialog.getByLabel('默认思考强度', { exact: true }).selectOption('high');
     assert.equal(await dialog.getByLabel('默认思考强度', { exact: true }).getByRole('option', { name: '中', exact: true }).count(), 0);

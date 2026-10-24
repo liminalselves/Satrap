@@ -399,18 +399,31 @@ async def test_admin_private_group_list_rechecks_revocation_after_adapter_read(t
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [True, False])
 @pytest.mark.parametrize("change", ["none", "remove", "exclude", "disable", "unrelated", "local"])
-async def test_real_pending_action_admin_grant_and_revocation(tmp_path: Path, asynchronous, change):
+@pytest.mark.parametrize("subject", ["user", "chat"])
+async def test_real_pending_action_admin_grant_and_revocation(tmp_path: Path, asynchronous, change, subject):
     import asyncio
     backend, adapter, origin, session, provider, configs = await runtime(tmp_path, asynchronous, "group_admin")
     try:
         manager = current_adapter_manager()
         manager.administrator_service = backend.administrator_service
         configured = groups(backend.config.platforms[0], ["group_admin"])
+        if subject == "chat":
+            configured[0]["members"] = []
+            configured[0]["chats"] = [{"platform_id": "ob", "chat_id": origin.chat_id}]
         backend.administrator_service.apply(configured)
         tool = session._wf.tools_manager.tools["group_admin_set_group_nickname"]
         config = {"write_tools_enabled": True, "allowed_callers": "123" if change == "local" else ""}
         tool.config.update(config)
         configs.update("assistant", {"plugins": [{"name": "group_admin", "config": config}]})
+        if subject == "chat" and change != "local":
+            for other in (replace(origin, chat_type="FriendMessage", chat_id=origin.actor_id), replace(origin, chat_id="other")):
+                with bind_call_origin(other):
+                    assert not tool.is_available_for_call()
+            with bind_call_origin(replace(origin, actor_id="another-member")):
+                assert tool.is_available_for_call()
+            with bind_call_origin(origin):
+                denied = await tool.execute(user_id="321", nickname="越界", group_id="other") if asynchronous else await asyncio.to_thread(tool.execute, user_id="321", nickname="越界", group_id="other")
+                assert not denied["ok"] and "当前群" in str(denied)
         with bind_call_origin(origin):
             assert tool.is_available_for_call()
             pending = await tool.execute(user_id="321", nickname="管理员验收") if asynchronous else await asyncio.to_thread(tool.execute, user_id="321", nickname="管理员验收")
@@ -432,7 +445,7 @@ async def test_real_pending_action_admin_grant_and_revocation(tmp_path: Path, as
         else:
             assert record["state"] == "succeeded"
             adapter._bot.set_group_card.assert_awaited_once()
-        assert "123" in backend._friend_protected_managers("ob") if configured and configured[0]["enabled"] else "123" not in backend._friend_protected_managers("ob")
+        assert "123" in backend._friend_protected_managers("ob") if subject == "user" and configured and configured[0]["enabled"] else "123" not in backend._friend_protected_managers("ob")
     finally:
         await provider.release_session_async(session)
 
@@ -597,3 +610,86 @@ async def test_administrator_read_busy_queue_returns_explicit_failure(tmp_path, 
     assert result[0] == 503 and "队列已满" in result[1]["error"]
     assert messages and "队列已满" in messages[0]
     assert load_config_document(path) == saved
+
+
+def test_chat_administrator_scope_identity_and_exception_policy(tmp_path):
+    """群聊授权按原消息来源隔离, 成员否决与个人授权合并且不隐式保护全员"""
+    configured = {**group(), "members": [], "chats": [{"platform_id": "qq", "chat_id": "room"}]}
+    platforms = [platform(), platform("other")]
+    service = AdministratorService(lambda: platforms, [configured])
+    for actor in ("user-alpha", "user-beta"):
+        grant = service.resolve(origin(actor), "example")
+        assert grant.allowed and grant.chat_scoped and grant.group_ids == ("admins",)
+    assert service.protected_users("qq") == []
+    for invalid in (None, replace(origin(), chat_type="FriendMessage"), replace(origin(), chat_id="different"),
+                    replace(origin(), conversation_kind="private"), replace(origin(), actor_kind="timer"),
+                    replace(origin(), actor_id=""), replace(origin(), self_id=""), origin(adapter="other")):
+        assert not service.resolve(invalid, "example").allowed
+    assert not service.resolve(origin(), "not-selected").allowed
+    service.apply([configured], [override(user="user-beta", deny=["example"])])
+    assert service.resolve(origin(), "example").allowed
+    assert not service.resolve(origin("user-beta"), "example").allowed
+    service.apply([configured, group(identity="personal")])
+    assert service.resolve(origin(), "example").allowed and not service.resolve(origin(), "example").chat_scoped
+    assert service.resolve(replace(origin(), chat_id="outside"), "example").allowed
+    legacy = {**configured, "plugin_scope": {"mode": "selected", "included": ["example"], "excluded": ["example"]}}
+    service.apply([legacy])
+    assert not service.resolve(origin(), "example").allowed
+    assert service.snapshot()[0][0]["plugin_scope"]["excluded"] == ["example"]
+    spec = PluginCatalog(user_dir=tmp_path / "plugins").get("group_admin").permissions
+    scoped = {**configured, "plugin_scope": {"mode": "selected", "included": ["group_admin"], "excluded": []}}
+    service.apply([scoped])
+    inside = evaluate_plugin_permissions("group_admin", spec, "tools", "group_admin_kick", {}, origin(), service)
+    outside = evaluate_plugin_permissions("group_admin", spec, "tools", "group_admin_kick", {}, replace(origin(), chat_id="outside"), service)
+    assert inside.status == "allowed" and inside.grants[0].source == "administrator_chat"
+    assert outside.status == "denied" and outside.permission_fingerprint != inside.permission_fingerprint
+    service.apply([configured])
+    platforms[0] = platform(instance="replacement")
+    assert not service.resolve(origin(), "example").allowed
+    assert not service.resolve(origin(), "example").chat_scoped
+    for change in ({"chats": None}, {"chats": [configured["chats"][0]] * 2},
+                   {"chats": [{"platform_id": "qq", "user_id": "room"}]}, {"chats": [{"platform_id": "qq", "chat_id": 123}]}):
+        with pytest.raises(ValueError): normalize_administrator_groups([{**configured, **change}], platforms)
+    assert "chats" not in normalize_administrator_groups([group()], platforms)[0]
+
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_chat_grant_native_approval_commands_stay_in_origin_group(tmp_path, asynchronous):
+    """群授权可用于真实管理命令, 不进入私聊, 别群或模型转发通道"""
+    import inspect
+    from satrap.core.call_context import bind_tool_workflow
+    from satrap.core.approval.state import session_approval
+
+    backend, adapter, source, session, provider, configs = await runtime(tmp_path, asynchronous, "permissions", {})
+    current_adapter_manager().administrator_service = backend.administrator_service
+    configured = groups(backend.config.platforms[0], ["permissions"])
+    configured[0]["members"] = []
+    configured[0]["chats"] = [{"platform_id": "ob", "chat_id": source.chat_id}]
+    backend.administrator_service.apply(configured)
+    registry = session.command_handler if asynchronous else session.cmd_handler
+    engine = session_approval(session)
+
+    async def command(origin, text):
+        """在真实原生命令作用域内运行指定来源的请求"""
+        with bind_call_origin(origin):
+            value = registry.process_message(text)
+            result, matched = await value if inspect.isawaitable(value) else value
+        assert matched
+        return str(result)
+
+    try:
+        assert "已切换" in await command(source, "/approve mode auto")
+        assert engine.mode == "auto"
+        for other in (replace(source, chat_type="FriendMessage", chat_id=source.actor_id), replace(source, chat_id="outside")):
+            assert "已切换" not in await command(other, "/approve mode full-access")
+            assert engine.mode == "auto"
+        with bind_tool_workflow(object()):
+            assert "已切换" not in await command(source, "/approve mode full-access")
+        assert "已切换" in await command(replace(source, actor_id="another-member"), "/approve mode user")
+        backend.administrator_service.apply([])
+        assert "已切换" not in await command(source, "/approve mode full-access")
+        assert engine.mode == "user"
+    finally:
+        await provider.release_session_async(session)

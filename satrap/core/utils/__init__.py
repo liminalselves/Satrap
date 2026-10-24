@@ -35,63 +35,46 @@ def _repair_json_value(value: str) -> str:
     return re.sub(r'"', lambda m: '\\"', value)   # 剩余裸引号 -> 转义
 
 
-def _as_argument_dict(value: object) -> dict[str, Any]:
-    """
-    将解析结果收窄为工具调用要求的字符串键字典
-
-    参数:
-    - value: JSON 或 Python 字面量解析结果
-
-    返回:
-    - dict[str, Any]: 合法参数字典, 非字典或含非字符串键时返回空字典
-    """
-    if not isinstance(value, dict):
-        return {}
-    candidate = cast(dict[object, object], value)
-    if not all(isinstance(key, str) for key in candidate):
-        return {}
-    return cast(dict[str, Any], candidate)
-
-
-def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
-    """
-    容错解析参数字符串, 返回 dict
-
-    参数:
-    - arg_str: 参数字符串
-
-    返回:
-    - dict[str, Any]:  dict
-    """
+def parse_tool_arguments(arg_str: object) -> tuple[dict[str, Any], str | None]:
+    """解析模型工具参数, 同时保留可供下一轮修正的错误原因"""
+    if isinstance(arg_str, dict):
+        return arg_str, None
     if not isinstance(arg_str, str):
-        return arg_str
+        return {}, "工具参数必须是 JSON 对象"
 
-    try:   # 尝试标准 JSON 解析
-        parsed: object = json.loads(arg_str)
-        return _as_argument_dict(parsed)
+    def parsed_result(value: object) -> tuple[dict[str, Any], str | None]:
+        if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+            return cast(dict[str, Any], value), None
+        return {}, "工具参数必须是键名为字符串的 JSON 对象"
+
+    try:
+        return parsed_result(json.loads(arg_str))
     except json.JSONDecodeError:
         pass
 
-    try:   # 尝试修复常见错误: 任意字符串字段内的裸换行/引号/反斜杠
+    try:
         pattern = r'("[^\"\s]+":\s*")(.*?)("(?=\s*[,}]))'
         def fix_value(match: re.Match[str]) -> str:
             return match.group(1) + _repair_json_value(match.group(2)) + match.group(3)
 
         repaired = re.sub(pattern, fix_value, arg_str, flags=re.DOTALL)
-        parsed = json.loads(repaired)
-        return _as_argument_dict(parsed)
+        return parsed_result(json.loads(repaired))
     except json.JSONDecodeError:
         pass
 
-    try:   # 尝试 ast.literal_eval
-        parsed = ast.literal_eval(arg_str)
-        return _as_argument_dict(parsed)
+    try:
+        return parsed_result(ast.literal_eval(arg_str))
     except (SyntaxError, ValueError):
         pass
 
     logger.error(f"[安全解析] 无法解析参数: {arg_str[:200]}...")
-    # 全部失败, 记录并返回空字典
-    return {}
+    return {}, "工具参数不是有效的 JSON 对象, 请重新生成完整参数"
+
+
+def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
+    """解析工具参数; 只需兼容字典结果的调用方可使用此入口"""
+    result, _ = parse_tool_arguments(arg_str)
+    return result
 
 
 @overload

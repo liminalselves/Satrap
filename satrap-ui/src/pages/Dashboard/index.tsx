@@ -1,8 +1,8 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useBackendStore } from '@/stores/useBackendStore';
-import { useConfigStore } from '@/stores/useConfigStore';
-import { useConfigWatch } from '@/hooks/useConfigWatch';
+import { controlClient } from '@/api/control';
+import { startVisiblePoll } from '@/utils/visiblePoll';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { BackendControls } from '@/components/common/BackendControls';
@@ -19,18 +19,25 @@ import {
 } from 'lucide-react';
 
 export function Dashboard() {
-  useConfigWatch(['llm', 'embedding', 'rerank', 'asr', 'sessions']);
+  const [counts, setCounts] = useState({ modelCount: 0, sessionCount: 0 });
+  const [configError, setConfigError] = useState('');
+  useEffect(() => {
+    const poll = startVisiblePoll(async (signal) => {
+      const { data } = await controlClient.get<{ model_counts: Record<string, number>; session_count: number }>('/config/overview', { signal });
+      if (signal.aborted) return;
+      setCounts({ modelCount: Object.values(data.model_counts).reduce((total, count) => total + count, 0), sessionCount: data.session_count });
+      setConfigError('');
+    }, { interval: 30000, onError: (error) => setConfigError(error instanceof Error ? error.message : '读取配置概览失败') });
+    return () => poll.stop();
+  }, []);
   const { health, healthAvailable, isRunning, runState, controlStatus, statusConnected } = useBackendStore(useShallow((state) => ({
     health: state.health, healthAvailable: state.healthAvailable, isRunning: state.isRunning, runState: state.runState, controlStatus: state.controlStatus, statusConnected: state.statusConnected })));
-  const { llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses } = useConfigStore(useShallow((state) => ({
-    llmConfigs: state.llmConfigs, embeddingConfigs: state.embeddingConfigs, rerankConfigs: state.rerankConfigs, asrConfigs: state.asrConfigs, sessionClasses: state.sessionClasses })));
 
   // 统计数据
   const stats = useMemo(() => ({
     adapterCount: isRunning && health?.adapters ? Object.keys(health.adapters).length : 0,
-    modelCount: Object.keys(llmConfigs).length + Object.keys(embeddingConfigs).length + Object.keys(rerankConfigs).length + Object.keys(asrConfigs).length,
-    sessionCount: Object.keys(sessionClasses).length,
-  }), [isRunning, health?.adapters, llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses]);
+    ...counts,
+  }), [isRunning, health?.adapters, counts]);
 
   const headerActions = <>
     <Badge variant={statusConnected ? 'success' : 'default'} className="flex items-center gap-1">
@@ -68,6 +75,7 @@ export function Dashboard() {
       )}
 
       {/* 状态卡片 */}
+      {configError && <p role="alert" className="text-error">{configError}</p>}
       <StatCardGrid>
         <StatCard
           variant="accent"

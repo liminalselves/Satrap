@@ -70,7 +70,7 @@ async function openPage(browser, { pathName, theme, messageCount }) {
     }
   });
   const chatSockets = new Set();
-  await installWebSocketMocks(page, chatSockets);
+  await installWebSocketMocks(page, chatSockets, fixture);
   await page.goto(`${appOrigin}${pathName}`, { waitUntil: 'domcontentloaded' });
   await page.locator(`[data-theme="${theme}"]`).waitFor({ state: 'attached' });
   if (pathName === '/') await page.getByText('benchmark-adapter', { exact: true }).first().waitFor();
@@ -83,9 +83,12 @@ async function openChat(browser, messageCount) {
   await opened.page.getByText('继续最近对话', { exact: true }).click();
   await opened.page.getByPlaceholder('输入消息, Enter 发送, Shift+Enter 换行').waitFor();
   const expectedMessages = Math.ceil(messageCount / 2) * 2;
-  await opened.page.waitForFunction((expected) => (
-    document.querySelectorAll('.chat-message-item').length >= expected
-  ), expectedMessages, { timeout: 30_000 });
+  await opened.page.locator('.chat-message-item').first().waitFor();
+  while (await opened.page.locator('.chat-message-item').count() < expectedMessages) {
+    const previous = await opened.page.locator('.chat-message-item').count();
+    await opened.page.getByRole('button', { name: '加载更早消息', exact: true }).click();
+    await opened.page.waitForFunction((count) => document.querySelectorAll('.chat-message-item').length > count, previous);
+  }
   return opened;
 }
 

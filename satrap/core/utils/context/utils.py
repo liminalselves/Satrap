@@ -28,7 +28,7 @@ TokenEstimateMethod = Literal["tokenizer", "experience"]
 
 ContextStrategy = Literal["sliding", "mid_truncate", "summarize"]
 
-_SUMMARY_PROMPT_VERSION = 1
+_SUMMARY_PROMPT_VERSION = 2
 
 _MIN_SUMMARY_OUTPUT_TOKENS = 512
 

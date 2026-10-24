@@ -11,7 +11,7 @@ from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar
 from enum import Enum
 import time
 
-from satrap.core.conversation import ConversationRoute
+from satrap.core.conversation import ConversationRoute, HistoryWindow
 from satrap.core.call_context import CallOrigin
 from satrap.core.components import BaseMessageComponent
 
@@ -195,6 +195,8 @@ class LLMCallResponse:
     """LLM 调用响应工具调用, 包含 name, id, arguments"""
     usage: Optional[TokenUsage] = None
     """API 返回的真实 token 使用量, 供应商未返回时为 None"""
+    finish_reason: Optional[str] = None
+    """模型结束原因; length 可帮助识别被截断的工具调用"""
 
     def __iter__(self) -> Iterator[Any]:
         """
@@ -288,6 +290,14 @@ class UserCall:
     """本轮会话覆盖对应的群路由代次"""
     request_blocks: tuple[RequestContextBlock, ...] = ()
     """本轮平台资料, 独立于需要保存的正文"""
+    received_at: float = field(default_factory=time.monotonic, kw_only=True)
+    """宿主接收请求的单调时钟, 平台调用沿用真实入队时刻"""
+    received_wall_at: float = field(default_factory=time.time, kw_only=True)
+    """宿主接收请求的 UTC 时间戳, 用于持久化会话档案起点"""
+    context_reset_at: float | None = field(default=None, init=False)
+    """仅在绑定成功后发布的命令接收边界, 用于撤销命令之前的窗口资料"""
+    history_window: HistoryWindow | None = field(default=None, init=False)
+    """宿主从真实会话配置冻结的查询下界, 不从模型输入构造"""
 
 @dataclass
 class LLMConfig:
@@ -306,6 +316,8 @@ class LLMConfig:
     """LLM top_p 参数"""
     max_tokens: Optional[int] = None
     """LLM 最大 token 数量"""
+    network_timeout: float = 60.0
+    """模型 SDK 的网络读写超时秒数, 不表示整轮或完整流式生成限时"""
     context_window: Optional[int] = None
     """总上下文窗口, 与 CM max_context 同源"""
     history_ratio: Optional[float] = None
@@ -339,7 +351,9 @@ class LLMConfig:
     """动画和兼容视频的抽帧间隔秒数, 范围 0.5 至 5.0"""
 
     def __post_init__(self) -> None:
-        """拒绝非布尔值的模型视觉能力声明"""
+        """校验模型网络超时和视觉能力声明"""
+        from satrap.core.utils.validation import positive_timeout
+        self.network_timeout = positive_timeout(self.network_timeout, "network_timeout")
         if not isinstance(self.supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
         from satrap.core.utils.media_config import validate_video_settings
@@ -437,6 +451,8 @@ class SessionConfig:
     """会话消息数量"""
     session_config: Dict[str, Any] = field(default_factory=dict[str, Any])
     """除去会话 ID 以外的会话实例初始化配置"""
+    history_started_at: float | None = None
+    """会话档案的持久起点, 老记录首次加载时按原创建时间建立"""
 
 @dataclass
 class UserInfo:
@@ -525,6 +541,7 @@ class PlatformMessage:
     def __init__(self) -> None:
         """初始化 PlatformMessage"""
         self.timestamp = int(time.time())
+        self.received_at = time.time()
         self.timestamp_source = "local"
         self.group = None
 
@@ -586,6 +603,7 @@ class CommandAction:
     动作类型, 可选值:
         - "switch_session": 切换会话
         - "new_session": 创建新会话
+        - "switch": 创建并切换新会话, 兼容内置 /new 的既有动作名
         - "none": 无动作, 仅返回信息
     """
     target_session_id: Optional[str] = None

@@ -5,7 +5,8 @@
 负责生成模型工具描述, 校验调用参数并统一包装执行结果
 """
 
-from typing import Dict, Tuple, Any, cast
+from typing import Dict, Iterable, Mapping, Tuple, Any, cast
+import copy
 import json
 from satrap.core.log import logger
 
@@ -148,35 +149,34 @@ def _tool_execution_error(
 def create_tool_defined(
     tool_name: str,
     description: str,
-    params_dict: Dict[str, Tuple[str, str]],  # 参数名 -> (类型, 描述)
+    params_dict: Mapping[str, Tuple[str, str] | Dict[str, Any]],
+    required: Iterable[str] | None = None,
 ) -> Dict[str, Any]:
     """
-    创建一个符合 OpenAI function calling 规范的工具定义
+    创建 OpenAI function calling 工具定义
 
     参数:
     - tool_name: 工具名称
-    - description: 工具描述
-    - params_dict: 参数字典, 键为参数名, 值为一个元组 (类型, 描述), 结构如下:
-
-        {
-            "param1": ("string", "这是第一个参数"),
-            "param2": ("number", "这是第二个参数"),
-            ...
-        }
-
-    其中参数类型可以是 "string", "number", "boolean", "array", "object"
+    - description: 工具用途和选择边界
+    - params_dict: 参数名到 (类型, 描述) 或完整 JSON Schema 的映射
+    - required: 必填参数; None 保留直接调用时的全部必填行为, 工具基类按 execute 签名传入
 
     返回:
-    - 一个字典, 符合 OpenAI function calling 的工具定义格式; 如果创建失败, 返回空字典
+    - 符合 OpenAI function calling 格式的工具定义; 失败时返回空字典
     """
-    properties: dict[str, dict[str, str]] = {}
-    required: list[str] = []
+    properties: dict[str, dict[str, Any]] = {}
+    required_params = list(params_dict) if required is None else list(required)
 
     try:
-        for param_name, (param_type, param_desc) in params_dict.items():
-            properties[param_name] = {"type": param_type, "description": param_desc}
-            required.append(param_name)
-
+        for param_name, spec in params_dict.items():
+            if isinstance(spec, dict):
+                properties[param_name] = copy.deepcopy(spec)
+            else:
+                param_type, param_desc = spec
+                properties[param_name] = {"type": param_type, "description": param_desc}
+        unknown = set(required_params) - set(properties)
+        if unknown:
+            raise ValueError(f"必填参数未声明: {', '.join(sorted(unknown))}")
     except Exception as e:
         logger.error(f"[创建工具] 工具定义 {tool_name} 生成失败: {e}")
         return {}
@@ -189,7 +189,8 @@ def create_tool_defined(
             "parameters": {
                 "type": "object",
                 "properties": properties,
-                "required": required,
+                "required": required_params,
+                "additionalProperties": False,
             },
         },
     }

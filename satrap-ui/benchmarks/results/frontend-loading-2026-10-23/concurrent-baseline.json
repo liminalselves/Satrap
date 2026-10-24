@@ -1,0 +1,49 @@
+{
+  "conversations": 5000,
+  "turns": 50000,
+  "transport": "actual route dispatch, no HTTP socket",
+  "p50_health_delay_ms": 750.4288000101224,
+  "p95_health_delay_ms": 785.8149000722915,
+  "samples": [
+    {
+      "query_ms": 734.0894001536071,
+      "scheduled_health_delay_ms": 729.1524001676589
+    },
+    {
+      "query_ms": 761.3789001479745,
+      "scheduled_health_delay_ms": 756.4522001240402
+    },
+    {
+      "query_ms": 740.2921000029892,
+      "scheduled_health_delay_ms": 735.3586998116225
+    },
+    {
+      "query_ms": 777.7515000198036,
+      "scheduled_health_delay_ms": 772.8145999182016
+    },
+    {
+      "query_ms": 760.1818998809904,
+      "scheduled_health_delay_ms": 755.2460000198334
+    },
+    {
+      "query_ms": 775.587199954316,
+      "scheduled_health_delay_ms": 770.6499999668449
+    },
+    {
+      "query_ms": 790.7507999334484,
+      "scheduled_health_delay_ms": 785.8149000722915
+    },
+    {
+      "query_ms": 743.4851001016796,
+      "scheduled_health_delay_ms": 738.5608000960201
+    },
+    {
+      "query_ms": 750.5486998707056,
+      "scheduled_health_delay_ms": 745.6116000004113
+    },
+    {
+      "query_ms": 739.1883998643607,
+      "scheduled_health_delay_ms": 734.2557999119163
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { createUuid } from '@/utils/uuid';
 import { ConfirmModal } from '@/components/common/ConfirmModal';
 import { useEffect, useRef, useState } from 'react';
 import { reminderApi, type GroupReminder, type ReminderPage, type ReminderState } from '@/api/reminders';
@@ -66,7 +67,7 @@ export function GroupReminders({ record, refresh, onDirty }: { record: PlatformA
   }, [record, state, cursor, refresh, version]);
 
   const changeDraft = (field: keyof Omit<Draft, 'key'>, value: string) => {
-    setDraft((old) => old ? { ...old, [field]: value, key: crypto.randomUUID() } : old);
+    setDraft((old) => old ? { ...old, [field]: value, key: createUuid() } : old);
     setDraftError('');
   };
   const create = async () => {
@@ -112,7 +113,7 @@ export function GroupReminders({ record, refresh, onDirty }: { record: PlatformA
 
   return <Card className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-semibold">一次性提醒</h2>
-      <div className="flex gap-2"><Button disabled={busy} onClick={() => { setDraftError(''); setDraft({ text: '', mode: 'relative', delay: '30', unit: '60', due: '', mentions: '', key: crypto.randomUUID() }); }}>创建提醒</Button>
+      <div className="flex gap-2"><Button disabled={busy} onClick={() => { setDraftError(''); setDraft({ text: '', mode: 'relative', delay: '30', unit: '60', due: '', mentions: '', key: createUuid() }); }}>创建提醒</Button>
         <Button disabled={busy || loading} onClick={() => { setCursors([]); setVersion((value) => value + 1); }}>刷新提醒</Button></div></div>
     <p className="text-sm text-text-secondary">到期发送固定文字，可提及已确认的群成员。创建和恢复需要平台在线并开启提醒；停用后不会自动恢复暂停任务。</p>
     <label className="block text-sm">任务状态<select className="glass-input mt-1 w-full" aria-label="提醒状态" value={state} onChange={(event) => { setState(event.target.value as ReminderState | ''); setCursors([]); }}>

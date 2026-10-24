@@ -14,6 +14,9 @@
 """
 from __future__ import annotations
 from satrap.core.plugin_interop.environment import EnvironmentSnapshot, bind_environment
+from satrap.core.file_access.artifacts import FileArtifact, artifact_lease, artifact_from_metadata, bind_file_receiver, copy_artifact
+from satrap.core.storage.file_lock import FileLease
+from typing import BinaryIO
 import mimetypes, base64
 
 from satrap.edictum.plugin_compatibility import PluginEnvironment
@@ -373,10 +376,25 @@ class ChatService:
                 q.invalidate()
                 logger.warning(f"[聊天] 会话 {conv.conversation_id} 慢订阅需要重同步")
 
-    def runtime_snapshot(self, conversation_id: str) -> dict[str, Any]:
-        """在订阅注册后同步取权威快照, 后续事件从快照序号继续"""
+    def runtime_snapshot(self, conversation_id: str, history_limit: int | None = None) -> dict[str, Any]:
+        """
+        同步捕获有界权威快照及事件序号, 避免异步读取越过未包含的事件
+
+        参数:
+        - conversation_id: 订阅会话 ID
+        - history_limit: 可选历史窗口, 旧客户端不指定时保留全量语义
+
+        返回:
+        - 包含生成缓冲, 分页边界和事件序号的快照
+        """
         conv = self._conversations.get(conversation_id)
-        turns = conv.recorder.snapshot_turns() if conv else self.list_turns(conversation_id)
+        limit = history_limit + 1 if history_limit is not None else None
+        turns = conv.recorder.snapshot_turns(limit=limit) if conv else self.list_turns(conversation_id, limit=limit, latest=limit is not None, all_variants=limit is None)
+        pagination = {}
+        if history_limit is not None:
+            has_more = len(turns) > history_limit
+            turns = turns[-history_limit:]
+            pagination = {'has_more': has_more, 'next_before': turns[0]['turn_index'] if turns else None}
         active_turn = next((turn["id"] for turn in turns if turn.get("generating")), None)
         operation = self._operations.get(conversation_id)
         state = operation.state if operation and (active_turn is not None or operation.state != "running") else "idle"
@@ -391,6 +409,7 @@ class ChatService:
             "type": "snapshot", "conversation_id": conversation_id, "stream_id": self._stream_id,
             "seq": self._event_sequences.get(conversation_id, 0), "state": state,
             "active_turn_id": active_turn, "turns": turns,
+            **pagination,
             "pending_user_inputs": [
                 {"request_id": item.request_id, "question": item.question, "options": list(item.options), "approval": item.approval}
                 for item in pending_inputs if not item.future.done()
@@ -468,6 +487,57 @@ class ChatService:
             return {"ok": True, "available": True, "mode": engine.mode,
                     "revision": engine.revision, "plan_mode": engine.plan_mode}
 
+    async def get_default_agent_prompt(self, conversation_id: str) -> dict[str, object]:
+        """
+        读取当前 Chat 会话的内置 Agent 提示开关
+
+        参数:
+        - conversation_id: Chat 会话 ID
+
+        返回:
+        - 当前开关; 会话不存在时抛出 ValueError
+        """
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        return {"ok": True, "default_agent_prompt_enabled": conv.session.default_agent_prompt_enabled}
+
+    @_exclusive_conversation_operation
+    async def set_default_agent_prompt(self, conversation_id: str, enabled: object) -> dict[str, object]:
+        """
+        持久化本会话提示开关, 与生成中的轮次互斥
+
+        参数:
+        - conversation_id: Chat 会话 ID
+        - enabled: 布尔开关
+
+        返回:
+        - 已保存的开关, 非法参数或不存在的会话抛出 ValueError
+        """
+        if type(enabled) is not bool:
+            raise ValueError("default_agent_prompt_enabled 必须是布尔值")
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            self._save_default_agent_prompt(conv, enabled)
+        return {"ok": True, "default_agent_prompt_enabled": enabled}
+
+    def _save_default_agent_prompt(self, conv: _Conversation, enabled: bool) -> None:
+        """
+        在调用方已占用会话时保存提示开关
+
+        参数:
+        - conv: 已由设置操作或首次发送独占的会话
+        - enabled: 已校验的布尔开关
+        """
+        store = conv.session.plugin_override_store
+        if store is None:
+            raise ValueError("会话覆盖存储尚未就绪")
+        current = store.read(conv.conversation_id, "session.agent_prompt")
+        store.replace(conv.conversation_id, "session.agent_prompt", {"default_agent_prompt_enabled": enabled}, expected_revision=current["revision"])
+        conv.session.default_agent_prompt_enabled = enabled
+
     async def get_command_history(self, conversation_id: str) -> dict[str, object]:
         """
         读取会话命令历史设置
@@ -508,6 +578,47 @@ class ChatService:
             store.replace(conversation_id, "session.commands", {"command_history_enabled": enabled}, expected_revision=current["revision"])
             conv.session.command_history_enabled = enabled
         return {"ok": True, "command_history_enabled": enabled}
+
+    async def get_max_iterations(self, conversation_id: str) -> dict[str, object]:
+        """
+        返回当前 Chat 会话的最大工具迭代次数
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+
+        返回:
+        - 会话当前生效的最大迭代次数
+        """
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        return {"ok": True, "max_iterations": conv.session.default_max_iterations}
+
+    @_exclusive_conversation_operation
+    async def set_max_iterations(self, conversation_id: str, value: object) -> dict[str, object]:
+        """
+        保存或清除最大工具迭代次数, 与当前轮次互斥
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+        - value: 正整数上限, None 清除覆盖还原会话定义默认
+
+        返回:
+        - 已保存或还原后的最大迭代次数
+        """
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+            raise ValueError("max_iterations 必须是正整数或 null")
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            store = conv.session.plugin_override_store
+            if store is None:
+                raise ValueError("会话覆盖存储尚未就绪")
+            current = store.read(conversation_id, "session.engine")
+            store.replace(conversation_id, "session.engine", {} if value is None else {"max_iterations": value}, expected_revision=current["revision"])
+            conv.session.default_max_iterations = conv.session.configured_max_iterations if value is None else value
+        return {"ok": True, "max_iterations": conv.session.default_max_iterations}
 
     async def _request_approval(self, conv: _Conversation, request: ApprovalRequest) -> ApprovalResult:
         """
@@ -889,6 +1000,7 @@ class ChatService:
         temperature: float | None,
         persisted: bool,
         build_fingerprint: str,
+        default_agent_prompt_enabled: bool = False,
         preload_lock: asyncio.Lock | None = None,
         subscribers: set[_SubscriberQueue] | None = None,
     ) -> _Conversation:
@@ -904,6 +1016,7 @@ class ChatService:
         - temperature: Chat 会话级温度覆盖
         - persisted: 是否立即保存正式会话元数据
         - build_fingerprint: 当前运行时构建指纹
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
         - preload_lock: 重建时复用的预加载锁
         - subscribers: 重建时继承的 WebSocket 订阅者
 
@@ -949,6 +1062,7 @@ class ChatService:
             "thinking_callback": on_thinking,
             "enable_checkpoint": False,
             "recoverable": True,
+            "default_agent_prompt_enabled": default_agent_prompt_enabled,
         }
         if system_prompt:
             session_kwargs["system_prompt"] = system_prompt
@@ -1050,6 +1164,7 @@ class ChatService:
         system_prompt: str | None = None,
         think: str = "off",
         project_id: str | None = None,
+        default_agent_prompt_enabled: bool = False,
     ) -> str:
         """
         创建并立即持久化正式会话
@@ -1059,6 +1174,7 @@ class ChatService:
         - system_prompt: 系统提示词
         - think: 思考模式
         - project_id: 项目 ID
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
 
         返回:
         - str: 会话 ID
@@ -1079,7 +1195,10 @@ class ChatService:
             temperature=None,
             persisted=True,
             build_fingerprint=fingerprint,
+            default_agent_prompt_enabled=default_agent_prompt_enabled,
         )
+        if default_agent_prompt_enabled:
+            await self.set_default_agent_prompt(conversation_id, default_agent_prompt_enabled)
         return conversation_id
 
     async def preload_conversation(
@@ -1091,6 +1210,7 @@ class ChatService:
         project_id: str | None = None,
         temperature: float | None = None,
         conversation_id: str | None = None,
+        default_agent_prompt_enabled: bool = False,
     ) -> str:
         """
         预分配 ID 并在内存完成 Session, 插件和工作流初始化
@@ -1102,6 +1222,7 @@ class ChatService:
         - project_id: 项目 ID
         - temperature: Chat 会话级温度覆盖
         - conversation_id: 后端重启或超时后的指定 ID 恢复
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
 
         返回:
         - str: 预加载会话 ID
@@ -1122,6 +1243,7 @@ class ChatService:
             temperature=temperature,
             persisted=False,
             build_fingerprint=fingerprint,
+            default_agent_prompt_enabled=default_agent_prompt_enabled,
         )
         return target_id
 
@@ -1218,25 +1340,57 @@ class ChatService:
         """
         return self._conversations.get(conversation_id)
 
-    def list_turns(self, conversation_id: str) -> list[dict[str, Any]]:
+    def list_turns(self, conversation_id: str, *, limit: int | None = None, before: int | None = None, latest: bool = False, all_variants: bool = True) -> list[dict[str, Any]]:
         """
         列出会话对话轮次 (经 recorder)
 
         参数:
         - conversation_id: 会话 ID
+        - limit: 可选读取数量上限
+        - before: 可选轮次游标
+        - latest: 是否优先读取最新轮次
+        - all_variants: 是否读取全部回答变体
 
         返回:
         - list[dict[str, Any]]: 列出会话对话轮次 (经 recorder)
         """
         conv = self._conversations.get(conversation_id)
         if conv is not None:
-            return conv.recorder.list_turns()
+            return conv.recorder.list_turns(limit=limit, before=before, latest=latest, all_variants=all_variants)
         # 会话不在内存 (如重启后): 用只读 recorder 查库
         rec = DisplayRecorder(db_path=self._display_db_path, conversation_id=conversation_id)
         try:
-            return rec.list_turns()
+            return rec.list_turns(limit=limit, before=before, latest=latest, all_variants=all_variants)
         finally:
             rec.close()
+
+    def open_output_file(self, conversation_id: str, file_id: str) -> tuple[BinaryIO, FileArtifact, FileLease]:
+        """
+        为鉴权下载打开当前会话已登记附件, 租约保护下载期间的目录
+
+        参数:
+        - conversation_id: 下载目标会话
+        - file_id: 本会话回复版本中的不透明文件 ID
+
+        返回:
+        - 已校验二进制流, 文件资料和必须释放的维护租约; 未登记时拒绝
+        """
+        root = self._storage.session_artifacts(self._platform_id, conversation_id)
+        lease = artifact_lease(root)
+        recorder: DisplayRecorder | None = None
+        try:
+            recorder = DisplayRecorder(db_path=self._display_db_path, conversation_id=conversation_id)
+            metadata = recorder.find_output_file(file_id)
+            if metadata is None:
+                raise FileNotFoundError("文件不存在或不属于当前会话")
+            artifact = artifact_from_metadata(root, metadata)
+            return artifact.open(), artifact, lease
+        except BaseException:
+            lease.close()
+            raise
+        finally:
+            if recorder is not None:
+                recorder.close()
 
     def query_history(
         self,
@@ -1592,6 +1746,9 @@ class ChatService:
                     raise ValueError("审批模式必须是 user, auto 或 full-access")
 
             model = str(settings.get("model") or conv.model)
+            prompt_enabled = settings.get("default_agent_prompt_enabled", conv.session.default_agent_prompt_enabled)
+            if type(prompt_enabled) is not bool:
+                raise ValueError("default_agent_prompt_enabled 必须是布尔值")
             system_prompt = (
                 str(settings.get("system_prompt") or "") or None
                 if "system_prompt" in settings
@@ -1630,12 +1787,16 @@ class ChatService:
                         temperature=temperature,
                         persisted=False,
                         build_fingerprint=fingerprint,
+                        default_agent_prompt_enabled=prompt_enabled,
                         preload_lock=lock,
                         subscribers=subscribers,
                     )
                 except Exception:
                     self._storage.purge_session(self._platform_id, conv.conversation_id)
                     raise
+
+            if "default_agent_prompt_enabled" in settings or prompt_enabled:
+                self._save_default_agent_prompt(conv, prompt_enabled)
 
             if "command_history_enabled" in settings:
                 enabled = settings["command_history_enabled"]
@@ -1647,6 +1808,17 @@ class ChatService:
                 current = store.read(conv.conversation_id, "session.commands")
                 store.replace(conv.conversation_id, "session.commands", {"command_history_enabled": enabled}, expected_revision=current["revision"])
                 conv.session.command_history_enabled = enabled
+
+            if "max_iterations" in settings:
+                value = settings["max_iterations"]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ValueError("max_iterations 必须是正整数")
+                store = conv.session.plugin_override_store
+                if store is None:
+                    raise ValueError("会话覆盖存储尚未就绪")
+                current = store.read(conv.conversation_id, "session.engine")
+                store.replace(conv.conversation_id, "session.engine", {"max_iterations": value}, expected_revision=current["revision"])
+                conv.session.default_max_iterations = value
 
             if approval_mode is not None:
                 from satrap.core.approval.state import session_approval
@@ -1786,8 +1958,24 @@ class ChatService:
             try:
                 await self._refresh_session_plugins(conv)
                 conv.session.recovery_origin = conv.recorder.recovery_origin()
-                result = (await conv.session.resume_run(resume_run_id) if resume_run_id is not None
-                          else await conv.session.run(text, img_urls=img_urls, video_urls=video_urls, thinking=think))
+                file_owner = conv.recorder.recovery_origin()
+
+                async def receive_file(artifact: FileArtifact) -> dict[str, object]:
+                    """
+                    将受控附件登记到原始回复版本
+
+                    参数:
+                    - artifact: 已冻结文件
+
+                    返回:
+                    - available 表示可以通过鉴权接口下载
+                    """
+                    conv.recorder.add_output_file(artifact.public(), file_owner)
+                    return {"ok": True, "status": "available", "file": artifact.public()}
+
+                with bind_file_receiver(receive_file):
+                    result = (await conv.session.resume_run(resume_run_id) if resume_run_id is not None
+                              else await conv.session.run(text, img_urls=img_urls, video_urls=video_urls, thinking=think))
                 answer = result.message if isinstance(result, CommandAction) else result
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
                 context_stats = conv.session.get_context_stats()
@@ -2118,10 +2306,22 @@ class ChatService:
                 new_conv = self._conversations[new_cid]
                 await RAG_WORKERS.run(fork_session_settings, self._storage, self._platform_id, conversation_id, new_cid)
                 new_conv.session.command_history_enabled = src.session.command_history_enabled
+                new_conv.session.default_agent_prompt_enabled = src.session.default_agent_prompt_enabled
+                new_conv.session.default_max_iterations = src.session.default_max_iterations
                 async with new_conv.plugin_lock:
                     await self._refresh_session_plugins(new_conv)
                 context_messages = src.recorder.active_context_before(turn_index)
                 copied = src.recorder.copy_turns_to(new_conv.recorder, turn_index)
+                source_root = self._storage.session_artifacts(self._platform_id, conversation_id)
+                target_root = self._storage.session_artifacts(self._platform_id, new_cid)
+
+                def copy_files() -> None:
+                    """在两个会话维护租约内复制实际选中版本的附件"""
+                    with artifact_lease(source_root), artifact_lease(target_root):
+                        for turn in new_conv.recorder.list_turns():
+                            for metadata in turn.get("output_files", []):
+                                copy_artifact(artifact_from_metadata(source_root, metadata), target_root)
+                await asyncio.to_thread(copy_files)
                 if copied > 0 and not context_messages and not src.recorder.has_context_deltas_before(turn_index):
                     context_messages = self._legacy_fork_context(src, turn_index)
                 if context_messages:
@@ -2149,6 +2349,10 @@ class ChatService:
         """
         session.plugin_override_store = SessionOverrideStore(self._storage.platform_db(self._platform_id))
         session.command_history_enabled = session.plugin_override_store.read(session.session_id, "session.commands")["overrides"].get("command_history_enabled", False)
+        session.default_agent_prompt_enabled = session.plugin_override_store.read(session.session_id, "session.agent_prompt")["overrides"].get("default_agent_prompt_enabled", session.default_agent_prompt_enabled)
+        engine_overrides = session.plugin_override_store.read(session.session_id, "session.engine")["overrides"]
+        if type(engine_overrides.get("max_iterations")) is int and engine_overrides["max_iterations"] >= 1:
+            session.default_max_iterations = engine_overrides["max_iterations"]
         session.plugin_model_manager = self._model_cfg
         session.storage_layout = self._storage
         session.storage_platform_id = self._platform_id

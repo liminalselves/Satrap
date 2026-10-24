@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+import { approvalLink } from '@/api/platformActions';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { groupApi, GROUP_PAGE_SIZE, type GroupAction } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
@@ -19,7 +21,6 @@ export function GroupActions() {
   const [page, setPage] = useState(1);
   const [actions, setActions] = useState<GroupAction[]>([]);
   const [total, setTotal] = useState(0);
-  const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const request = useRef(0);
   const actionRead = useMemo(() => new VersionedConfigRead([], (signal) =>
@@ -49,24 +50,10 @@ export function GroupActions() {
     });
     return () => poll.stop();
   }, [isRunning, error, state, refresh]);
-  const decide = async (id: string, approve: boolean) => {
-    if (busy || historical || !isRunning) return;
-    setBusy(id); setError('');
-    try {
-      await groupApi.decideAction(adapterId, groupId, id, account, approve);
-      if (actionRead !== currentRead.current) return;
-      request.current++; actionRead.invalidate();
-      await refresh();
-    } catch (caught) {
-      if (actionRead !== currentRead.current) return;
-      setError(errorText(caught)); request.current++; actionRead.invalidate(); await refresh();
-    }
-    finally { setBusy(''); }
-  };
   return <div className="space-y-4">
     {error && <Card role="alert" className="border border-error text-error">{error}</Card>}
     <Card className="space-y-3">
-      <h2 className="text-lg font-semibold">审批与动作记录</h2>
+      <h2 className="text-lg font-semibold">动作记录</h2>
       <div className="flex flex-wrap gap-2">
         <select className="glass-input" value={state} onChange={(event) => { setState(event.target.value); setPage(1); }}>
           {['pending', 'all', 'executing', 'succeeded', 'failed', 'unknown', 'rejected', 'expired'].map((value) =>
@@ -85,8 +72,7 @@ export function GroupActions() {
         <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(item.params, null, 2)}</pre>
         {(item.result?.message || item.result?.reason) && <p>结果: {item.result.message || item.result.reason}</p>}
         {item.state === 'pending' && !historical && isRunning && <div className="mt-2 flex gap-2">
-          <Button size="sm" onClick={() => decide(item.action_id, true)} disabled={!!busy}>批准</Button>
-          <Button size="sm" variant="subtle" onClick={() => decide(item.action_id, false)} disabled={!!busy}>拒绝</Button>
+          <Link className="text-accent" to={approvalLink({ platform: adapterId, account, source: 'group', target: groupId, action: item.action_id })}>前往审批中心</Link>
         </div>}
       </div>)}
       <div className="flex gap-2">

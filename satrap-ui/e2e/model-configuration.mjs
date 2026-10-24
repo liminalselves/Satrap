@@ -1,3 +1,5 @@
+import { conversationPageResponse, turnPageResponse } from './config-fixtures.mjs';
+import { emptyConfigResponse } from './runtime.mjs';
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -55,7 +57,7 @@ async function asr_models(runtime) {
         return route.fulfill({ json: models[url.searchParams.get('type')] ?? {}, headers });
       }
       const responses = { '/api/health': { running: true, adapters: {} }, '/status': { running: true } };
-      return route.fulfill({ json: responses[pathname] ?? { ok: true }, headers });
+      return route.fulfill({ json: responses[pathname] ?? emptyConfigResponse(route.request().url()), headers });
     });
     const page = await context.newPage();
     const errors = [];
@@ -207,12 +209,13 @@ async function shared_llm_editor(runtime) {
         '/config/models': url.searchParams.get('type') === 'llm' ? models : {},
         '/api/chat/models': { models: Object.keys(models) }, '/api/chat/models/detail': { ok: true, models },
         '/api/chat/health': { ok: true }, '/api/chat/plugins': { plugins: [] },
-        '/api/chat/conversations': { conversations: fixture.conversations }, '/api/chat/turns': { turns: fixture.turns },
+        '/api/chat/conversations/page': conversationPageResponse(route.request().url(), fixture.conversations), '/api/chat/turns': { turns: fixture.turns },
+        '/api/chat/turns/page': turnPageResponse(route.request().url(), fixture.turns),
         '/api/chat/runs': { ok: true, runs: [], next_cursor: null }, '/api/projects': { projects: [] },
         '/api/health': { running: true, adapters: {} }, '/status': { running: true },
         '/api/config/reload': { ok: true, platforms: [], edictum_sessions: [] },
       };
-      return route.fulfill({ headers, json: responses[pathname] ?? { ok: true } });
+      return route.fulfill({ headers, json: responses[pathname] ?? emptyConfigResponse(route.request().url()) });
     });
     const page = await context.newPage();
     const errors = [];

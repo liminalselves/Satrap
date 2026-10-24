@@ -34,6 +34,14 @@ export interface Attachment {
   type: string;
 }
 
+export interface OutputFile {
+  file_id: string;
+  name: string;
+  size: number;
+  sha256: string;
+  mime: string;
+}
+
 // 消息段 (按时间顺序)
 export interface MessageSegment {
   type: 'thinking' | 'tool' | 'content';
@@ -42,6 +50,7 @@ export interface MessageSegment {
 }
 
 export interface ChatTurnVariant {
+  output_files?: OutputFile[];
   variant_index: number;
   thinking: string | null;
   answer: string;
@@ -81,6 +90,7 @@ export interface ContextTurnStats {
 
 // 对话轮次 (对齐 display_turns)
 export interface ChatTurn {
+  output_files?: OutputFile[];
   generating?: boolean;
   interrupted?: boolean;
   id: number;
@@ -94,6 +104,7 @@ export interface ChatTurn {
   tool_calls: ToolCall[];
   active_variant: number;
   variant_count: number;
+  variant_indices?: number[];
   variants: ChatTurnVariant[];
   context_stats?: ContextTurnStats | null;
 }
@@ -199,7 +210,9 @@ export type ModelConfigItem = LLMConfig;
 
 // 预加载及首次发送使用的会话构建设置
 export interface ChatPreloadSettings {
+  defaultAgentPromptEnabled?: boolean;
   commandHistoryEnabled?: boolean;
+  maxIterations?: number;   // 最大工具迭代次数, 缺省沿用会话定义默认
   approvalMode?: ApprovalMode;   // 草稿首次发送时应用, 不改变已有会话的审批策略
   model: string;
   think: string;
@@ -262,7 +275,7 @@ export interface ApprovalPresentation {
 
 // WS 推送事件
 export type ChatEvent = (
-  | { type: 'snapshot'; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[]; approval?: ApprovalPresentation | null }[] }
+  | { type: 'snapshot'; has_more?: boolean; next_before?: number | null; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[]; approval?: ApprovalPresentation | null }[] }
   | { type: 'resync_required' }
   | { type: 'subscribed'; conversation_id: string }
   | { type: 'turn_start'; user_input: string; turn_id: number; turn_index: number; variant_index: number; retry?: boolean }
@@ -272,9 +285,9 @@ export type ChatEvent = (
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
   | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[]; approval?: ApprovalPresentation | null }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
-  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null }
+  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }
-  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null }
+  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
 ) & { seq?: number; stream_id?: string };
 
 // ==================== HTTP 请求 ====================
@@ -313,6 +326,24 @@ function historyQueryString(query: ChatHistoryQuery = {}): string {
 }
 
 export const chatApi = {
+  downloadFile: async (conversationId: string, file: OutputFile) => {
+    const baseUrl = getChatApiUrl();
+    await ensureApiSession(baseUrl);
+    const send = () => fetch(`${baseUrl}/api/chat/files/${encodeURIComponent(conversationId)}/${encodeURIComponent(file.file_id)}`, { credentials: 'include' });
+    let response = await send();
+    if (response.status === 401) {
+      await establishApiSession(baseUrl);
+      response = await send();
+    }
+    if (!response.ok) throw new Error('文件不存在、已回收或暂时无法下载');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = file.name;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
   getApproval: (conversationId: string, signal?: AbortSignal) =>
     request<ApprovalState>('GET', '/api/chat/approval?' + new URLSearchParams({ conversation: conversationId }), undefined, signal),
   setApproval: (conversationId: string, mode: ApprovalMode, revision: number) =>
@@ -340,6 +371,7 @@ export const chatApi = {
       think: settings.think,
       temperature: settings.temperature,
       system_prompt: settings.systemPrompt,
+      default_agent_prompt_enabled: settings.defaultAgentPromptEnabled ?? false,
       project_id: settings.projectId,
     }),
 
@@ -350,11 +382,23 @@ export const chatApi = {
       { project_id: projectId },
     ),
 
+  getDefaultAgentPrompt: (conversation: string) =>
+    request<{ ok: boolean; default_agent_prompt_enabled: boolean }>('GET', `/api/chat/default-agent-prompt?conversation=${encodeURIComponent(conversation)}`),
+
+  setDefaultAgentPrompt: (conversation: string, enabled: boolean) =>
+    request<{ ok: boolean; default_agent_prompt_enabled: boolean; error?: string }>('PUT', `/api/chat/default-agent-prompt?conversation=${encodeURIComponent(conversation)}`, { default_agent_prompt_enabled: enabled }),
+
   getCommandHistory: (conversation: string) =>
     request<{ ok: boolean; command_history_enabled: boolean }>('GET', `/api/chat/command-history?conversation=${encodeURIComponent(conversation)}`),
 
   setCommandHistory: (conversation: string, enabled: boolean) =>
     request<{ ok: boolean; command_history_enabled: boolean; error?: string }>('PUT', `/api/chat/command-history?conversation=${encodeURIComponent(conversation)}`, { command_history_enabled: enabled }),
+
+  getMaxIterations: (conversation: string) =>
+    request<{ ok: boolean; max_iterations: number }>('GET', `/api/chat/max-iterations?conversation=${encodeURIComponent(conversation)}`),
+
+  setMaxIterations: (conversation: string, value: number | null) =>
+    request<{ ok: boolean; max_iterations: number; error?: string }>('PUT', `/api/chat/max-iterations?conversation=${encodeURIComponent(conversation)}`, { max_iterations: value }),
 
   // 项目管理
   listProjects: () => request<{ projects: ProjectItem[] }>('GET', '/api/projects'),
@@ -374,6 +418,10 @@ export const chatApi = {
     ),
 
   listConversations: () => request<{ conversations: ConversationItem[] }>('GET', '/api/chat/conversations'),
+  listConversationPage: (cursor?: string, filters: { search?: string; project_id?: string } = {}, signal?: AbortSignal) =>
+    request<{ conversations: ConversationItem[]; has_more: boolean; next_cursor: string | null }>(
+      'GET', '/api/chat/conversations/page?' + new URLSearchParams({ limit: '50', ...filters, ...(cursor ? { cursor } : {}) }), undefined, signal),
+  getConversation: (id: string) => request<{ conversations: ConversationItem[] }>('GET', '/api/chat/conversations/page?' + new URLSearchParams({ conversation_id: id })),
 
   queryHistory: (query: ChatHistoryQuery = {}) =>
     request<ChatHistoryResult>('GET', `/api/chat/history${historyQueryString(query)}`),
@@ -399,6 +447,8 @@ export const chatApi = {
 
   listTurns: (conversation: string) =>
     request<{ turns: ChatTurn[] }>('GET', `/api/chat/turns?conversation=${encodeURIComponent(conversation)}`),
+  listTurnPage: (conversation: string, before?: number) =>
+    request<{ turns: ChatTurn[]; has_more: boolean; next_before: number | null }>('GET', '/api/chat/turns/page?' + new URLSearchParams({ conversation, limit: '50', ...(before !== undefined ? { before: String(before) } : {}) })),
 
   send: (
     conversation: string,
@@ -426,6 +476,8 @@ export const chatApi = {
         project_id: preloadSettings.projectId,
         approval_mode: preloadSettings.approvalMode,
         command_history_enabled: preloadSettings.commandHistoryEnabled,
+        default_agent_prompt_enabled: preloadSettings.defaultAgentPromptEnabled ?? false,
+        max_iterations: preloadSettings.maxIterations,
       } : {}),
     }),
 
@@ -536,7 +588,7 @@ export type ChatEventHandler = (event: ChatEvent) => void;
 // 订阅会话实时事件; 返回取消订阅函数
 export function subscribeChat(conversationId: string, onEvent: ChatEventHandler): () => void {
   const baseUrl = getChatApiUrl();
-  const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
+  const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}&history_limit=50`;
   let ws: WebSocket;
   let stopped = false;
   let retry = 0;

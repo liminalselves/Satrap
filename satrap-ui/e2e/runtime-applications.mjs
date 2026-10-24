@@ -2,7 +2,7 @@ import { autoAcceptConfirmations } from "./confirmation.mjs";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runSuite, waitForRequestEntry } from './runtime.mjs';
+import { runSuite, waitForRequestEntry, emptyConfigResponse, assertNoConfigErrors } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function control_plugin_application(runtime) {
@@ -194,6 +194,7 @@ async function runtime_application_progress(runtime) {
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await runtime.browser;
     const page = await browser.newPage();
+    await page.addInitScript(() => { Object.defineProperty(Crypto.prototype, 'randomUUID', { value: undefined, configurable: true }); });
     stopConfirmations = autoAcceptConfirmations(page);
     await page.clock.install();
     const errors = [], applications = [], writes = [], reads = {};
@@ -226,6 +227,14 @@ async function runtime_application_progress(runtime) {
       const request = route.request(), url = new URL(request.url());
       const reply = (json, status = 200) => route.fulfill({ json, status, headers: cors });
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/config/snapshot') {
+        const resource = url.searchParams.get('resource');
+        const snapshot = emptyConfigResponse(url.href);
+        if (resource === 'edictum_configs') snapshot.data = configs;
+        if (resource === 'models') snapshot.data = { model: { model: 'probe-model' } };
+        for (const version of Object.values(snapshot.versions)) version.change_token = JSON.stringify(configs);
+        return reply(snapshot);
+      }
       if (request.method() === 'GET') reads[url.pathname] = (reads[url.pathname] || 0) + 1;
       if (url.pathname === '/config/versions') return reply({ ok: true, resources: Object.fromEntries((url.searchParams.get('resources') || '').split(',').map((name) => [name, { state: 'available', change_token: JSON.stringify(configs) }])) });
       if (url.pathname === '/config/edictum/sessions/assistant' && request.method() === 'PATCH') {
@@ -298,6 +307,7 @@ async function runtime_application_progress(runtime) {
     assert.equal(applications[2].body.config_name, 'assistant');
     assert.equal(configs.assistant.params.system_prompt, '完整配置进度测试');
     assert.deepEqual(configs.other, untouched); assert.deepEqual(errors, []);
+    await assertNoConfigErrors(page);
     console.log('PASS: 202 实际阶段展示, 120 秒截止保留已保存事实和草稿, 查询不重发, 部分失败仅重试失败实例, 完整保存沿正确接口');
   } finally {
     if (stopConfirmations) await stopConfirmations();
@@ -324,6 +334,7 @@ async function scoped_agent_apply(runtime) {
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     browser = await runtime.browser;
     const page = await browser.newPage();
+    await page.addInitScript(() => { Object.defineProperty(Crypto.prototype, 'randomUUID', { value: undefined, configurable: true }); });
     stopConfirmations = autoAcceptConfirmations(page);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
@@ -343,6 +354,14 @@ async function scoped_agent_apply(runtime) {
       const request = route.request(), url = new URL(request.url());
       const reply = (json, status = 200) => route.fulfill({ json, status, headers: cors });
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/config/snapshot') {
+        const resource = url.searchParams.get('resource');
+        const snapshot = emptyConfigResponse(url.href);
+        if (resource === 'edictum_configs') snapshot.data = configs;
+        if (resource === 'models') snapshot.data = { model: { model: 'probe-model' } };
+        for (const version of Object.values(snapshot.versions)) version.change_token = JSON.stringify(configs);
+        return reply(snapshot);
+      }
       if (request.method() === 'GET') reads[url.pathname] = (reads[url.pathname] || 0) + 1;
       if (url.pathname === '/config/versions') {
         const resources = (url.searchParams.get('resources') || '').split(',');
