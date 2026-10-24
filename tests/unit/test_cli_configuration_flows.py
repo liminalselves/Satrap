@@ -7,6 +7,7 @@ from typing import Any
 import json
 import pytest
 from satrap.cli import cmd_edictum
+from satrap.cli import common as cli_common
 from satrap.cli.output import CliError
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.cli import cmd_plugin
@@ -184,6 +185,8 @@ def _cmd_edictum_offline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         session_scan_paths=[],
     )
     monkeypatch.setattr(cmd_edictum, "daemon_client_from_args", _cmd_edictum_DeadClient)
+    monkeypatch.setattr(cli_common, "daemon_client_from_args", _cmd_edictum_DeadClient)
+    # 离线写入守卫也使用离线客户端, 不连接宿主机后端
     monkeypatch.setattr(cmd_edictum, "load_cli_config", lambda args: config)
     return config
 
@@ -375,6 +378,8 @@ def _cmd_session_instance_offline_env(tmp_path: Path, monkeypatch: pytest.Monkey
         session_scan_paths=[],
     )
     monkeypatch.setattr(cmd_session_instance, "daemon_client_from_args", _cmd_session_instance_DeadClient)
+    monkeypatch.setattr(cli_common, "daemon_client_from_args", _cmd_session_instance_DeadClient)
+    # 保留真实守卫逻辑, 仅替换被调用模块内的客户端工厂
     monkeypatch.setattr(cmd_session_instance, "load_cli_config", lambda args: config)
 
     scm = SessionClassConfigManager(storage_path=config.session_class_config_path, session_scan_paths=[])

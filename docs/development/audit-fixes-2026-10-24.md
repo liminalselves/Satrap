@@ -230,3 +230,39 @@ PR #25 的 Actions 在 Windows 3.11 出现 7 项失败, 3.12 出现 4 项失败,
 - Pyright: 12 个变更生产模块 0 errors, 72 warnings; MCP 导出模块单独 0 errors, 0 warnings
 - 非测试模块头文档, Python AST 和 git diff --check 通过
 - 本轮没有本地 macOS 环境, GitHub 跨平台矩阵仍待推送后复验
+
+## WebSocket 测试分批读取与 Windows CI 提速 (2026-10-25)
+
+- Actions 40111567273 的 macOS Python 3.13 仅 test_websocket_handshake_and_frame 失败: 单次 TCP read 只取得 101 握手, 测试直接访问空帧缓冲区; macOS 3.11/3.12, Linux 和已完成的 Windows 任务通过
+- 测试改为 readuntil 读取握手, 再通过已有 readexactly 帧解析器读取文本帧和关闭帧; 参数覆盖立即发送与客户端读完握手后才发送, 后者由 Event 协调而非 sleep
+- Windows CI 保留全部测试与 Python 3.11/3.12/3.13 矩阵, 使用 pytest-xdist 的两个工作进程, loadfile 保证同文件测试在同一进程执行; tests/conftest.py 原有隔离逻辑为每个进程分配独立存储, 日志和运行时目录
+- pytest-xdist>=3.8,<4 已明确写入 requirements.txt; 本地默认 pytest 仍为串行, Linux 和 macOS CI 也保持串行
+- setup-python 开启 pip 下载缓存, 键包含 requirements.txt, setup.py 和 pyproject.toml; 仍运行正常依赖安装, 不缓存整个虚拟环境
+- Chat 业务测试夹具显式使用 tmp_path 工作区, 避免重复探测宿主机盘符; 默认磁盘浏览仍由 test_project_feature.py 的独立场景验证
+- CLI 离线夹具同时替换命令模块和公共写入守卫使用的客户端工厂, 避免真实连接本机 Backend; 保留在线拒绝, 强制离线和真正离线的守卫分支验证
+- 首次全量并行运行发现插件测试遗留 sys.path, 后续模型配置 spawn 子进程误导入插件 mcp.py 而非 SDK; 单测逐项使用路径列表副本并在结束后恢复, 避免依赖文件调度顺序
+- 本轮不修改生产逻辑, 不关闭文件持久化或权限检查
+
+本机 Windows Python 3.13.5 的对比, 两次顺序执行相同三个模块:
+
+| 范围 | 执行方式 | 结果 | pytest 耗时 |
+| --- | --- | --- | --- |
+| test_cli_configuration_flows.py, test_platform_application_flows.py, test_display_service.py | 原串行和原工作区夹具 | 132 passed | 151.86 秒 |
+| 相同范围 | 两进程 loadfile 和隔离工作区 | 132 passed | 83.06 秒 |
+
+上述本机抽样耗时减少 45.3%, 不把它当作 GitHub Windows runner 的实际加速结果; pip 缓存的热启动收益也仍待推送后测量
+
+上述抽样完成后继续消除了 CLI 离线夹具的连接等待: 五项实例写入测试共 5 passed, 3.43 秒; test_instance_delete 的 call 阶段从 4.28 秒降至 0.09 秒, 该数字不包括 setup 与收集
+
+Windows Python 3.11.17 / 3.12.15 分别使用双进程 loadfile 验证握手分批, 模型文件真实跨进程写入以及三类离线守卫分支, 均为 6 passed
+
+最终验证:
+
+- Windows Python 3.13.5 按 CI 双进程命令完整运行 tests/unit: 3911 passed, 8 skipped, 20 warnings, 316.48 秒; 此次已包含导入路径隔离和 CLI 离线夹具修复
+- 8 项跳过仍为 Windows 符号链接权限, POSIX 专用场景与显式集成开关, 没有新增跳过; warning 为既有 curl_cffi 事件循环提示
+- CLI 配置, CLI 守卫和 MiniHTTP 三模块补充回归: 112 passed; MiniHTTP 首批串行 35 passed, 握手两种情况在双进程下另行通过
+- Workflow YAML 矩阵仍为 9 组, 变更 Python AST 和 git diff --check 通过
+- 上一轮同机串行全量 714.08 秒仅作历史参考, 本轮没有重跑相同最终代码的串行全量, 不据此计算受控全量加速比例
+- 没有本地 macOS 环境, macOS 3.13 的 GitHub 复验和实际 Windows CI 热缓存收益仍待推送后确认; 本节仅记录本地验收, 不代表远端部署
+
+参考: [pytest-xdist 调度文档](https://pytest-xdist.readthedocs.io/en/stable/distribution.html), [setup-python 缓存说明](https://github.com/actions/setup-python/blob/main/docs/advanced-usage.md#caching-packages)

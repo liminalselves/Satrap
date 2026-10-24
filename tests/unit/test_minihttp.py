@@ -452,30 +452,54 @@ async def test_untrusted_origin_is_rejected(echo_server: int):
 
 
 @pytest.mark.asyncio
-async def test_websocket_handshake_and_frame(echo_server: int):
-    """WS 握手返回 101, 随后收到文本帧与关闭帧"""
-    port = echo_server
-    request = (
-        b"GET /ws/test HTTP/1.1\r\n"
-        b"Host: 127.0.0.1\r\n"
-        b"Upgrade: websocket\r\n"
-        b"Connection: Upgrade\r\n"
-        b"Origin: http://localhost:5173\r\n"
-        b"Authorization: Bearer test-token-that-is-at-least-thirty-two-characters\r\n"
-        b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
-    )
-    resp = await _raw_request(port, request)
-    idx = resp.find(b"\r\n\r\n")
-    assert idx >= 0
-    head, rest = resp[:idx], resp[idx + 4:]
-    assert b"101 Switching Protocols" in head
+@pytest.mark.parametrize("deferred_frame", [False, True])
+async def test_websocket_handshake_and_frame(deferred_frame: bool, monkeypatch: pytest.MonkeyPatch):
+    """
+    握手与帧分批到达时仍完整读取文本帧和正常关闭帧
 
-    assert rest[0] == 0x81
-    # 第一帧: 文本帧 (0x81)
-    length = rest[1]
-    payload = json.loads(rest[2:2 + length])
-    assert payload["type"] == "subscribed"
-    assert payload["path"] == "/ws/test"
+    参数:
+    - deferred_frame: 是否等客户端读完握手后才发送帧
+    - monkeypatch: 临时替换测试服务器的帧分发入口
+    """
+    server = _EchoServer()
+    release = asyncio.Event()
+    dispatch = server._ws_dispatch
+
+    async def deferred_dispatch(path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """
+        等待客户端读完握手后再发送帧, 确定性覆盖 TCP 分批交付
+
+        参数:
+        - path: WebSocket 请求路径
+        - reader: 客户端输入流
+        - writer: 服务端输出流
+        """
+        await release.wait()
+        await dispatch(path, reader, writer)
+
+    if deferred_frame:
+        monkeypatch.setattr(server, "_ws_dispatch", deferred_dispatch)
+    port = await _start_server(server)
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        try:
+            writer.write(_websocket_request())
+            await writer.drain()
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=2)
+            assert b"101 Switching Protocols" in head
+            release.set()
+            opcode, body = await asyncio.wait_for(_read_server_websocket_frame(reader), timeout=2)
+            assert opcode == 0x1
+            assert json.loads(body) == {"type": "subscribed", "path": "/ws/test"}
+            opcode, body = await asyncio.wait_for(_read_server_websocket_frame(reader), timeout=2)
+            assert opcode == 0x8
+            assert int.from_bytes(body[:2], "big") == 1000 and body[2:] == b"bye"
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        release.set()
+        await server.stop()
 
 
 @pytest.mark.asyncio

@@ -294,6 +294,7 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
         storage_layout=StorageLayout(tmp_path / "data"),
+        workspace_roots=[tmp_path],   # 业务测试使用隔离工作区, 不探测宿主机磁盘
     )
 
 

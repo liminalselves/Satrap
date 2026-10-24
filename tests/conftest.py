@@ -11,6 +11,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def isolate_plugin_import_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    隔离单个测试安装插件时追加的导入路径, 避免后续 spawn 子进程加载同名私有模块
+
+    参数:
+    - monkeypatch: 测试结束后恢复原始路径列表
+    """
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+
 @pytest.fixture
 def caplog(caplog: pytest.LogCaptureFixture):
     """直接捕获隔离后的项目控制台 logger, 不依赖生产代码向根 logger 传播"""
