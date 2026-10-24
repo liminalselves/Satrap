@@ -2,7 +2,6 @@ import { ApprovalSettings } from './ApprovalSettings';
 import { useApprovalMode, type ApprovalControl } from './useApprovalMode';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
-import { LogoutButton } from '@/components/common/LogoutButton';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { conversationBoundaryReached, restoreConversation, sidebarConversationVisible, type Conversation as ConversationState } from './conversations';
 import { RunRecovery } from "./RunRecovery";
@@ -3110,7 +3109,6 @@ function ChatHeader({
   return (
     <header ref={headerRef} className="glass-header m-0 flex items-center justify-between px-4 py-2.5 shrink-0">
       <div className="flex items-center gap-3">
-        <LogoutButton />
         <button onClick={onBack} className="theme-toggle" title="返回管理面板">
           <ArrowLeft className="h-4 w-4 text-text-secondary" />
         </button>

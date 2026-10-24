@@ -153,12 +153,28 @@ export async function passwordLogin(baseUrl: string, password: string, remember 
 }
 
 export async function logoutBrowser(): Promise<void> {
-  const urls = [...new Set([getApiBaseUrl(), getControlApiUrl(), getChatApiUrl()])];
-  const results = await Promise.allSettled(urls.map(async (url) => {
-    const response = await fetch(`${url.replace(/\/$/, '')}/auth/logout`, { method: 'POST', credentials: 'include', signal: AbortSignal.timeout(API_SESSION_TIMEOUT_MS) });
-    if (!response.ok && response.status !== 401) throw new Error(`退出失败: HTTP ${response.status}`);
+  const services = new Map([
+    [getApiBaseUrl().replace(/\/$/, ''), '平台后端'],
+    [getControlApiUrl().replace(/\/$/, ''), '管理服务'],
+    [getChatApiUrl().replace(/\/$/, ''), '聊天服务'],
+  ]);
+  const sessions = useApiSessionStore.getState().sessions;
+  const results = await Promise.allSettled([...services].map(async ([url, name]) => {
+    let response: Response;
+    try {
+      response = await fetch(`${url}/auth/logout`, { method: 'POST', credentials: 'include', signal: AbortSignal.timeout(API_SESSION_TIMEOUT_MS) });
+    } catch (error) {
+      const unavailable = error instanceof TypeError || (error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name));
+      if (unavailable && sessions[url]?.state !== 'ready') return false;
+      // 本轮未建立登录的离线服务不阻断注销, 已登录服务仍须确认撤销结果
+      throw new Error(`${name}无法连接, 注销未确认`);
+    }
+    if (!response.ok && response.status !== 401) throw new Error(`${name}注销失败: HTTP ${response.status}`);
+    return true;
   }));
-  if (results.some((result) => result.status === 'rejected')) throw new Error('部分服务退出未完成, 请确认服务连接后重试');
+  const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failures.length) throw new Error(`部分服务注销未完成: ${failures.map((result) => result.reason instanceof Error ? result.reason.message : '未知错误').join('; ')}`);
+  if (!results.some((result) => result.status === 'fulfilled' && result.value)) throw new Error('无法连接任何服务, 注销未确认, 请恢复服务连接后重试');
   window.location.reload();
 }
 

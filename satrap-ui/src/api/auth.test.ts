@@ -8,7 +8,7 @@ let sessionStore: typeof import('@/stores/useApiSessionStore').useApiSessionStor
 const response = (status = 200) => ({ ok: status < 400, status } as Response);
 beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers();
-  vi.stubGlobal('window', { location: { hash: '#token=synthetic-test-token', pathname: '/plugins', search: '?tab=config' }, history: { replaceState: vi.fn() } });
+  vi.stubGlobal('window', { location: { hash: '#token=synthetic-test-token', pathname: '/plugins', search: '?tab=config', reload: vi.fn() }, history: { replaceState: vi.fn() } });
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response()));
   auth = await import('./auth');
   sessionStore = (await import('@/stores/useApiSessionStore')).useApiSessionStore;
@@ -158,6 +158,52 @@ describe('每服务认证', () => {
   });
 });
 
+
+describe('退出登录', () => {
+  it.each(['unknown', 'network', 'timeout'])('后端未登录且离线时仍注销其它服务: %s', async (state) => {
+    if (state !== 'unknown') sessionStore.setState({ sessions: { 'http://backend': { state: 'error', errorKind: state === 'network' ? 'network' : 'timeout' } } });
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      if (String(url).startsWith('http://backend')) throw new TypeError('Failed to fetch');
+      return response();
+    });
+    await auth.logoutBrowser();
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(['http://backend/auth/logout', 'http://control/auth/logout', 'http://chat/auth/logout']);
+    expect(window.location.reload).toHaveBeenCalledOnce();
+  });
+
+  it('未登录的离线服务超时不阻断其它服务注销', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new DOMException('Timed out', 'TimeoutError'));
+    await auth.logoutBrowser();
+    expect(window.location.reload).toHaveBeenCalledOnce();
+  });
+
+  it('已登录服务断连时保留未确认提示, 不把部分完成当成成功', async () => {
+    sessionStore.setState({ sessions: { 'http://backend': { state: 'ready' } } });
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(auth.logoutBrowser()).rejects.toThrow('平台后端无法连接, 注销未确认');
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(window.location.reload).not.toHaveBeenCalled();
+  });
+
+  it('服务返回实际注销错误时展示服务名和状态码', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(response(500));
+    await expect(auth.logoutBrowser()).rejects.toThrow('平台后端注销失败: HTTP 500');
+    expect(window.location.reload).not.toHaveBeenCalled();
+  });
+
+  it('全部服务不可达时不声称注销成功', async () => {
+    vi.mocked(fetch).mockRejectedValue(new TypeError('Failed to fetch'));
+    await expect(auth.logoutBrowser()).rejects.toThrow('无法连接任何服务');
+    expect(window.location.reload).not.toHaveBeenCalled();
+  });
+
+  it('全部服务确认注销或已无登录凭据后刷新页面', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(response(401));
+    await auth.logoutBrowser();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(window.location.reload).toHaveBeenCalledOnce();
+  });
+});
 
 it('管理业务页需要 Backend 认证, Chat 与模型配置保留独立服务入口', () => {
   expect(auth.requiredApiServices('/platforms/approvals')).toEqual(['http://control', 'http://backend']);
