@@ -24,6 +24,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from satrap.core.utils.validation import is_bounded_text
+from satrap.core.utils.outbound import UnsafeOutboundURLError, OutboundHTTPError
 from satrap.core.call_context import CallOrigin, current_call_origin, require_call_origin
 from satrap.core.conversation import HistoryWindow, current_history_window
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
@@ -552,7 +553,7 @@ class GroupChatService:
                     raise
                 logger.warning(f"[群图片] 读取拒绝, 平台={context.scope.adapter_id}, 原因={exc.code}")
                 entry["reason"] = exc.code
-            except (asyncio.TimeoutError, OSError) as exc:
+            except (asyncio.TimeoutError, OSError, UnsafeOutboundURLError, OutboundHTTPError) as exc:
                 logger.warning(f"[群图片] 读取失败, 平台={context.scope.adapter_id}, 原因={type(exc).__name__}")
                 entry["reason"] = "asset_unavailable"
             except Exception:
