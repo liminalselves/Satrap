@@ -53,6 +53,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         llm: AsyncLLM,
         *,
         system_prompt: str | None = None,
+        default_agent_prompt_enabled: bool = False,
         thinking: str = "off",
         command_history_enabled: bool = False,
         model_params: dict[str, Any] | None = None,
@@ -74,6 +75,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         - session_id: 会话 ID
         - llm: 主模型实例
         - system_prompt: 系统提示词, 默认 None 保留已有系统提示词, 提供时在初始化阶段重置
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
         - thinking: 默认思考强度, 默认 off; run 可逐次覆盖
         - command_history_enabled: 是否记录命令及回复到模型上下文, 默认 False
         - model_params: temperature/top_p/max_tokens 的会话覆盖, 默认 None 继承模型配置
@@ -96,6 +98,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         if type(command_history_enabled) is not bool:
             raise ValueError("command_history_enabled 必须是布尔值")
         self.command_history_enabled = command_history_enabled
+        self.default_agent_prompt_enabled = default_agent_prompt_enabled
         self.recoverable = recoverable
         self.plugin_environment = plugin_environment or PluginEnvironment()
         super().__init__(
@@ -145,6 +148,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                 tools_manager=AsyncToolsManager(),
                 recoverable=self.recoverable,
                 system_prompt=self._init_system_prompt,
+                default_agent_prompt_enabled=self.default_agent_prompt_enabled,
                 content_callback=self._init_content_callback,
                 return_thinking=self._init_return_thinking,
                 thinking_callback=self._init_thinking_callback,

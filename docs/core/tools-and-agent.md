@@ -38,7 +38,7 @@ params_dict = {
 }
 ```
 
-`description` 应说明何时使用、何时不用这个工具；参数说明只写调用所需的信息，不混入宿主实现细节。只有 `**kwargs` 的动态工具应显式声明必填项。MCP 导出器也会保留参数的必填状态、默认值和完整参数结构。
+`description` 应说明何时使用、何时不用这个工具；参数说明只写调用所需的信息，不混入宿主实现细节。只有 `**kwargs` 的动态工具应显式声明必填项。MCP 导出器使用原始 JSON Schema 提供输入声明和执行前校验, 保留必填状态、默认值、组合类型、根节点条件与 `$defs`。显式 `null` 与省略字段分别传递, 不由 SDK 改写为同一种输入。
 
 ## 异步工具
 
@@ -141,7 +141,7 @@ if response and response.type == "tools_call":
 
 ## ModelWorkflowFramework
 
-`ModelWorkflowFramework.full_agent()` 封装完整工具调用循环。每次模型请求都会在请求副本的 system 消息中加入固定的工具使用规则；自定义 `system_prompt` 和持久历史不会被改写。
+`ModelWorkflowFramework.full_agent()` 封装完整工具调用循环。会话可通过 `default_agent_prompt_enabled=True` 在请求副本的 system 消息中补充内置工具使用规则, 默认关闭; 自定义 `system_prompt` 和持久历史不会被改写。技能目录和达到迭代上限后的收尾要求独立生效。
 
 ```python
 from satrap import LLM, ModelWorkflowFramework, ToolsManager

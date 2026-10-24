@@ -858,7 +858,9 @@ def test_malformed_tool_arguments_return_correction_instead_of_execution() -> No
     assert "有效的 JSON 对象" in result["error"]
 
 
-def test_base_agent_prompt_is_added_only_to_request_view() -> None:
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("custom_prompt", [None, "保持角色"])
+def test_base_agent_prompt_is_added_only_to_request_view(enabled, custom_prompt) -> None:
     class PromptLLM:
         model = "offline"
         supports_visual_input = False
@@ -870,11 +872,16 @@ def test_base_agent_prompt_is_added_only_to_request_view() -> None:
 
     llm = PromptLLM()
     agent = ModelWorkflowFramework(
-        llm=cast(LLM, llm), context_id="base-prompt", system_prompt="保持角色", persist_context=False,
+        llm=cast(LLM, llm), context_id="base-prompt", system_prompt=custom_prompt, persist_context=False,
+        default_agent_prompt_enabled=enabled,
     )
     assert agent.full_agent("测试", callback=False) == "完成"
-    assert llm.messages[0] == {"role": "system", "content": "保持角色\n\n" + BASE_AGENT_PROMPT}
-    assert agent.ctx.get_context()[0] == {"role": "system", "content": "保持角色"}
+    expected = "\n\n".join(part for part in (custom_prompt, BASE_AGENT_PROMPT if enabled else "") if part)
+    systems = [message["content"] for message in llm.messages if message["role"] == "system"]
+    assert systems == ([expected] if expected else [])
+    assert BASE_AGENT_PROMPT not in str(agent.ctx.get_context())
+    if custom_prompt:
+        assert agent.ctx.get_context()[0] == {"role": "system", "content": custom_prompt}
 
 def test_sync_and_async_contexts_share_summary_prompt() -> None:
     from satrap.core.utils.context.base import _ContextCore

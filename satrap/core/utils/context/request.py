@@ -16,9 +16,19 @@ FINAL_RESPONSE_PROMPT = (
 )
 
 
-def compose_agent_system_suffix(catalog: str = "", *, final: bool = False) -> str:
-    """组合每次请求的固定工具规则、技能目录和收尾要求"""
-    parts = [BASE_AGENT_PROMPT]
+def compose_agent_system_suffix(catalog: str = "", *, final: bool = False, default_agent_prompt_enabled: bool = False) -> str:
+    """
+    组合会话选择的内置提示, 技能目录和收尾要求
+
+    参数:
+    - catalog: 本次可用技能目录, 默认空字符串
+    - final: 是否进入禁止继续调用工具的收尾阶段
+    - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
+
+    返回:
+    - 本次请求的系统提示后缀, 没有需要追加的内容时为空字符串
+    """
+    parts = [BASE_AGENT_PROMPT] if default_agent_prompt_enabled else []
     if catalog:
         parts.append(catalog)
     if final:

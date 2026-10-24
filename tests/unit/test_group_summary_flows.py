@@ -237,7 +237,8 @@ async def test_real_session_first_turn_summary_tools_and_reply_disabled(tmp_path
     instance._wf.tools_manager.disable_tool("group_chat_reply")
     await PipelineScheduler(Invoker(instance, asynchronous)).execute(event)
     assert "总结一段讨论" not in str(script.requests[0][0])
-    assert "总结一段讨论" in script.requests[1][0][-1]["content"]
+    assert "group_chat_prepare_summary" in script.requests[1][0][-1]["content"]
+    assert "source_message_ids" in script.requests[1][0][-1]["content"]
     assert script.requests[1][0][-1]["role"] == "tool"
     result = json.loads(script.requests[2][0][-1]["content"])
     assert result["ok"] and result["items"][0]["message_id"] == "77"

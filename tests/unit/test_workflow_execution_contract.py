@@ -76,6 +76,30 @@ async def test_request_environment_recovery_uses_original_snapshot(tmp_path: Pat
     assert "原轮发言人甲" not in str(stored_history(wf))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_recovery_rejects_changed_default_agent_prompt(tmp_path, asynchronous):
+    """切换提示后拒绝恢复旧轮次, 还原后继续使用原请求快照"""
+    from satrap.core.framework.Base.execution.engine import run_async, run_sync
+    from satrap.core.framework.Base.execution.store import RunConflictError
+    script = Script([TOOLS, RuntimeError("临时失败"), ANSWER])
+    wf, _ = await make_workflow(tmp_path, script, asynchronous, True)
+    with pytest.raises(RuntimeError, match="临时失败"):
+        await invoke(wf, False, 2)
+    wf.default_agent_prompt_enabled = True
+    with pytest.raises(RunConflictError, match="配置已改变"):
+        if isinstance(wf, AsyncModelWorkflowFramework):
+            await run_async(wf, run_id=wf.last_run_id)
+        else:
+            run_sync(wf, run_id=wf.last_run_id)
+    wf.default_agent_prompt_enabled = False
+    if isinstance(wf, AsyncModelWorkflowFramework):
+        assert await run_async(wf, run_id=wf.last_run_id) == "完成"
+    else:
+        assert run_sync(wf, run_id=wf.last_run_id) == "完成"
+    assert script.requests[1]["messages"] == script.requests[2]["messages"]
+
+
 class Script:
     """记录外部模型的动态请求, 替身边界沿用 JSON 消息类型"""
 

@@ -487,6 +487,57 @@ class ChatService:
             return {"ok": True, "available": True, "mode": engine.mode,
                     "revision": engine.revision, "plan_mode": engine.plan_mode}
 
+    async def get_default_agent_prompt(self, conversation_id: str) -> dict[str, object]:
+        """
+        读取当前 Chat 会话的内置 Agent 提示开关
+
+        参数:
+        - conversation_id: Chat 会话 ID
+
+        返回:
+        - 当前开关; 会话不存在时抛出 ValueError
+        """
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        return {"ok": True, "default_agent_prompt_enabled": conv.session.default_agent_prompt_enabled}
+
+    @_exclusive_conversation_operation
+    async def set_default_agent_prompt(self, conversation_id: str, enabled: object) -> dict[str, object]:
+        """
+        持久化本会话提示开关, 与生成中的轮次互斥
+
+        参数:
+        - conversation_id: Chat 会话 ID
+        - enabled: 布尔开关
+
+        返回:
+        - 已保存的开关, 非法参数或不存在的会话抛出 ValueError
+        """
+        if type(enabled) is not bool:
+            raise ValueError("default_agent_prompt_enabled 必须是布尔值")
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.plugin_lock:
+            self._save_default_agent_prompt(conv, enabled)
+        return {"ok": True, "default_agent_prompt_enabled": enabled}
+
+    def _save_default_agent_prompt(self, conv: _Conversation, enabled: bool) -> None:
+        """
+        在调用方已占用会话时保存提示开关
+
+        参数:
+        - conv: 已由设置操作或首次发送独占的会话
+        - enabled: 已校验的布尔开关
+        """
+        store = conv.session.plugin_override_store
+        if store is None:
+            raise ValueError("会话覆盖存储尚未就绪")
+        current = store.read(conv.conversation_id, "session.agent_prompt")
+        store.replace(conv.conversation_id, "session.agent_prompt", {"default_agent_prompt_enabled": enabled}, expected_revision=current["revision"])
+        conv.session.default_agent_prompt_enabled = enabled
+
     async def get_command_history(self, conversation_id: str) -> dict[str, object]:
         """
         读取会话命令历史设置
@@ -949,6 +1000,7 @@ class ChatService:
         temperature: float | None,
         persisted: bool,
         build_fingerprint: str,
+        default_agent_prompt_enabled: bool = False,
         preload_lock: asyncio.Lock | None = None,
         subscribers: set[_SubscriberQueue] | None = None,
     ) -> _Conversation:
@@ -964,6 +1016,7 @@ class ChatService:
         - temperature: Chat 会话级温度覆盖
         - persisted: 是否立即保存正式会话元数据
         - build_fingerprint: 当前运行时构建指纹
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
         - preload_lock: 重建时复用的预加载锁
         - subscribers: 重建时继承的 WebSocket 订阅者
 
@@ -1009,6 +1062,7 @@ class ChatService:
             "thinking_callback": on_thinking,
             "enable_checkpoint": False,
             "recoverable": True,
+            "default_agent_prompt_enabled": default_agent_prompt_enabled,
         }
         if system_prompt:
             session_kwargs["system_prompt"] = system_prompt
@@ -1110,6 +1164,7 @@ class ChatService:
         system_prompt: str | None = None,
         think: str = "off",
         project_id: str | None = None,
+        default_agent_prompt_enabled: bool = False,
     ) -> str:
         """
         创建并立即持久化正式会话
@@ -1119,6 +1174,7 @@ class ChatService:
         - system_prompt: 系统提示词
         - think: 思考模式
         - project_id: 项目 ID
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
 
         返回:
         - str: 会话 ID
@@ -1139,7 +1195,10 @@ class ChatService:
             temperature=None,
             persisted=True,
             build_fingerprint=fingerprint,
+            default_agent_prompt_enabled=default_agent_prompt_enabled,
         )
+        if default_agent_prompt_enabled:
+            await self.set_default_agent_prompt(conversation_id, default_agent_prompt_enabled)
         return conversation_id
 
     async def preload_conversation(
@@ -1151,6 +1210,7 @@ class ChatService:
         project_id: str | None = None,
         temperature: float | None = None,
         conversation_id: str | None = None,
+        default_agent_prompt_enabled: bool = False,
     ) -> str:
         """
         预分配 ID 并在内存完成 Session, 插件和工作流初始化
@@ -1162,6 +1222,7 @@ class ChatService:
         - project_id: 项目 ID
         - temperature: Chat 会话级温度覆盖
         - conversation_id: 后端重启或超时后的指定 ID 恢复
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
 
         返回:
         - str: 预加载会话 ID
@@ -1182,6 +1243,7 @@ class ChatService:
             temperature=temperature,
             persisted=False,
             build_fingerprint=fingerprint,
+            default_agent_prompt_enabled=default_agent_prompt_enabled,
         )
         return target_id
 
@@ -1684,6 +1746,9 @@ class ChatService:
                     raise ValueError("审批模式必须是 user, auto 或 full-access")
 
             model = str(settings.get("model") or conv.model)
+            prompt_enabled = settings.get("default_agent_prompt_enabled", conv.session.default_agent_prompt_enabled)
+            if type(prompt_enabled) is not bool:
+                raise ValueError("default_agent_prompt_enabled 必须是布尔值")
             system_prompt = (
                 str(settings.get("system_prompt") or "") or None
                 if "system_prompt" in settings
@@ -1722,12 +1787,16 @@ class ChatService:
                         temperature=temperature,
                         persisted=False,
                         build_fingerprint=fingerprint,
+                        default_agent_prompt_enabled=prompt_enabled,
                         preload_lock=lock,
                         subscribers=subscribers,
                     )
                 except Exception:
                     self._storage.purge_session(self._platform_id, conv.conversation_id)
                     raise
+
+            if "default_agent_prompt_enabled" in settings or prompt_enabled:
+                self._save_default_agent_prompt(conv, prompt_enabled)
 
             if "command_history_enabled" in settings:
                 enabled = settings["command_history_enabled"]
@@ -2237,6 +2306,7 @@ class ChatService:
                 new_conv = self._conversations[new_cid]
                 await RAG_WORKERS.run(fork_session_settings, self._storage, self._platform_id, conversation_id, new_cid)
                 new_conv.session.command_history_enabled = src.session.command_history_enabled
+                new_conv.session.default_agent_prompt_enabled = src.session.default_agent_prompt_enabled
                 new_conv.session.default_max_iterations = src.session.default_max_iterations
                 async with new_conv.plugin_lock:
                     await self._refresh_session_plugins(new_conv)
@@ -2279,6 +2349,7 @@ class ChatService:
         """
         session.plugin_override_store = SessionOverrideStore(self._storage.platform_db(self._platform_id))
         session.command_history_enabled = session.plugin_override_store.read(session.session_id, "session.commands")["overrides"].get("command_history_enabled", False)
+        session.default_agent_prompt_enabled = session.plugin_override_store.read(session.session_id, "session.agent_prompt")["overrides"].get("default_agent_prompt_enabled", session.default_agent_prompt_enabled)
         engine_overrides = session.plugin_override_store.read(session.session_id, "session.engine")["overrides"]
         if type(engine_overrides.get("max_iterations")) is int and engine_overrides["max_iterations"] >= 1:
             session.default_max_iterations = engine_overrides["max_iterations"]

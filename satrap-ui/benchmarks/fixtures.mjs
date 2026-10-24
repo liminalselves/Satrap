@@ -82,6 +82,7 @@ export function responseFor(request, fixture) {
   if (path === '/api/chat/runs') return { runs: [] };
   if (path === '/api/chat/approval') return { ok: true, available: false, mode: 'user', revision: 0, plan_mode: false };
   if (path === '/api/chat/command-history') return { ok: true, command_history_enabled: false };
+  if (path === '/api/chat/default-agent-prompt' && method === 'GET') return { ok: true, default_agent_prompt_enabled: false };
   if (path === '/api/chat/max-iterations') return { ok: true, max_iterations: 100 };
   if (path === '/api/chat/conversations' && method === 'GET') return { conversations: fixture.conversations };
   if (path === '/api/chat/conversations/page') return conversationPageResponse(request.url(), fixture.conversations);

@@ -431,6 +431,41 @@ async def test_command_history_setting_survives_preload_restart_and_fork(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_default_agent_prompt_preload_isolation_restart_and_fork(tmp_path, monkeypatch):
+    """内置提示在首次调用前生效, 持久化和分支继承且不影响其他会话"""
+    from satrap.core.utils.context.request import BASE_AGENT_PROMPT
+    service = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(service)
+    cid = await service.preload_conversation(default_agent_prompt_enabled=True)
+    assert (await service.get_default_agent_prompt(cid))["default_agent_prompt_enabled"] is True
+    assert (await service.send(cid, "测试"))["ok"] is True
+    await _wait_conversation_task(service, cid)
+    assert _must_conversation(service, cid).session._wf.default_agent_prompt_enabled is True
+    assert BASE_AGENT_PROMPT not in str(_must_conversation(service, cid).session.ctx.get_context())
+    other = await service.create_conversation()
+    assert (await service.get_default_agent_prompt(other))["default_agent_prompt_enabled"] is False
+    fork = await service.fork(cid, 1)
+    assert fork["ok"]
+    fork_id = fork["conversation_id"]
+    assert (await service.get_default_agent_prompt(fork_id))["default_agent_prompt_enabled"] is True
+    status, _ = await server._route("PUT", f"/api/chat/default-agent-prompt?conversation={cid}",
+                                    b'{"default_agent_prompt_enabled":"false"}')
+    assert status == 400
+    await service.close()
+    resumed = _make_service(tmp_path, monkeypatch)
+    try:
+        assert (await resumed.get_default_agent_prompt(cid))["default_agent_prompt_enabled"] is True
+        assert (await resumed.get_default_agent_prompt(fork_id))["default_agent_prompt_enabled"] is True
+        status, body = await ChatHTTPServer(resumed)._route(
+            "PUT", f"/api/chat/default-agent-prompt?conversation={fork_id}", b'{"default_agent_prompt_enabled":false}',
+        )
+        assert status == 200 and body["default_agent_prompt_enabled"] is False
+        assert (await resumed.get_default_agent_prompt(cid))["default_agent_prompt_enabled"] is True
+    finally:
+        await resumed.close()
+
+
+@pytest.mark.asyncio
 async def test_max_iterations_setting_survives_preload_restart_fork_and_clear(tmp_path, monkeypatch):
     """Chat 最大迭代在首条消息前生效, 持久化/重启/分支继承, null 还原定义默认, HTTP 拒绝非法值"""
     service = _make_service(tmp_path, monkeypatch)

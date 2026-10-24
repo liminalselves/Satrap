@@ -70,6 +70,7 @@ try {
             let data;
             if (url.pathname === '/api/chat/approval') data = { ok: true, available: false, mode: 'user', revision: 0, plan_mode: false };
             else if (url.pathname === '/api/chat/command-history') data = { ok: true, command_history_enabled: false };
+            else if (url.pathname === '/api/chat/default-agent-prompt') data = { ok: true, default_agent_prompt_enabled: false };
             else if (url.pathname === '/api/chat/max-iterations') data = { ok: true, max_iterations: 50 };
             else if (url.pathname === '/config/overview') data = { ok: true, model_counts: { llm: 1, embedding: 0, rerank: 0, asr: 0 }, session_count: 0 };
             else if (url.pathname === '/api/chat/conversations/page') data = { conversations: fixture.conversations.slice(0, 50), has_more: fixture.conversations.length > 50, next_cursor: 'fixture-cursor' };

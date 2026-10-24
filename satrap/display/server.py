@@ -279,6 +279,22 @@ class ChatHTTPServer(MiniHTTPServer):
                 logger.error(f"[对话数据] Chat/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
                 return 500, {"error": "对话数据操作失败, 请查看 Chat 日志"}
 
+        if clean == "/api/chat/default-agent-prompt" and method in {"GET", "PUT"}:
+            conversation_id = self._query_param(path, "conversation")
+            try:
+                if not conversation_id:
+                    raise ValueError("缺少 conversation")
+                if method == "GET":
+                    return 200, await svc.get_default_agent_prompt(conversation_id)
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or set(payload) != {"default_agent_prompt_enabled"}:
+                    raise ValueError("内置提示设置参数无效")
+                result = await svc.set_default_agent_prompt(conversation_id, payload["default_agent_prompt_enabled"])
+                return (200 if result.get("ok") else 409), result
+            except (OSError, TypeError, ValueError) as error:
+                logger.warning(f"[内置提示] 设置读取或更新失败: {error}")
+                return 400, {"error": str(error)}
+
         if clean == "/api/chat/command-history" and method in {"GET", "PUT"}:
             conversation_id = self._query_param(path, "conversation")
             try:
@@ -404,6 +420,7 @@ class ChatHTTPServer(MiniHTTPServer):
                     model=str(payload.get("model") or "default"),
                     think=str(payload.get("think") or "off"),
                     system_prompt=str(payload.get("system_prompt") or "") or None,
+                    default_agent_prompt_enabled=payload.get("default_agent_prompt_enabled", False),
                     project_id=str(payload.get("project_id") or "") or None,
                 )
             except ValueError as e:
@@ -418,6 +435,7 @@ class ChatHTTPServer(MiniHTTPServer):
                     model=str(payload.get("model") or "default"),
                     think=str(payload.get("think") or "off"),
                     system_prompt=str(payload.get("system_prompt") or "") or None,
+                    default_agent_prompt_enabled=payload.get("default_agent_prompt_enabled", False),
                     project_id=str(payload.get("project_id") or "") or None,
                     temperature=float(temperature) if temperature is not None else None,
                 )
@@ -589,7 +607,7 @@ class ChatHTTPServer(MiniHTTPServer):
             think = str(think) if think is not None else None
             preload_settings = {
                 key: payload[key]
-                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled", "max_iterations")
+                for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled", "max_iterations", "default_agent_prompt_enabled")
                 if key in payload
             }
             result = await svc.send(

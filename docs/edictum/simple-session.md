@@ -198,3 +198,7 @@ session.list_mutations()
 ```
 
 未启用检查点 (`enable_checkpoint=False`) 时调用上述接口会抛 `ValueError`。
+
+## 内置 Agent 提示
+
+`SimpleSession` 和 `AsyncSimpleSession` 可传入 `default_agent_prompt_enabled=True`, 默认 False。它只控制工具调用及结果核实的内置提示, 与自定义 `system_prompt` 独立, 不改变技能加载、权限或审批规则。提示只出现在模型请求副本, 不写入历史。平台 Edictum 配置在 `params` 中保存同名布尔字段, 管理界面可直接切换。切换后不能继续恢复使用另一提示配置的旧执行记录。

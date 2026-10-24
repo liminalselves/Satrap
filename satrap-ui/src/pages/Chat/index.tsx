@@ -115,6 +115,7 @@ interface ChatSettings {
   think: string;   // 思考强度 (off/low/medium/high)
   temperature: number;   // 采样温度
   commandHistoryEnabled: boolean;   // 是否将已执行命令及回复写入模型上下文
+  defaultAgentPromptEnabled: boolean;   // 是否在本会话补充内置 Agent 提示
   maxIterations?: number;   // 最大工具迭代次数, undefined 沿用会话定义默认
   systemPrompt: string;   // 系统提示词
 }
@@ -124,6 +125,7 @@ const DEFAULT_SETTINGS: ChatSettings = {
   think: 'off',
   temperature: 0.7,
   commandHistoryEnabled: false,
+  defaultAgentPromptEnabled: false,
   maxIterations: undefined,
   systemPrompt: '',
 };
@@ -967,6 +969,13 @@ export function Chat() {
 
   // 更新单项设置
   const updateSettings = useCallback(<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
+    if (key === 'defaultAgentPromptEnabled' && activeId && activeId !== '__draft__') {
+      void chatApi.setDefaultAgentPrompt(activeId, value === true).then((result) => {
+        if (!result.ok) throw new Error(result.error || '保存失败');
+        if (activeIdRef.current === activeId) setSettings((prev) => ({ ...prev, defaultAgentPromptEnabled: result.default_agent_prompt_enabled }));
+      }).catch((error: unknown) => toast('error', String(error)));
+      return;
+    }
     if (key === 'commandHistoryEnabled' && activeId && activeId !== '__draft__') {
       void chatApi.setCommandHistory(activeId, value === true).then((result) => {
         if (!result.ok) throw new Error(result.error || '保存失败');
@@ -987,6 +996,9 @@ export function Chat() {
   useEffect(() => {
     if (!activeId || activeId === '__draft__') return;
     let cancelled = false;
+    void chatApi.getDefaultAgentPrompt(activeId).then((result) => {
+      if (!cancelled) setSettings((prev) => ({ ...prev, defaultAgentPromptEnabled: result.default_agent_prompt_enabled === true }));
+    }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     void chatApi.getCommandHistory(activeId).then((result) => {
       if (!cancelled) setSettings((prev) => ({ ...prev, commandHistoryEnabled: result.command_history_enabled }));
     }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
@@ -1001,12 +1013,13 @@ export function Chat() {
     model: settings.model,
     temperature: settings.temperature,
     commandHistoryEnabled: settings.commandHistoryEnabled,
+    defaultAgentPromptEnabled: settings.defaultAgentPromptEnabled,
     maxIterations: settings.maxIterations,
     systemPrompt: settings.systemPrompt,
     modelConfig: modelsDetail[settings.model] ?? null,
     plugins,
     pluginConfigRevision,
-  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.maxIterations, modelsDetail, plugins, pluginConfigRevision]);
+  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.defaultAgentPromptEnabled, settings.maxIterations, modelsDetail, plugins, pluginConfigRevision]);
 
   const preloadKeyFor = useCallback(
     (projectId: string | null | undefined) => `${preloadBaseKey}:${projectId ?? ''}`,
@@ -1019,11 +1032,12 @@ export function Chat() {
       think: settings.think,
       temperature: settings.temperature,
       commandHistoryEnabled: settings.commandHistoryEnabled,
+      defaultAgentPromptEnabled: settings.defaultAgentPromptEnabled,
       maxIterations: settings.maxIterations,
       systemPrompt: settings.systemPrompt,
       projectId: projectId ?? null,
     }),
-    [settings.model, settings.think, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.maxIterations]
+    [settings.model, settings.think, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.defaultAgentPromptEnabled, settings.maxIterations]
   );
 
   // 启动或复用当前设置对应的预加载请求
@@ -2555,6 +2569,15 @@ function ChatSettingsModal({
                     options={thinkingOptions}
                   />
                 </div>
+
+                <label className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-text-primary">使用内置 Agent 提示</div>
+                    <div className="text-xs text-text-tertiary">补充工具调用与结果核实的通用规则, 可与自定义提示同时使用</div>
+                  </div>
+                  <input type="checkbox" checked={settings.defaultAgentPromptEnabled}
+                    onChange={(e) => onChange('defaultAgentPromptEnabled', e.target.checked)} />
+                </label>
 
                 <label className="flex items-center justify-between gap-4">
                   <div>

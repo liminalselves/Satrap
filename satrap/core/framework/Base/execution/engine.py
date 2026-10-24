@@ -140,7 +140,8 @@ def configuration(wf: Workflow) -> str:
         tools.append({"name": name, "source": source, "enabled": tool.is_enabled(),
                       "definition": tool.get_tool_defined(), "owner": tool.owner_plugin,
                       "recovery": getattr(tool, "recovery_policy", "manual")})
-    return fingerprint({"model": model, "tools": tools, "plugins": getattr(wf, "recovery_plugin_fingerprint", "")})
+    return fingerprint({"model": model, "tools": tools, "plugins": getattr(wf, "recovery_plugin_fingerprint", ""),
+                        "default_agent_prompt_enabled": wf.default_agent_prompt_enabled})
 
 
 def prepared_metadata(prepared: PreparedModelContext) -> dict[str, Any]:
@@ -277,7 +278,9 @@ def execute(
                     if saved is None and seeded is None:
                         tools = None if step.final else wf.tools_manager.get_tools_definitions()
                         catalog = wf.skill_runtime.catalog(wf) if wf.skill_runtime is not None else ""
-                        system_suffix = compose_agent_system_suffix(catalog, final=step.final)
+                        system_suffix = compose_agent_system_suffix(
+                            catalog, final=step.final, default_agent_prompt_enabled=wf.default_agent_prompt_enabled,
+                        )
                         prepared = yield Prepare(step, tools, payload["img_urls"], frozen_blocks, system_suffix)
                         request = {"messages": prepared.messages, "tools": tools,
                                    "thinking": payload["thinking"], "img_urls": payload["img_urls"],

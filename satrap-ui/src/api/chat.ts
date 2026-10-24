@@ -210,6 +210,7 @@ export type ModelConfigItem = LLMConfig;
 
 // 预加载及首次发送使用的会话构建设置
 export interface ChatPreloadSettings {
+  defaultAgentPromptEnabled?: boolean;
   commandHistoryEnabled?: boolean;
   maxIterations?: number;   // 最大工具迭代次数, 缺省沿用会话定义默认
   approvalMode?: ApprovalMode;   // 草稿首次发送时应用, 不改变已有会话的审批策略
@@ -370,6 +371,7 @@ export const chatApi = {
       think: settings.think,
       temperature: settings.temperature,
       system_prompt: settings.systemPrompt,
+      default_agent_prompt_enabled: settings.defaultAgentPromptEnabled ?? false,
       project_id: settings.projectId,
     }),
 
@@ -379,6 +381,12 @@ export const chatApi = {
       'POST', `/api/chat/conversations/${encodeURIComponent(conversationId)}/project`,
       { project_id: projectId },
     ),
+
+  getDefaultAgentPrompt: (conversation: string) =>
+    request<{ ok: boolean; default_agent_prompt_enabled: boolean }>('GET', `/api/chat/default-agent-prompt?conversation=${encodeURIComponent(conversation)}`),
+
+  setDefaultAgentPrompt: (conversation: string, enabled: boolean) =>
+    request<{ ok: boolean; default_agent_prompt_enabled: boolean; error?: string }>('PUT', `/api/chat/default-agent-prompt?conversation=${encodeURIComponent(conversation)}`, { default_agent_prompt_enabled: enabled }),
 
   getCommandHistory: (conversation: string) =>
     request<{ ok: boolean; command_history_enabled: boolean }>('GET', `/api/chat/command-history?conversation=${encodeURIComponent(conversation)}`),
@@ -468,6 +476,7 @@ export const chatApi = {
         project_id: preloadSettings.projectId,
         approval_mode: preloadSettings.approvalMode,
         command_history_enabled: preloadSettings.commandHistoryEnabled,
+        default_agent_prompt_enabled: preloadSettings.defaultAgentPromptEnabled ?? false,
         max_iterations: preloadSettings.maxIterations,
       } : {}),
     }),

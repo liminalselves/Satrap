@@ -34,6 +34,7 @@ async function chat_reconnect(runtime) {
     const preloads = [];
     const firstSends = [];
     const initialApprovals = new Map();
+    const defaultAgentPrompts = new Map();
     let releaseDraftPreload;
     await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
       backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
@@ -43,9 +44,20 @@ async function chat_reconnect(runtime) {
       const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
         'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS' };
       if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+      if (pathname.startsWith('/api/chat/conversations/draft-') && route.request().method() === 'DELETE') {
+        defaultAgentPrompts.delete(pathname.split('/').at(-1));
+        return route.fulfill({ json: { ok: true }, headers });
+      }
       if (pathname === '/api/chat/ask-user/answer') {
         approvalAnswers.push(route.request().postDataJSON());
         return route.fulfill({ json: { ok: true }, headers });
+      }
+      if (pathname === '/api/chat/default-agent-prompt') {
+        const cid = new URL(route.request().url()).searchParams.get('conversation');
+        if (route.request().method() === 'PUT') {
+          defaultAgentPrompts.set(cid, route.request().postDataJSON().default_agent_prompt_enabled);
+        }
+        return route.fulfill({ json: { ok: true, default_agent_prompt_enabled: defaultAgentPrompts.get(cid) ?? false }, headers });
       }
       if (pathname === '/api/chat/approval') {
         const cid = new URL(route.request().url()).searchParams.get('conversation');
@@ -66,6 +78,7 @@ async function chat_reconnect(runtime) {
       if (pathname === '/api/chat/conversations/preload') {
         preloads.push(route.request().postDataJSON());
         const result = { ok: true, conversation_id: `draft-${preloads.length}` };
+        defaultAgentPrompts.set(result.conversation_id, preloads.at(-1).default_agent_prompt_enabled ?? false);
         if (preloads.length === 1) {
           return new Promise((resolve) => {
             releaseDraftPreload = () => route.fulfill({ json: result, headers }).then(resolve);
@@ -206,6 +219,11 @@ async function chat_reconnect(runtime) {
     await quickApproval.getByRole('button', { name: '帮我审批', exact: true }).waitFor();
     await page.getByTitle('对话设置', { exact: true }).click();
     const settings = page.getByRole('dialog', { name: '对话设置', exact: true });
+    const defaultPromptToggle = settings.getByRole('checkbox', { name: /使用内置 Agent 提示/ });
+    assert.equal(await defaultPromptToggle.isChecked(), false);
+    await defaultPromptToggle.click();
+    await waitFor(() => defaultAgentPrompts.get('benchmark-active') === true);
+    await waitFor(() => defaultPromptToggle.isChecked());
     const approvalGroup = settings.getByRole('group', { name: '执行审批模式' });
     for (const [previous, label] of [
       ['帮我审批', '完全访问'],

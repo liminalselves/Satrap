@@ -208,3 +208,25 @@ PR #25 的 Actions 在 Windows 3.11 出现 7 项失败, 3.12 出现 4 项失败,
 - Windows Python 3.13.5 完整 tests/unit: 3888 passed, 8 skipped, 20 warnings; 跳过为符号链接权限, POSIX 专用场景和显式集成开关, warning 为既有 curl_cffi 事件循环适配提示
 - 变更的 6 个生产模块和 4 个测试模块按相同 Pyright 配置与 HEAD 副本对照: 两侧均有 26 项既有错误, 无新增错误或警告
 - 本轮未重新运行 GitHub 完整跨平台矩阵, 未提交, 推送或部署
+
+## PR #26 合入与默认提示修复 (2026-10-25)
+
+- 已将 PR #26 的工具参数契约和提示精简合入 fix/issue-24, 冲突处保留跨平台 Shell, 群历史范围及任意文件发送
+- 新增会话级 default_agent_prompt_enabled 布尔配置, 默认 False; Chat 和平台 Edictum 均可设置, 不修改自定义提示或历史, 技能目录与收尾要求独立生效
+- Chat 开关支持预加载, 首次发送, 持久化恢复和 Fork 独立继承; 生成期间拒绝切换, 可恢复任务通过配置指纹检查开关一致性
+- 媒体回归按角色与媒体内容选取请求消息, 覆盖同步/异步及提示开关两种状态; 群摘要测试验证关键说明而非固定标题
+- MCP 导出和执行共用原始 JSON Schema, 保留组合类型, 根节点 oneOf, additionalProperties 与 $defs; 保留原始类型以及显式 null 与省略字段的区别
+- jsonschema 已列入 requirements.txt 直接依赖, 未实现另一套 schema 类型编译器
+- macOS Python 3.12 Actions 暴露的同步审批超时窗口已单独修复: 启动前计算单调时钟截止时间, 队列等待后仍复核, 迟到批准转人工; 回归使用可控时钟模拟等待方延迟调度
+
+本轮实际验证:
+
+- Windows Python 3.13.5 完整 tests/unit: 3910 passed, 8 skipped, 20 warnings, 714.08 秒; 跳过为符号链接权限, POSIX 专用场景及显式集成开关, warning 为既有 curl_cffi 事件循环提示
+- 后端首批定向: 299 passed, 1 skipped; 任务恢复开关一致性另有 2 passed
+- Windows Python 3.11.17 / 3.12.15: 关键回归各 17 passed, 使用 CI 同款 MCP 2.3.0; Python 3.13 环境使用 MCP 2.0.0
+- 前端 Vitest: 322 passed; TypeScript 和 Vite 生产构建通过
+- 浏览器: 7 个 CI 场景, chat-reconnect 与 edictum-settings 均通过, 覆盖开关保存和回填
+- 性能夹具契约: 7 passed; 新增设置读取接口已补齐夹具
+- Pyright: 12 个变更生产模块 0 errors, 72 warnings; MCP 导出模块单独 0 errors, 0 warnings
+- 非测试模块头文档, Python AST 和 git diff --check 通过
+- 本轮没有本地 macOS 环境, GitHub 跨平台矩阵仍待推送后复验

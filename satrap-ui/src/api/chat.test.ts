@@ -8,6 +8,7 @@ const SETTINGS: ChatPreloadSettings = {
   think: 'high',
   temperature: 0.35,
   systemPrompt: '测试提示词',
+  defaultAgentPromptEnabled: true,
   projectId: 'project-1',
 };
 
@@ -54,6 +55,7 @@ describe('chatApi conversation preload', () => {
       think: 'high',
       temperature: 0.35,
       system_prompt: '测试提示词',
+      default_agent_prompt_enabled: true,
       project_id: 'project-1',
     });
   });
@@ -71,9 +73,18 @@ describe('chatApi conversation preload', () => {
       model: 'deepseek-v4-flash',
       temperature: 0.35,
       system_prompt: '测试提示词',
+      default_agent_prompt_enabled: true,
       project_id: 'project-1',
       approval_mode: 'auto',
     });
+  });
+
+  it('内置提示开关只更新指定会话', async () => {
+    const fetchSpy = mockFetch({ ok: true, default_agent_prompt_enabled: false });
+    await chatApi.setDefaultAgentPrompt('conv & test', false);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('conversation=conv%20%26%20test');
+    expect(fetchSpy.mock.calls[0][1]?.method).toBe('PUT');
+    expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toEqual({ default_agent_prompt_enabled: false });
   });
 
   it('submits an ask_user answer to the pending tool request', async () => {

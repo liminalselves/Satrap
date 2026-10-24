@@ -55,6 +55,7 @@ class SimpleSession(Session, _SessionFeatures):
         llm: LLM,
         *,
         system_prompt: str | None = None,
+        default_agent_prompt_enabled: bool = False,
         thinking: str = "off",
         command_history_enabled: bool = False,
         model_params: dict[str, Any] | None = None,
@@ -76,6 +77,7 @@ class SimpleSession(Session, _SessionFeatures):
         - session_id: 会话 ID
         - llm: 主模型实例
         - system_prompt: 系统提示词, 默认 None 保留已有系统提示词, 提供时在初始化阶段重置
+        - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
         - thinking: 默认思考强度, 默认 off; run 可逐次覆盖
         - command_history_enabled: 是否记录命令及回复到模型上下文, 默认 False
         - model_params: temperature/top_p/max_tokens 的会话覆盖, 默认 None 继承模型配置
@@ -98,6 +100,7 @@ class SimpleSession(Session, _SessionFeatures):
         if type(command_history_enabled) is not bool:
             raise ValueError("command_history_enabled 必须是布尔值")
         self.command_history_enabled = command_history_enabled
+        self.default_agent_prompt_enabled = default_agent_prompt_enabled
         self.recoverable = recoverable
         settings = normalize_session_settings({"thinking": thinking, "max_iterations": max_iterations,
                                                "model_params": {} if model_params is None else model_params})
@@ -121,6 +124,7 @@ class SimpleSession(Session, _SessionFeatures):
             tools_manager=ToolsManager(),
             recoverable=recoverable,
             system_prompt=system_prompt,
+            default_agent_prompt_enabled=self.default_agent_prompt_enabled,
             content_callback=content_callback,
             return_thinking=return_thinking,
             thinking_callback=thinking_callback,

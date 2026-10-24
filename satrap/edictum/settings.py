@@ -21,6 +21,8 @@ def normalize_session_settings(params: dict[str, Any]) -> dict[str, Any]:
     - dict[str, Any]: 生成参数归入 model_params 的新对象, 非法配置抛出 ValueError
     """
     normalized = dict(params)
+    if type(normalized.get("default_agent_prompt_enabled", False)) is not bool:
+        raise ValueError("default_agent_prompt_enabled 必须是布尔值")
     if type(normalized.get("command_history_enabled", False)) is not bool:
         raise ValueError("command_history_enabled 必须是布尔值")
     if "max_iterations" in normalized:
