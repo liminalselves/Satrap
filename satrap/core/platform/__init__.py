@@ -1038,7 +1038,7 @@ class PlatformAdapter(ABC):
         返回:
         - bool: 入队成功返回 True, 队列满时返回 False
         """
-        event.queued_at = time.monotonic()
+        event.mark_queued()
         try:
             self._event_queue.put_nowait(event)
             return True

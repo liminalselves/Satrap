@@ -1,7 +1,7 @@
 """空窗补偿计时, 到期仅向已有平台队列提交轻量事件"""
 from dataclasses import dataclass
 from weakref import WeakKeyDictionary
-from time import monotonic
+from time import get_clock_info, monotonic
 from copy import copy, deepcopy
 from collections import OrderedDict
 import asyncio
@@ -67,6 +67,7 @@ class WakeTimers:
         lightweight.policy_settings = deepcopy(event.policy_settings)
         lightweight._call_origin = event.call_origin
         lightweight.queued_at = event.queued_at
+        lightweight.queued_sequence = event.queued_sequence
         self._sources[key] = lightweight
         self._sources.move_to_end(key)
         while len(self._sources) > self.window.max_routes:
@@ -82,7 +83,10 @@ class WakeTimers:
         async def enqueue() -> None:
             """到期后回到平台队列, 不直接调用模型"""
             try:
-                await asyncio.sleep(max(0, due - monotonic()))
+                resolution = get_clock_info("monotonic").resolution
+                while (remaining := due - monotonic()) > 0:
+                    await asyncio.sleep(max(remaining, resolution))
+                # 事件循环允许计时略微提前返回, 必须复核到期且避免低精度时钟下零延迟忙循环
                 ticket.snapshot = self.window.peek(lightweight)
                 if ticket.snapshot and not ticket.cancelled and adapter.config.enable:
                     adapter.commit_event(lightweight)
@@ -136,17 +140,16 @@ class WakeTimers:
             if key[0] == adapter_id:
                 del self._sources[key]
 
-    def reset_route(self, event: MessageEvent, cutoff: float) -> None:
+    def reset_route(self, event: MessageEvent) -> None:
         """
-        撤销旧补偿, 仅用边界之后真实消息的来源安排新补偿
+        窗口重置后撤销旧补偿, 仅用仍在窗口中的真实消息来源安排新补偿
 
         参数:
         - event: 用于定位范围的重置命令, 不把其操作者当作后续消息发送者
-        - cutoff: 已成功生效的命令接收边界
         """
         source = self._sources.pop(self.window.key(event), None)
         self.cancel_route(event, invalidate_tickets=True)
-        if source is not None and source.queued_at > cutoff:
+        if source is not None and any(row.request_id == source.call_origin.request_id for row in self.window.peek(event)):
             self.schedule(source)
 
     async def close(self) -> None:

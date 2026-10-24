@@ -613,6 +613,37 @@ class TestDiagnosticCollection:
         assert stages["model"]["status"] == "unknown" and stages["model"]["reason_code"] == "session_timeout"
 
 class TestDiagnosticBounds:
+    def test_equal_timestamps_keep_append_order_in_lists_and_summary(self):
+        """跨请求和跨适配器的同刻记录按追加序号排序, 汇总仍选最终阶段"""
+        from dataclasses import replace
+        log = RequestDiagnosticLog()
+        initial = RequestDiagnostic(
+            adapter_id="ob", session_id="s", actor_id="a", stage="projection", decision="partial",
+            reason="窗口截断", recorded_at=_NOW, request_id="r1", reason_code="wake_window_budget",
+        )
+        log.record(initial)
+        final = replace(initial, reason_code="none", notes="wake_window_budget:1")
+        log.record(replace(initial, adapter_id="other", request_id="r2"))
+        log.record(final)
+        records = log.list()
+        assert [(row["request_id"], row["reason_code"]) for row in records] == [
+            ("r1", "none"), ("r2", "wake_window_budget"), ("r1", "wake_window_budget"),
+        ]
+        summaries = log.list_requests()
+        assert [row["request_id"] for row in summaries] == ["r1", "r2"]
+        assert summaries[0]["notes"] == "wake_window_budget:1"
+        detail = log.get_request("r1")
+        assert detail is not None
+        assert [row["reason_code"] for row in detail["records"]] == ["wake_window_budget", "none"]
+        assert all("_sequence" not in row for row in records)
+        log.record(initial)
+        assert log.list()[0]["reason_code"] == "wake_window_budget"
+        log.clear_adapter("ob")
+        log.clear_adapter("other")
+        log.record(replace(initial, request_id="earlier", recorded_at=_NOW + 0.25))
+        log.record(replace(initial, request_id="later", recorded_at=_NOW + 0.75))
+        assert [row["request_id"] for row in log.list_requests()] == ["later", "earlier"]
+
     def test_capacity_keeps_newest_requests_and_drops_oldest(self):
         log = RequestDiagnosticLog(per_adapter=2)
         for index in range(3):

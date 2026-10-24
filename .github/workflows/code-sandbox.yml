@@ -48,7 +48,7 @@ jobs:
           [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          python -m pytest tests/unit -q
+          python -m pytest tests/unit -q --durations=20 -o faulthandler_timeout=90
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   frontend:
     runs-on: ubuntu-latest

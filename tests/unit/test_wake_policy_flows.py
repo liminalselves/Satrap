@@ -645,4 +645,4 @@ async def test_new_reset_removes_late_old_claim_cooldown_and_submission_activity
     assert window.cooldown_remaining(event, 5) > 0
     window.reset(event, 3)
     assert window.cooldown_remaining(event, 5) == 0
-    assert not any(submitted for _, submitted in window._activity.get(window.key(event), []))
+    assert not any(submitted for _, submitted, _sequence in window._activity.get(window.key(event), []))

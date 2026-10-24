@@ -851,10 +851,12 @@ class PipelineScheduler:
         - cutoff: 宿主发布的成功边界
         """
         self.wake_window.reset(event, cutoff)
-        self.wake_timers.reset_route(event, cutoff)
+        self.wake_timers.reset_route(event)
         key = self.wake_window.key(event)
         for queued, ticket in list(self.manual_wakes.tickets.items()):
-            if self.wake_window.key(queued) == key and any(row.received_at <= cutoff for row in ticket.snapshot):
+            if self.wake_window.key(queued) == key and any(
+                (row.received_at, row.received_sequence) <= (cutoff, event.queued_sequence) for row in ticket.snapshot
+            ):
                 ticket.cancelled = True
                 ticket.status = "cancelled"
 

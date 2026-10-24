@@ -295,10 +295,13 @@ async def test_command_skips_window_observe_in_frequency_mode():
 
 
 @pytest.mark.parametrize("scope", ["group", "group_member"])
-async def test_new_success_boundary_preserves_later_window_and_cancels_old_tickets(scope):
+async def test_new_success_boundary_preserves_later_window_and_cancels_old_tickets(scope: str, monkeypatch: pytest.MonkeyPatch):
     """宿主确认重置后只清旧窗口, 旧快照撤销, 后到正文仍能继续提交"""
     from satrap.core.pipeline.wake_timers import DeadlineTicket
     from satrap.core.pipeline.manual_wake import ManualWakeTicket
+    from satrap.core.platform import event as event_module
+    stamp = event_module.monotonic()
+    monkeypatch.setattr(event_module, "monotonic", lambda: stamp)
     adapter = RecorderAdapter(settings={"context_scope": scope, "wake_mode": "frequency", "wake_message_threshold": 100, "wake_max_wait": 30})
     scheduler = PipelineScheduler(_as_session_manager(_FakeSessionManager()), user_manager=cast(Any, _FakeUserManager()))
     old = _scheduler_event(adapter, [Plain(text="重置前")], sender_id="u1", request_id_note="old")
@@ -319,6 +322,7 @@ async def test_new_success_boundary_preserves_later_window_and_cancels_old_ticke
             if call.message == "/new":
                 call.context_reset_at = call.received_at
                 after = _scheduler_event(adapter, [Plain(text="重置后")], sender_id="u3" if scope == "group" else "u1", request_id_note="after")
+                assert after.queued_at == command.queued_at and after.queued_sequence > command.queued_sequence
                 scheduler.wake_window.observe(after)
                 scheduler.wake_timers.schedule(after)
                 return "已开始新对话"
@@ -342,9 +346,12 @@ async def test_new_success_boundary_preserves_later_window_and_cancels_old_ticke
 
 
 @pytest.mark.parametrize("mode", ["mention", "all"])
-async def test_new_failure_keeps_window_and_waiting_message_re_resolves_route(mode):
+async def test_new_failure_keeps_window_and_waiting_message_re_resolves_route(mode: str, monkeypatch: pytest.MonkeyPatch):
     """失败没有重置信号, 并发等待的普通消息必须使用切换后的实际路由"""
     import asyncio
+    from satrap.core.platform import event as event_module
+    stamp = event_module.monotonic()
+    monkeypatch.setattr(event_module, "monotonic", lambda: stamp)
     adapter = RecorderAdapter(settings={"context_scope": "group", "wake_mode": mode})
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -388,6 +395,24 @@ async def test_new_failure_keeps_window_and_waiting_message_re_resolves_route(mo
     assert manager.calls[1].session_id == "new"
     assert "旧窗口" not in manager.calls[1].message
     assert not scheduler._session_turns
+
+
+@pytest.mark.asyncio
+async def test_queue_order_uses_actual_enqueue_when_clock_is_equal(monkeypatch: pytest.MonkeyPatch):
+    """事件构造顺序可以不同于入队顺序, 同刻窗口排序仍按实际入队顺序"""
+    from satrap.core.platform import event as event_module
+    from satrap.core.pipeline.wake_window import WakeWindow
+    monkeypatch.setattr(event_module, "monotonic", lambda: 100.0)
+    adapter = RecorderAdapter(settings={"context_scope": "group"})
+    first = _scheduler_event(adapter, [Plain(text="后入队")], request_id_note="first")
+    second = _scheduler_event(adapter, [Plain(text="先入队")], request_id_note="second")
+    assert first.queued_sequence < second.queued_sequence
+    assert adapter.commit_event(second) and adapter.commit_event(first)
+    assert second.queued_sequence < first.queued_sequence
+    window = WakeWindow()
+    window.observe(first, now=100.0)
+    snapshot = window.observe(second, now=100.0)
+    assert [row.text for row in snapshot] == ["先入队", "后入队"]
 
 
 @pytest.mark.parametrize("scope", ["legacy_user", "group_member", "group"])

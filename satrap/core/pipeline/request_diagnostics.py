@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 import threading
 
@@ -78,6 +78,8 @@ class RequestDiagnostic:
     turn_id: str = ""
     attachments: str = ""
     notes: str = ""
+    _sequence: int = field(default=0, kw_only=True, repr=False, compare=False)
+    """日志内部追加序号, 由 record 覆盖且不向 API 暴露"""
 
 
 def _iso_time(recorded_at: float) -> str:
@@ -106,6 +108,7 @@ class RequestDiagnosticLog:
         self._per_adapter = per_adapter
         self._requests: dict[str, OrderedDict[str, list[RequestDiagnostic]]] = {}
         self._lock = threading.Lock()
+        self._sequence = 0
 
     def record(self, entry: RequestDiagnostic) -> None:
         """
@@ -116,6 +119,8 @@ class RequestDiagnosticLog:
         """
         key = _request_key(entry)
         with self._lock:
+            self._sequence += 1
+            entry = replace(entry, _sequence=self._sequence)
             requests = self._requests.get(entry.adapter_id)
             if requests is None:
                 requests = OrderedDict[str, list[RequestDiagnostic]]()
@@ -175,7 +180,7 @@ class RequestDiagnosticLog:
         limit = max(1, min(REJECTION_QUERY_MAX_LIMIT, limit))
         with self._lock:
             selected = self._selected(adapter_id, stages)
-        selected.sort(key=lambda item: item.recorded_at, reverse=True)
+        selected.sort(key=lambda item: (item.recorded_at, item._sequence), reverse=True)
         return [self._row(item) for item in selected[:limit]]
 
     def list_requests(
@@ -200,7 +205,7 @@ class RequestDiagnosticLog:
                 groups = [(adapter_id, self._requests.get(adapter_id, OrderedDict()))]
             else:
                 groups = list(self._requests.items())
-        summaries: list[dict[str, object]] = []
+        summaries: list[tuple[float, int, dict[str, object]]] = []
         for platform_id, requests in groups:
             for key, rows in requests.items():
                 if request_id and key != request_id:
@@ -209,12 +214,12 @@ class RequestDiagnosticLog:
                     continue
                 if not rows:
                     continue
-                latest = max(rows, key=lambda item: item.recorded_at)
+                latest = max(rows, key=lambda item: (item.recorded_at, item._sequence))
                 if self_id and latest.self_id != self_id:
                     continue
                 if group_id and latest.session_id != f"group%{group_id}":
                     continue
-                summaries.append({
+                summaries.append((latest.recorded_at, latest._sequence, {
                     "request_id": latest.request_id or key,
                     "adapter_id": platform_id, "session_id": latest.session_id, "actor_id": latest.actor_id,
                     "self_id": latest.self_id, "message_id": latest.message_id,
@@ -224,9 +229,9 @@ class RequestDiagnosticLog:
                     "reason_codes": [item.reason_code for item in rows if item.reason_code],
                     "attachments": latest.attachments, "notes": latest.notes,
                     "send_status": latest.send_status, "turn_id": latest.turn_id,
-                })
-        summaries.sort(key=lambda item: str(item["recorded_at"]), reverse=True)
-        return summaries[:limit]
+                }))
+        summaries.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in summaries[:limit]]
 
     def get_request(self, request_id: str, adapter_id: str | None = None) -> RequestDiagnosticDetail | None:
         """
@@ -248,7 +253,7 @@ class RequestDiagnosticLog:
                 rows = requests.get(request_id)
                 if not rows:
                     continue
-                ordered = sorted(rows, key=lambda item: item.recorded_at)
+                ordered = sorted(rows, key=lambda item: (item.recorded_at, item._sequence))
                 return {
                     "request_id": request_id, "adapter_id": group_id,
                     "records": [self._row(item) for item in ordered],

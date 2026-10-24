@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+from itertools import count
 import asyncio
 from typing import Any
 from enum import Enum
@@ -29,6 +30,10 @@ from satrap.core.log import logger
 # 模块级导入, 避免每个方法重复 lazy import; 无循环依赖风险 (__init__.py 仅在 TYPE_CHECKING 下引用 event.py)
 
 from satrap.core.config.group_session import decode_group_route
+
+
+_EVENT_SEQUENCE = count(1)
+"""进程内消息入队顺序, 不依赖系统时钟的分辨率"""
 
 
 @dataclass
@@ -323,6 +328,11 @@ class MessageEvent:
     - 管理临时文件
     """
 
+    def mark_queued(self) -> None:
+        """登记本次入队时间和序号, 时间仅用于限时, 序号用于区分同刻消息"""
+        self.queued_at = monotonic()
+        self.queued_sequence = next(_EVENT_SEQUENCE)
+
     def __init__(
         self,
         message_str: str,
@@ -349,7 +359,7 @@ class MessageEvent:
         self.platform_message = platform_message
         self.platform_meta = platform_meta
         self.adapter = adapter
-        self.queued_at = monotonic()
+        self.mark_queued()
         resolve_group_policy = getattr(adapter, "resolve_policy_settings", None)
         resolved_policy = (
             resolve_group_policy(self.get_group_id())
