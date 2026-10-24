@@ -526,7 +526,7 @@ def test_update_common_fields_parse_platforms_and_configured_types():
         default_session_type="misskey",
         max_sessions=100,
         idle_timeout=60,
-        llm_timeout=30.0,
+        session_timeout=30.0,
         rate_limit=1.5,
         rate_burst=3,
         platforms=platforms,

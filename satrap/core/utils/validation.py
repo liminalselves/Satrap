@@ -1,7 +1,30 @@
-"""平台无关的有限文字基础规则, 领域边界保留自己的错误与空白语义"""
+"""平台无关的有限文字与超时数值规则, 领域边界保留自己的空白语义"""
 from __future__ import annotations
 
 from typing import TypeGuard
+import math
+
+
+def positive_timeout(value: object, name: str) -> float:
+    """
+    校验超时为有限正秒数, 不将布尔值当作数字
+
+    参数:
+    - value: 配置中的秒数
+    - name: 用于错误提示的字段名
+
+    返回:
+    - 规范化浮点秒数, 无效值抛出 ValueError
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"{name} 必须是有限正秒数")
+    try:
+        seconds = float(value)
+    except ValueError as error:
+        raise ValueError(f"{name} 必须是有限正秒数") from error
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"{name} 必须是有限正秒数")
+    return seconds
 
 
 def is_bounded_text(value: object, *, maximum: int = 256, non_blank: bool = False,

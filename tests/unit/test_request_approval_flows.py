@@ -597,7 +597,7 @@ class TestDiagnosticCollection:
     @pytest.mark.asyncio
     async def test_model_timeout_stage_is_recorded(self, tmp_path: Path):
         scheduler, _, adapter = _scheduler(tmp_path)
-        scheduler.llm_timeout = 0.01
+        scheduler.session_timeout = 0.01
         scheduler.error_feedback = False
 
         async def slow(*args: Any, **kwargs: Any) -> str:
@@ -610,7 +610,7 @@ class TestDiagnosticCollection:
         detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
         assert detail is not None
         stages = _stages(detail)
-        assert stages["model"]["status"] == "unknown" and stages["model"]["reason_code"] == "llm_timeout"
+        assert stages["model"]["status"] == "unknown" and stages["model"]["reason_code"] == "session_timeout"
 
 class TestDiagnosticBounds:
     def test_capacity_keeps_newest_requests_and_drops_oldest(self):

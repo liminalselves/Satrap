@@ -28,7 +28,7 @@ from satrap.core.log import logger
 
 
 class AsyncLLM(_LLMBase[AsyncOpenAI]):
-    def _create_client(self, api_key: str, timeout: int) -> AsyncOpenAI:
+    def _create_client(self, api_key: str, timeout: float) -> AsyncOpenAI:
         return AsyncOpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
 
     async def chat(

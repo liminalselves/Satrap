@@ -66,7 +66,7 @@ class ConfigLoader:
             "idle_timeout": cfg.idle_timeout,
             "rate_limit": cfg.rate_limit,
             "rate_burst": cfg.rate_burst,
-            "llm_timeout": cfg.llm_timeout,
+            "session_timeout": cfg.session_timeout,
             "error_feedback": cfg.error_feedback,
             "session_classes": dict(cfg.session_classes),
             "session_scan_paths": list(cfg.session_scan_paths),
@@ -222,7 +222,7 @@ class ConfigLoader:
         - SATRAP_SESSION_CLASS_CONFIG_PATH
         - SATRAP_EDICTUM_CONFIG_PATH
         - SATRAP_DATA_ROOT
-        - SATRAP_LLM_TIMEOUT
+        - SATRAP_SESSION_TIMEOUT
 
         返回:
         - BackendConfig: 用环境变量覆盖配置中的敏感字段
@@ -239,10 +239,11 @@ class ConfigLoader:
             if val:
                 setattr(config, attr, val)
 
-        timeout = os.getenv("SATRAP_LLM_TIMEOUT")
+        timeout = os.getenv("SATRAP_SESSION_TIMEOUT", os.getenv("SATRAP_LLM_TIMEOUT"))
         if timeout:
             try:
-                config.llm_timeout = float(timeout)
+                from satrap.core.utils.validation import positive_timeout
+                config.session_timeout = None if timeout.strip().lower() in {"none", "null"} else positive_timeout(timeout, "session_timeout")
             except ValueError:
                 pass
 

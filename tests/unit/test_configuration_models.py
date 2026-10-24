@@ -34,8 +34,10 @@ def test_shared_model_file_sync_preserves_other_edits_and_covers_crud(tmp_path: 
     platform.set_llm_config(LLMConfig(model="step", api_key="test-key"), "step")
     chat.update_llm_config(model="chat")
     platform.set_embedding_config(EmbeddingConfig(model="embed"), "embed")
-    chat.update_named_config("llm", "step", {"temperature": 0.2}, new_name="renamed")
+    chat.update_named_config("llm", "step", {"temperature": 0.2, "network_timeout": 95.5}, new_name="renamed")
     assert platform.get_llm_config("renamed").temperature == 0.2
+    assert platform.get_llm_config("renamed").network_timeout == 95.5
+    assert ModelConfigManager(path).get_llm_config("renamed").network_timeout == 95.5
     assert not platform.has_config("llm", "step")
     assert chat.get_embedding_config("embed").model == "embed"
     assert platform.get_llm_config().model == "chat"
@@ -411,6 +413,7 @@ def test_maps_all_fields(asynchronous: bool):
             temperature=0.3,
             top_p=0.9,
             max_tokens=512,
+            network_timeout=37.5,
             lock_api_key=False,
             thinking_field_name="reasoning",
             thinking_fields=["reasoning_effort"],
@@ -422,6 +425,7 @@ def test_maps_all_fields(asynchronous: bool):
     assert llm.temperature == 0.3
     assert llm.top_p == 0.9
     assert llm.max_tokens == 512
+    assert llm.client.timeout == 37.5
     assert llm.api_key == "k"
     assert llm.thinking_field_name == "reasoning"
     assert llm.thinking_fields == ["reasoning_effort"]
@@ -432,6 +436,13 @@ def test_output_budget_wins_over_max_tokens():
     llm = build_llm_from_config(_cfg(context_window=128000, history_ratio=0.7, max_tokens=512))
     assert isinstance(llm, LLM)
     assert llm.max_tokens == int(128000 * 0.3)
+
+
+def test_network_timeout_rejects_invalid_values():
+    """网络超时只接受有限正秒数, 不与会话不限时混用"""
+    for invalid in [None, True, 0, -1, float("nan"), float("inf")]:
+        with pytest.raises(ValueError, match="network_timeout"):
+            _cfg(network_timeout=invalid)
 
 def test_max_tokens_fallback_4096():
     """无输出预算且未配置 max_tokens 时回退 4096"""

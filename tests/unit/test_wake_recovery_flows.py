@@ -1064,12 +1064,12 @@ class TestSendOutcomeAdjudication:
         assert store.request_send_outcome("cancel1", "bot")["confirmed"] == 1
 
     @pytest.mark.asyncio
-    async def test_llm_timeout_does_not_erase_tool_delivery(self, tmp_path: Path):
+    async def test_session_timeout_does_not_erase_tool_delivery(self, tmp_path: Path):
         """反例: 模型超时不得把模型调用期间已经发出的回复抹成失败"""
         backend, _, _, _ = _manual_wake_store_runtime(tmp_path)
         adapter, store, scheduler = self._attach(backend, tmp_path)
         adapter._bot.send_group_msg = AsyncMock(return_value={"message_id": 1})
-        scheduler.llm_timeout = 0.05
+        scheduler.session_timeout = 0.05
         scheduler.error_feedback = False
 
         async def tool_then_hang(*args: Any, **kwargs: Any) -> str:
@@ -1087,7 +1087,7 @@ class TestSendOutcomeAdjudication:
         record = store.lookup_request("timeout", "bot")
         # 已确认的工具输出保留为已确认前缀, 模型超时既不抹掉它也不谎报全部送达
         assert record is not None and record["status"] == "partial"
-        assert "llm_timeout" in record["detail"] and "confirmed_prefix" in record["detail"]
+        assert "session_timeout" in record["detail"] and "confirmed_prefix" in record["detail"]
         adapter._bot.send_group_msg.assert_awaited_once()
         attempts = store.lookup_attempts("timeout", "bot")
         assert attempts[0]["segments"][0]["status"] == "sent"

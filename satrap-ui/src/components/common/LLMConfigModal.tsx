@@ -20,6 +20,7 @@ const FIELDS: FormField[] = [
   { key: 'temperature', label: '温度', type: 'number', min: 0, max: 2, step: 0.1 },
   { key: 'top_p', label: 'Top P', type: 'number', min: 0, max: 1, step: 0.05 },
   { key: 'max_tokens', label: 'Max Tokens', type: 'number', min: 1, step: 1 },
+  { key: 'network_timeout', label: '网络超时 (秒)', type: 'number', min: 0.1, placeholder: '默认 60 秒, 限制网络读写等待, 不限制整轮会话' },
   { key: 'context_window', label: '上下文窗口', type: 'number', min: 1, step: 1, placeholder: '128000' },
   { key: 'history_ratio', label: '历史比例', type: 'number', min: 0, max: 1, step: 0.05, placeholder: '0.7' },
   { key: 'context_strategy', label: '上下文处理策略', type: 'select', options: [
@@ -89,7 +90,7 @@ export function LLMConfigModal({ modelName, initialConfig, defaultName = '', all
     setError('');
     setSaving(true);
     try {
-      const config: LLMConfig = { ...draft, name: draft.name.trim(), thinking_field_name: draft.thinking_field_name?.trim() || null };
+      const config: LLMConfig = { ...draft, name: draft.name.trim(), network_timeout: draft.network_timeout ?? 60, thinking_field_name: draft.thinking_field_name?.trim() || null };
       for (const key of ['model', 'base_url', 'api_key'] as const) {
         const value = config[key]?.trim();
         if (value) config[key] = value;

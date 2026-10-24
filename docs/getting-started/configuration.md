@@ -98,7 +98,7 @@ Copy-Item config.example.yaml config.yaml
 | `idle_timeout` | `3600` | Session 闲置超时秒数 |
 | `rate_limit` | `1.0` | 管线限流速率 |
 | `rate_burst` | `5` | 管线突发容量 |
-| `llm_timeout` | `120.0` | 单次 LLM 调用超时秒数 |
+| `session_timeout` | `120.0` | 单轮会话执行限时秒数, 包含模型、工具和审批等待; `null` 表示无限制 |
 | `error_feedback` | `true` | 出错或限流时是否向用户反馈 |
 | `api.host` | `127.0.0.1` | 后端 HTTP API 监听地址 |
 | `api.port` | `19870` | 后端 HTTP API 监听端口 |
@@ -108,6 +108,10 @@ Copy-Item config.example.yaml config.yaml
 | `workspace_roots` | `[]` | Chat 项目可浏览和绑定的目录根; 空列表默认使用本机磁盘 (Linux/macOS 为 `/`), 旧自动配置 `["."]` 同样使用此默认值; 显式填写其它路径时限制在这些目录内 |
 | `media_allowed_roots` | `null` | 本地媒体允许目录, 仅接受字符串列表或 null; 规则见下文 |
 | `platforms` | `[]` | 平台适配器实例配置 |
+
+`session_timeout` 限制平台单轮会话执行, 不包含前置附件解析和最终回复提交。填 `null` 可关闭总限时, 宿主停止和取消仍然有效。旧配置字段 `llm_timeout` 继续按原来的会话限时读取, 保存后统一改名为 `session_timeout`; 两者同时存在时以新字段为准。
+
+模型网络超时在共用的「模型配置 → LLM 配置 → 网络超时」中设置, 对应模型字段 `network_timeout`, 默认 60 秒。它传给 SDK 约束网络连接和读写等待, 不表示完整流式生成或整个任务的总时间。Chat 和平台使用同一份模型配置, 关闭会话总限时不会关闭网络超时。
 
 平台实例 `settings` 内的策略字段 (唤醒规则, 窗口与输入预算, 媒体下载, 命令入口等) 由 `satrap/core/config/platform_policy.py` 的 `POLICY_FIELD_CONTRACT` 声明并校验, 逐字段口径与默认值见[平台接入](../platform/platforms.md)。其中 `command_operators` 是 `/approve` 与 `/plan` 的操作员名单: 缺失, 为空或取值非法时这两条命令一律拒绝 (fail-closed), 升级后需先在平台设置中登记操作员, 否则群内与私聊都会收到固定拒绝文案。
 
@@ -227,7 +231,9 @@ satrap session enable assistant
 | `SATRAP_API_HOST` | `api_host` |
 | `SATRAP_API_PORT` | `api_port` |
 | `SATRAP_DATA_ROOT` | `data_root` |
-| `SATRAP_LLM_TIMEOUT` | `llm_timeout` |
+| `SATRAP_SESSION_TIMEOUT` | `session_timeout` |
+
+`SATRAP_SESSION_TIMEOUT=none` 或 `null` 表示不限时。旧环境变量 `SATRAP_LLM_TIMEOUT` 保留原语义作为兼容入口, 新变量优先。
 
 平台配置中的敏感字段可以写成 `${ENV_NAME}` 形式, 由相关配置编辑流程解析。
 

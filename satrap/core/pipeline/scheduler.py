@@ -60,6 +60,7 @@ from satrap.core.group_chat.reply import bind_reply_turn
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
+from satrap.core.utils.validation import positive_timeout
 
 
 _RECEIPT_TO_REQUEST_STATUS = {"success": "sent", "partial": "partial", "failed": "failed", "unknown": "unknown"}
@@ -81,14 +82,14 @@ class PipelineScheduler:
     来源范围与 preprocessor 链
     停止状态与权限检查
     唤醒词/@ 检查与模型调用限流
-    会话路由与 LLM 请求 (超时保护)
+    会话路由与整轮执行 (可选会话限时)
     后处理: 兜底发送回复
     """
     def __init__(
         self,
         session_manager: SessionManager,
         rate_limiter: RateLimiter | None = None,
-        llm_timeout: float = 120.0,
+        session_timeout: float | None = 120.0,
         error_feedback: bool = True,
         user_manager: UserManager | None = None,
     ):
@@ -96,13 +97,13 @@ class PipelineScheduler:
         参数:
         - session_manager: 会话管理器实例
         - rate_limiter: 可选的限流器, 传 None 禁用限流
-        - llm_timeout: LLM 调用超时(秒), 默认 120
+        - session_timeout: 单轮会话执行限时秒数, 默认 120, None 表示不限时
         - error_feedback: 出错/限流时是否发送反馈消息给用户
         - user_manager: 用户管理器, 传 None 禁用上下文路由
         """
         self.session_manager = session_manager
         self.rate_limiter = rate_limiter
-        self.llm_timeout = llm_timeout
+        self.session_timeout = None if session_timeout is None else positive_timeout(session_timeout, "session_timeout")
         self.error_feedback = error_feedback
         self.user_manager = user_manager
         self.preprocessors: List[Callable[[MessageEvent], Awaitable[bool] | bool]] = []
@@ -718,20 +719,21 @@ class PipelineScheduler:
                     event.set_extra("require_send_tracking", True)
                     await self._update_manual_request(event, manual_ticket, "executing", "")
                 with bind_reply_turn(event) as reply_turn:
+                    session_deadline = asyncio.timeout(self.session_timeout)
                     try:
-                        response = await asyncio.wait_for(
-                            session_manager.handle_call_async(user_call),
-                            timeout=self.llm_timeout,
-                        )
+                        async with session_deadline:
+                            response = await session_manager.handle_call_async(user_call)
                     except asyncio.TimeoutError:
-                        logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
+                        if not session_deadline.expired():
+                            raise   # 网络或工具自身抛出的超时不是会话限时到期
+                        logger.error(f"[PipelineScheduler] 会话执行超时: {event.session_id}, 限时={self.session_timeout}s")
                         self._record_diagnostic(
-                            event, "model", "unknown", reason_code="llm_timeout", reason="模型调用超时",
+                            event, "model", "unknown", reason_code="session_timeout", reason="会话执行超时",
                             turn_id=self._request_turn_ids(event),
                         )
                         if self.error_feedback:
-                            await self._send_feedback(event, "请求超时, 请稍后重试")
-                        manual_detail = "llm_timeout"
+                            await self._send_feedback(event, "本轮会话执行超时, 请缩小任务范围或调整会话限时")
+                        manual_detail = "session_timeout"
                         return
                     if reply_turn.failed:
                         if command_text is None:

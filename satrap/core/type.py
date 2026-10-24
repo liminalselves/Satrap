@@ -314,6 +314,8 @@ class LLMConfig:
     """LLM top_p 参数"""
     max_tokens: Optional[int] = None
     """LLM 最大 token 数量"""
+    network_timeout: float = 60.0
+    """模型 SDK 的网络读写超时秒数, 不表示整轮或完整流式生成限时"""
     context_window: Optional[int] = None
     """总上下文窗口, 与 CM max_context 同源"""
     history_ratio: Optional[float] = None
@@ -347,7 +349,9 @@ class LLMConfig:
     """动画和兼容视频的抽帧间隔秒数, 范围 0.5 至 5.0"""
 
     def __post_init__(self) -> None:
-        """拒绝非布尔值的模型视觉能力声明"""
+        """校验模型网络超时和视觉能力声明"""
+        from satrap.core.utils.validation import positive_timeout
+        self.network_timeout = positive_timeout(self.network_timeout, "network_timeout")
         if not isinstance(self.supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
         from satrap.core.utils.media_config import validate_video_settings

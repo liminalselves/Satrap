@@ -15,7 +15,7 @@ session_checkpoint: false             # 会话实例化时默认启用状态检�
 # --- 管线参数 ---
 rate_limit: 1.0                       # 限流速率
 rate_burst: 5                         # 限流突发容量
-llm_timeout: 120.0                    # LLM 调用超时, 单位秒
+session_timeout: 120.0                # 单轮会话执行限时秒数, null 表示无限制
 error_feedback: true                  # 出错或限流时是否通知用户
 
 # --- HTTP API ---

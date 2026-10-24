@@ -71,6 +71,7 @@ from satrap.core.platform import (
     set_current_adapter_manager,
 )
 from satrap.core.utils.paths import set_media_allowed_roots, set_media_storage_root
+from satrap.core.utils.validation import positive_timeout
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 
@@ -135,7 +136,8 @@ class BackendConfig:
     rate_limit: float = 1.0
     # 调度管线配置
     rate_burst: int = 5
-    llm_timeout: float = 120.0
+    session_timeout: float | None = 120.0
+    """单轮会话执行限时, None 表示不限时, 不影响模型网络超时"""
     error_feedback: bool = True
 
     session_classes: Dict[str, str] = field(default_factory=dict[str, str])
@@ -242,7 +244,8 @@ class BackendConfig:
             session_checkpoint=cls._as_bool(data.get("session_checkpoint", False)),
             rate_limit=float(data.get("rate_limit", 1.0)),
             rate_burst=int(data.get("rate_burst", 5)),
-            llm_timeout=float(data.get("llm_timeout", 120.0)),
+            session_timeout=(None if data.get("session_timeout", data.get("llm_timeout", 120.0)) is None
+                             else positive_timeout(data.get("session_timeout", data.get("llm_timeout", 120.0)), "session_timeout")),
             error_feedback=cls._as_bool(data.get("error_feedback", True)),
             session_classes=dict(classes),
             session_scan_paths=cls._path_list(data, "session_scan_paths", [".satrap/session"]),
@@ -3357,7 +3360,7 @@ class BackendManager:
         self._scheduler = PipelineScheduler(
             session_manager=self._session_mgr,
             rate_limiter=self._rate_limiter,
-            llm_timeout=self.config.llm_timeout,
+            session_timeout=self.config.session_timeout,
             error_feedback=self.config.error_feedback,
             user_manager=self._user_mgr,
         )

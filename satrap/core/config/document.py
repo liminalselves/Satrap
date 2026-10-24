@@ -345,6 +345,9 @@ def validate_config_document(data: object) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("配置根节点必须是对象")
     normalized = migrate_approval_admin_config(dict(cast(dict[str, Any], data)))
+    if "llm_timeout" in normalized:
+        normalized.setdefault("session_timeout", normalized.pop("llm_timeout"))
+        # 旧字段只改名, 保留原来的整轮执行限时语义
     normalized["platforms"] = validate_platforms(normalized.get("platforms", []))
     from satrap.core.config.administrator_groups import (migrate_legacy_scope_exclusions, normalize_administrator_overrides,
                                                          normalize_administrator_groups)
@@ -519,7 +522,7 @@ def update_common_fields(
     default_session_type: str,
     max_sessions: int,
     idle_timeout: int,
-    llm_timeout: float,
+    session_timeout: float | None,
     rate_limit: float,
     rate_burst: int,
     platforms: list[dict[str, Any]],
@@ -534,7 +537,7 @@ def update_common_fields(
     - default_session_type: 默认会话类型
     - max_sessions: 最大会话数
     - idle_timeout: 会话闲置超时
-    - llm_timeout: LLM 超时
+    - session_timeout: 单轮会话执行限时, None 表示不限时
     - rate_limit: 限流速率
     - rate_burst: 限流突发数
     - platforms: 平台配置列表
@@ -543,6 +546,7 @@ def update_common_fields(
     - dict[str, Any]: 更新后的配置文档
     """
     updated = dict(data)
+    updated.pop("llm_timeout", None)   # 新配置只写正确名称, 旧字段仅在读取时兼容
     api = dict(cast(dict[str, Any], updated.get("api") or {}))
     api.update({"host": api_host, "port": int(api_port)})
     updated.update({
@@ -550,7 +554,7 @@ def update_common_fields(
         "default_session_type": default_session_type,
         "max_sessions": int(max_sessions),
         "idle_timeout": int(idle_timeout),
-        "llm_timeout": float(llm_timeout),
+        "session_timeout": session_timeout,
         "rate_limit": float(rate_limit),
         "rate_burst": int(rate_burst),
         "platforms": validate_platforms(platforms),

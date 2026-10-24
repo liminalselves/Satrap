@@ -50,6 +50,7 @@ export interface LLMConfig {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  network_timeout?: number;
   context_window?: number;
   history_ratio?: number;
   context_strategy?: 'sliding' | 'mid_truncate' | 'summarize';
@@ -517,7 +518,7 @@ export interface BackendConfig {
   default_session_type: string;
   max_sessions: number;
   idle_timeout: number;
-  llm_timeout: number;
+  session_timeout: number | null;
   rate_limit: number;
   rate_burst: number;
     platforms: PlatformConfig[];

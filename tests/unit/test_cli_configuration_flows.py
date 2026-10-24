@@ -22,6 +22,30 @@ from satrap.edictum.config import EdictumConfigManager
 from satrap.core.config.loader import ConfigLoader, ConfigLoadError
 
 
+def test_session_timeout_null_legacy_and_environment_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """不限时与旧字段经文件读写保持语义, 新环境变量可显式覆盖为不限时"""
+    from satrap.core.config.document import validate_config_document, save_config_document
+
+    assert BackendConfig.from_dict({}).session_timeout == 120
+    assert BackendConfig.from_dict({"llm_timeout": 35}).session_timeout == 35
+    normalized = validate_config_document({"llm_timeout": 35, "session_timeout": None})
+    assert normalized["session_timeout"] is None and "llm_timeout" not in normalized
+    path = tmp_path / "config.json"
+    save_config_document(path, normalized)
+    loaded = ConfigLoader.from_json(path)
+    assert loaded.session_timeout is None
+    assert ConfigLoader.default_config_document(loaded)["session_timeout"] is None
+    assert "llm_timeout" not in ConfigLoader.default_config_document(loaded)
+    monkeypatch.setenv("SATRAP_LLM_TIMEOUT", "25")
+    monkeypatch.delenv("SATRAP_SESSION_TIMEOUT", raising=False)
+    assert ConfigLoader.merge_env(loaded).session_timeout == 25
+    monkeypatch.setenv("SATRAP_SESSION_TIMEOUT", "none")
+    assert ConfigLoader.merge_env(loaded).session_timeout is None
+    for invalid in [True, 0, -1, float("nan"), float("inf")]:
+        with pytest.raises(ValueError):
+            BackendConfig.from_dict({"session_timeout": invalid})
+
+
 @pytest.mark.parametrize("format", ["yaml", "json"])
 def test_backend_file_null_collections_and_empty_scan_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, format: str):
     """真实文件加载兼容空节点, 管理员校验与扫描目录保持同一空值语义"""

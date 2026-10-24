@@ -22,7 +22,7 @@ class _LLMBase(Generic[_ClientT]):
         temperature: float = 0.7,
         top_p: float = 0.95,
         max_tokens: int = 1000,
-        timeout: int = 60,
+        timeout: float = 60,
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
@@ -44,7 +44,7 @@ class _LLMBase(Generic[_ClientT]):
         - temperature: 生成文本的随机性 (0.0 - 2.0), 默认 0.7
         - top_p: 控制生成文本的多样性 (0.0 - 1.0), 默认 0.95
         - max_tokens: 最大生成 token 数, 默认 1000
-        - timeout: 请求超时时间, 默认 60 秒
+        - timeout: SDK 网络读写超时秒数, 默认 60, 不是完整流式生成的总限时
         - suppress_error: 是否抑制异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
@@ -81,7 +81,7 @@ class _LLMBase(Generic[_ClientT]):
 
         self.client = self._create_client(api_key, timeout)
 
-    def _create_client(self, api_key: str, timeout: int) -> _ClientT:
+    def _create_client(self, api_key: str, timeout: float) -> _ClientT:
         """由入口选择同步或异步客户端"""
         raise NotImplementedError
 

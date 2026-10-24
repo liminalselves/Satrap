@@ -30,6 +30,7 @@ const REASON_LABELS: Record<string, string> = {
   cancelled_before_send: '发送前被取消',
   no_response: '没有收到回执',
   llm_timeout: '模型调用超时',
+  session_timeout: '会话执行超时',
   completed: '模型调用完成',
   image_download_failed: '图片下载失败',
   image_url_refreshed: '图片地址已刷新',
