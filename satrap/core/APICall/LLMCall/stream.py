@@ -214,4 +214,6 @@ class _StreamCallAccumulator:
                 "total_tokens": self.usage.total_tokens,
                 "cached_tokens": self.usage.cached_tokens,
             }
-        return parse_call_response(payload, suppress_error=suppress_error)
+        parsed = parse_call_response(payload, suppress_error=suppress_error)
+        parsed.finish_reason = self.finish_reason
+        return parsed

@@ -1,7 +1,8 @@
 from __future__ import annotations
 from mcp.server import MCPServer
 import inspect
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+from pydantic import Field
 from satrap.core.utils.TCBuilder import Tool, ToolsManager
 from satrap.core.type import safe_getattr
 from satrap.core.log import logger
@@ -62,7 +63,7 @@ class MCPServerExporter:
 
     def _build_handler(self, tool: Tool):
         """
-        根据 params_dict 构建带类型化签名的处理函数 (供 MCPServer 生成 JSON Schema)
+        根据工具定义构建带类型与默认值的处理函数 (供 MCPServer 生成 JSON Schema)
 
         参数:
         - tool: 工具
@@ -70,19 +71,35 @@ class MCPServerExporter:
         返回:
         - 根据 params_dict 构建带类型化签名的处理函数 (供 MCPServer 生成 JSON Schema)
         """
-        params_dict = tool.params_dict or {}
+        schema = tool.get_tool_defined()["function"]["parameters"]
+        required = set(schema.get("required", []))
+        execute_parameters = inspect.signature(tool.execute).parameters
+        omitted = set()
 
         def handler(**kwargs: Any) -> Any:
-            return self.tools_manager.execute_tool(tool.get_tool_name(), kwargs)
+            arguments = {name: value for name, value in kwargs.items()
+                         if not (name in omitted and value is None)}
+            return self.tools_manager.execute_tool(tool.get_tool_name(), arguments)
 
-        parameters = [
-            inspect.Parameter(
-                name,
-                inspect.Parameter.KEYWORD_ONLY,
-                annotation=TYPE_MAP.get(ptype, str),
-            )
-            for name, (ptype, _desc) in params_dict.items()
-        ]
+        parameters = []
+        for name, prop in schema.get("properties", {}).items():
+            ptype = prop.get("type", "string")
+            annotation: Any = TYPE_MAP.get(ptype, str) if isinstance(ptype, str) else Any
+            if isinstance((tool.params_dict or {}).get(name), dict):
+                annotation = Annotated[annotation, Field(json_schema_extra=prop)]
+            default = inspect.Parameter.empty
+            if name not in required:
+                source = execute_parameters.get(name)
+                if source is not None and source.default is not inspect.Parameter.empty:
+                    default = source.default
+                else:
+                    default = prop.get("default")
+                    if "default" not in prop:
+                        omitted.add(name)
+            parameters.append(inspect.Parameter(
+                name, inspect.Parameter.KEYWORD_ONLY,
+                annotation=annotation, default=default,
+            ))
         setattr(handler, "__signature__", inspect.Signature(parameters))
         return handler
 

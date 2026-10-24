@@ -10,7 +10,7 @@ from satrap.core.utils.sandbox.models import SandboxResult
 from satrap.core.utils.TCBuilder import Tool
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.log import logger
-from .utils import prepare_operation, sandbox_description, SandboxEnvironmentMixin
+from .utils import prepare_operation, sandbox_description, SandboxEnvironmentMixin, SANDBOX_PARAMS
 from satrap.core.plugin_interop import PluginInteractionError
 
 
@@ -30,17 +30,7 @@ class CodeSandboxTool(SandboxEnvironmentMixin, Tool):
         super().__init__(
             tool_name="code_sandbox",
             description=sandbox_description(sandbox.modules),
-            params_dict={
-                "operation": (
-                    "string",
-                    "要执行的操作，可选值：'run', 'run_file', 'save', 'read', 'delete', 'delete_dir', 'list'",
-                ),
-                "code": ("string", "当操作为'run'或'save'时，需要提供的代码字符串"),
-                "path": (
-                    "string",
-                    "当操作为'save','run_file','read','delete','delete_dir','list'时，需要的文件或目录路径（相对于沙箱根目录）",
-                ),
-            },
+            params_dict=SANDBOX_PARAMS,
         )
         self.sandbox = sandbox
 

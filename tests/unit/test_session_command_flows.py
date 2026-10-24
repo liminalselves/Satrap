@@ -1172,7 +1172,7 @@ async def test_tools_manager_structured_errors_and_exception_isolated(asynchrono
     assert counting.calls == 0
 
     none_args = await call(name_c, None)
-    assert none_args["error_type"] == "execution_error"
+    assert none_args["error_type"] == "invalid_arguments"
     assert counting.calls == 0
 
     boom = await call(name_r, {"value": 3})

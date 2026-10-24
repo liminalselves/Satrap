@@ -31,11 +31,11 @@ class _ReadFileToolCore(_FileProtectionMixin, _ToolBase):
     recovery_policy = "retry"
 
     tool_name = "read_file"
-    description = "分页读取单个文件; 工作区和本会话上传/沙箱内直接读取, 外部文件按 user/auto/full-access 审批"
+    description = "按行分页读取代码或纯文本；PDF、Office 文档、图片和视频使用 read_document（若已提供）"
     params_dict = {
-        "path": ("string", "文件路径 (绝对或相对工作区)"),
-        "offset": ("number", "起始行号, 默认 0"),
-        "limit": ("number", "读取行数上限, 默认 200"),
+        "path": {"type": "string", "minLength": 1, "description": "文件路径，绝对路径或相对工作区"},
+        "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "起始行偏移"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 200, "description": "最多读取多少行"},
     }
 
     def __init__(self) -> None:
@@ -97,9 +97,9 @@ class _ListDirToolCore(_FileProtectionMixin, _ToolBase):
     recovery_policy = "retry"
 
     tool_name = "list_dir"
-    description = "列出目录内容; 默认工作区, full-access 允许显式外部路径"
+    description = "查看目录内容；不传 path 时列出工作区根目录"
     params_dict = {
-        "path": ("string", "目录路径, 默认工作区根"),
+        "path": {"type": "string", "default": "", "description": "目录路径；省略表示工作区根目录"},
     }
 
     def _execute(self, path: str = "") -> str:
@@ -138,9 +138,9 @@ class _GlobFilesToolCore(_FileProtectionMixin, _ToolBase):
     recovery_policy = "retry"
 
     tool_name = "glob_files"
-    description = "按 glob 模式递归搜索文件, 如 **/*.py"
+    description = "按 glob 模式查找文件名，例如 **/*.py；搜索文件内容用 grep_files"
     params_dict = {
-        "pattern": ("string", "glob 模式, 默认相对工作区; full-access 允许绝对模式"),
+        "pattern": {"type": "string", "minLength": 1, "description": "glob 模式，默认相对工作区"},
     }
 
     def _execute(self, pattern: str) -> str:
@@ -182,11 +182,11 @@ class _GrepFilesToolCore(_FileProtectionMixin, _ToolBase):
     recovery_policy = "retry"
 
     tool_name = "grep_files"
-    description = "在指定目录内按正则表达式搜索文件内容, 返回匹配行"
+    description = "用正则搜索文件内容，返回文件、行号和匹配行；只找文件名时用 glob_files"
     params_dict = {
-        "pattern": ("string", "正则表达式"),
-        "path": ("string", "搜索目录, 默认工作区根"),
-        "glob": ("string", "文件过滤, 如 *.py"),
+        "pattern": {"type": "string", "minLength": 1, "description": "正则表达式"},
+        "path": {"type": "string", "default": "", "description": "搜索目录；省略表示工作区根目录"},
+        "glob": {"type": "string", "default": "", "description": "文件过滤模式，例如 *.py；省略表示全部文件"},
     }
 
     def _execute(self, pattern: str, path: str = "", glob: str = "") -> str:
@@ -235,13 +235,11 @@ class _TodoWriteToolCore(_ToolBase):
     """任务清单: 多步任务跟踪 (会话级状态)"""
 
     tool_name = "todo_write"
-    description = (
-        "管理任务清单, 用于多步任务跟踪: add 添加, done 完成, list 查看, clear 清空"
-    )
+    description = "管理多步任务清单：add 添加，done 完成，list 查看，clear 清空"
     params_dict = {
-        "operation": ("string", "操作: add / done / list / clear"),
-        "item": ("string", "任务内容 (add 时必填)"),
-        "index": ("number", "任务序号, 从 1 开始 (done 时必填)"),
+        "operation": {"type": "string", "enum": ["add", "done", "list", "clear"], "description": "要执行的操作"},
+        "item": {"type": "string", "description": "任务内容；operation=add 时填写"},
+        "index": {"type": "integer", "minimum": 1, "description": "任务序号，从 1 开始；operation=done 时填写"},
     }
 
     def __init__(self, todos: dict[str, Any]) -> None:

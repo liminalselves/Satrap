@@ -6,9 +6,29 @@ from typing import Any, Iterable, cast
 from satrap.core.type import RequestContextBlock
 
 
+BASE_AGENT_PROMPT = (
+    "需要读取资料、查询最新信息或执行操作时，使用请求中提供的工具，不要凭猜测代替实际结果。\n"
+    "按工具参数说明，只传当前需要的值。调用后先看结果：成功就继续，失败就按原因修正参数或换用合适的工具，不要不看原因就原样重试。\n"
+    "回答以实际结果为准；没有执行、执行失败或仍不确定的地方直接说明。"
+)
+FINAL_RESPONSE_PROMPT = (
+    "工具调用次数已到上限。不要再调用工具；根据已有结果回答，缺少的信息直接说明。"
+)
+
+
+def compose_agent_system_suffix(catalog: str = "", *, final: bool = False) -> str:
+    """组合每次请求的固定工具规则、技能目录和收尾要求"""
+    parts = [BASE_AGENT_PROMPT]
+    if catalog:
+        parts.append(catalog)
+    if final:
+        parts.append(FINAL_RESPONSE_PROMPT)
+    return "\n\n".join(parts)
+
+
 def attach_system_suffix(messages: list[dict[str, Any]], suffix: str) -> list[dict[str, Any]]:
     """
-    在模型请求副本的系统消息中追加本次技能目录, 不改写存档
+    在模型请求副本的系统消息中追加本次规则和技能目录, 不改写存档
 
     参数:
     - messages: 已准备的请求消息

@@ -28,6 +28,20 @@ from satrap.expend.plugins.base_take.tools.sync import ReadDocumentTool
 from satrap.core.utils.pdf_pages import read_pdf_pages
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_document_schema_marks_only_path_required(tmp_path, asynchronous):
+    from satrap.expend.plugins.base_take.tools.async_ import AsyncReadMediaTool
+    from satrap.expend.plugins.base_take.tools.sync import ReadMediaTool
+
+    document = (AsyncReadDocumentTool if asynchronous else ReadDocumentTool)(tmp_path)
+    parameters = document.get_tool_defined()["function"]["parameters"]
+    assert parameters["required"] == ["path"]
+    assert parameters["properties"]["mode"]["enum"] == ["auto", "text", "visual"]
+    assert parameters["properties"]["page_count"]["maximum"] == 5
+    media = (AsyncReadMediaTool if asynchronous else ReadMediaTool)()
+    assert media.get_tool_defined()["function"]["parameters"]["required"] == ["media_id"]
+
+
 def _small_video(seconds=2):
     """生成可解码的 MP4, 用于验证完整视觉输入链路"""
     av = pytest.importorskip("av")

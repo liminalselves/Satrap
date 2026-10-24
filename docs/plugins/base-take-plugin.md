@@ -57,6 +57,8 @@ OneBot 默认使用实现端 upload_file_stream 分块传输, 核对大小和 SH
 接口依据 [NapCat 文件处理指南](https://napneko.github.io/develop/file) 和 [UploadFileStream 实现](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/action/stream/UploadFileStream.ts), 实际平台仍需具备这些接口
 Misskey 使用 multipart 文件流上传并单次发布, 上传失败不发送文字兜底; Drive 上传成功但发布失败时返回 platform_file_id 供核查, 不自动删除或重发
 
+模型调用只要求 `search.query`、`fetch_page.url`、`code_sandbox.operation`、`read_document.path` 和 `read_media.media_id`。其余参数均可省略，默认值、枚举和范围以各自 JSON Schema 为准。
+
 ## 插件配置
 
 meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会话覆盖两级):

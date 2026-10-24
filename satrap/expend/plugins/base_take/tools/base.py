@@ -236,11 +236,11 @@ class _MediaCore(_ToolBase):
     """只允许按当前会话持有的媒体 ID 读取, 不接受路径或任意网络地址"""
 
     tool_name = "read_media"
-    description = "按 media_id 分段查看当前会话已收到的视频或动画; start_time/end_time 单位秒, 保持模型配置的采样间隔, 超限时缩短区间; 连续读取前先用文字记录已看区间的观察; 不读取其它会话或任意路径"
+    description = "按 media_id 查看当前会话收到的视频或动画，可指定时间区间；不能读取其他会话、文件路径或网址"
     params_dict = {
-        "media_id": ("string", "当前会话媒体说明给出的 media_id"),
-        "start_time": ("number", "起始秒数, 默认 0"),
-        "end_time": ("number", "结束秒数; 建议按小区间读取, 不填表示结尾"),
+        "media_id": {"type": "string", "minLength": 1, "description": "当前会话媒体说明中的 media_id"},
+        "start_time": {"type": "number", "minimum": 0, "default": 0, "description": "起始秒数"},
+        "end_time": {"type": ["number", "null"], "default": None, "description": "结束秒数；省略表示结尾，长媒体宜分段读取"},
     }
     recovery_policy = "retry"
     _session: SimpleSession | AsyncSimpleSession

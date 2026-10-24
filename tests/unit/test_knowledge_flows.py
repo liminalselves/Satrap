@@ -342,6 +342,13 @@ def test_rag_factory_tools_carry_entry_binding(environment: Any, tmp_path: Path,
     session.storage_layout, session.storage_platform_id, session.plugin_model_manager = layout, "chat", models
     tools = get_tools(session, {})
     assert {tool.get_tool_name() for tool in tools} == {"rag_search", "rag_list", "rag_ingest"}
+    ingest = next(tool for tool in tools if tool.get_tool_name() == "rag_ingest")
+    parameters = ingest.get_tool_defined()["function"]["parameters"]
+    assert parameters["required"] == []
+    assert parameters["oneOf"] == [
+        {"required": ["text"], "not": {"required": ["path"]}},
+        {"required": ["path"], "not": {"required": ["text"]}},
+    ]
     for tool in tools:
         # 绑定由 bind_plugin_tool 动态写入, 类型上不可见
         binding = cast(Any, tool)._plugin_entry_binding

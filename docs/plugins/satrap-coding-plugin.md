@@ -55,6 +55,8 @@ bash/sh 非交互运行, 不读取个人登录配置或继承 `BASH_ENV`/`ENV` �
 
 命令分级支持 POSIX 引号、换行和常见嵌套 Shell, 动态展开保守按高风险处理。它提供审批辅助, 不是操作系统沙箱; 已批准的本机命令仍具有运行进程的系统权限。
 
+工具的 `required` 与 `execute` 默认值一致：`read_file` 只需 `path`，`list_dir` 可空参数，`todo_write` 只需 `operation`。数组、枚举和数值范围直接写入 JSON Schema，例如 `search_replace.replacements` 的每项必须包含 `old` 和 `new`。
+
 ## 三档审批
 
 审批策略由宿主统一持有, /approve 和 approval_model 已迁至独立的 [permissions 插件](permissions-plugin.md)。先启用该插件, Chat 可在「对话设置 → 对话 → 执行审批模式」切换当前会话模式, 与 `/approve mode` 共用同一份状态, 保存后立即生效并持久化; 默认 `user`:

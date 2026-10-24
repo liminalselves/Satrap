@@ -6,7 +6,7 @@
 
 | 模块 | 职责 |
 | --- | --- |
-| `flow.py` | 固定 Agent 状态转换: `agent_flow(user_input, max_iterations)` 生成器按序产出 `ModelStep` / `ToolStep`, 维护消息列表, 到达最大轮数时禁用工具并要求最终回答 |
+| `flow.py` | 固定 Agent 状态转换: `agent_flow(user_input, max_iterations)` 生成器按序产出 `ModelStep` / `ToolStep`, 维护消息列表, 到达最大轮数时禁用工具并要求最终回答; 被截断的工具调用在执行前拒绝 |
 | `engine.py` | 统一执行协议: `execute()` 生成器把 `agent_flow` 的步骤展开成执行指令, 并按 `recoverable` 决定持久化策略; `run_sync` / `run_async` 是执行指令的原生 I/O 驱动器 |
 | `store.py` | `RunStore`: 任务 (runs) 与步骤 (agent_steps / agent_step_inputs) 的 SQLite 持久化, 与会话共用数据库; 负责执行互斥, 步骤恢复和整轮消息的原子提交 |
 | `codec.py` | 任务内模型请求的增量编码: `pack` / `unpack` 压缩同一任务内相邻请求的公共消息前缀, 恢复时使用原始请求记录, 不从当前会话历史重建 |
@@ -28,6 +28,8 @@
 | `ReplaceHistory` | 为兼容执行预先保存的用户消息补齐固定媒体 |
 
 `run_sync` 与 `run_async` 逐条解释这些指令: 异步版用 `await` 与 `asyncio.to_thread`, 同步版直接调用, 循环语义完全一致。因此普通执行和可恢复执行, 同步会话和异步会话, 走的就是同一个 Agent 循环。
+
+每次模型请求都会在请求副本的 system 消息中加入固定的工具使用规则，技能目录继续追加在同一位置；这些内容不写入持久历史。最后一次模型请求的 `tools` 为 `None`，收尾要求也只存在于请求副本，不再伪装成用户消息写入历史。
 
 ## recoverable 契约
 

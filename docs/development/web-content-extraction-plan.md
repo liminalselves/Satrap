@@ -150,7 +150,7 @@ search 返回的 title/snippet 同样是外部内容, 通过工具描述明确, 
 
 - 已按上述范围实现, 没有新增浏览器, 前端选项或模型工具名称
 - trafilatura 采用 `>=2.3.1,<2.4`, 本地实际验证版本 2.3.1
-- 工具定义仅 url 必填, max_length/offset/page_id 可选, 原框架默认全部必填的问题通过该工具自己的定义覆盖处理
+- 工具定义仅 url 必填, max_length/offset/page_id 可选, 当轮通过该工具自己的定义覆盖处理；2026-10-24 公共工具基类已统一按 execute 签名推断 required
 - 额外限制 URL 最多 8192 UTF-8 字节, 避免快照元数据键无界增长; 已同步参数校验与用户文档
 - Windows Python 3.11.17 与 3.13.5 的网页整合测试各 17 项通过, 覆盖真实本地 HTTP 请求和同步异步入口
 - Windows Python 3.13 相关六模块回归 312 项通过, 1 项因 Windows 符号链接权限不足跳过; 跳过的是既有 coding 文件遍历测试. curl_cffi 的 Windows 事件循环兼容提醒不影响执行

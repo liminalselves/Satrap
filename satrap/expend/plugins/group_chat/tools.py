@@ -75,10 +75,10 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
     "group_chat_list_groups": ("在获授权的管理者私聊中查看机器人加入的群, 返回群号, 群名及人数; 结果不完整时不能当成全部群", {}, []),
     "group_chat_get_group_info": ("查看当前群的群名, 群号及人数, 不读取其它群", {}, []),
     "group_chat_list_members": ("分页查看当前群成员的 ID, 昵称, 群昵称及角色; has_more=true 时可用 next_cursor 继续读取", {"limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, []),
-    "group_chat_set_group_nickname": ("只修改机器人自己在当前群的群昵称, 不能修改其他成员或账号全局昵称; 空字符串清空群昵称. pending 表示待审批, succeeded 才是已执行, 失败或结果未知时不要重复执行", {"nickname": {"type": "string", "maxLength": 60, "description": "机器人自己的新群昵称, 空字符串表示清空"}}, ["nickname"]),
-    "group_chat_reply": ("给当前群回复一条消息, 可组合文字, 引用, 多个 @, 图片和表情; 回复在本轮成功结束后发送. 返回 prepared 表示待发送, 此后不要再次调用本工具或重复提交正文", {"components": _COMPONENTS}, ["components"]),
-    "group_chat_get_message_assets": ("取出当前群某条消息中的图片, 返回可发送的 asset_id; 图片已经失效, 撤回或无法下载时会注明原因. 只按需读取这条消息, 不读取其它群", {"message_id": _MESSAGE_ID}, ["message_id"]),
-    "group_chat_import_sandbox_image": ("登记当前会话沙箱中已生成的图片, 返回本轮可供 group_chat_reply 使用的 asset.asset_id; 不直接发送. path 填相对路径, 例如 heart.png, 不接受 URL, 绝对路径或其它会话文件", {"path": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "当前会话沙箱内已生成图片的相对路径, 例如 heart.png 或 charts/plot.png; 支持 PNG/JPEG/WebP/GIF"}}, ["path"]),
+    "group_chat_set_group_nickname": ("修改机器人自己在当前群的群昵称，空字符串表示清空；succeeded 才表示已执行，结果未知时不要重试", {"nickname": {"type": "string", "maxLength": 60, "description": "机器人自己的新群昵称, 空字符串表示清空"}}, ["nickname"]),
+    "group_chat_reply": ("回复当前群，可组合文字、引用、@、图片和表情；prepared 表示等待本轮结束后发送，之后不要重复调用或提交正文", {"components": _COMPONENTS}, ["components"]),
+    "group_chat_get_message_assets": ("读取当前群某条消息中的图片，取得回复可用的 asset_id；失效或无法下载时会注明原因", {"message_id": _MESSAGE_ID}, ["message_id"]),
+    "group_chat_import_sandbox_image": ("登记当前会话沙箱中已生成的图片，取得本轮回复可用的 asset.asset_id；只接受沙箱相对路径，不会直接发送", {"path": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "当前会话沙箱内已生成图片的相对路径, 例如 heart.png 或 charts/plot.png; 支持 PNG/JPEG/WebP/GIF"}}, ["path"]),
     "group_chat_list_stickers": ("查看当前群已启用的表情, 返回名称, 标签和 sticker_id; 选择符合语境的表情后放进回复组件. 未在该群启用的表情不会出现在结果中", {"keyword": _string("想找的表情名称或标签, 不填则查看可用目录"), "limit": _LIMIT, "cursor": _CURSOR}, []),
     "group_chat_find_members": ("根据账号昵称或本群昵称查找当前群的成员, 返回成员 ID, 账号昵称和本群昵称. 找到多个同名成员时, 先确认目标再操作", {"query": _string("要查找的账号昵称或本群昵称, 可以填写其中一部分"), "limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, ["query"]),
     "group_chat_get_member": ("查看当前群某位成员的 ID, 昵称, 群昵称和角色; 需要确认成员 ID 对应谁时使用. 角色只表示平台资料, 不代表对方有权让机器人执行管理操作", {"user_id": _MEMBER_ID}, ["user_id"]),
@@ -91,16 +91,16 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
         "end_time": _string("只查这个时间及之前的消息, 填写日期和时间, 例如 2026-10-04T18:00:00"),
         "limit": _LIMIT, "cursor": _CURSOR,
     }, []),
-    "group_chat_prepare_summary": ("读取当前群指定时段的讨论, 供你生成摘要; 结果会注明保存范围和省略情况, 不能把不完整记录说成全部讨论", {
+    "group_chat_prepare_summary": ("读取当前群指定时段的讨论以生成摘要；结果注明记录范围和省略情况，不完整的内容不能说成全部讨论", {
         "start_time": _string("讨论的开始日期和时间, 例如 2026-10-04T09:00:00; 自动使用后端本地时区"),
         "end_time": _string("讨论的结束日期和时间, 例如 2026-10-04T18:00:00; 自动使用后端本地时区"),
         "keyword": _string("只总结包含这段文字的消息; 不填则读取该时段的所有已保存讨论"),
-        "include_bot": {"type": "boolean", "description": "是否包含机器人自己的发言, 默认不包含"},
+        "include_bot": {"type": "boolean", "default": False, "description": "是否包含机器人自己的发言"},
     }, ["start_time", "end_time"]),
-    "group_chat_read_summary_sources": ("继续读取本次摘要的消息来源; 沿用准备摘要时返回的 snapshot_id 和上一页 next_cursor, 读完后再保存摘要", {
+    "group_chat_read_summary_sources": ("继续读取本次摘要的来源；使用 prepare_summary 返回的 snapshot_id 和上一页 next_cursor，读完再保存", {
         "snapshot_id": _string("本轮 prepare_summary 返回的快照 ID"), "cursor": _CURSOR,
     }, ["snapshot_id", "cursor"]),
-    "group_chat_save_summary": ("保存你根据本次消息快照写出的摘要; 每一条结论都要列出来源消息 ID. 返回 saved 只表示保存成功, 可再用回复工具发到群里", {
+    "group_chat_save_summary": ("保存根据本次消息快照写出的摘要，每条结论都要附来源消息 ID；saved 只表示保存成功", {
         "snapshot_id": _string("本轮已经读完全部分页的摘要快照 ID"),
         "title": {**_string("概括这段讨论的标题"), "maxLength": 120},
         "points": {"type": "array", "minItems": 1, "maxItems": 20, "description": "逐条填写讨论结论, 区分提议, 决定和分歧, 总正文不超过 12000 字符",
@@ -116,7 +116,7 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
     "group_chat_list_summaries": ("查找当前群已保存的摘要, 返回摘要 ID, 时间范围和有效状态", {
         "keyword": _string("要查找的标题或摘要文字"), "limit": _LIMIT, "cursor": _CURSOR,
     }, []),
-    "group_chat_create_reminder": ("在当前群创建一次性提醒, 可填具体日期时间或等待秒数; 返回 created 表示已安排, 到期是否送达要查看任务记录. 只在用户明确要求提醒时创建", {
+    "group_chat_create_reminder": ("用户明确要求时，在当前群创建一次性提醒；created 表示已安排，是否送达需查看任务记录", {
         "text": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "到期直接发送的提醒正文, 到时不会再调用模型生成内容"},
         "due_at": {**_string("提醒的日期和时间, 例如 2026-10-05T09:00:00; 自动使用后端本地时区, 与 after_seconds 二选一"), "maxLength": 64},
         "after_seconds": {"type": "integer", "minimum": 10, "maximum": 31536000, "description": "从后端接受请求起等待多少秒, 例如半小时填 1800; 与 due_at 二选一"},
@@ -127,10 +127,10 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
         "state": _string("只看这个状态: scheduled 待执行, paused 已暂停, sent 已发送, unknown 无法确认是否送达; 不填则查看全部本人任务"),
         "limit": {**_LIMIT, "maximum": 50}, "cursor": _CURSOR,
     }, []),
-    "group_chat_get_reminder": ("查看你的一条提醒的时间, 状态, revision 和实际发送结果; created 不代表已发送, unknown 时不要自动重新创建以免重复", {
+    "group_chat_get_reminder": ("查看本人一条提醒的时间、状态、revision 和发送结果；unknown 时不要重建，以免重复", {
         "reminder_id": _string("创建或列表结果返回的提醒 ID"),
     }, ["reminder_id"]),
-    "group_chat_cancel_reminder": ("取消你创建且还没开始发送的提醒; 先查询取得最新 revision. 已经开始发送时可能无法撤回, 工具会明确返回当前状态", {
+    "group_chat_cancel_reminder": ("取消本人尚未开始发送的提醒；先查询取得最新 revision，已开始发送时可能无法撤回", {
         "reminder_id": _string("要取消的本人提醒 ID"),
         "expected_revision": {"type": "integer", "minimum": 1, "description": "最近一次查询这条提醒返回的 revision, 不要猜测"},
     }, ["reminder_id", "expected_revision"]),

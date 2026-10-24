@@ -76,6 +76,17 @@ def extract_code(response: str) -> str:
         return response.strip()
 
 
+SANDBOX_PARAMS = {
+    "operation": {
+        "type": "string",
+        "enum": ["run", "run_file", "save", "read", "delete", "delete_dir", "list"],
+        "description": "要执行的操作",
+    },
+    "code": {"type": "string", "description": "run 或 save 使用的代码/文本；其他操作省略"},
+    "path": {"type": "string", "description": "沙箱内相对路径；文件操作必填，list 可省略"},
+}
+
+
 def sandbox_description(modules: tuple[str, ...]) -> str:
     """
     根据生效白名单生成工具说明
@@ -87,13 +98,11 @@ def sandbox_description(modules: tuple[str, ...]) -> str:
     - 包含操作, 网络和产物边界的说明, 空白名单明确显示为无可用模块
     """
     return (
-        "在独立 Python 进程执行代码或管理沙箱文件, 无需代码审批. "
-        "支持 run/run_file/save/read/delete/delete_dir/list. "
-        "网络和外部程序调用被拦截, 不保留 Python 变量. "
-        "文件只保存到沙箱, 不自动展示图片或发送附件. "
-        "群聊需要发送已生成图片时, 可调用已启用的 group_chat_import_sandbox_image 登记相对图片路径, 再用返回的 asset_id 回复. "
-        "允许导入: " + (", ".join(modules) if modules else "(无)") + ". "
-        "仅已登记子模块可用, 不支持沙箱内自定义模块和交互输入"
+        "在隔离沙箱中运行 Python 或管理文件，适合计算、解析和生成文件。"
+        "不能联网或启动外部程序，变量不跨调用保留，文件不会自动展示或发送。"
+        "群聊需要发送图片时，若提供 group_chat_import_sandbox_image，先登记相对路径，再把返回的 asset_id 用于回复。"
+        "可导入模块: " + (", ".join(modules) if modules else "(无)") + "。"
+        "未列出的子模块和自定义模块不可用，不支持交互输入"
     )
 
 

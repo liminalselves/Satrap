@@ -14,15 +14,15 @@ class AsyncReadDocumentTool(_DocumentCore, AsyncTool):
     """异步读取本地图片和文档文本, 按模型能力分页查看 PDF 图像"""
 
     tool_name = "read_document"
-    description = "读取本地图片和视频 (png/jpg/webp/gif/mp4/webm/mov/mkv/avi) 和 xlsx/docx/pdf/txt/md 等文档; 图片返回视觉内容, 动画和视频支持按时间区间读取; 目录外读取按 user/auto/full-access 审批; PDF 支持分页, auto 随模型能力返回文字或页面图像, text 只读文字, visual 查看图表和扫描页"
+    description = "读取 PDF、Office 文档、图片和视频；普通代码或纯文本优先用 read_file（若已提供）。PDF 可分页，媒体可按时间区间查看"
     params_dict = {
-        "path": ("string", "文档或图片路径 (绝对或相对工作区)"),
-        "max_length": ("number", "返回文本最大长度, 默认 131072, 超出截断"),
-        "mode": ("string", "auto/text/visual, 默认 auto"),
-        "start_page": ("number", "PDF 起始页码, 从 1 开始"),
-        "page_count": ("number", "本次读取 1 至 5 页, 默认 5"),
-        "start_time": ("number", "动画或视频起始秒数, 默认 0"),
-        "end_time": ("number", "动画或视频结束秒数, 不填表示结尾; 长媒体应分段读取"),
+        "path": {"type": "string", "minLength": 1, "description": "文件路径，绝对路径或相对工作区"},
+        "max_length": {"type": "integer", "minimum": 1, "maximum": 1000000, "default": 131072, "description": "返回文本的最大字符数"},
+        "mode": {"type": "string", "enum": ["auto", "text", "visual"], "default": "auto", "description": "auto 按模型能力选择，text 只读文字，visual 查看视觉内容"},
+        "start_page": {"type": "integer", "minimum": 1, "default": 1, "description": "PDF 起始页码"},
+        "page_count": {"type": "integer", "minimum": 1, "maximum": 5, "default": 5, "description": "本次读取的 PDF 页数"},
+        "start_time": {"type": "number", "minimum": 0, "default": 0, "description": "动画或视频的起始秒数"},
+        "end_time": {"type": ["number", "null"], "default": None, "description": "结束秒数；省略表示读到结尾，长媒体应分段读取"},
     }
 
     def _bind(self, session: AsyncSimpleSession) -> None:

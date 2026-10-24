@@ -766,3 +766,31 @@ def test_exporter_registers_sync_tools():
     assert list(inspect.signature(handler).parameters) == ["msg"]
     assert handler(msg="hi") == {"echo": "hi"}
     assert inspect.signature(handler).parameters["msg"].annotation is str
+
+
+@pytest.mark.asyncio
+async def test_exporter_preserves_rich_parameters_and_optional_defaults():
+    class RichTool(Tool):
+        tool_name = "rich"
+        description = "处理文字列表"
+        params_dict = {
+            "options": {"type": "array", "items": {"type": "string"}},
+            "mode": {"type": "string", "enum": ["auto", "text"], "default": "auto"},
+        }
+
+        def execute(self, options: list[str], mode: str = "auto"):
+            return {"options": options, "mode": mode}
+
+    manager = ToolsManager()
+    manager.register_tool(RichTool())
+    server = export_tools_to_mcp(manager)
+    tools = await server.list_tools()
+    assert len(tools) == 1
+    schema = tools[0].input_schema
+    assert schema["required"] == ["options"]
+    assert schema["properties"]["options"]["items"] == {"type": "string"}
+    assert schema["properties"]["mode"]["enum"] == ["auto", "text"]
+    assert schema["properties"]["mode"]["default"] == "auto"
+    result = await server.call_tool("rich", {"options": ["one"]})
+    assert not result.is_error
+    assert '"mode": "auto"' in str(result.content)

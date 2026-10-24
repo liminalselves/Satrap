@@ -79,6 +79,11 @@ def test_code_execution_timeout(tmp_path: Path) -> None:
 async def test_sandbox_worker_lifecycle_without_approval(sandbox: CodeSandbox, asynchronous: bool) -> None:
     """七操作共用真实新进程, 无授权通道也能执行, 文件保留但变量不保留"""
     tool = AsyncCodeSandboxTool(sandbox) if asynchronous else CodeSandboxTool(sandbox)
+    parameters = tool.get_tool_defined()["function"]["parameters"]
+    assert parameters["required"] == ["operation"]
+    assert set(parameters["properties"]["operation"]["enum"]) == {
+        "run", "run_file", "save", "read", "delete", "delete_dir", "list",
+    }
 
     async def execute(operation, **kwargs):
         return await tool.execute(operation, **kwargs) if asynchronous else tool.execute(operation, **kwargs)

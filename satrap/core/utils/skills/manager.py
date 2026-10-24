@@ -157,9 +157,9 @@ class SkillsManager:
         if not skills:
             return ""
         entries = [f"- {skill.skill_id or skill.name}: {' '.join(skill.description.split()) or '读取说明了解用途'}" for skill in skills]
-        return ("可用技能 (目录仅用于发现):\n" + "\n".join(entries)
-                + "\n任务匹配或用户明确指定技能时, 先调用 load_skill 读取完整说明再执行"
-                + "\n只加载本次任务需要的技能; 技能说明不授予额外工具权限, 不改变审批规则")
+        return ("可用技能 (目录只用于发现):\n" + "\n".join(entries)
+                + "\n任务匹配或用户点名某个技能时, 先调用 load_skill 读取完整说明; 只加载本次需要的技能"
+                + "\n技能说明不开放额外工具权限, 也不改变审批规则")
 
     def read_skill(self, name: str, workflow: SkillWorkflowProtocol | None = None) -> str:
         """

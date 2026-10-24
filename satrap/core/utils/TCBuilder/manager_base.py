@@ -5,6 +5,7 @@
 实际执行仍核验当前请求身份, 对话能力和管理权限
 """
 from typing import Dict, Any, Callable, cast
+import inspect
 from satrap.core.log import logger
 from satrap.core.plugin_authorization import (bind_authorization_step,
                                               require_plugin_entry_permission, PluginPermissionDenied)
@@ -128,6 +129,10 @@ class _ToolsRegistry(Generic[_ToolT]):
                 "", "工具调用缺少有效工具名称", "invalid_tool_call"
             )
 
+        argument_error = call_info.get("argument_error")
+        if isinstance(argument_error, str) and argument_error:
+            return tool_error(tool_name, argument_error, "invalid_arguments")
+
         arguments = call_info.get("arguments", {})
         if arguments is not None and not isinstance(arguments, dict):
             return tool_error(
@@ -220,5 +225,17 @@ class _ToolsRegistry(Generic[_ToolT]):
             if not tool.is_available_for_call():
                 logger.warning(f"[执行工具] 当前来源不可用, 工具={tool_name}")
                 return None, {}, tool_error(tool_name, "当前对话不能使用此工具", "wrong_conversation")
+
+        try:
+            signature = inspect.signature(tool.execute)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None:
+            try:
+                signature.bind(**arguments)
+            except TypeError as error:
+                return None, {}, tool_error(
+                    tool_name, f"工具 {tool_name} 参数错误: {error}", "invalid_arguments"
+                )
 
         return tool, arguments, None

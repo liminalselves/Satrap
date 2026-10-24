@@ -74,12 +74,13 @@ class SubAgent(Tool):
         """
         super().__init__(
             tool_name="sub_agent",
-            description="子代理，运行在独立上下文中的子代理，用于高效处理特定任务",
+            description="把多个独立子任务分派给子代理并行执行，返回各任务结果；每个任务都要写明必要背景和预期输出",
             params_dict={
-                "task": (
-                    "array",
-                    "要执行的任务描述数组，形式为: [sub_task1, sub_task2, sub_task3]",
-                )
+                "task": {
+                    "type": "array", "minItems": 1, "maxItems": MAX_SUB_AGENT_TASKS,
+                    "items": {"type": "string", "minLength": 1},
+                    "description": "独立子任务列表",
+                }
             },
         )  # 初始化父类工具
 
@@ -88,7 +89,7 @@ class SubAgent(Tool):
         self.task_timeout = max(0.1, float(task_timeout))
         self.max_workers = max(1, min(MAX_SUB_AGENT_TASKS, int(max_workers)))
 
-    def execute(self, task: str) -> str:
+    def execute(self, task: str | list[str]) -> str:
         """
         执行子代理任务
 
@@ -99,7 +100,7 @@ class SubAgent(Tool):
         - str: 执行子代理任务
         """
         # Step.1 安全解析 (处理模型可能传字符串或数组的情况)
-        task_list, error = _parse_tasks(task, "SubAgent")
+        task_list, error = _parse_tasks(task)
         if error is not None:
             return error
         from . import multiprocessing
