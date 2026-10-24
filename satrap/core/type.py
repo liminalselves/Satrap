@@ -195,6 +195,8 @@ class LLMCallResponse:
     """LLM 调用响应工具调用, 包含 name, id, arguments"""
     usage: Optional[TokenUsage] = None
     """API 返回的真实 token 使用量, 供应商未返回时为 None"""
+    finish_reason: Optional[str] = None
+    """模型结束原因; length 可帮助识别被截断的工具调用"""
 
     def __iter__(self) -> Iterator[Any]:
         """

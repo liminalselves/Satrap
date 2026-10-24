@@ -94,7 +94,8 @@ async def test_full_agent_runs_complete_agent_flow(tmp_path: Path, asynchronous:
         result = wf.full_agent("你好")
 
     assert result == ("异步回复" if asynchronous else "同步回复")
-    assert llm.messages[0]["content"] == "你好"
+    user_messages = [message for message in llm.messages if message["role"] == "user"]
+    assert len(user_messages) == 1 and user_messages[0]["content"] == "你好"
     assert llm.tools == []
 
 

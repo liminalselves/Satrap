@@ -7,18 +7,30 @@ import pytest
 import copy
 
 from satrap.core.framework.Base.execution.errors import ModelCallError, ModelProtocolError
+from satrap.core.framework.Base.execution.flow import agent_flow
 from satrap.core.framework.Base.execution.store import RunStore
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.core.type import RequestContextBlock
+from satrap.core.utils.context.request import FINAL_RESPONSE_PROMPT
 
 
 CALL = {"id": "c1", "name": "noop", "arguments": {}}
 TOOLS = LLMCallResponse("tools_call", "工具说明", tool_calls=[CALL], thinking="思考")
 ANSWER = LLMCallResponse("message", "完成", thinking="思考")
 Workflow = ModelWorkflowFramework | AsyncModelWorkflowFramework
+
+
+def test_truncated_tool_call_is_rejected_before_execution() -> None:
+    flow = agent_flow("测试", 1)
+    next(flow)
+    with pytest.raises(ModelProtocolError, match="max_tokens"):
+        flow.send({
+            "type": "tools_call", "content": "", "finish_reason": "length",
+            "tool_calls": [{"id": "partial", "name": "noop", "arguments": {}}],
+        })
 
 
 @pytest.mark.asyncio
@@ -205,9 +217,10 @@ async def test_iterations_thinking_and_atomic_history(tmp_path: Path, asynchrono
     assert len(script.requests) == rounds + 1
     assert all(request["thinking"] == "high" for request in script.requests)
     assert all(request["tools"] for request in script.requests[:-1])
-    assert script.requests[-1]["tools"] == []
-    assert script.requests[-1]["messages"][-1]["role"] == "user"
-    assert "已达到最大工具调用尝试次数" in script.requests[-1]["messages"][-1]["content"]
+    assert script.requests[-1]["tools"] is None
+    final_messages = script.requests[-1]["messages"]
+    assert FINAL_RESPONSE_PROMPT in next(message["content"] for message in final_messages if message["role"] == "system")
+    assert all("已达到最大工具调用尝试次数" not in str(message) for message in final_messages)
     assert all(history == original for history in script.histories)
     assert [text for role, text in stored_history(wf) if role == "user"].count("新输入") == 1
     assert stored_history(wf)[-1] == ("assistant", "完成")
@@ -433,8 +446,10 @@ async def test_compat_executor_media_stays_on_original_user(tmp_path, asynchrono
     assert success
     users = [m for m in script.requests[0]["messages"] if m["role"] == "user"]
     assert users[0]["content"][1]["image_url"]["url"] == image
-    assert isinstance(users[-1]["content"], str)
-    assert "已达到最大" in users[-1]["content"]
+    assert len(users) == 1
+    system_messages = [message for message in script.requests[0]["messages"] if message["role"] == "system"]
+    assert system_messages and FINAL_RESPONSE_PROMPT in system_messages[0]["content"]
+    assert all("已达到最大工具调用尝试次数" not in str(message) for message in users)
     assert script.requests[0]["img_urls"] is None
 
 

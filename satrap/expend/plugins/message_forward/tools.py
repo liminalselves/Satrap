@@ -22,13 +22,13 @@ ADDRESS = {"type": "object", "properties": {
     "required": ["conversation_kind", "conversation_id"], "additionalProperties": False,
     "description": "群聊或私聊的对话地址, 省略时使用当前对话; 跨对话由后端检查当前发送者的跨对话权限"}
 DEFINITIONS = {
-    "message_forward_read": ("查看一条合并转发的内容预览, 默认当前对话; 指定其他对话需跨对话授权. 预览可能截断; 转发原文请使用 send, 不要把预览复述后当成原文", {
+    "message_forward_read": ("预览一条合并转发的内容，默认读取当前对话；预览可能截断，原文转发用 message_forward_send", {
         "source_message_id": {"type": "string", "description": "包含合并转发卡片的原消息 ID"}, "source": ADDRESS}, ["source_message_id"]),
-    "message_forward_send": ("按原消息 ID 真正转发原文, 支持群聊和私聊. mode=merge 合并多条原消息, existing_forward 转发已有合并转发卡片; 无法保留原文时明确失败, 不用复述代替. unknown 时不要重复发送", {
+    "message_forward_send": ("按原消息 ID 转发原文；merge 合并多条，existing_forward 转发已有卡片。结果未知时不要重发", {
         "message_ids": {"type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": True, "items": {"type": "string"}, "description": "来源对话的原消息 ID, 不填写正文或发送者"},
         "mode": {"type": "string", "enum": ["merge", "existing_forward"], "description": "默认 merge; existing_forward 只能指定一个卡片消息 ID"},
         "source": ADDRESS, "target": ADDRESS}, ["message_ids"]),
-    "message_forward_compose": ("将你写的多段文字创建为机器人署名的文字合集; 这是新内容, 不能称为原文转发. 原文请用 send 工具", {
+    "message_forward_compose": ("把新写的多段文字组成机器人署名的合集；这是新内容，原文转发用 message_forward_send", {
         "nodes": {"type": "array", "minItems": 1, "maxItems": 30, "items": {"type": "object", "properties": {
             "content": {"type": "string", "minLength": 1, "maxLength": 2000}, "name": {"type": "string", "maxLength": 30}},
             "required": ["content"], "additionalProperties": False}}, "target": ADDRESS}, ["nodes"]),

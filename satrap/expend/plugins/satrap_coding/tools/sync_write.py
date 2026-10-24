@@ -21,11 +21,11 @@ class WriteFileTool(_FileProtectionMixin, Tool):
     """写入/追加工作区内文件 (写操作走审批)"""
 
     tool_name = "write_file"
-    description = "写入或追加文件; 沙箱内免审批, 其余遵守 user/auto/full-access 模式"
+    description = "新建或覆盖文件；append=true 时追加到末尾。只改局部内容时优先用 edit_file"
     params_dict = {
-        "path": ("string", "文件路径 (绝对或相对工作区)"),
-        "content": ("string", "要写入的内容"),
-        "append": ("boolean", "是否追加, 默认 False (覆盖)"),
+        "path": {"type": "string", "minLength": 1, "description": "文件路径，绝对路径或相对工作区"},
+        "content": {"type": "string", "description": "要写入的完整内容"},
+        "append": {"type": "boolean", "default": False, "description": "true 追加，false 覆盖"},
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
@@ -86,12 +86,12 @@ class EditFileTool(_FileProtectionMixin, Tool):
     """精确替换工作区内文件内容 (写操作走审批)"""
 
     tool_name = "edit_file"
-    description = "在文件中精确替换一段文本 (old -> new), 用于定向修改"
+    description = "把文件中的精确原文 old 替换为 new，适合小范围修改；多处不同位置修改可用 search_replace"
     params_dict = {
-        "path": ("string", "文件路径 (绝对或相对工作区)"),
-        "old": ("string", "要替换的原文 (必须精确匹配)"),
-        "new": ("string", "替换后的内容"),
-        "replace_all": ("boolean", "是否替换全部匹配, 默认 False (仅首处)"),
+        "path": {"type": "string", "minLength": 1, "description": "文件路径，绝对路径或相对工作区"},
+        "old": {"type": "string", "description": "必须精确匹配的原文"},
+        "new": {"type": "string", "description": "替换后的内容"},
+        "replace_all": {"type": "boolean", "default": False, "description": "true 替换全部匹配，false 只替换第一处"},
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
@@ -153,16 +153,22 @@ class SearchReplaceTool(_FileProtectionMixin, Tool):
     """批量精确替换: 一个文件内多对 old->new (类似 IDE search & replace)"""
 
     tool_name = "search_replace"
-    description = (
-        "在一个文件中一次性执行多对精确文本替换 (类似 IDE 的 search & replace), "
-        "每对可独立控制是否替换全部匹配; 审批规则同 edit_file"
-    )
+    description = "在同一文件中批量替换多组精确原文；每组可单独选择替换首处或全部匹配"
     params_dict = {
-        "path": ("string", "文件路径 (绝对或相对工作区)"),
-        "replacements": (
-            "array",
-            "替换列表, 每项为对象 {old: 原文, new: 新文, replace_all?: 是否替换全部匹配(默认 False)}",
-        ),
+        "path": {"type": "string", "minLength": 1, "description": "文件路径，绝对路径或相对工作区"},
+        "replacements": {
+            "type": "array", "minItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "old": {"type": "string", "minLength": 1, "description": "必须精确匹配的原文"},
+                    "new": {"type": "string", "description": "替换后的内容"},
+                    "replace_all": {"type": "boolean", "default": False, "description": "是否替换全部匹配"},
+                },
+                "required": ["old", "new"], "additionalProperties": False,
+            },
+            "description": "替换列表，按顺序执行",
+        },
     }
 
     def __init__(self, engine: PermissionEngine) -> None:

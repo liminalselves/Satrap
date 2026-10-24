@@ -26,6 +26,7 @@ import json
 import ast
 from satrap.core.utils.TCBuilder import Tool as _tool_calling_Tool, ToolsManager as _tool_calling_ToolsManager
 from satrap.core.utils.TCBuilder import create_tool_defined
+from satrap.core.utils.context.request import BASE_AGENT_PROMPT
 from satrap.core.utils import safe_parse_arguments
 
 class _llm_call_parity_AsyncStream:
@@ -787,6 +788,14 @@ def test_tool_manager_registers_definitions_and_executes_calls():
 
     definitions = manager.get_tools_definitions()
     assert {item["function"]["name"] for item in definitions} == {"get_weather", "calculate"}
+    weather = next(item for item in definitions if item["function"]["name"] == "get_weather")
+    assert weather["function"]["parameters"]["required"] == ["city"]
+    assert weather["function"]["parameters"]["additionalProperties"] is False
+
+    missing = manager.execute_tool("calculate", {})
+    unknown = manager.execute_tool("calculate", {"expression": "1", "extra": True})
+    assert missing["error_type"] == unknown["error_type"] == "invalid_arguments"
+    assert "expression" in missing["error"] and "extra" in unknown["error"]
 
     tool_message, result = manager.execute_tool_call(
         {"name": "calculate", "arguments": {"expression": "2 + 3 * 4"}},
@@ -805,6 +814,74 @@ def test_create_tool_defined_and_tool_call_are_compatible():
 
     assert definition["function"]["name"] == "search_web"
     assert definition["function"]["parameters"]["required"] == ["query"]
+
+
+def test_create_tool_defined_preserves_nested_schema() -> None:
+    item_schema = {
+        "type": "object",
+        "properties": {"old": {"type": "string", "minLength": 1}, "new": {"type": "string"}},
+        "required": ["old", "new"], "additionalProperties": False,
+    }
+    definition = create_tool_defined(
+        "replace", "替换文本",
+        {"replacements": {"type": "array", "items": item_schema, "minItems": 1}},
+        required=["replacements"],
+    )
+    parameters = definition["function"]["parameters"]
+    assert parameters["properties"]["replacements"]["items"] == item_schema
+    assert parameters["properties"]["replacements"]["items"] is not item_schema
+    assert parameters["additionalProperties"] is False
+
+
+def test_malformed_tool_arguments_return_correction_instead_of_execution() -> None:
+    response = parse_call_response({
+        "choices": [{
+            "finish_reason": "length",
+            "message": {
+                "role": "assistant", "content": None,
+                "tool_calls": [{
+                    "id": "broken", "type": "function",
+                    "function": {"name": "calculate", "arguments": '{"expression":'},
+                }],
+            },
+        }],
+    })
+    assert response.finish_reason == "length"
+    assert response.tool_calls is not None
+    call = response.tool_calls[0]
+    assert "argument_error" in call
+
+    manager = _tool_calling_ToolsManager()
+    manager.register_tool(CalculatorTool())
+    _, result = manager.execute_tool_call(call)
+    assert result["error_type"] == "invalid_arguments"
+    assert "有效的 JSON 对象" in result["error"]
+
+
+def test_base_agent_prompt_is_added_only_to_request_view() -> None:
+    class PromptLLM:
+        model = "offline"
+        supports_visual_input = False
+        supports_native_video_input = False
+
+        def call(self, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
+            self.messages = messages
+            return _stream_call_LLMCallResponse(type="message", content="完成")
+
+    llm = PromptLLM()
+    agent = ModelWorkflowFramework(
+        llm=cast(LLM, llm), context_id="base-prompt", system_prompt="保持角色", persist_context=False,
+    )
+    assert agent.full_agent("测试", callback=False) == "完成"
+    assert llm.messages[0] == {"role": "system", "content": "保持角色\n\n" + BASE_AGENT_PROMPT}
+    assert agent.ctx.get_context()[0] == {"role": "system", "content": "保持角色"}
+
+def test_sync_and_async_contexts_share_summary_prompt() -> None:
+    from satrap.core.utils.context.base import _ContextCore
+
+    assert ContextManager._SUMMARY_PROMPT == _ContextCore._SUMMARY_PROMPT
+    assert AsyncContextManager._SUMMARY_PROMPT == _ContextCore._SUMMARY_PROMPT
+
 
 def test_safe_parse_arguments_standard_json():
     """标准 JSON 字符串直接解析"""

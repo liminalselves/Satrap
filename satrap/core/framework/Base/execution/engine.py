@@ -14,7 +14,7 @@ import copy
 from typing import Any, Generator, TYPE_CHECKING, TypedDict, Unpack, cast
 
 from satrap.core.type import RequestContextBlock
-from satrap.core.utils.context.request import freeze_request_blocks, serialize_request_blocks, restore_request_blocks
+from satrap.core.utils.context.request import freeze_request_blocks, serialize_request_blocks, restore_request_blocks, compose_agent_system_suffix
 from satrap.core.utils.context import PreparedModelContext
 from satrap.core.type import LLMCallResponse, TokenUsage
 from satrap.core.utils.media import user_media_content, freeze_tool_result, project_messages
@@ -60,7 +60,7 @@ class Prepare:
     """准备本轮模型上下文与工具定义"""
 
     step: ModelStep
-    tools: list[dict[str, Any]]
+    tools: list[dict[str, Any]] | None
     images: list[str] | None
     request_blocks: tuple[RequestContextBlock, ...]
     system_suffix: str = ""
@@ -275,9 +275,10 @@ def execute(
                 elif isinstance(step, ModelStep):
                     seeded = initial_response if step.key == "model:0" else None
                     if saved is None and seeded is None:
-                        tools = [] if step.final else wf.tools_manager.get_tools_definitions()
+                        tools = None if step.final else wf.tools_manager.get_tools_definitions()
                         catalog = wf.skill_runtime.catalog(wf) if wf.skill_runtime is not None else ""
-                        prepared = yield Prepare(step, tools, payload["img_urls"], frozen_blocks, catalog)
+                        system_suffix = compose_agent_system_suffix(catalog, final=step.final)
+                        prepared = yield Prepare(step, tools, payload["img_urls"], frozen_blocks, system_suffix)
                         request = {"messages": prepared.messages, "tools": tools,
                                    "thinking": payload["thinking"], "img_urls": payload["img_urls"],
                                    "_prepared": prepared_metadata(prepared)}

@@ -398,12 +398,6 @@ class AsyncContextManager(_AsyncSummary):
                 f"[异步上下文管理] 导出 json 文件失败：{e}, ID: {self.conversation_id}"
             )
 
-    _SUMMARY_PROMPT = (
-        "请将以下对话历史浓缩为一段简洁的摘要, 保留关键事实、用户意图、已做的决策和待办事项。"
-        "摘要将注入 system prompt 作为后续对话的上下文, 请用第三人称客观描述, 不要遗漏影响后续交互的信息。"
-    )
-
-
     async def _commit_turn_messages(self, messages: list[dict[str, Any]]) -> None:
         """
         提交成功执行的整轮消息, 保存失败时恢复内存历史

@@ -45,9 +45,11 @@ def agent_flow(user_input: str | list[dict[str, Any]] | None, max_iterations: in
     messages: list[dict[str, Any]] = [] if user_input is None else [{"role": "user", "content": user_input}]
     for iteration in range(max(1, max_iterations) + 1):
         final = iteration >= max(1, max_iterations)
-        if final:
-            messages.append({"role": "user", "content": "已达到最大工具调用尝试次数, 请基于已有信息给出最终答案"})
         response = yield ModelStep(f"model:{iteration}", messages, final)
+        if response.get("type") == "tools_call" and response.get("finish_reason") == "length":
+            raise ModelProtocolError(
+                "模型输出达到 max_tokens, 工具调用可能不完整, 未执行; 请增大输出预算或缩短单次工具参数"
+            )
         if response.get("type") != "tools_call" or not response.get("tool_calls"):
             content = response.get("content") or ""
             add_bot_message(messages, content, reasoning=response.get("thinking"))

@@ -12,7 +12,7 @@ session.install_plugin("./satrap/expend/plugins/base_take")
 
 plugin = session.list_plugins()[0]
 plugin.name          # "base_take"
-plugin.tools         # 4 个工具
+plugin.tools         # 5 个工具
 plugin.handlers      # 无记忆处理器
 plugin.commands      # 无记忆命令
 ```
@@ -25,7 +25,9 @@ plugin.commands      # 无记忆命令
 | --- | --- | --- |
 | 搜索 | search / fetch_page | 网页搜索与抓取 (复用 expend.tools.search) |
 | 沙箱 | code_sandbox | 在隔离目录中执行 Python 代码 |
-| 文档 | read_document | 读取本地图片, 提取文档文本及分页查看 PDF 图像 |
+| 文档 | read_document / read_media | 读取文档、图片和已登记媒体，支持 PDF 分页及媒体时间区间 |
+
+模型调用只要求 `search.query`、`fetch_page.url`、`code_sandbox.operation`、`read_document.path` 和 `read_media.media_id`。其余参数均可省略，默认值、枚举和范围以各自 JSON Schema 为准。
 
 ## 插件配置
 

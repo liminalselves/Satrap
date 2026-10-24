@@ -245,7 +245,7 @@ class _FakeAsyncLLM:
 # ================================================================
 
 
-async def _execute_sub_agent(task_input: str, asynchronous: bool) -> str:
+async def _execute_sub_agent(task_input: str | list[str], asynchronous: bool) -> str:
     """按同步或异步实现执行一次子代理任务"""
     if asynchronous:
         agent = AsyncSubAgent(_as_async_llm(_FakeAsyncLLM()), _as_async_tools_manager(_FakeToolsManager()))
@@ -265,6 +265,16 @@ async def test_sub_agent_parses_json_array_task(
     assert "子代理2执行任务" in result
     assert "task one" in result
     assert "task two" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_sub_agent_accepts_native_task_array(
+    threaded_sub_agent_process_context: None,
+    asynchronous: bool,
+) -> None:
+    result = await _execute_sub_agent(["task one", "task two"], asynchronous)
+    assert "子代理1执行任务" in result and "子代理2执行任务" in result
 
 
 @pytest.mark.asyncio

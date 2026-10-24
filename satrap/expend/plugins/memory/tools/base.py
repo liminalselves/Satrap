@@ -339,7 +339,7 @@ _ID = {**_TEXT, "description": "记忆查询结果中的完整 ID"}
 _SOURCES = {"type": "array", "minItems": 1, "maxItems": 10, "items": _TEXT, "description": "支持这条信息的来源消息 ID; 群内本人偏好必须包含本轮本人发言"}
 _REVISION = {"type": "integer", "minimum": 1, "description": "查询结果中的 revision; 内容已变化时需要重新查询"}
 DEFINITIONS = {
-    "add_memory": ("用户明确要求记住时, 保存一条长期信息; 群内只能保存本人偏好或提交群记忆. pending 表示待审批, 不能说群记忆已经生效", {
+    "add_memory": ("用户明确要求记住时保存长期信息；群内只能保存本人偏好或提交群记忆，pending 不代表已生效", {
         "title": {**_TEXT, "maxLength": 120, "description": "方便查找的简短标题"},
         "content": {**_TEXT, "maxLength": 2000, "description": "用户明确要求保存的信息, 不推测未表达的偏好"},
         "kind": {"type": "string", "enum": ["member_preference", "group_rule"], "description": "群聊必填: 本人的偏好, 或群记忆提案"},
@@ -348,7 +348,7 @@ DEFINITIONS = {
         "tags": {"type": "array", "maxItems": 20, "items": _TEXT, "description": "普通会话记忆的分类标签"},
         "importance": {"type": "integer", "minimum": 1, "maximum": 5, "description": "普通会话记忆的重要程度, 默认 1"},
     }, ["title", "content"]),
-    "update_memory": ("用户明确更正已保存的信息时使用; 先查询记忆和修订号. 群内只能改本人偏好, 群记忆修改仍需审批", {
+    "update_memory": ("用户明确更正已保存的信息时使用；先查询记忆和 revision，群内只能修改本人偏好", {
         "memory_id": _ID, "content": {**_TEXT, "maxLength": 2000, "description": "更正后的信息"},
         "title": {**_TEXT, "maxLength": 120, "description": "需要更名时填写"}, "source_message_ids": _SOURCES, "expected_revision": _REVISION,
     }, ["memory_id"]),

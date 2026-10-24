@@ -23,13 +23,13 @@ from satrap.core.platform import current_adapter_manager
 from satrap.core.log import logger
 
 DEFINITIONS: dict[str, tuple[str, dict[str, Any], list[str]]] = {
-    "account_requests_list_group_invites": ("查看别人邀请机器人加入新群的邀请, 按当前机器人账号查询, 不要求先提供群号; 不包含别人申请加入已有群的申请. 归档不代表平台失效, can_handle 只表示本地处理资格", {
+    "account_requests_list_group_invites": ("查询当前机器人账号收到的入群邀请，可先查 active，再查 archived 或 all；不包含成员申请加入已有群的记录", {
         "group_id": {"type": "string", "description": "只看这个群的邀请; 不填查询当前账号全部入群邀请"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "最多返回多少条, 默认 20"},
         "cursor": {"type": "string", "description": "上次查询返回的 next_cursor, 保持相同查询条件"},
         "view": {"type": "string", "enum": ["active", "archived", "all"], "description": "active 待处理, archived 归档, all 全部; 默认 active"},
     }, []),
-    "account_requests_handle_group_invite": ("接受或拒绝查询结果中邀请机器人加入新群的邀请; 不处理成员入群申请. pending 表示待人工批准, succeeded 表示已执行, unknown 不要重复操作", {
+    "account_requests_handle_group_invite": ("接受或拒绝查询结果中的入群邀请；只使用返回的 request_id，pending 不是已处理，unknown 不要重试", {
         "request_id": {"type": "string", "description": "邀请查询返回的 request_id, 不能用群号代替"},
         "approve": {"type": "boolean", "description": "true 接受邀请, false 拒绝邀请"},
         "expected_revision": {"type": "integer", "minimum": 1, "description": "查询返回的 revision, 处理归档邀请必须填写"},

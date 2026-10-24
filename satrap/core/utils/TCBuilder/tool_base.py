@@ -4,7 +4,8 @@
 为同步和异步工具提供公共定义和开关,
 注册状态与当前请求来源能力分开判断, 保留旧工具默认行为
 """
-from typing import Dict, Tuple, Any
+from typing import Dict, Mapping, Tuple, Any
+import inspect
 from satrap.core.type import safe_getattr
 from satrap.core.log import logger
 from .utils import create_tool_defined
@@ -17,7 +18,7 @@ class _ToolBase:
         self,
         tool_name: str | None = None,
         description: str | None = None,
-        params_dict: Dict[str, Tuple[str, str]] | None = None,
+        params_dict: Mapping[str, Tuple[str, str] | Dict[str, Any]] | None = None,
         owner_plugin: str | None = None,
     ):
         """
@@ -65,7 +66,24 @@ class _ToolBase:
         params_dict = self.params_dict
         if tool_name is None or description is None or params_dict is None:
             return {}  # 工具定义不完整时保持既有空字典契约
-        return create_tool_defined(tool_name, description, params_dict)
+        try:
+            parameters = inspect.signature(getattr(self, "execute")).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        # 只有 **kwargs 的动态工具无法从签名推断, 由各自声明显式覆盖
+        if not parameters or not any(name in parameters for name in params_dict):
+            required = list(params_dict)
+        else:
+            required = [
+                name for name in params_dict
+                if name in parameters
+                and parameters[name].default is inspect.Parameter.empty
+                and parameters[name].kind not in {
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                }
+            ]
+        return create_tool_defined(tool_name, description, params_dict, required)
 
     def get_tool_name(self) -> str:
         """

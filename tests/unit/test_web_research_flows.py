@@ -37,6 +37,20 @@ def inline_challenge(script: str) -> bytes:
 GOOD_JS = 'document.cookie="acw_sc__v2="+arg1.slice(0,40)+"; Path=/"; document.location.reload();'
 
 
+def test_web_tool_schemas_keep_optional_parameters_optional():
+    for cls in (SearchTool, AsyncSearchTool):
+        parameters = cls().get_tool_defined()["function"]["parameters"]
+        assert parameters["required"] == ["query"]
+        assert parameters["properties"]["max_results"] == {
+            "type": "integer", "minimum": 1, "maximum": 20, "default": 5,
+            "description": "最多返回多少条结果",
+        }
+    for cls in (FetchPageTool, AsyncFetchPageTool):
+        parameters = cls().get_tool_defined()["function"]["parameters"]
+        assert parameters["required"] == ["url"]
+        assert parameters["properties"]["max_length"]["default"] == 5000
+
+
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
 

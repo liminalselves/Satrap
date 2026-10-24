@@ -47,6 +47,8 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 
 > `ask_user` 需要宿主特殊适配: 宿主必须设置 `session.user_input_provider`, 展示工具提出的问题, 等待用户回答并把回答回填到当前工具调用。未适配时工具只返回占位说明, 不会自动暂停并跨消息恢复
 
+工具的 `required` 与 `execute` 默认值一致：`read_file` 只需 `path`，`list_dir` 可空参数，`todo_write` 只需 `operation`。数组、枚举和数值范围直接写入 JSON Schema，例如 `search_replace.replacements` 的每项必须包含 `old` 和 `new`。
+
 ## 三档审批
 
 审批策略由宿主统一持有, /approve 和 approval_model 已迁至独立的 [permissions 插件](permissions-plugin.md)。先启用该插件, Chat 可在「对话设置 → 对话 → 执行审批模式」切换当前会话模式, 与 `/approve mode` 共用同一份状态, 保存后立即生效并持久化; 默认 `user`:

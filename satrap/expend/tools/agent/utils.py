@@ -12,7 +12,7 @@ from satrap.core.log import logger
 
 
 SUB_AGENT_SYSTEM_PROMPT = """
-你是一个子代理，你需要根据任务描述，合理使用工具来完成任务并返回结果
+你负责一个独立子任务。需要时使用工具，只处理任务范围内的内容，最后返回结果和未解决的问题。
 """
 
 MAX_SUB_AGENT_TASKS = 16
@@ -227,17 +227,21 @@ def _run_sub_task_process(
         connection.close()
 
 
-def _parse_tasks(task: str, label: str) -> tuple[list[str], str | None]:
+def _parse_tasks(task: object) -> tuple[list[str], str | None]:
     """统一子任务解析与数量校验"""
-    try:
-        tasks = json.loads(task)
-        if isinstance(tasks, str):
-            tasks = [tasks]
-        elif not isinstance(tasks, list):
-            return [], f"错误：传入的task不是数组，而是 {type(tasks)}"
-    except json.JSONDecodeError:
-        logger.warning(f"[{label}] 警告：传入的task不是JSON数组，尝试当作单个任务处理")
-        tasks = [task]
+    if isinstance(task, list):
+        tasks = task
+    elif isinstance(task, str):
+        try:
+            tasks = json.loads(task)
+            if isinstance(tasks, str):
+                tasks = [tasks]
+            elif not isinstance(tasks, list):
+                return [], f"错误：task 必须是任务字符串或字符串数组，收到 {type(tasks).__name__}"
+        except json.JSONDecodeError:
+            tasks = [task]
+    else:
+        return [], f"错误：task 必须是任务字符串或字符串数组，收到 {type(task).__name__}"
     if not tasks:
         return [], "未收到任何子任务"
     if len(tasks) > MAX_SUB_AGENT_TASKS:
