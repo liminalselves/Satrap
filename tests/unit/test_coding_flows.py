@@ -1033,7 +1033,6 @@ async def test_auto_decisions_failures_human_fallback_and_timeout(tmp_path, work
     tools = await _async_tools(session) if asynchronous else _install_tools(session)
     engine = get_plugin_state(session)["engine"]
     engine.set_mode("auto", persist=False)
-    monkeypatch.setattr(approval, "_REVIEW_TIMEOUT", 0.01)
     human_calls = []
     def human(request):
         human_calls.append(request)
@@ -1042,6 +1041,7 @@ async def test_auto_decisions_failures_human_fallback_and_timeout(tmp_path, work
                 '{"decision":"ask","reason":"需要确认目标"}', "allow",
                 '{"decision":"allow","reason":"ok","extra":true}', RuntimeError("模型离线"), "timeout"]
     for index, value in enumerate(variants):
+        monkeypatch.setattr(approval, "_REVIEW_TIMEOUT", 0.01 if value == "timeout" else 1.0)
         def model(**kwargs):
             if isinstance(value, Exception):
                 raise value
@@ -1068,6 +1068,35 @@ async def test_auto_decisions_failures_human_fallback_and_timeout(tmp_path, work
                 assert ("approval_denied" if denied else "approval_required") in result
                 if value == "timeout":
                     assert "超时" in result
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_sync_review_checks_deadline_when_result_is_already_queued(monkeypatch, late):
+    """等待方延迟调度后, 已入队的迟到批准仍被拒绝, 及时结果仍可返回"""
+    from satrap.core.approval import coordinator as approval
+    import threading
+
+    clock = [0.0]
+    original_thread = threading.Thread
+
+    class FinishedBeforeWait(original_thread):
+        def start(self):
+            super().start()
+            self.join(1)
+            assert not self.is_alive()
+
+    def review(**kwargs):
+        clock[0] = 0.04 if late else 0.005
+        return "approved"
+
+    monkeypatch.setattr(approval, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(approval, "_REVIEW_TIMEOUT", 0.01)
+    monkeypatch.setattr(approval.threading, "Thread", FinishedBeforeWait)
+    if late:
+        with pytest.raises(TimeoutError, match="模型审批超时"):
+            approval._sync_review(review, [])
+    else:
+        assert approval._sync_review(review, []) == "approved"
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ import threading
 import inspect
 import asyncio
 from typing import Awaitable, Callable, cast
+from time import monotonic
 import queue
 import json
 
@@ -270,11 +271,15 @@ def _sync_review(call: Callable[..., object], messages: list[dict[str, str]]) ->
             responses.put((True, call(messages=messages)))
         except Exception as error:
             responses.put((False, error))
+    deadline = monotonic() + _REVIEW_TIMEOUT
     threading.Thread(target=run, daemon=True, name="approval-review").start()
     try:
-        success, value = responses.get(timeout=_REVIEW_TIMEOUT)
+        success, value = responses.get(timeout=max(0.0, deadline - monotonic()))
     except queue.Empty as error:
         raise TimeoutError("模型审批超时, 需要人工批准") from error
+    if monotonic() >= deadline:
+        raise TimeoutError("模型审批超时, 需要人工批准")
+    # 队列已有结果或等待方延迟调度时也必须复核截止时间, 迟到结果不能授权
     if not success:
         if isinstance(value, Exception):
             raise value
