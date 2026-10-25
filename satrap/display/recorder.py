@@ -441,8 +441,10 @@ class DisplayRecorder:
             self._segments = []
             count = conn.execute("SELECT COUNT(*) FROM display_tool_calls WHERE turn_id=?", (turn_id,)).fetchone()
             self._tool_seq = int(count[0])
+            metadata = conn.execute("SELECT response_metadata FROM display_turn_variants WHERE turn_id=? AND variant_index=?",
+                                    (turn_id, variant_index)).fetchone()
             return {"turn_id": turn_id, "turn_index": int(row[0]), "variant_index": variant_index,
-                    "user_input": str(row[1])}
+                    "user_input": str(row[1]), "response_metadata": json.loads(metadata[0]) if metadata and metadata[0] else None}
 
     def end_turn(
         self,

@@ -46,6 +46,8 @@ import {
   type ApprovalMode,
   type CapabilityKind,
   type ChatEvent,
+  type ChatDefaults,
+  type ResponseMetadata,
   type ChatPreloadSettings,
   type ChatPlugin,
   type ChatTurnVariant,
@@ -168,6 +170,7 @@ const COLOR_TEXT_CLASS: Record<GlassColor, string> = {
 type MessageRole = 'user' | 'assistant';
 
 interface LocalResponseVariant {
+  responseMetadata?: ResponseMetadata | null;
   outputFiles?: OutputFile[];
   variantIndex: number;
   content: string;
@@ -179,6 +182,7 @@ interface LocalResponseVariant {
 
 // 单条消息
 interface ChatMessage {
+  responseMetadata?: ResponseMetadata | null;
   outputFiles?: OutputFile[];
   id: string;
   role: MessageRole;
@@ -254,6 +258,7 @@ function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
     segments: convertSegments(variant),
     contextStats: variant.context_stats,
     outputFiles: variant.output_files,
+    responseMetadata: variant.response_metadata,
   };
 }
 
@@ -282,9 +287,10 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
     const segments = convertSegments(currentVariant);
     messages.push({
       id: `${turn.id}-a`,
+      responseMetadata: turn.response_metadata,
       role: 'assistant',
       streaming: turn.generating ?? false,
-      content: turn.interrupted ? (turn.answer || '[生成已中断]') : turn.answer,
+      content: turn.interrupted ? (turn.answer || '[生成已中断]') : variantAnswer(currentVariant),
       thinking: turn.thinking ?? undefined,
       toolCalls: turn.tool_calls,
       timestamp: turn.created_at * 1000,
@@ -317,12 +323,17 @@ export function Chat() {
     think: loadPersistedThink(),
   }));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [defaults, setDefaults] = useState<ChatDefaults | null>(null);
+  const [defaultSaving, setDefaultSaving] = useState(false);
+  const [bindingPending, setBindingPending] = useState<Set<string>>(() => new Set());
+  const [bindingProblem, setBindingProblem] = useState<string | null>(null);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [draftApprovalMode, setDraftApprovalMode] = useState<ApprovalMode>('user');
   // 后端连接状态
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
   // 可选模型列表(来自聊天服务)
   const [models, setModels] = useState<string[]>([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   // 插件列表(来自聊天服务)
   const [plugins, setPlugins] = useState<ChatPlugin[]>([]);
   // 插件配置保存后递增, 用于主动刷新空的预加载会话
@@ -398,6 +409,9 @@ export function Chat() {
   const mutationPendingRef = useRef(false);
   const snapshotEpochRef = useRef<Record<string, number>>({});
   const settingsThinkRef = useRef(DEFAULT_SETTINGS.think);
+  const bindingEpoch = useRef<Record<string, number>>({});
+  const bindingMutations = useRef(new Set<string>());
+  const preloadKeyRef = useRef<(projectId: string | null | undefined, model?: string) => string>(() => '');
   // 单帧内积累的流式增量和对应消息目标
   const streamingDeltasRef = useRef<StreamingDelta[]>([]);
   const streamingDeltaTargetRef = useRef<{ conversationId: string; messageId: string } | null>(null);
@@ -414,6 +428,8 @@ export function Chat() {
     () => conversations.find((c) => c.id === activeId),
     [conversations, activeId]
   );
+  const modelBusy = bindingPending.has(activeId);
+  const modelReady = Boolean(defaults) && !modelBusy && !bindingProblem && models.includes(settings.model);
   const approval = useApprovalMode(
     backendOk && active && active.id !== '__draft__' && !active.preloaded ? active.id : '',
     !active || active.id === '__draft__' || active.preloaded ? {
@@ -534,6 +550,11 @@ export function Chat() {
     setConversations((prev) => prev.map((c) => (c.id === id ? updater(c) : c)));
   }, []);
 
+  const applyModelBinding = useCallback((id: string, model: string) => {
+    updateConversation(id, (conversation) => ({ ...conversation, model }));
+    if (activeIdRef.current === id) setSettings((previous) => ({ ...previous, model }));
+  }, [updateConversation]);
+
   // 更新当前流式消息
   const updateStreamingMessage = useCallback(
     (updater: (m: ChatMessage) => ChatMessage, conversationId = activeIdRef.current) => {
@@ -598,7 +619,13 @@ export function Chat() {
   const handleEvent = useCallback(
     (conversationId: string, event: ChatEvent) => {
       switch (event.type) {
+        case 'model_changed':
+          bindingEpoch.current[conversationId] = (bindingEpoch.current[conversationId] ?? 0) + 1;
+          applyModelBinding(conversationId, event.model);
+          if (!bindingMutations.current.has(conversationId)) setBindingPending((current) => { const next = new Set(current); next.delete(conversationId); return next; });
+          break;
         case 'snapshot': {
+          if (event.model) applyModelBinding(conversationId, event.model);
           flushStreamingDeltas();
           snapshotEpochRef.current[conversationId] = (snapshotEpochRef.current[conversationId] ?? 0) + 1;
           const preservePending = mutationPendingRef.current && event.state === 'idle';
@@ -755,6 +782,7 @@ export function Chat() {
               segments: message.segments,
               contextStats: event.context_stats,
               outputFiles: event.output_files,
+              responseMetadata: event.response_metadata,
             };
             const variants = [
               ...(message.variants ?? []).filter(
@@ -771,6 +799,7 @@ export function Chat() {
               variantCount: event.variant_count,
               variants,
               outputFiles: event.output_files,
+              responseMetadata: event.response_metadata,
               contextStats: event.context_stats,
             };
           }, conversationId);
@@ -782,9 +811,12 @@ export function Chat() {
         }
         case 'error': {
           flushStreamingDeltas();
+          const errorText = `\n\n[错误] ${event.error ?? event.message ?? '未知错误'}`;
           updateStreamingMessage((m) => ({
             ...m,
-            content: m.content + `\n\n[错误] ${event.error ?? event.message ?? '未知错误'}`,
+            content: m.content + errorText,
+            segments: m.segments?.length ? [...m.segments, { type: 'content', content: errorText }] : undefined,
+            responseMetadata: event.response_metadata,
             streaming: false,
             turnIndex: event.turn_index ?? m.turnIndex,
             activeVariant: event.variant_index ?? m.activeVariant,
@@ -802,7 +834,7 @@ export function Chat() {
           break;
       }
     },
-    [flushStreamingDeltas, queueStreamingDelta, updateConversation, updateStreamingMessage]
+    [flushStreamingDeltas, queueStreamingDelta, updateConversation, updateStreamingMessage, applyModelBinding]
   );
 
   // 加载会话历史消息
@@ -882,9 +914,9 @@ export function Chat() {
       if (signal?.aborted || version !== modelReadVersion.current) return;
       const names = Object.keys(detail);
       setModels(names);
+      setModelsLoaded(true);
       setModelsDetail(detail);
       modelDetailsSnapshot.current = detail;
-      if (names.length) setSettings((previous) => names.includes(previous.model) ? previous : { ...previous, model: names[0] });
     } catch (error) {
       if (!signal?.aborted) console.error('[Chat] 刷新模型列表失败:', error);
     }
@@ -902,6 +934,13 @@ export function Chat() {
         void chatApi.listPlugins().then(({ plugins }) => { if (!cancelled) setPlugins(plugins); }).catch((error) => console.error('[Chat] 插件读取失败:', error));
         void chatApi.listProjects().then(({ projects }) => { if (!cancelled) setProjects(projects); }).catch((error) => console.error('[Chat] 项目读取失败:', error));
         initialModelRead.current = handleModelSaved();
+        void chatApi.getSettings().then((value) => {
+          if (!value || typeof value.default_model !== 'string' || typeof value.revision !== 'string') throw new Error('Chat 默认设置响应无效');
+          if (!cancelled) {
+            setDefaults(value);
+            if (!activeIdRef.current) setSettings((previous) => ({ ...previous, model: value.default_model }));
+          }
+        }).catch((error: unknown) => { if (!cancelled) toast('error', `读取 Chat 默认模型失败: ${String(error)}`); });
 
       } catch (err) {
         console.error('[Chat] 后端连接失败:', err);
@@ -941,7 +980,7 @@ export function Chat() {
   const modelOptions = useMemo(() => {
     const list = models.length > 0 ? models : [DEFAULT_SETTINGS.model];
     const all = list.includes(settings.model) ? list : [settings.model, ...list];
-    return all.map((name) => ({ value: name, label: name }));
+    return all.map((name) => ({ value: name, label: models.includes(name) ? name : `${name} (不可用, 请重选)` }));
   }, [models, settings.model]);
 
   const thinkingOptions = useMemo(
@@ -977,6 +1016,39 @@ export function Chat() {
 
   // 更新单项设置
   const updateSettings = useCallback(<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
+    if (key === 'model') {
+      const model = String(value);
+      const id = activeId;
+      if (generatingRef.current || bindingMutations.current.has(id)) return;
+      if (!id || id === '__draft__') {
+        preloadVersionRef.current += 1;
+        if (id) applyModelBinding(id, model);
+        else {
+          setConversations((previous) => [{ id: '__draft__', title: '新对话', model, messages: [], updatedAt: Math.round(Date.now() / 1000), loaded: true }, ...previous]);
+          setActiveId('__draft__'); setShowEntryChoice(false);
+          setSettings((previous) => ({ ...previous, model }));
+        }
+        return;
+      }
+      bindingEpoch.current[id] = (bindingEpoch.current[id] ?? 0) + 1;
+      bindingMutations.current.add(id);
+      setBindingPending((current) => new Set(current).add(id));
+      const expected = conversationsRef.current.find((conversation) => conversation.id === id)?.model;
+      void chatApi.setModel(id, model, expected).then((result) => {
+        if (!result.ok) throw new Error(result.error || '模型切换失败');
+        applyModelBinding(id, result.model);
+        updateConversation(id, (conversation) => ({ ...conversation,
+          preloadKey: conversation.preloaded ? preloadKeyRef.current(conversation.projectId, result.model) : conversation.preloadKey }));
+        if (activeIdRef.current === id) setBindingProblem(null);
+      }).catch(async (error: unknown) => {
+        await chatApi.getModel(id).then((result) => applyModelBinding(id, result.model)).catch(() => undefined);
+        toast('error', `模型切换失败: ${String(error)}`);
+      }).finally(() => {
+        bindingMutations.current.delete(id);
+        setBindingPending((current) => { const next = new Set(current); next.delete(id); return next; });
+      });
+      return;
+    }
     if (key === 'defaultAgentPromptEnabled' && activeId && activeId !== '__draft__') {
       void chatApi.setDefaultAgentPrompt(activeId, value === true).then((result) => {
         if (!result.ok) throw new Error(result.error || '保存失败');
@@ -999,7 +1071,50 @@ export function Chat() {
       return;
     }
     setSettings((prev) => ({ ...prev, [key]: value }));
-  }, [activeId]);
+  }, [activeId, applyModelBinding, updateConversation]);
+
+  useEffect(() => {
+    setBindingProblem(null);
+    const cached = conversationsRef.current.find((conversation) => conversation.id === activeId);
+    if (cached?.model) setSettings((previous) => ({ ...previous, model: cached.model! }));
+    if (!activeId || activeId === '__draft__') return;
+    const id = activeId;
+    const epoch = (bindingEpoch.current[id] ?? 0) + 1;
+    bindingEpoch.current[id] = epoch;
+    setBindingPending((current) => new Set(current).add(id));
+    let cancelled = false;
+    void chatApi.getModel(id).then((result) => {
+      if (!result.ok || typeof result.model !== 'string') throw new Error('会话模型响应无效');
+      if (!cancelled && bindingEpoch.current[id] === epoch) applyModelBinding(id, result.model);
+    }).catch((error: unknown) => {
+      if (!cancelled && bindingEpoch.current[id] === epoch) setBindingProblem(`读取会话模型失败: ${String(error)}`);
+    }).finally(() => {
+      if (bindingEpoch.current[id] === epoch) setBindingPending((current) => { const next = new Set(current); next.delete(id); return next; });
+    });
+    return () => { cancelled = true; };
+  }, [activeId, applyModelBinding]);
+
+  const saveDefaultModel = useCallback(async (model: string) => {
+    if (!defaults || defaultSaving) return;
+    setDefaultSaving(true);
+    try {
+      const result = await chatApi.saveSettings(model, defaults.revision);
+      setDefaults(result);
+      if (!activeIdRef.current) setSettings((previous) => ({ ...previous, model: result.default_model }));
+      toast('success', '整体默认模型已保存, 仅影响之后创建的会话');
+    } catch (error) { toast('error', `保存整体默认模型失败: ${String(error)}`); }
+    finally { setDefaultSaving(false); }
+  }, [defaults, defaultSaving]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    let cancelled = false;
+    void chatApi.getSettings().then((value) => {
+      if (typeof value.default_model !== 'string' || typeof value.revision !== 'string') throw new Error('Chat 默认设置响应无效');
+      if (!cancelled) setDefaults(value);
+    }).catch((error: unknown) => { if (!cancelled) toast('error', `读取整体默认失败: ${String(error)}`); });
+    return () => { cancelled = true; };
+  }, [settingsOpen]);
 
   useEffect(() => {
     if (!activeId || activeId === '__draft__') return;
@@ -1018,25 +1133,24 @@ export function Chat() {
 
   // 生成会影响 Session, 模型或插件安装结果的前端设置键
   const preloadBaseKey = useMemo(() => JSON.stringify({
-    model: settings.model,
     temperature: settings.temperature,
     commandHistoryEnabled: settings.commandHistoryEnabled,
     defaultAgentPromptEnabled: settings.defaultAgentPromptEnabled,
     maxIterations: settings.maxIterations,
     systemPrompt: settings.systemPrompt,
-    modelConfig: modelsDetail[settings.model] ?? null,
     plugins,
     pluginConfigRevision,
-  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.defaultAgentPromptEnabled, settings.maxIterations, modelsDetail, plugins, pluginConfigRevision]);
+  }), [settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.defaultAgentPromptEnabled, settings.maxIterations, plugins, pluginConfigRevision]);
 
   const preloadKeyFor = useCallback(
-    (projectId: string | null | undefined) => `${preloadBaseKey}:${projectId ?? ''}`,
-    [preloadBaseKey]
+    (projectId: string | null | undefined, model = settings.model) => `${preloadBaseKey}:${JSON.stringify({ model, config: modelsDetail[model] ?? null })}:${projectId ?? ''}`,
+    [preloadBaseKey, settings.model, modelsDetail]
   );
+  preloadKeyRef.current = preloadKeyFor;
 
   const preloadSettingsFor = useCallback(
-    (projectId: string | null | undefined): ChatPreloadSettings => ({
-      model: settings.model,
+    (projectId: string | null | undefined, model = settings.model): ChatPreloadSettings => ({
+      model,
       think: settings.think,
       temperature: settings.temperature,
       commandHistoryEnabled: settings.commandHistoryEnabled,
@@ -1064,7 +1178,7 @@ export function Chat() {
     preloadVersionRef.current = version;
     const sourceId = target.id;
     const oldPreloadedId = target.preloaded ? target.id : null;
-    const request = chatApi.preloadConversation(preloadSettingsFor(target.projectId))
+    const request = chatApi.preloadConversation(preloadSettingsFor(target.projectId, target.model))
       .then(async ({ conversation_id: conversationId }) => {
         if (preloadVersionRef.current !== version) {
           await chatApi.deleteConversation(conversationId).catch(() => undefined);
@@ -1141,9 +1255,12 @@ export function Chat() {
 
   // 创建本地草稿会话 (不切换选中, 供自动创建场景复用); projectId = 在项目下新建
   const createDraft = useCallback((projectId?: string): Conversation => {
+    const existing = conversationsRef.current.find((conversation) => conversation.id === '__draft__' && (conversation.projectId ?? null) === (projectId ?? null));
+    if (existing) return existing;
     const draft: Conversation = {
       id: '__draft__',
       title: '新对话',
+      model: defaults?.default_model ?? DEFAULT_SETTINGS.model,
       messages: [],
       updatedAt: Math.round(Date.now() / 1000),
       loaded: true,
@@ -1156,10 +1273,11 @@ export function Chat() {
       return [draft, ...prev.filter((c) => c.id !== '__draft__')];
     });
     return draft;
-  }, []);
+  }, [defaults]);
 
   // 新建会话并触发后端预加载; projectId = 在项目下新建
   const handleNew = useCallback((projectId?: string) => {
+    if (!defaults) { toast('error', '整体默认模型尚未读取完成'); return; }
     const existing = conversations.find((conv) => (
       conv.preloaded
       && conv.messages.length === 0
@@ -1190,13 +1308,13 @@ export function Chat() {
     setShowEntryChoice(false);
     setInput('');
     textareaRef.current?.focus();
-  }, [conversations, createDraft]);
+  }, [conversations, createDraft, defaults]);
 
   // 草稿立即预加载; 未发送前变更构建设置时防抖刷新
   useEffect(() => {
     if (!active || active.messages.length > 0) return;
     if (active.id !== '__draft__' && !active.preloaded) return;
-    const key = preloadKeyFor(active.projectId);
+    const key = preloadKeyFor(active.projectId, active.model);
     if (active.preloaded && active.preloadKey === key) return;
     // 已上传附件时保留同一 ID 和文件, 首次发送由后端按指纹原地重建
     if (active.preloaded && pendingAttachments.length > 0) return;
@@ -1290,7 +1408,7 @@ export function Chat() {
   // 发送消息
   const handleSend = useCallback(async () => {
     const content = input.trim();
-    if ((!content && pendingAttachments.length === 0) || generating) return;
+    if ((!content && pendingAttachments.length === 0) || generating || !modelReady || bindingMutations.current.has(activeIdRef.current)) return;
     if (pendingAttachments.some((attachment) => ((attachment.type ?? '').startsWith('image/') && !modelsDetail[settings.model]?.supports_visual_input) || ((attachment.type ?? '').startsWith('video/') && !modelsDetail[settings.model]?.supports_visual_input && !modelsDetail[settings.model]?.supports_native_video_input))) {
       alert('当前模型未启用图像与视频输入, 请切换模型或移除媒体附件');
       return;
@@ -1347,7 +1465,7 @@ export function Chat() {
 
     // 草稿或设置已变化的空会话: 等待对应预加载完成
     let realConvId = convId;
-    const preloadKey = preloadKeyFor(targetConv.projectId);
+    const preloadKey = preloadKeyFor(targetConv.projectId, targetConv.model);
     const shouldRefreshPreload = isDraft || (
       targetConv.preloaded
       && targetConv.preloadKey !== preloadKey
@@ -1383,11 +1501,12 @@ export function Chat() {
         settings.think,
         atts,
         {
-          ...preloadSettingsFor(targetConv.projectId),
+          ...preloadSettingsFor(targetConv.projectId, targetConv.model),
           ...((isDraft || targetConv.preloaded)
             && (draftApprovalMode !== 'user' || plugins.some((plugin) => plugin.name === 'permissions' && plugin.enabled))
             ? { approvalMode: draftApprovalMode } : {}),
         },
+        targetConv.model ?? settings.model,
       );
       updateConversation(realConvId, (conversation) => ({
         ...conversation,
@@ -1403,6 +1522,7 @@ export function Chat() {
       // 流式内容经 WS 推送, 此处仅等待发送确认
     } catch (err) {
       console.error('[Chat] 发送失败:', err);
+      void chatApi.getModel(realConvId).then((binding) => applyModelBinding(realConvId, binding.model)).catch(() => undefined);
       updateConversation(realConvId, (c) => ({
         ...c,
         messages: c.messages.map((m) =>
@@ -1417,10 +1537,11 @@ export function Chat() {
     } finally {
       mutationPendingRef.current = false;
     }
-  }, [input, active, generating, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload, draftApprovalMode, plugins]);
+  }, [input, active, generating, modelReady, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload, draftApprovalMode, plugins, applyModelBinding]);
 
   // 选择文件
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!modelReady || bindingMutations.current.has(activeIdRef.current)) return;
     const files = e.target.files;
     if (!files) return;
 
@@ -1431,7 +1552,7 @@ export function Chat() {
       setActiveId(targetConv.id);
       setShowEntryChoice(false);
     }
-    const preloadKey = preloadKeyFor(targetConv.projectId);
+    const preloadKey = preloadKeyFor(targetConv.projectId, targetConv.model);
     const needsPreload = targetConv.id === '__draft__' || (
       targetConv.preloaded
       && targetConv.preloadKey !== preloadKey
@@ -1489,7 +1610,7 @@ export function Chat() {
     }
     // 清空 input 以便重复选择同一文件
     e.target.value = '';
-  }, [active, pendingAttachments.length, createDraft, preloadKeyFor, startPreload, modelsDetail, settings.model]);
+  }, [active, pendingAttachments.length, createDraft, preloadKeyFor, startPreload, modelsDetail, settings.model, modelReady]);
 
   // 移除待发送附件
   const removeAttachment = useCallback((index: number) => {
@@ -1499,7 +1620,7 @@ export function Chat() {
   // Retry: 重试最后一轮
   const handleRetry = useCallback(async () => {
     const currentActive = activeRef.current;
-    if (!currentActive || currentActive.id === '__draft__' || currentActive.preloaded || generatingRef.current) return;
+    if (!currentActive || currentActive.id === '__draft__' || currentActive.preloaded || generatingRef.current || bindingMutations.current.has(currentActive.id) || bindingPending.has(currentActive.id) || bindingProblem) return;
     const previousAssistant = currentActive.messages[currentActive.messages.length - 1];
     if (!previousAssistant || previousAssistant.role !== 'assistant') return;
     flushStreamingDeltas();
@@ -1513,6 +1634,7 @@ export function Chat() {
         segments: previousAssistant.segments,
         contextStats: previousAssistant.contextStats,
         outputFiles: previousAssistant.outputFiles,
+        responseMetadata: previousAssistant.responseMetadata,
       }];
     const assistantId = genId();
     const assistantMsg: ChatMessage = {
@@ -1536,7 +1658,7 @@ export function Chat() {
     setGenerating(true);
     mutationPendingRef.current = true;
     try {
-      const result = await chatApi.retry(currentActive.id, settingsThinkRef.current);
+      const result = await chatApi.retry(currentActive.id, settingsThinkRef.current, currentActive.model);
       if (result.ok) {
         updateStreamingMessage((message) => ({
           ...message,
@@ -1548,6 +1670,7 @@ export function Chat() {
       }
     } catch (err) {
       console.error('[Chat] 重试失败:', err);
+      void chatApi.getModel(currentActive.id).then((binding) => applyModelBinding(currentActive.id, binding.model)).catch(() => undefined);
       updateConversation(currentActive.id, (conversation) => ({
         ...conversation,
         messages: [...conversation.messages.slice(0, -1), previousAssistant],
@@ -1559,7 +1682,7 @@ export function Chat() {
     } finally {
       mutationPendingRef.current = false;
     }
-  }, [flushStreamingDeltas, updateConversation, updateStreamingMessage]);
+  }, [flushStreamingDeltas, updateConversation, updateStreamingMessage, applyModelBinding, bindingPending, bindingProblem]);
 
   const handleSelectVariant = useCallback(async (turnIndex: number, variantIndex: number) => {
     const currentActive = activeRef.current;
@@ -1577,7 +1700,7 @@ export function Chat() {
           message.role === 'assistant' && message.turnIndex === turnIndex
             ? {
               ...message,
-              content: selected.answer,
+              content: variantAnswer(selected),
               thinking: selected.thinking ?? undefined,
               toolCalls: selected.tool_calls,
               segments: convertSegments(selected),
@@ -1587,6 +1710,7 @@ export function Chat() {
               variants: turn.variants.map(convertVariant),
               contextStats: selected.context_stats,
               outputFiles: selected.output_files,
+              responseMetadata: selected.response_metadata,
             }
             : message
         )),
@@ -1981,9 +2105,15 @@ export function Chat() {
           <div className="sticky bottom-0 z-10 shrink-0 -mx-5 px-5 pt-3 pb-4 bg-gradient-to-t from-[var(--glass-bg)] to-transparent">
             <div className="max-w-3xl mx-auto">
               {/* 折叠选项面板: 思考, 模型和执行审批 */}
+              {modelBusy && <p className="mb-2 text-xs text-text-secondary">正在确认会话模型…</p>}
+              {bindingProblem && <p role="alert" className="mb-2 text-xs text-error">{bindingProblem}</p>}
+              {modelsLoaded && !modelBusy && !models.includes(settings.model) && <p role="alert" className="mb-2 text-xs text-error">
+                模型 {settings.model} 不可用, 请展开选项手动选择
+              </p>}
               {optionsOpen && (
                 <div className="mb-2 w-fit max-w-full ml-auto">
                   <OptionsPanel
+                    modelDisabled={generating || modelBusy}
                     approval={approval}
                     think={settings.think}
                     model={settings.model}
@@ -2071,7 +2201,7 @@ export function Chat() {
                     variant="primary"
                     size="sm"
                     onClick={handleSend}
-                    disabled={!input.trim() && pendingAttachments.length === 0}
+                    disabled={!modelReady || (!input.trim() && pendingAttachments.length === 0)}
                     className="shrink-0 mb-0.5"
                     title="发送"
                   >
@@ -2090,6 +2220,10 @@ export function Chat() {
 
       {/* 聊天设置弹窗 */}
       <ChatSettingsModal
+        defaults={defaults}
+        defaultSaving={defaultSaving}
+        onDefaultModel={(model) => void saveDefaultModel(model)}
+        modelDisabled={generating || modelBusy}
         approval={approval}
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -2418,6 +2552,7 @@ function DirectoryPicker({
 
 // 折叠选项面板(紧凑自适应宽度 + 独立反光)
 function OptionsPanel({
+  modelDisabled,
   approval,
   think,
   model,
@@ -2426,6 +2561,7 @@ function OptionsPanel({
   onToggleThink,
   onModelChange,
 }: {
+  modelDisabled: boolean;
   approval: ApprovalControl;
   think: string;
   model: string;
@@ -2463,6 +2599,7 @@ function OptionsPanel({
         <div className="w-36">
           <Select
             value={model}
+            disabled={modelDisabled}
             onChange={(e) => onModelChange(e.target.value)}
             options={modelOptions}
           />
@@ -2486,6 +2623,10 @@ const CHAT_SETTINGS_CATEGORIES: { key: ChatSettingsCategory; label: string; icon
 
 // 聊天设置弹窗: 左侧分类导航 + 右侧分类内容
 function ChatSettingsModal({
+  defaults,
+  defaultSaving,
+  onDefaultModel,
+  modelDisabled,
   approval,
   open,
   onClose,
@@ -2505,6 +2646,10 @@ function ChatSettingsModal({
   onEditModel,
   onDeleteModel,
 }: {
+  defaults: ChatDefaults | null;
+  defaultSaving: boolean;
+  onDefaultModel: (model: string) => void;
+  modelDisabled: boolean;
   approval: ApprovalControl;
   open: boolean;
   onClose: () => void;
@@ -2556,13 +2701,23 @@ function ChatSettingsModal({
                 <ApprovalSettings approval={approval} />
                 {/* 模型 */}
                 <div>
-                  <label className="block text-sm font-medium text-text-primary mb-2">模型</label>
+                  <label className="block text-sm font-medium text-text-primary mb-2">当前会话模型</label>
                   <Select
+                    disabled={modelDisabled}
                     value={settings.model}
                     onChange={(e) => onChange('model', e.target.value)}
                     options={modelOptions}
                   />
                   <p className="text-xs text-text-tertiary mt-1.5">模型配置的新增与编辑见「模型管理」页</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-2">整体默认模型</label>
+                  <Select value={defaults?.default_model ?? 'default'} disabled={!defaults || defaultSaving}
+                    onChange={(event) => onDefaultModel(event.target.value)}
+                    options={defaults && !modelOptions.some((option) => option.value === defaults.default_model)
+                      ? [{ value: defaults.default_model, label: `${defaults.default_model} (不可用, 请重选)` }, ...modelOptions] : modelOptions} />
+                  <p className="text-xs text-text-tertiary mt-1.5">{defaultSaving ? '正在保存…' : '仅影响之后创建的会话, 已有会话和草稿保持自己的选择'}</p>
                 </div>
 
                 {/* 思考强度 */}
@@ -3576,6 +3731,11 @@ const MessageBubble = memo(function MessageBubble({
           {!isUser && message.contextStats && (
             <ContextStatsPanel stats={message.contextStats} />
           )}
+
+          {!isUser && !message.streaming && <div className="text-xs text-text-tertiary" data-response-model={message.responseMetadata?.model ?? 'unknown'}>
+            模型: {message.responseMetadata?.model ?? '未知'}
+            {message.responseMetadata?.model_id ? ` / ${message.responseMetadata.model_id}` : ''}
+          </div>}
 
           {/* 操作按钮 (hover 显示) */}
           {!message.streaming && (

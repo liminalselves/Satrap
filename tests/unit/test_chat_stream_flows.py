@@ -24,7 +24,7 @@ from satrap.edictum import SimpleSession
 
 async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
     recorder = _display_stream_DisplayRecorder(str(tmp_path / "display.db"), "audit")
-    conv = cast(_Conversation, SimpleNamespace(conversation_id="audit", recorder=recorder, subscribers=set(), pending_user_inputs={}, task=None))
+    conv = cast(_Conversation, SimpleNamespace(conversation_id="audit", model="default", recorder=recorder, subscribers=set(), pending_user_inputs={}, task=None))
     service = ChatService.__new__(ChatService)
     service._conversations = {"audit": conv}
     service._orphan_queues = {}

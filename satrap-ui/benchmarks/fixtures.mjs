@@ -78,6 +78,8 @@ export function responseFor(request, fixture) {
     };
   }
   if (path === '/api/chat/models') return { models: ['benchmark-model'] };
+  if (path === '/api/chat/settings') return { default_model: 'benchmark-model', revision: 'benchmark-default-v1' };
+  if (path === '/api/chat/model') return { ok: true, model: 'benchmark-model', available: true };
   if (path === '/api/chat/plugins') return { plugins: [] };
   if (path === '/api/chat/runs') return { runs: [] };
   if (path === '/api/chat/approval') return { ok: true, available: false, mode: 'user', revision: 0, plan_mode: false };

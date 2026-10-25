@@ -398,7 +398,7 @@ async function chat_fork_projects(runtime) {
         '/api/chat/turns': { turns: url.searchParams.get('conversation') === sent.conversation_id ? sentTurns : fixture.turns },
         '/api/chat/turns/page': turnPageResponse(route.request().url(), url.searchParams.get('conversation') === sent.conversation_id ? sentTurns : fixture.turns),
         '/api/chat/models': { models: ['benchmark-model'] },
-        '/api/chat/models/detail': { ok: true, models: {} },
+        '/api/chat/models/detail': { ok: true, models: { 'benchmark-model': { name: 'benchmark-model', model: 'benchmark-model' } } },
         '/api/chat/plugins': { plugins: [] },
         '/api/chat/history': { items: [cold], total: 1, page: 1, page_size: 50, mode: 'hot', storage_size_bytes: 0 },
         '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
@@ -576,7 +576,7 @@ async function chat_sidebar_state(runtime) {
     }
     const responses = {
       '/api/chat/health': { ok: true, conversations: fixture.conversations.length },
-      '/api/chat/models': { models: ['benchmark-model'] }, '/api/chat/models/detail': { ok: true, models: {} },
+      '/api/chat/models': { models: ['benchmark-model'] }, '/api/chat/models/detail': { ok: true, models: { 'benchmark-model': { name: 'benchmark-model', model: 'benchmark-model' } } },
       '/api/chat/plugins': { plugins: [] }, '/api/chat/runs': { runs: [] },
       '/api/chat/turns': { turns: fixture.turns },
         '/api/chat/turns/page': turnPageResponse(route.request().url(), fixture.turns), '/api/projects': { projects },

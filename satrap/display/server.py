@@ -239,12 +239,98 @@ class ChatHTTPServer(MiniHTTPServer):
             lease.close()
         return True
 
+    async def _route_model_settings(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]] | None:
+        """
+        路由整体默认和会话模型设置, 复用服务鉴权与会话互斥
+
+        参数:
+        - method: HTTP 方法
+        - path: 包含会话查询参数的路径
+        - body: JSON 请求正文
+
+        返回:
+        - 已确认设置或明确的冲突/失败响应, 无关路径返回 None
+        """
+        from satrap.core.config.document import ConfigRevisionConflict
+        clean = urlsplit(path).path
+        if clean not in {"/api/chat/settings", "/api/chat/model"}:
+            return None
+        if method not in {"GET", "PUT"}:
+            return 405, {"error": "模型设置仅支持 GET 和 PUT"}
+        try:
+            if clean == "/api/chat/settings":
+                if method == "GET":
+                    return 200, dict(await self.service.get_settings())
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or set(payload) != {"default_model", "expected_revision"}:
+                    raise ValueError("Chat 默认设置参数无效")
+                return 200, dict(await self.service.set_settings(payload["default_model"], payload["expected_revision"]))
+            conversation_id = self._query_param(path, "conversation")
+            if not conversation_id:
+                raise ValueError("缺少 conversation")
+            if method == "GET":
+                return 200, dict(await self.service.get_model(conversation_id))
+            payload = json.loads(body or b"{}")
+            if not isinstance(payload, dict) or not {"model"} <= set(payload) <= {"model", "expected_model"}:
+                raise ValueError("会话模型设置参数无效")
+            if not isinstance(payload["model"], str) or (payload.get("expected_model") is not None and not isinstance(payload["expected_model"], str)):
+                raise ValueError("模型配置名必须是字符串")
+            result = await self.service.set_model(conversation_id, payload["model"], payload.get("expected_model"))
+            return (200 if result.get("ok") else 409), result
+        except ConfigRevisionConflict as error:
+            logger.warning(f"[Chat 模型设置] 保存冲突: {error}")
+            return 409, {"error": str(error)}
+        except (OSError, TypeError, ValueError, TimeoutError) as error:
+            logger.warning(f"[Chat 模型设置] 读取或保存失败: {error}")
+            return 400, {"error": str(error)}
+
+    async def _route_creation(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]] | None:
+        """
+        路由正式与预加载会话创建, 未指定模型时只解析一次整体默认
+
+        参数:
+        - method: HTTP 方法
+        - path: 请求路径
+        - body: 创建选项 JSON
+
+        返回:
+        - 新会话 ID 或参数错误, 无关路径返回 None
+        """
+        clean = urlsplit(path).path
+        if method != "POST" or clean not in {"/api/chat/conversations", "/api/chat/conversations/preload"}:
+            return None
+        try:
+            payload = json.loads(body or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("创建参数必须是对象")
+            options = {"think": str(payload.get("think") or "off"),
+                       "system_prompt": str(payload.get("system_prompt") or "") or None,
+                       "project_id": str(payload.get("project_id") or "") or None,
+                       "default_agent_prompt_enabled": payload.get("default_agent_prompt_enabled", False)}
+            model = str(payload["model"]) if payload.get("model") is not None else None
+            if clean.endswith("/preload"):
+                temperature = payload.get("temperature")
+                cid = await self.service.preload_conversation(model=model,
+                    temperature=float(temperature) if temperature is not None else None, **options)
+            else:
+                cid = await self.service.create_conversation(model=model, **options)
+            return 200, {"ok": True, "conversation_id": cid}
+        except (OSError, TypeError, ValueError) as error:
+            logger.warning(f"[Chat 创建] 创建会话失败: {error}")
+            return 400, {"ok": False, "error": str(error)}
+
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
         operation_status = self.application_status(method, path)
         if operation_status is not None:
             return operation_status
         clean = path.split("?", 1)[0]
+        model_settings = await self._route_model_settings(method, path, body)
+        if model_settings is not None:
+            return model_settings
+        creation = await self._route_creation(method, path, body)
+        if creation is not None:
+            return creation
 
         if method == "GET" and clean == "/api/chat/health":
             persisted = sum(1 for conv in svc._conversations.values() if conv.persisted)
@@ -412,36 +498,6 @@ class ChatHTTPServer(MiniHTTPServer):
             if method == "DELETE":
                 return 200, svc.delete_model(model_name)
             return 405, {"error": f"method not allowed: {method}"}
-
-        if method == "POST" and clean == "/api/chat/conversations":
-            payload = json.loads(body or b"{}")
-            try:
-                cid = await svc.create_conversation(
-                    model=str(payload.get("model") or "default"),
-                    think=str(payload.get("think") or "off"),
-                    system_prompt=str(payload.get("system_prompt") or "") or None,
-                    default_agent_prompt_enabled=payload.get("default_agent_prompt_enabled", False),
-                    project_id=str(payload.get("project_id") or "") or None,
-                )
-            except ValueError as e:
-                return 400, {"ok": False, "error": str(e)}
-            return 200, {"ok": True, "conversation_id": cid}
-
-        if method == "POST" and clean == "/api/chat/conversations/preload":
-            payload = json.loads(body or b"{}")
-            temperature = payload.get("temperature")
-            try:
-                cid = await svc.preload_conversation(
-                    model=str(payload.get("model") or "default"),
-                    think=str(payload.get("think") or "off"),
-                    system_prompt=str(payload.get("system_prompt") or "") or None,
-                    default_agent_prompt_enabled=payload.get("default_agent_prompt_enabled", False),
-                    project_id=str(payload.get("project_id") or "") or None,
-                    temperature=float(temperature) if temperature is not None else None,
-                )
-            except (TypeError, ValueError) as e:
-                return 400, {"ok": False, "error": str(e)}
-            return 200, {"ok": True, "conversation_id": cid}
 
         if method == "GET" and clean == "/api/chat/conversations":
             return 200, {"conversations": await CHAT_READ_WORKERS.run(list_conversations, db_path=svc._display_db_path)}
@@ -616,6 +672,7 @@ class ChatHTTPServer(MiniHTTPServer):
                 think=think,
                 attachments=attachments,
                 preload_settings=preload_settings,
+                expected_model=str(payload["expected_model"]) if payload.get("expected_model") is not None else None,
             )
             return (200 if result.get("ok") else 400), result
 
@@ -684,7 +741,8 @@ class ChatHTTPServer(MiniHTTPServer):
                 return 400, {"error": "缺少 conversation 参数"}
             think = payload.get("think")
             think = str(think) if think is not None else None
-            result = await svc.retry(conv, think=think)
+            result = await svc.retry(conv, think=think,
+                                     expected_model=str(payload["expected_model"]) if payload.get("expected_model") is not None else None)
             return (200 if result.get("ok") else 400), result
         # 重试与分支
 

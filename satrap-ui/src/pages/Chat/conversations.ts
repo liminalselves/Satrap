@@ -3,6 +3,7 @@ import type { ConversationItem } from '@/api/chat';
 export interface Conversation<Message> {
   id: string;   // 后端 conversation_id
   title: string;
+  model?: string;   // 服务端已确认的会话模型, 不从其它会话或整体默认补猜
   messages: Message[];
   updatedAt: number;
   // 是否已从后端加载历史
@@ -56,6 +57,8 @@ export function restoreConversation<Message = never>(
     ...previous,
     id: item.conversation_id,
     title: item.title,
+    model: previous?.model ?? item.model,
+    // 目录读取可能早于模型切换, 不能覆盖已经回填的绑定; 激活后由模型接口与 WS 更新
     messages: previous?.messages ?? [],
     updatedAt: item.last_at,
     loaded: previous?.loaded ?? false,

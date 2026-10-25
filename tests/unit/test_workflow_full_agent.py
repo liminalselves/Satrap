@@ -6,6 +6,7 @@ import pytest
 import copy
 
 from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
+from satrap.core.framework.Base.execution.errors import ModelCallError
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.type import LLMCallResponse
 from support.casts import _as_async_llm, _as_async_tools_manager, _as_llm, _as_tools_manager
@@ -156,7 +157,8 @@ async def test_tools_agent_cleans_context_after_model_failure(tmp_path: Path, as
         wf.ctx = AsyncContextManager("tools-agent-async-fail", db_path=str(tmp_path / "tools-async-fail.db"))
         await wf.ctx.initialize()
         await wf.ctx.reset_system_prompt("系统提示")
-        result = await wf.tools_agent("本轮消息")
+        with pytest.raises(ModelCallError, match="模型调用失败"):
+            await wf.tools_agent("本轮消息")
     else:
         wf = ModelWorkflowFramework(
             llm=_as_llm(llm),
@@ -165,9 +167,9 @@ async def test_tools_agent_cleans_context_after_model_failure(tmp_path: Path, as
         )
         wf.ctx = ContextManager("tools-agent-fail", db_path=str(tmp_path / "tools-fail.db"))
         wf.ctx.reset_system_prompt("系统提示")
-        result = wf.tools_agent("本轮消息")
+        with pytest.raises(ModelCallError, match="模型调用失败"):
+            wf.tools_agent("本轮消息")
 
-    assert result == "模型调用失败"
     assert [message["role"] for message in llm.messages] == ["system", "user"]
     assert wf.ctx.get_context() == [{"role": "system", "content": "系统提示"}]
 

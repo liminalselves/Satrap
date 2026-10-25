@@ -2,10 +2,8 @@ import { Outlet } from 'react-router-dom';
 import { useState } from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
-import { ToastContainer, useToasts } from '@/components/ui/Toast';
 
 export function AppLayout() {
-  const { toasts, closeToast } = useToasts();
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -21,7 +19,6 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
-      <ToastContainer toasts={toasts} onClose={closeToast} />
     </div>
   );
 }

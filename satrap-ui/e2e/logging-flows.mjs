@@ -412,6 +412,15 @@ async function log_stream(runtime) {
     await terminal.hover();
     await page.mouse.wheel(0, -1200);
     await page.getByText('已暂停滚动', { exact: true }).waitFor();
+    await terminal.evaluate(async (element) => {
+      let previous = element.scrollTop, stable = 0;
+      while (stable < 6) {
+        await new Promise(requestAnimationFrame);
+        const current = element.scrollTop;
+        stable = Math.abs(current - previous) < 0.1 ? stable + 1 : 0;
+        previous = current;
+      }
+    });
     const anchor = await terminal.evaluate((element) => {
       const row = [...element.querySelectorAll('[data-log-id]')].find((item) => item.getBoundingClientRect().top >= element.getBoundingClientRect().top);
       return { id: row.dataset.logId, top: row.getBoundingClientRect().top };

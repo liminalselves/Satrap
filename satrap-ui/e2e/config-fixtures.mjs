@@ -5,6 +5,8 @@ export function emptyConfigResponse(requestUrl) {
   const url = new URL(requestUrl);
   if (url.pathname === '/config/models' || url.pathname === '/config/session-classes' || url.pathname === '/config/edictum/sessions') return {};
   if (url.pathname === '/config/plugins') return { plugins: [] };
+  if (url.pathname === '/api/chat/settings') return { default_model: 'benchmark-model', revision: 'chat-default-fixture-v1' };
+  if (url.pathname === '/api/chat/model') return { ok: true, model: 'benchmark-model', available: true };
   if (url.pathname === '/config/snapshot') {
     const resource = url.searchParams.get('resource');
     assert.ok(['models', 'session_classes', 'edictum_configs', 'plugin_catalog'].includes(resource), `未知快照资源: ${resource}`);

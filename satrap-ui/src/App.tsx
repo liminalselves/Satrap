@@ -5,8 +5,10 @@ import { useBackendStatusSync } from './hooks/useBackendStatusSync';
 import { ApiSessionNotice } from '@/components/common/ApiSessionNotice';
 import { PasswordGate } from '@/components/common/PasswordGate';
 import { ConfirmProvider } from '@/components/common/ConfirmProvider';
+import { ToastContainer, useToasts } from '@/components/ui/Toast';
 
 function App() {
+  const { toasts, closeToast } = useToasts();
   useBackendStatusSync();
   useEffect(() => {
     const syncBackgroundVisibility = () => {
@@ -36,6 +38,7 @@ function App() {
       
       <ConfirmProvider><RouterProvider router={router} /></ConfirmProvider>
       <ApiSessionNotice />
+      <ToastContainer toasts={toasts} onClose={closeToast} />
       <PasswordGate />
     </>
   );

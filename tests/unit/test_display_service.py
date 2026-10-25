@@ -22,6 +22,7 @@ from satrap.display.recorder import DisplayRecorder, list_conversations, get_con
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
 from satrap.display.server import ChatHTTPServer
+from satrap.display.settings import ChatSettingsStore
 from satrap.edictum.plugin import load_plugin_meta
 from satrap.edictum.plugin_apply import PluginApplySnapshot
 from satrap.core.storage import StorageLayout
@@ -80,6 +81,164 @@ async def _wait_conversation_task(service: ChatService, conversation_id: str) ->
     if task is None:
         raise AssertionError(f"会话无进行中任务: {conversation_id}")
     await task
+
+
+@pytest.mark.asyncio
+async def test_chat_defaults_binding_retry_actual_model_and_cold_reselection(tmp_path, monkeypatch):
+    """整体默认只影响新会话, 手动切换后的真实发送/重试及旧变体资料保持独立"""
+    service = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(service)
+    captured = []
+    available = {"default", "fast"}
+    monkeypatch.setattr(service._model_cfg, "list_llm_configs", lambda **kwargs: {name: {} for name in available})
+    monkeypatch.setattr(service._model_cfg, "get_llm_config", lambda name="default": LLMConfig(name=name, model=f"model-{name}", api_key="test", base_url="https://example.invalid"))
+
+    class CapturingLLM(_FakeAsyncLLM):
+        def __init__(self, cfg):
+            self.model = cfg.model
+            self.config_name = cfg.name
+
+        async def stream_call(self, messages, **kwargs):
+            captured.append(self.config_name)
+            async for item in super().stream_call(messages, **kwargs):
+                yield item
+
+    monkeypatch.setattr(service_mod, "build_llm", CapturingLLM)
+    try:
+        cid = await service.create_conversation()
+        draft = await service.preload_conversation()
+        status, initial = await server._route("GET", "/api/chat/settings", b"")
+        assert status == 200 and initial["default_model"] == "default"
+        payload = json.dumps({"default_model": "fast", "expected_revision": initial["revision"]}).encode()
+        status, saved = await server._route("PUT", "/api/chat/settings", payload)
+        assert status == 200 and saved["default_model"] == "fast"
+        assert (await server._route("PUT", "/api/chat/settings", payload))[0] == 409
+        invalid = json.dumps({"default_model": "missing", "expected_revision": saved["revision"]}).encode()
+        assert (await server._route("PUT", "/api/chat/settings", invalid))[0] == 400
+        assert _must_conversation(service, draft).model == "default"
+        assert await service.preload_conversation(conversation_id=draft) == draft
+        assert _must_conversation(service, draft).model == "default"
+        assert _must_conversation(service, await service.create_conversation()).model == "fast"
+        assert _must_conversation(service, cid).model == "default"
+        assert (await service.send(cid, "原问题", expected_model="default"))["ok"]
+        await _wait_conversation_task(service, cid)
+        conv = _must_conversation(service, cid)
+        original_run = (await service.list_runs(cid))["runs"][0]["id"]
+        original_context = copy.deepcopy(conv.session.ctx.get_context())
+        plugin_states = conv.plugin_states
+        status, binding = await server._route("PUT", f"/api/chat/model?conversation={cid}",
+            json.dumps({"model": "fast", "expected_model": "default"}).encode())
+        assert status == 200 and binding["model"] == "fast"
+        assert conv.session.ctx.get_context() == original_context and conv.plugin_states is plugin_states
+        assert get_conversation_meta(cid, service._display_db_path)["model"] == "fast"
+        assert (await service.manage_run(cid, original_run, "resume"))["ok"]
+        await _wait_conversation_task(service, cid)
+        assert captured == ["default"]
+        assert service.list_turns(cid)[0]["response_metadata"]["model"] == "default"
+        assert not (await service.retry(cid, expected_model="default"))["ok"]
+        assert (await service.retry(cid, expected_model="fast"))["ok"]
+        await _wait_conversation_task(service, cid)
+        assert (await service.send(cid, "新问题", expected_model="fast"))["ok"]
+        await _wait_conversation_task(service, cid)
+        assert captured == ["default", "fast", "fast"]
+        variants = service.list_turns(cid)[0]["variants"]
+        assert variants[0]["response_metadata"]["model"] == "default"
+        assert variants[0]["response_metadata"]["model_id"] == "model-default"
+        assert variants[1]["response_metadata"]["model"] == "fast"
+        assert variants[1]["response_metadata"]["model_id"] == "model-fast"
+        forked = await service.fork(cid, 1)
+        assert forked["ok"]
+        fork_id = forked["conversation_id"]
+        assert (await service.get_model(fork_id))["model"] == "fast"
+        assert service.list_turns(fork_id)[0]["variants"][0]["response_metadata"]["model"] == "fast"
+        assert service.list_turns(cid)[0]["variants"][0]["response_metadata"]["model"] == "default"
+        assert (await service.set_model(fork_id, "default", expected_model="fast"))["ok"]
+        assert (await service.get_model(cid))["model"] == "fast"
+
+        previous_llm, previous_config = conv.session.llm, conv.session._context_config
+        with monkeypatch.context() as patch:
+            patch.setattr(service_mod, "build_llm", lambda cfg: (_ for _ in ()).throw(ValueError("构造失败")))
+            with pytest.raises(ValueError, match="构造失败"):
+                await service.set_model(cid, "default", expected_model="fast")
+        assert conv.model == "fast" and conv.session.llm is previous_llm
+        apply = conv.session.apply_context_config
+        def fail_apply(config):
+            apply(config)
+            if config.name == "default":
+                raise ValueError("应用失败")
+        with monkeypatch.context() as patch:
+            patch.setattr(conv.session, "apply_context_config", fail_apply)
+            with pytest.raises(ValueError, match="应用失败"):
+                await service.set_model(cid, "default", expected_model="fast")
+        assert conv.model == "fast" and conv.session.llm is previous_llm and conv.session._context_config is previous_config
+        with monkeypatch.context() as patch:
+            patch.setattr(conv.recorder, "save_meta", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("保存失败")))
+            with pytest.raises(OSError, match="保存失败"):
+                await service.set_model(cid, "default", expected_model="fast")
+        assert conv.model == "fast" and conv.session.llm is previous_llm and conv.session._context_config is previous_config
+        busy = asyncio.Event()
+        conv.task = asyncio.create_task(busy.wait())
+        assert not (await service.set_model(cid, "default"))["ok"]
+        busy.set(); await conv.task
+        conv.task = None
+
+        service._conversations.pop(cid)
+        await service._dispose_conversation_runtime(conv)
+        assert (await service._resume_conversation(cid)).model == "fast"
+        conv = service._conversations.pop(cid)
+        await service._dispose_conversation_runtime(conv)
+        entered, release = asyncio.Event(), asyncio.Event()
+        load = service._load_conversation
+        async def paused_load(*args, **kwargs):
+            staged = await load(*args, **kwargs)
+            entered.set()
+            await release.wait()
+            return staged
+        with monkeypatch.context() as patch:
+            patch.setattr(service, "_load_conversation", paused_load)
+            switching = asyncio.create_task(service.set_model(cid, "default", expected_model="fast"))
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                assert (await service.get_model(cid))["model"] == "fast"
+                assert cid not in service._conversations
+            finally:
+                release.set()
+            assert (await switching)["ok"]
+        assert (await service.set_model(cid, "fast", expected_model="default"))["ok"]
+        conv = service._conversations.pop(cid)
+        await service._dispose_conversation_runtime(conv)
+        available.remove("fast")
+        assert (await service.get_model(cid)) == {"ok": True, "model": "fast", "available": False}
+        with pytest.raises(ValueError, match="不可用"):
+            await service._resume_conversation(cid)
+        assert (await service.set_model(cid, "default", expected_model="fast"))["ok"]
+        assert len(service.list_turns(cid)) == 2
+        assert (await service.get_model(cid))["model"] == "default"
+        assert ChatSettingsStore(tmp_path / "chat_settings.json").read()["default_model"] == "fast"
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_retry_rejects_incompatible_media_before_creating_variant(tmp_path, monkeypatch):
+    service = _make_service(tmp_path, monkeypatch)
+    try:
+        cid = await service.create_conversation()
+        conv = _must_conversation(service, cid)
+        root = service._storage.session_uploads(service._platform_id, cid)
+        root.mkdir(parents=True, exist_ok=True)
+        image = root / "previous.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 24)
+        conv.recorder.start_turn("图片问题", attachments=[{"url": str(image), "type": "image/png", "name": "previous.png"}])
+        conv.recorder.end_turn("旧回答")
+        before_turns = copy.deepcopy(service.list_turns(cid))
+        before_context = copy.deepcopy(conv.session.ctx.get_context())
+        result = await service.retry(cid)
+        assert not result["ok"] and "输入能力" in result["error"]
+        assert service.list_turns(cid) == before_turns
+        assert conv.session.ctx.get_context() == before_context
+    finally:
+        await service.close()
 
 
 @pytest.mark.asyncio
@@ -331,6 +490,7 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         display_db_path=str(tmp_path / "display.db"),
         storage_layout=StorageLayout(tmp_path / "data"),
         workspace_roots=[tmp_path],   # 业务测试使用隔离工作区, 不探测宿主机磁盘
+        settings=ChatSettingsStore(tmp_path / "chat_settings.json"),
     )
 
 
@@ -851,7 +1011,9 @@ def test_service_model_policy_hot_update_defers_running_conversation(tmp_path: P
     )
     def build_fake_llm(_config: LLMConfig) -> _FakeAsyncLLM:
         """返回测试使用的异步模型替身"""
-        return _FakeAsyncLLM()
+        llm = _FakeAsyncLLM()
+        llm.network_timeout = _config.network_timeout
+        return llm
 
     monkeypatch.setattr(service_mod, "build_llm", build_fake_llm)
     svc = ChatService(
@@ -880,6 +1042,7 @@ def test_service_model_policy_hot_update_defers_running_conversation(tmp_path: P
         result = svc.update_model(
             "default",
             {
+                "network_timeout": 23.5,
                 "context_window": 10000,
                 "history_ratio": 0.6,
                 "context_strategy": "summarize",
@@ -901,6 +1064,11 @@ def test_service_model_policy_hot_update_defers_running_conversation(tmp_path: P
         assert conv.session.ctx.trigger_tokens == 4500
         assert conv.session.ctx.floor_tokens == 1500
         assert conv.session.ctx.summary_keep_recent_turns == 3
+        assert conv.session.llm.network_timeout == 23.5
+        assert conv.model == "default"
+        assert ModelConfigManager(storage_path=tmp_path / "models.json").get_llm_config("default").network_timeout == 23.5
+        assert svc.add_model({"name": "fast", "model": "model-fast", "api_key": "k", "base_url": "https://x", "network_timeout": 7.5})["ok"]
+        assert manager.get_llm_config("fast").network_timeout == 7.5
         await svc.close()
 
     asyncio.run(_run())
@@ -1914,10 +2082,11 @@ async def test_concurrent_retry_must_reserve_conversation(tmp_path):
     async def run_turn(*args, **kwargs):
         counts["runs"] += 1
 
-    conv = SimpleNamespace(task=None, recorder=recorder, default_think="off", plugin_lock=asyncio.Lock(), session=SimpleNamespace(
+    conv = SimpleNamespace(task=None, recorder=recorder, model="default", default_think="off", plugin_lock=asyncio.Lock(), session=SimpleNamespace(
         ctx=SimpleNamespace(del_last_chat=delete_turn, static_message=lambda: 0, get_context=lambda: []),
     ))
     service = ChatService.__new__(ChatService)
+    service._model_cfg = _as_model_config(_FakeModelConfig())
     service._conversations = {"audit": cast(service_mod._Conversation, conv)}
     service._operations = {}
     service._broadcast = lambda conv, msg: None

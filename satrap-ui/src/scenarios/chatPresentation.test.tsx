@@ -103,6 +103,12 @@ describe("pages/Chat/conversations", () => {
       expect(restored.title).toBe('新标题');
       expect(restored.projectId).toBeNull();
     });
+
+    it('迟到的目录保留已确认模型, 初次发现会话才从目录初始化绑定', () => {
+      const previous = { ...restoreConversation(item), model: 'manually-selected' };
+      expect(restoreConversation({ ...item, model: 'old-model' }, previous).model).toBe('manually-selected');
+      expect(restoreConversation({ ...item, model: 'initial-model' }).model).toBe('initial-model');
+    });
   });
 });
 
