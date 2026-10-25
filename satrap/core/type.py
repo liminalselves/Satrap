@@ -182,6 +182,29 @@ class ModelContextTurnStats:
         }
 
 
+@dataclass(frozen=True)
+class LLMErrorInfo:
+    """可公开展示的模型调用错误, 不携带原始请求或认证资料"""
+    code: str
+    message: str
+    status: int | None = None
+    provider_code: str | None = None
+    request_id: str | None = None
+
+    @property
+    def text(self) -> str:
+        """
+        生成聊天与平台共用的简短失败说明
+
+        返回:
+        - 含稳定错误码和可用 HTTP 状态的展示文本
+        """
+        label = self.provider_code or self.code
+        if self.status is not None:
+            label = f"HTTP {self.status} / {label}"
+        return f"请求失败 [{label}]: {self.message}"
+
+
 @dataclass
 class LLMCallResponse:
     """LLM 调用响应数据结构"""
@@ -197,6 +220,8 @@ class LLMCallResponse:
     """API 返回的真实 token 使用量, 供应商未返回时为 None"""
     finish_reason: Optional[str] = None
     """模型结束原因; length 可帮助识别被截断的工具调用"""
+    error_info: LLMErrorInfo | None = None
+    """失败响应的脱敏资料, 工作流不得将其提交为正常回答"""
 
     def __iter__(self) -> Iterator[Any]:
         """
@@ -235,6 +260,8 @@ class LLMCallStreamEvent:
     """模型结束原因"""
     error: Optional[str] = None
     """error 事件的错误信息"""
+    error_info: LLMErrorInfo | None = None
+    """与非流式响应共用的结构化错误"""
 
 @dataclass
 class LLMCallRequest:

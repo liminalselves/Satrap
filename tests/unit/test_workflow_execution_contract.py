@@ -13,6 +13,39 @@ from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_model_failure_preserves_error_and_does_not_commit_success(tmp_path, monkeypatch, asynchronous, stream):
+    """结构化失败与流中断保留旧历史, 记录失败而非提交错误为回答"""
+    from satrap.core.type import LLMErrorInfo
+
+    info = LLMErrorInfo("network_timeout", "等待模型响应超时")
+    script = Script([LLMCallResponse("error", "", error_info=info)])
+    wf, callbacks = await make_workflow(tmp_path, script, asynchronous, True)
+    before = copy.deepcopy(wf.ctx.get_context())
+
+    def failed_stream(self, messages, **kwargs):
+        yield LLMCallStreamEvent("content_delta", delta="未完成内容")
+        yield LLMCallStreamEvent("error", error=info.text, error_info=info)
+        raise AssertionError("错误事件后不应继续消费流")
+
+    async def failed_async_stream(self, messages, **kwargs):
+        for event in failed_stream(self, messages, **kwargs):
+            yield event
+
+    monkeypatch.setattr(SyncModel, "stream_call", failed_stream)
+    monkeypatch.setattr(AsyncModel, "stream_call", failed_async_stream)
+    with pytest.raises(ModelCallError, match="network_timeout") as failure:
+        await invoke(wf, stream)
+    assert failure.value.info == info
+    assert wf.ctx.get_context() == before
+    assert "等待模型响应超时" not in str(stored_history(wf))
+    if stream:
+        assert "未完成内容" in callbacks
+    assert RunStore(wf.ctx.db_path, wf.ctx.conversation_id).get(wf.last_run_id)["status"] == "failed"
 from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import FINAL_RESPONSE_PROMPT
 

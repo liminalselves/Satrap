@@ -9,6 +9,8 @@ from .utils import (
     _as_tool_choice_param,
     _build_thinking_extra_body,
 )
+from .errors import log_model_error, model_error_info
+from satrap.core.type import LLMErrorInfo
 
 _ClientT = TypeVar("_ClientT")
 
@@ -80,6 +82,23 @@ class _LLMBase(Generic[_ClientT]):
         self.video_frame_interval = video_frame_interval
 
         self.client = self._create_client(api_key, timeout)
+        self.network_timeout = timeout
+
+    def _report_error(self, error: Exception) -> LLMErrorInfo:
+        """
+        记录脱敏诊断并按调用方配置保留异常传播
+
+        参数:
+        - error: 本次请求的终态异常
+
+        返回:
+        - 可用于所有响应形式的结构化错误
+        """
+        info = model_error_info(error, timeout=self.network_timeout)
+        log_model_error(info, self.model, error)
+        if not self.suppress_error:
+            raise error
+        return info
 
     def _create_client(self, api_key: str, timeout: float) -> _ClientT:
         """由入口选择同步或异步客户端"""

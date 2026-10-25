@@ -49,7 +49,16 @@ export interface MessageSegment {
   tool?: ToolCall;
 }
 
+export interface ResponseMetadata {
+  status?: 'completed' | 'failed';
+  error_text?: string;
+  error?: { code: string; message: string; status?: number | null; provider_code?: string | null; request_id?: string | null };
+  model?: string;
+  model_id?: string;
+}
+
 export interface ChatTurnVariant {
+  response_metadata?: ResponseMetadata | null;
   output_files?: OutputFile[];
   variant_index: number;
   thinking: string | null;
@@ -90,6 +99,7 @@ export interface ContextTurnStats {
 
 // 对话轮次 (对齐 display_turns)
 export interface ChatTurn {
+  response_metadata?: ResponseMetadata | null;
   output_files?: OutputFile[];
   generating?: boolean;
   interrupted?: boolean;
@@ -285,9 +295,9 @@ export type ChatEvent = (
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
   | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[]; approval?: ApprovalPresentation | null }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
-  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
+  | { type: 'turn_done'; response_metadata?: ResponseMetadata | null; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }
-  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
+  | { type: 'error'; response_metadata?: ResponseMetadata | null; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
 ) & { seq?: number; stream_id?: string };
 
 // ==================== HTTP 请求 ====================

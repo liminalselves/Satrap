@@ -5,7 +5,44 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 import pytest
+from satrap.core.type import LLMErrorInfo
 from openai import APIError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["401", "429", "503", "timeout", "connection", "unknown"])
+async def test_request_failure_details_are_shared_and_do_not_leak_credentials(monkeypatch, caplog, kind):
+    """真实 SDK 异常贯通同步/异步与流式/非流式, 只回传脱敏原因"""
+    import httpx
+    from openai import APIStatusError, APITimeoutError, APIConnectionError
+
+    secret = "sk-private-credential-do-not-return"
+    request = httpx.Request("POST", f"https://example.com/?key={secret}", headers={"Authorization": f"Bearer {secret}"})
+    if kind.isdigit():
+        error = APIStatusError(secret, response=httpx.Response(int(kind), request=request),
+                               body={"error": {"code": "rate_limit_exceeded" if kind == "429" else "request_rejected", "message": secret}})
+    elif kind == "timeout":
+        error = APITimeoutError(request=request)
+    elif kind == "connection":
+        error = APIConnectionError(request=request, message=secret)
+    else:
+        error = RuntimeError(secret)
+    llm, async_llm, _ = _clients(monkeypatch, error=error)
+    for client in (llm, async_llm):
+        response = client.call([{"role": "user", "content": "问题"}])
+        if isinstance(client, _llm_call_parity_AsyncLLM):
+            response = await response
+            events = [event async for event in client.stream_call([{"role": "user", "content": "问题"}])]
+        else:
+            events = list(client.stream_call([{"role": "user", "content": "问题"}]))
+        assert response.type == "error" and isinstance(response.error_info, LLMErrorInfo)
+        assert events[0].kind == "error" and events[0].error_info == response.error_info
+        assert events[-1].finish_reason == "error"
+        assert "请求失败" in response.content and secret not in response.content
+        assert response.error_info.status == (int(kind) if kind.isdigit() else None)
+        if kind == "timeout":
+            assert response.error_info.code == "network_timeout" and "60" in response.content
+    assert secret not in caplog.text
 from satrap import LLM, AsyncLLM as _llm_call_parity_AsyncLLM
 from satrap.core.APICall.LLMCall import sync, async_
 from satrap.core.type import LLMCallResponse as _llm_call_parity_LLMCallResponse

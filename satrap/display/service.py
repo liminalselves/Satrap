@@ -55,6 +55,7 @@ from satrap.edictum.plugin_apply import PluginApplySnapshot, plugin_source_versi
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
 from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
+from satrap.core.APICall.LLMCall.errors import model_error_info
 from satrap.edictum.plugin_spec import plugin_specs_fingerprint
 from satrap.core.utils.paths import get_data_dir, get_project_root
 from satrap.display.recorder import (
@@ -1989,17 +1990,20 @@ class ChatService:
                     {"type": MSG_TURN_DONE, "answer": answer, "context_stats": context_stats, **completed},
                 )
             except Exception as e:
-                logger.error(f"[聊天] 会话 {conv.conversation_id} run 失败: {e}")
+                info = model_error_info(e)
+                log = logger.error if info.code == "internal_error" else logger.warning
+                log(f"[聊天] 会话 {conv.conversation_id} run 失败: {info.text}")
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
                 context_stats = conv.session.get_context_stats()
                 completed = conv.recorder.end_turn(
                     "",
                     context_messages=context_messages,
                     context_stats=context_stats,
+                    response_metadata={"status": "failed", "error": asdict(info), "error_text": info.text},
                 ) or {}
                 self._broadcast(
                     conv,
-                    {"type": MSG_ERROR, "error": str(e), "context_stats": context_stats, **completed},
+                    {"type": MSG_ERROR, "error": info.text, "error_info": asdict(info), "context_stats": context_stats, **completed},
                 )
             finally:
                 self._apply_pending_model_refresh(conv)

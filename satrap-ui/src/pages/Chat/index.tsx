@@ -220,8 +220,10 @@ const deriveTitle = (content: string) => {
 };
 
 function convertSegments(variant: ChatTurnVariant): LocalMessageSegment[] | undefined {
+  const errorText = variant.response_metadata?.error_text;
+  const errorSegments: LocalMessageSegment[] = errorText ? [{ type: 'content', content: `\n\n[错误] ${errorText}` }] : [];
   if (variant.segments && variant.segments.length > 0) {
-    return variant.segments.map((segment) => {
+    return [...variant.segments.map((segment) => {
       if (segment.type === 'thinking') {
         return { type: 'thinking' as const, content: segment.content ?? '' };
       }
@@ -229,19 +231,24 @@ function convertSegments(variant: ChatTurnVariant): LocalMessageSegment[] | unde
         return { type: 'tool' as const, tool: segment.tool };
       }
       return { type: 'content' as const, content: segment.content ?? '' };
-    });
+    }), ...errorSegments];
   }
   const fallback: LocalMessageSegment[] = [];
   if (variant.thinking) fallback.push({ type: 'thinking', content: variant.thinking });
   for (const tool of variant.tool_calls ?? []) fallback.push({ type: 'tool', tool });
   if (variant.answer) fallback.push({ type: 'content', content: variant.answer });
-  return fallback;
+  return [...fallback, ...errorSegments];
+}
+
+function variantAnswer(variant: ChatTurnVariant): string {
+  const error = variant.response_metadata?.error_text;
+  return variant.answer + (error ? `\n\n[错误] ${error}` : '');
 }
 
 function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
   return {
     variantIndex: variant.variant_index,
-    content: variant.answer,
+    content: variantAnswer(variant),
     thinking: variant.thinking ?? undefined,
     toolCalls: variant.tool_calls ?? [],
     segments: convertSegments(variant),
@@ -262,6 +269,7 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
       turnIndex: turn.turn_index,
     });
     const currentVariant: ChatTurnVariant = {
+      response_metadata: turn.response_metadata,
       variant_index: turn.active_variant ?? 0,
       thinking: turn.thinking,
       answer: turn.answer,

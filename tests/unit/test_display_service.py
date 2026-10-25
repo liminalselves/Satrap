@@ -27,6 +27,42 @@ from satrap.edictum.plugin_apply import PluginApplySnapshot
 from satrap.core.storage import StorageLayout
 from satrap.core.memory import store as ms_mod
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig
+
+
+@pytest.mark.asyncio
+async def test_model_error_survives_history_reload_and_fork(tmp_path, monkeypatch):
+    """失败版本保留部分输出与脱敏原因, 查询和 Fork 均不丢失错误元数据"""
+    from satrap.core.type import LLMErrorInfo
+    from satrap.core.framework.Base.execution.errors import ModelCallError
+
+    service = _make_service(tmp_path, monkeypatch)
+    cid = await service.create_conversation()
+    conv = _must_conversation(service, cid)
+    info = LLMErrorInfo("rate_limit", "服务商限流", 429, "rate_limit_exceeded")
+
+    async def fail(*args, **kwargs):
+        conv.recorder.on_content("部分回答")
+        raise ModelCallError(info)
+
+    monkeypatch.setattr(conv.session, "run", fail)
+    try:
+        assert (await service.send(cid, "问题"))["ok"]
+        await _wait_conversation_task(service, cid)
+        turns = service.list_turns(cid)
+        assert turns[0]["answer"] == "部分回答"
+        metadata = turns[0]["response_metadata"]
+        assert metadata["status"] == "failed" and metadata["error"]["status"] == 429
+        assert "rate_limit_exceeded" in metadata["error_text"]
+        assert metadata == turns[0]["variants"][0]["response_metadata"]
+        target = DisplayRecorder(tmp_path / "copy.db", "copy")
+        try:
+            assert conv.recorder.copy_turns_to(target, 1) == 1
+            assert target.list_turns()[0]["response_metadata"] == metadata
+        finally:
+            target.close()
+        assert "服务商限流" not in str(conv.session.ctx.get_context())
+    finally:
+        await service.close()
 from satrap.display import service as service_mod
 
 

@@ -343,7 +343,7 @@ async def test_inner_timeout_is_not_reported_as_session_deadline(limit):
     adapter = RecorderAdapter()
     await scheduler.execute(_message_event(adapter))
     assert len(adapter.sent) == 1
-    assert "处理失败" in getattr(adapter.sent[0][1].components[0], "text", "")
+    assert "operation_timeout" in getattr(adapter.sent[0][1].components[0], "text", "")
 
 
 @pytest.mark.asyncio
@@ -354,7 +354,7 @@ async def test_execute_error_sends_feedback():
     adapter = RecorderAdapter()
     await sched.execute(_message_event(adapter))
     assert len(adapter.sent) == 1
-    assert "处理失败" in getattr(adapter.sent[0][1].components[0], "text", "")
+    assert "internal_error" in getattr(adapter.sent[0][1].components[0], "text", "")
 
 
 @pytest.mark.asyncio

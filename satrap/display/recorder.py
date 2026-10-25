@@ -276,6 +276,7 @@ class DisplayRecorder:
             )
             _ensure_column_locked(conn, "display_turn_variants", "context_stats", "TEXT")
             _ensure_column_locked(conn, "display_turn_variants", "output_files", "TEXT NOT NULL DEFAULT '[]'")
+            _ensure_column_locked(conn, "display_turn_variants", "response_metadata", "TEXT")
             # 既有展示轮次按第 0 个回复版本登记
             conn.execute(
                 """
@@ -449,6 +450,7 @@ class DisplayRecorder:
         *,
         context_messages: list[dict[str, Any]] | None = None,
         context_stats: dict[str, Any] | None = None,
+        response_metadata: dict[str, object] | None = None,
     ) -> dict[str, int] | None:
         """
         run 后调用: 回填 thinking / answer / segments (answer 优先回调流拼接, 空则用 run 返回值兜底)
@@ -457,6 +459,7 @@ class DisplayRecorder:
         - fallback_answer: 回退回答
         - context_messages: 本回复对应的模型上下文增量
         - context_stats: 本回复对应的上下文与 token 统计
+        - response_metadata: 本次使用模型或脱敏失败资料, 不进入模型上下文
 
         返回:
         - dict[str, int] | None: 已完成轮次和回复版本标识
@@ -501,6 +504,8 @@ class DisplayRecorder:
                     time.time(),
                 ),
             )
+            conn.execute("UPDATE display_turn_variants SET response_metadata=? WHERE turn_id=? AND variant_index=?",
+                         (json.dumps(response_metadata, ensure_ascii=False) if response_metadata else None, self._turn_id, self._variant_index))
             conn.commit()
             turn_id = self._turn_id
             turn_row = conn.execute(
@@ -512,6 +517,7 @@ class DisplayRecorder:
                 (turn_id,),
             ).fetchone()
             result = {
+                "response_metadata": response_metadata,
                 "turn_id": turn_id,
                 "turn_index": int(turn_row[0]) if turn_row else -1,
                 "variant_index": self._variant_index,
@@ -771,7 +777,7 @@ class DisplayRecorder:
                     f" WHERE id IN ({selection}) ORDER BY turn_index ASC", params,
                 ).fetchall()
                 variant_rows = conn.execute(
-                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at, output_files"
+                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at, output_files, response_metadata"
                     f" FROM display_turn_variants WHERE turn_id IN ({selection})"
                     + ('' if all_variants else ' AND variant_index=(SELECT active_variant FROM display_turns WHERE id=display_turn_variants.turn_id)')
                     + ' ORDER BY variant_index ASC', params,
@@ -800,6 +806,7 @@ class DisplayRecorder:
                     "context_stats": json.loads(row[5]) if row[5] else None,
                     "created_at": row[6], "tool_calls": tools.get((row[0], int(row[1])), []),
                     "output_files": json.loads(row[7]),
+                    "response_metadata": json.loads(row[8]) if row[8] else None,
                 })
             turns: list[dict[str, Any]] = [
                 {
@@ -817,6 +824,7 @@ class DisplayRecorder:
                     **({'variant_indices': variant_indices.get(r[0], [])} if not all_variants else {}),
                     "tool_calls": tools.get((r[0], int(r[9] or 0)), []),
                     "variants": variants.get(r[0], []),
+                    "response_metadata": next((item["response_metadata"] for item in variants.get(r[0], []) if item["variant_index"] == int(r[9] or 0)), None),
                     "output_files": next((item["output_files"] for item in variants.get(r[0], []) if item["variant_index"] == int(r[9] or 0)), []),
                 }
                 for r in rows
@@ -875,7 +883,7 @@ class DisplayRecorder:
         - list[dict[str, Any]]: 按版本索引排序的回复版本
         """
         rows = conn.execute(
-            "SELECT variant_index, thinking, answer, segments, context_stats, created_at, output_files"
+            "SELECT variant_index, thinking, answer, segments, context_stats, created_at, output_files, response_metadata"
             " FROM display_turn_variants WHERE turn_id = ? ORDER BY variant_index ASC",
             (turn_id,),
         ).fetchall()
@@ -888,6 +896,7 @@ class DisplayRecorder:
                 "context_stats": json.loads(row[4]) if row[4] else None,
                 "created_at": row[5],
                 "output_files": json.loads(row[6]),
+                "response_metadata": json.loads(row[7]) if row[7] else None,
                 "tool_calls": cls._list_tool_calls_locked(conn, turn_id, int(row[0])),
             }
             for row in rows
@@ -1109,7 +1118,7 @@ class DisplayRecorder:
             conn = self._get_conn()
             rows = conn.execute(
                 "SELECT t.id, t.turn_index, t.user_input, t.thinking, t.answer, t.attachments,"
-                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages, v.output_files"
+                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages, v.output_files, v.response_metadata"
                 " FROM display_turns t LEFT JOIN display_turn_variants v"
                 " ON v.turn_id = t.id AND v.variant_index = t.active_variant"
                 " WHERE t.conversation_id = ? AND t.turn_index < ? ORDER BY t.turn_index ASC",
@@ -1150,8 +1159,8 @@ class DisplayRecorder:
                 new_turn_id = int(cur.lastrowid or 0)
                 tconn.execute(
                     "INSERT INTO display_turn_variants"
-                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at, output_files)"
-                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?)",
+                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at, output_files, response_metadata)"
+                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         new_turn_id,
                         row[3],
@@ -1161,6 +1170,7 @@ class DisplayRecorder:
                         row[7],
                         row[8],
                         row[11] or "[]",
+                        row[12],
                     ),
                 )
                 for tool in tools:

@@ -70,18 +70,12 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             )
 
         except APIError as e:
-            err_msg = f"[AsyncLLM] LLM API 返回错误: {e}"
-            if not self.suppress_error:
-                raise e
-            logger.error(err_msg)
-            return "" if not self.return_false else False
+            info = self._report_error(e)
+            return False if self.return_false else info.text
 
         except Exception as e:
-            err_msg = f"[AsyncLLM] 调用过程发生未知异常: {e}"
-            if not self.suppress_error:
-                raise e
-            logger.error(err_msg)
-            return "" if not self.return_false else False
+            info = self._report_error(e)
+            return False if self.return_false else info.text
 
     async def stream_chat(
         self,
@@ -131,15 +125,12 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                         yield content
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[AsyncLLM] LLM API 错误: {e}")
-            yield "" if not self.return_false else False
+            info = self._report_error(e)
+            yield False if self.return_false else info.text
+
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
-            yield "" if not self.return_false else False
+            info = self._report_error(e)
+            yield False if self.return_false else info.text
 
     async def structured_output(
         self,
@@ -192,15 +183,12 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             return parse_chat_response(response, self.suppress_error)
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[AsyncLLM] LLM API 错误: {e}")
-            return "" if not self.return_false else False
+            info = self._report_error(e)
+            return False if self.return_false else info.text
+
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
-            return "" if not self.return_false else False
+            info = self._report_error(e)
+            return False if self.return_false else info.text
 
     async def call(
         self,
@@ -267,28 +255,12 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             return parse_call_response(response, self.suppress_error)
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[AsyncLLM] LLM API 错误: {e}")
-            return (
-                LLMCallResponse(
-                    type="message", content="LLM API 错误，请在后台日志中查看详细信息"
-                )
-                if not self.return_false
-                else False
-            )
+            info = self._report_error(e)
+            return False if self.return_false else LLMCallResponse(type="error", content=info.text, error_info=info)
+
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
-            return (
-                LLMCallResponse(
-                    type="message",
-                    content="调用过程发生未知异常，请在后台日志中查看详细信息",
-                )
-                if not self.return_false
-                else False
-            )
+            info = self._report_error(e)
+            return False if self.return_false else LLMCallResponse(type="error", content=info.text, error_info=info)
 
     async def stream_call(
         self,
@@ -388,35 +360,13 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             )
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-
-            message = "LLM API 错误，请在后台日志中查看详细信息"
-            logger.error(f"[AsyncLLM] LLM API 错误: {e}")
-            response = (
-                False
-                if self.return_false
-                else LLMCallResponse(type="message", content=message)
-            )
-
-            yield LLMCallStreamEvent(kind="error", error=message, response=response)
-            yield LLMCallStreamEvent(
-                kind="done", response=response, finish_reason="error"
-            )
+            info = self._report_error(e)
+            response = False if self.return_false else LLMCallResponse(type="error", content=info.text, error_info=info)
+            yield LLMCallStreamEvent(kind="error", error=info.text, error_info=info, response=response)
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
 
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-
-            message = "调用过程发生未知异常，请在后台日志中查看详细信息"
-            logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
-            response = (
-                False
-                if self.return_false
-                else LLMCallResponse(type="message", content=message)
-            )
-
-            yield LLMCallStreamEvent(kind="error", error=message, response=response)
-            yield LLMCallStreamEvent(
-                kind="done", response=response, finish_reason="error"
-            )
+            info = self._report_error(e)
+            response = False if self.return_false else LLMCallResponse(type="error", content=info.text, error_info=info)
+            yield LLMCallStreamEvent(kind="error", error=info.text, error_info=info, response=response)
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")

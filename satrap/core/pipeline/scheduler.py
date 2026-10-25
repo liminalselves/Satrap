@@ -59,6 +59,7 @@ from satrap.core.platform import PlatformAdapter
 from satrap.core.group_chat.reply import bind_reply_turn
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
+from satrap.core.APICall.LLMCall.errors import model_error_info
 from satrap.core.log import logger
 from satrap.core.utils.validation import positive_timeout
 
@@ -608,6 +609,7 @@ class PipelineScheduler:
             if event.agent_route_generation:
                 scope = event.agent_context_scope
             generation = event.group_route_generation if not event.is_private_chat() else 0
+            extra_params: dict[str, str] | None = None
             if (scope != "legacy_user" or generation > 0 or event.agent_route_generation) and (not user_manager or not event.session_type):
                 raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
             if user_manager and event.session_type:
@@ -726,13 +728,13 @@ class PipelineScheduler:
                     except asyncio.TimeoutError:
                         if not session_deadline.expired():
                             raise   # 网络或工具自身抛出的超时不是会话限时到期
-                        logger.error(f"[PipelineScheduler] 会话执行超时: {event.session_id}, 限时={self.session_timeout}s")
+                        logger.warning(f"[PipelineScheduler] code=session_timeout 会话执行超时: {event.session_id}, 限时={self.session_timeout}s")
                         self._record_diagnostic(
                             event, "model", "unknown", reason_code="session_timeout", reason="会话执行超时",
                             turn_id=self._request_turn_ids(event),
                         )
                         if self.error_feedback:
-                            await self._send_feedback(event, "本轮会话执行超时, 请缩小任务范围或调整会话限时")
+                            await self._send_feedback(event, "请求失败 [session_timeout]: 本轮会话执行超时, 请缩小任务范围或调整会话限时")
                         manual_detail = "session_timeout"
                         return
                     if reply_turn.failed:
@@ -767,10 +769,12 @@ class PipelineScheduler:
             logger.error(f"[PipelineScheduler] 管线配置或输入错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
             manual_detail = f"pipeline_input:{type(e).__name__}"
         except Exception as e:
-            logger.error(f"[PipelineScheduler] 管线执行错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
+            info = model_error_info(e)
+            log = logger.error if info.code == "internal_error" else logger.warning
+            log(f"[PipelineScheduler] session={event.session_id} request={event.call_origin.request_id}: {info.text}")
             manual_detail = f"pipeline_error:{type(e).__name__}"
             if self.error_feedback:
-                await self._send_feedback(event, "处理失败, 请稍后重试")
+                await self._send_feedback(event, info.text)
         finally:
             self._record_send_diagnostic(event, manual_detail)
             ticket = self.manual_wakes.tickets.get(event)

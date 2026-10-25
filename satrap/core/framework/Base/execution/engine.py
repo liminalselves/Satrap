@@ -16,7 +16,7 @@ from typing import Any, Generator, TYPE_CHECKING, TypedDict, Unpack, cast
 from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import freeze_request_blocks, serialize_request_blocks, restore_request_blocks, compose_agent_system_suffix
 from satrap.core.utils.context import PreparedModelContext
-from satrap.core.type import LLMCallResponse, TokenUsage
+from satrap.core.type import LLMCallResponse, LLMErrorInfo, TokenUsage
 from satrap.core.utils.media import user_media_content, freeze_tool_result, project_messages
 from .errors import ModelCallError
 from satrap.core.call_context import bind_tool_workflow
@@ -292,6 +292,8 @@ def execute(
                     response = yield InvokeModel(request, payload["stream"], callback, seeded)
                     if not isinstance(response, LLMCallResponse):
                         raise ModelCallError("模型调用失败")
+                    if response.error_info is not None:
+                        raise ModelCallError(response.error_info)
                     value = asdict(response)
                     if store is not None and run_id is not None:
                         store.finish_step(run_id, step.key, value)
@@ -390,6 +392,8 @@ async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[Ex
                         await wf._content_callback(value.content)
                 elif action.stream:
                     async for event in wf.llm.stream_call(request["messages"], **_request_kwargs(request)):
+                        if event.kind == "error":
+                            raise ModelCallError(event.error_info or LLMErrorInfo("model_call_failed", "模型调用失败"))
                         if event.kind == "done":
                             value = event.response
                         elif action.callback and event.kind == "content_delta":
@@ -398,6 +402,8 @@ async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[Ex
                             await (wf.thinking_callback or wf._content_callback)(event.delta)
                 else:
                     value = await wf.llm.call(request["messages"], **_request_kwargs(request))
+                    if isinstance(value, LLMCallResponse) and value.error_info is not None:
+                        raise ModelCallError(value.error_info)
                     if action.callback and isinstance(value, LLMCallResponse):
                         if wf.return_thinking and value.thinking:
                             await (wf.thinking_callback or wf._content_callback)(value.thinking)
@@ -461,6 +467,8 @@ def _run_sync_scoped(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptio
                         wf._content_callback(value.content)
                 elif action.stream:
                     for event in wf.llm.stream_call(request["messages"], **_request_kwargs(request)):
+                        if event.kind == "error":
+                            raise ModelCallError(event.error_info or LLMErrorInfo("model_call_failed", "模型调用失败"))
                         if event.kind == "done":
                             value = event.response
                         elif action.callback and event.kind == "content_delta":
@@ -469,6 +477,8 @@ def _run_sync_scoped(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptio
                             (wf.thinking_callback or wf._content_callback)(event.delta)
                 else:
                     value = wf.llm.call(request["messages"], **_request_kwargs(request))
+                    if isinstance(value, LLMCallResponse) and value.error_info is not None:
+                        raise ModelCallError(value.error_info)
                     if action.callback and isinstance(value, LLMCallResponse):
                         if wf.return_thinking and value.thinking:
                             (wf.thinking_callback or wf._content_callback)(value.thinking)
