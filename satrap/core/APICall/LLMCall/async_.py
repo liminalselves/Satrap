@@ -31,6 +31,20 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
     def _create_client(self, api_key: str, timeout: float) -> AsyncOpenAI:
         return AsyncOpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
 
+    async def _complete(self, **request: Any) -> Any:
+        """
+        观察最终异步 SDK 请求, 不保存认证字段
+
+        参数:
+        - request: 已准备的 SDK 参数
+
+        返回:
+        - SDK 响应或相同迭代协议的观察流
+        """
+        from satrap.core.log.debug.model import complete_async
+
+        return await complete_async(self.client.chat.completions.create, request, self.network_timeout)
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
@@ -61,7 +75,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             return "" if not self.return_false else False
 
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._complete(
                 **self._build_request(parameters, messages, thinking=thinking)
             )  # 发起网络请求并等待结果
 
@@ -110,7 +124,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         try:
             stream = cast(
                 Any,
-                await self.client.chat.completions.create(
+                await self._complete(
                     **self._build_request(
                         parameters, messages, thinking=thinking, stream=True
                     )
@@ -176,7 +190,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         processed_messages = prepare_structured_messages(messages, format)
 
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._complete(
                 **self._build_request(parameters, processed_messages, structured=True)
             )  # 使用注入了格式提示的消息列表发起请求
 
@@ -242,7 +256,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         )
 
         try:
-            response = await self.client.chat.completions.create(
+            response = await self._complete(
                 **self._build_request(
                     parameters,
                     processed_messages,
@@ -332,7 +346,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                 received_chunk = False
                 try:
                     stream = cast(
-                        Any, await self.client.chat.completions.create(**request_params)
+                        Any, await self._complete(**request_params)
                     )
                     async for chunk in stream:
                         received_chunk = True

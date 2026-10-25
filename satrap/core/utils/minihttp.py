@@ -273,6 +273,7 @@ class MiniHTTPServer:
         self.port = port
         self._cors = cors_headers if cors_headers is not None else DEFAULT_CORS_HEADERS
         self.auth = auth or ServerAuth.create(host, port, session_namespace=session_namespace)
+        self._debug_service = session_namespace if session_namespace in {"chat", "backend", "control"} else "local"
         self._log_errors = log_errors
         self._max_header_bytes = max_header_bytes
         self._max_body_bytes = max_body_bytes
@@ -413,6 +414,9 @@ class MiniHTTPServer:
                 self._send_json(writer, 401, {"error": "unauthorized"}, origin)
                 return
 
+            from satrap.core.log.debug.api import stream_debug_export
+            if await stream_debug_export(writer, method, path, headers, self.auth, self._debug_service):
+                return
             if await self._stream_response(writer, method, path, headers):
                 return
 
@@ -424,7 +428,10 @@ class MiniHTTPServer:
             )
 
             logs = log_response(method, path)
-            status, data = logs if logs is not None else await self._route(method, path, body)
+            from satrap.core.log.debug.api import debug_response
+
+            advanced = await debug_response(method, path, self._debug_service)
+            status, data = advanced if advanced is not None else logs if logs is not None else await self._route(method, path, body)
             self._send_json(writer, status, data, origin)
         except HTTPRequestError as error:
             self._send_json(writer, error.status, {"error": error.message}, origin)

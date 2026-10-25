@@ -37,6 +37,7 @@ import sys
 import os
 import time
 import zipfile
+import sqlite3
 
 from satrap.core.config.session_instance_service import SessionInstanceConfigService
 from satrap.core.log import logger
@@ -655,6 +656,7 @@ def _is_control_api_path(path: str) -> bool:
         "/api/platforms/",
         "/api/group-chat/",
         "/api/skills/",
+        "/api/debug/",
     ))
 
 
@@ -1617,6 +1619,50 @@ async def _route_logging(ctx: _RouteContext) -> ControlResponse | None:
     logs = log_response(ctx.method, ctx.raw_path)
     if logs is not None:
         return logs
+    from satrap.core.log.debug.api import debug_response
+
+    advanced = await debug_response(ctx.method, ctx.raw_path, "control")
+    if advanced is not None:
+        return advanced
+    if ctx.path == "/config/debug-logging/contexts":
+        from satrap.core.log.debug.catalog import available_contexts
+
+        try:
+            if ctx.method != "GET":
+                return 405, {"error": "已有上下文只支持 GET"}
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True)
+            if set(query) - {"platform_id", "cursor", "limit"} or any(len(items) != 1 for items in query.values()):
+                raise ValueError("已有上下文查询参数无效")
+            return 200, await RAG_WORKERS.run(available_contexts, _configured_storage_layout(), query.get("platform_id", ["chat"])[0],
+                                             cursor=query.get("cursor", [""])[0], limit=int(query.get("limit", ["50"])[0]))
+        except (ValueError, TypeError) as error:
+            return 400, {"error": str(error)}
+        except (OSError, sqlite3.Error):
+            return 503, {"error": "已有上下文目录暂时不可用"}
+    if ctx.path == "/config/debug-logging":
+        from satrap.core.log.debug.policy import DebugPolicy, policy_store
+
+        try:
+            settings = policy_store()
+            if ctx.method == "GET":
+                return 200, await RAG_WORKERS.run(settings.snapshot)
+            if ctx.method == "PUT":
+                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                revision = payload.get("expected_revision")
+                if not isinstance(revision, str):
+                    raise ValueError("缺少高级 Debug 设置修订")
+                policy = DebugPolicy.parse(payload.get("policy"))
+                saved = await RAG_WORKERS.run(settings.save, policy, revision)
+                logger.info(f"[高级 Debug 设置] 面板修改成功 revision={saved['revision']} default={policy.default_enabled} objects={len(policy.objects)}")
+                return 200, saved
+            return 405, {"error": "高级 Debug 设置不支持此方法"}
+        except ConfigRevisionConflict as error:
+            return 409, {"error": str(error)}
+        except (ValueError, TypeError) as error:
+            return 400, {"error": str(error)}
+        except (OSError, TimeoutError) as error:
+            logger.warning(f"[高级 Debug 设置] 保存或读取失败: {type(error).__name__}")
+            return 503, {"error": "高级 Debug 设置暂时不可用"}
     if ctx.path not in {"/config/logging", "/config/logging/cleanup"}:
         return None
     try:
@@ -3727,6 +3773,10 @@ async def _handle_request(
 
         if _is_control_api_path(path) and not await asyncio.to_thread(_CONTROL_AUTH.authorized, headers):
             await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
+            return
+
+        from satrap.core.log.debug.api import stream_debug_export
+        if await stream_debug_export(writer, method, raw_path, headers, _CONTROL_AUTH, "control"):
             return
 
         status = 200

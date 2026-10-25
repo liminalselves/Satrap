@@ -29,6 +29,20 @@ class LLM(_LLMBase[OpenAI]):
     def _create_client(self, api_key: str, timeout: float) -> OpenAI:
         return OpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
 
+    def _complete(self, **request: Any) -> Any:
+        """
+        在 SDK 实际请求边界接入诊断, 保留动态供应商字段
+
+        参数:
+        - request: 已准备的 SDK 参数
+
+        返回:
+        - SDK 响应或同协议的观察流
+        """
+        from satrap.core.log.debug.model import complete_sync
+
+        return complete_sync(self.client.chat.completions.create, request, self.network_timeout)
+
     def chat(
         self,
         messages: List[Dict[str, str]],
@@ -59,7 +73,7 @@ class LLM(_LLMBase[OpenAI]):
             return "" if not self.return_false else False
 
         try:
-            response = self.client.chat.completions.create(
+            response = self._complete(
                 **self._build_request(parameters, messages, thinking=thinking)
             )  # 发起网络请求
 
@@ -106,7 +120,7 @@ class LLM(_LLMBase[OpenAI]):
         try:
             stream = cast(
                 Any,
-                self.client.chat.completions.create(
+                self._complete(
                     **self._build_request(
                         parameters, messages, thinking=thinking, stream=True
                     )
@@ -172,7 +186,7 @@ class LLM(_LLMBase[OpenAI]):
         processed_messages = prepare_structured_messages(messages, format)
 
         try:
-            response = self.client.chat.completions.create(
+            response = self._complete(
                 **self._build_request(parameters, processed_messages, structured=True)
             )  # 使用注入了格式提示的消息列表发起请求
 
@@ -238,7 +252,7 @@ class LLM(_LLMBase[OpenAI]):
         )
 
         try:
-            response = self.client.chat.completions.create(
+            response = self._complete(
                 **self._build_request(
                     parameters,
                     processed_messages,
@@ -329,7 +343,7 @@ class LLM(_LLMBase[OpenAI]):
                 received_chunk = False
                 try:
                     stream = cast(
-                        Any, self.client.chat.completions.create(**request_params)
+                        Any, self._complete(**request_params)
                     )
                     for chunk in stream:
                         received_chunk = True

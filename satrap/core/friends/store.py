@@ -111,7 +111,11 @@ class FriendStore:
                           json.dumps(target, ensure_ascii=False) if target else None, actor_id))
             row = conn.execute("SELECT * FROM friend_actions WHERE self_id=? AND action_id=?", (account, action_id)).fetchone()
             assert row is not None
-            return self.record(row), True
+            record = self.record(row)
+        from satrap.core.log.debug.capture import record_platform_action
+
+        record_platform_action("friend", self.path, account, action_id, state, metadata={"action_type": action, "actor_kind": actor})
+        return record, True
 
     def get(self, account: str, action_id: str) -> dict[str, Any]:
         """
@@ -125,11 +129,17 @@ class FriendStore:
         - 动作记录, 不存在时拒绝
         """
         with self.connection() as conn:
+            previous = conn.execute("SELECT state FROM friend_actions WHERE self_id=? AND action_id=?", (account, action_id)).fetchone()
             conn.execute("UPDATE friend_actions SET state='expired' WHERE self_id=? AND state='pending' AND expires_at<=?", (account, time.time()))
             row = conn.execute("SELECT * FROM friend_actions WHERE self_id=? AND action_id=?", (account, action_id)).fetchone()
             if row is None:
                 raise FriendError("action_not_found", "动作不存在或不属于当前账号")
-            return self.record(row)
+            record = self.record(row)
+        if previous is not None and previous[0] == "pending" and record["state"] == "expired":
+            from satrap.core.log.debug.capture import record_platform_action
+
+            record_platform_action("friend", self.path, account, action_id, "expired", metadata={"reason": "approval_expired"})
+        return record
 
     def transition(self, account: str, action_id: str, expected: str, state: str, result: dict[str, Any] | None = None) -> bool:
         """
@@ -147,13 +157,18 @@ class FriendStore:
         """
         now = time.time()
         with self.connection() as conn:
-            return conn.execute(
+            changed = conn.execute(
                 "UPDATE friend_actions SET state=?, result_json=?, decision_at=CASE WHEN ?='pending' THEN ? ELSE decision_at END, "
                 "executed_at=CASE WHEN ?='executing' THEN ? ELSE executed_at END WHERE self_id=? AND action_id=? AND state=? "
                 "AND (?!='pending' OR expires_at>?)",
                 (state, json.dumps(result, ensure_ascii=False) if result else None, expected, now, expected, now,
                  account, action_id, expected, expected, now),
             ).rowcount == 1
+        if changed:
+            from satrap.core.log.debug.capture import record_platform_action
+
+            record_platform_action("friend", self.path, account, action_id, state, metadata=result)
+        return changed
 
     def list(self, account: str, page: int, limit: int) -> dict[str, Any]:
         """

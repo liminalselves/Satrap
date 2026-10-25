@@ -6,6 +6,23 @@ import { administratorError } from "@/api/administrators";
 import { loggingError } from "@/api/logging";
 import { ragErrorMessage } from "@/api/rag";
 import { errorText } from "@/utils/errorText";
+import { debugMode, withDebugMode, sameDebugObject, type DebugPolicy } from '@/api/debugLogging';
+
+describe('高级诊断对象设置', () => {
+  it('覆盖绑定完整对象, 切换上下文不复制覆盖, reset 恢复默认且不修改原草稿', () => {
+    const group = { platform_id: 'qq', self_id: 'bot', conversation_kind: 'group' as const, target_id: 'group' };
+    const policy: DebugPolicy = { version: 1, default_enabled: false, retention_days: 7, max_total_mb: 512, max_body_mb: 8, max_request_mb: 32, objects: [] };
+    const enabled = withDebugMode(policy, group, 'on');
+    expect(policy.objects).toEqual([]);
+    expect(debugMode(enabled, { ...group })).toBe('on');
+    for (const changed of [{ ...group, self_id: 'other' }, { ...group, platform_id: 'other' }, { ...group, target_id: 'other' }, { ...group, conversation_kind: 'private' as const }]) {
+      expect(sameDebugObject(group, changed)).toBe(false);
+      expect(debugMode(enabled, changed)).toBe('inherit');
+    }
+    expect(withDebugMode(enabled, group, 'inherit').objects).toEqual([]);
+    expect(debugMode(withDebugMode(enabled, group, 'off'), group)).toBe('off');
+  });
+});
 
 describe("api/client", () => {
   function responseError(status: number, data: unknown): AxiosError<{ error?: string; reason?: string }> {

@@ -87,4 +87,5 @@ jobs:
           node e2e/run.mjs --case chat-history-races
           node e2e/run.mjs --case runtime-application-progress
           node e2e/run.mjs --case log-stream
+          node e2e/run.mjs --case advanced-debug
           node e2e/run.mjs --case chat-model-binding

@@ -12,6 +12,7 @@ import { logServices, readLogSource, type LogSource } from '@/api/logging';
 import { isPasswordRequiredError } from '@/api/auth';
 import { PageHeader } from '@/components/common';
 import { Play, Pause, Trash2, Download, Search, Wifi, WifiOff } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 
 
@@ -203,6 +204,7 @@ export function Logs() {
 
   const headerActions = useMemo(() => (
     <>
+      <Link className="text-accent" to="/logs/debug">高级 Debug</Link>
       <Badge variant={isConnected ? 'success' : 'error'} className="flex items-center gap-1">
         {isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
         {isConnected ? '已连接' : '未连接'}

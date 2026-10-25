@@ -468,6 +468,7 @@ def _make_llm(cls: type[_LLM], client: object) -> _LLM:
     llm.temperature = 0.2
     llm.top_p = 0.95
     llm.max_tokens = 100
+    llm.network_timeout = 60.0
     llm.thinking_field_name = "reasoning_content"
     llm.thinking_fields = None
     llm.omit_none_thinking_fields = False

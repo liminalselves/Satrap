@@ -165,6 +165,10 @@ class RunStore:
                 "INSERT INTO agent_runs VALUES (?,?,?,?,?,?,NULL,NULL,?,?)",
                 (run_id, self.scope, "running", encode(payload), context, config, now, now),
             )
+        from satrap.core.log.debug.capture import record_debug
+
+        record_debug("execution_run", "start", span_id=run_id, metadata={"run_id": run_id, "context_id": self.scope,
+                     "context_fingerprint": context, "configuration_fingerprint": config})
         return run_id
 
     def get(self, run_id: str) -> dict[str, Any]:
@@ -215,6 +219,10 @@ class RunStore:
             )
             if cursor.rowcount != 1:
                 raise RunConflictError("任务不存在或不属于当前会话")
+        from satrap.core.log.debug.capture import record_debug
+
+        record_debug("execution_run", "update", span_id=run_id, status=status,
+                     metadata={"run_id": run_id, "context_id": self.scope, "has_error": error is not None})
 
     def step(self, run_id: str, key: str) -> dict[str, Any] | None:
         """

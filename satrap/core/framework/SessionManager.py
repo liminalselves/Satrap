@@ -1430,6 +1430,12 @@ class SessionManager:
             session_id = session_cfg.session_id or ""
             user_call.session_id = session_id
 
+            from satrap.core.log.debug.capture import current_trace
+
+            debug = current_trace()
+            if debug is not None:
+                debug.bind_context(session_id)
+
             entry = self._acquire_or_create_entry(session_cfg)
             if entry is None:
                 logger.error(f"[SessionManager] handle_call 失败：会话创建失败，session_id={session_id}")
@@ -1473,6 +1479,12 @@ class SessionManager:
             self._bind_history_window(session_cfg, user_call)
             session_id = session_cfg.session_id or ""
             user_call.session_id = session_id
+
+            from satrap.core.log.debug.capture import current_trace
+
+            debug = current_trace()
+            if debug is not None:
+                debug.bind_context(session_id)
 
             entry = await self._acquire_or_create_entry_async(session_cfg)
             if entry is None:
@@ -2999,6 +3011,9 @@ class SessionManager:
         - 会话执行结果
         """
         try:
+            from satrap.core.log.debug.capture import record_session_start
+
+            record_session_start(session)
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
             with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), buffer_session_reply(session):
@@ -3021,6 +3036,9 @@ class SessionManager:
         - 会话执行结果
         """
         try:
+            from satrap.core.log.debug.capture import record_session_start
+
+            record_session_start(session)
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
             with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), buffer_session_reply(session):

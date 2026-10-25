@@ -907,6 +907,11 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             submitted = False
+            from satrap.core.log.debug.capture import record_debug
+
+            record_debug("delivery", "start", metadata={"purpose": purpose, "explicit_reply": explicit_reply},
+                         bodies={"message": [{"type": component.type.value, "text": safe_getattr_str(component, "text"),
+                                             "asset_id": safe_getattr_str(component, "asset_id")} for component in message.components]})
             try:
                 self._verify_send_route()
                 submitted = True
@@ -916,6 +921,8 @@ class MessageEvent:
                 )
                 self._record_send_result(result, purpose=purpose)
             except Exception as e:
+                record_debug("delivery", "end", status="unknown" if submitted else "failed",
+                             metadata={"purpose": purpose, "error_type": type(e).__name__})
                 if explicit_reply:
                     self._record_send_result(SendReceipt("unknown" if submitted else "failed", reason="explicit_reply_send_error"), purpose=purpose)
                 logger.error(
@@ -1016,6 +1023,14 @@ class MessageEvent:
 
         旧适配器返回 None 时仍表示调用已完成, 不伪造平台确认回执
         """
+        from satrap.core.log.debug.capture import current_trace, record_debug
+
+        receipt = result if isinstance(result, SendReceipt) else None
+        record_debug("delivery", "end", status=receipt.status if receipt else "unknown", metadata={"purpose": purpose,
+                     "message_ids": list(receipt.message_ids) if receipt else [], "reason": receipt.reason if receipt else "legacy_no_receipt"})
+        trace = current_trace()
+        if trace is not None and purpose == "business" and trace.status not in {"failed", "timeout", "cancelled"}:
+            trace.status = receipt.status if receipt else "unknown"
         if isinstance(result, SendReceipt):
             self.last_send_receipt = result
             if purpose == "business":

@@ -136,6 +136,9 @@ class EdictumConfigManager:
         if type_name in {"simple", "async_simple"}:
             params = normalize_session_settings(params)
         model_name = str(raw.get("model_name", "")).strip()
+        plugins: object = raw.get("plugins", [])
+        if type_name in {"simple", "async_simple"} and "plugins" not in raw and (catalog or self.plugin_catalog).get("debug_logger") is not None:
+            plugins = ["debug_logger"]   # 只填补未配置的新入口, 显式列表和卸载结果不追加插件
         return {
             "provider": EDICTUM_PROVIDER,
             "edictum_type": type_name,
@@ -143,7 +146,7 @@ class EdictumConfigManager:
             "description": str(raw.get("description", "")),
             "model_name": model_name,
             "params": dict(cast(dict[str, Any], params)),
-            "plugins": self._normalize_plugins(raw.get("plugins", []), catalog),
+            "plugins": self._normalize_plugins(plugins, catalog),
         }
 
     def _save_locked(self) -> None:

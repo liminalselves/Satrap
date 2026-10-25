@@ -140,6 +140,8 @@ class Logger:
         standard_log_stream.service = service
         if self.file_handler is not None:
             self.file_handler.set_service(service)
+        from satrap.core.log.debug.capture import maintain_existing_debug
+        maintain_existing_debug(service)
 
     def close(self) -> None:
         """幂等关闭当前实例的全部日志句柄"""

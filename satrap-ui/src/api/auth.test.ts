@@ -30,6 +30,7 @@ describe('每服务认证', () => {
   it('日志页由各来源独立认证, 不要求 Backend 或 Control 先就绪', () => {
     expect(auth.requiredApiServices('/logs')).toEqual([]);
     expect(auth.requiredApiServices('/logs/')).toEqual([]);
+    expect(auth.requiredApiServices('/logs/debug')).toEqual([]);
   });
   it('绑定后端的写请求收到 401 时不重放, 保留错误原因码', async () => {
     const adapter = vi.fn<AxiosAdapter>(async (config) => {

@@ -143,7 +143,12 @@ class GroupActionStore(GroupConfigStore):
             row = connection.execute("SELECT * FROM group_actions WHERE action_id=?", (action_id,)).fetchone()
             if row is None:
                 raise RuntimeError("动作登记后读取失败")
-            return self._record(row), True
+            record = self._record(row)
+        from satrap.core.log.debug.capture import record_platform_action
+
+        record_platform_action("group", self.database, self_id, action_id, state,
+                               metadata={"group_id": group_id, "action_type": action_type, "actor_kind": actor_kind})
+        return record, True
 
     def model_origin(self, self_id: str, group_id: str, action_id: str) -> dict[str, str] | None:
         """仅供执行授权复核读取不出现在动作 API 中的模型来源"""
@@ -286,6 +291,9 @@ class GroupActionStore(GroupConfigStore):
                     (now, action_id),
                 )
                 connection.commit()
+                from satrap.core.log.debug.capture import record_platform_action
+
+                record_platform_action("group", self.database, self_id, action_id, "expired", metadata={"reason": "deadline_expired"})
                 raise GroupConfigConflict("管理动作已过期")
             if int(row["policy_revision"]) != policy_revision:
                 connection.execute(
@@ -293,6 +301,9 @@ class GroupActionStore(GroupConfigStore):
                     (now, json.dumps({"reason": "policy_changed"}), action_id),
                 )
                 connection.commit()
+                from satrap.core.log.debug.capture import record_platform_action
+
+                record_platform_action("group", self.database, self_id, action_id, "expired", metadata={"reason": "policy_changed"})
                 raise GroupConfigConflict("审批策略或账号状态已变化")
             connection.execute(
                 "UPDATE group_actions SET state=?, decision_at=? WHERE action_id=?",
@@ -301,7 +312,11 @@ class GroupActionStore(GroupConfigStore):
             row = connection.execute("SELECT * FROM group_actions WHERE action_id=?", (action_id,)).fetchone()
             if row is None:
                 raise RuntimeError("动作决策后读取失败")
-            return self._record(row)
+            record = self._record(row)
+        from satrap.core.log.debug.capture import record_platform_action
+
+        record_platform_action("group", self.database, self_id, action_id, record["state"], metadata={"approved": approve})
+        return record
 
     def settle(self, self_id: str, group_id: str, action_id: str, state: str, reason: str,
                details: Mapping[str, object] | None = None) -> GroupActionRecord:
@@ -353,4 +368,8 @@ class GroupActionStore(GroupConfigStore):
             row = connection.execute("SELECT * FROM group_actions WHERE action_id=?", (action_id,)).fetchone()
             if row is None:
                 raise RuntimeError("动作结算后读取失败")
-            return self._record(row)
+            record = self._record(row)
+        from satrap.core.log.debug.capture import record_platform_action
+
+        record_platform_action("group", self.database, self_id, action_id, state, metadata={"reason": reason, **(details or {})})
+        return record

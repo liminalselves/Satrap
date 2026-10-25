@@ -141,10 +141,11 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       description: '',
       model_name: llmNames[0] || '',
       ...readEdictumParams({}, true),
-      plugins: '[]',
+      plugins: ['simple', 'async_simple'].includes(types[0]?.name || '') && availablePlugins.some((plugin) => plugin.name === 'debug_logger')
+        ? JSON.stringify([{ name: 'debug_logger', enabled: true, config: {}, capabilities: {} }], null, 2) : '[]',
     });
     setModalOpen(true);
-  }, [llmNames, types]);
+  }, [llmNames, types, availablePlugins]);
 
   const openEdit = useCallback((name: string) => {
     const config = configs[name];

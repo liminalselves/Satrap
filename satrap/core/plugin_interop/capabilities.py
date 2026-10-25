@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from satrap.core.plugin_interop.skills import SkillHostAccess
     from satrap.core.plugin_interop.artifacts import ArtifactAccess
     from satrap.core.plugin_interop.approvals import ApprovalAccess
+    from satrap.core.plugin_interop.debug_logging import DebugLoggingAccess
 
     SessionType = SimpleSession | AsyncSimpleSession
 
@@ -394,6 +395,19 @@ class PluginHost:
 
         self._runtime()
         return ApprovalAccess(self)
+
+    @property
+    def debug_logging(self) -> DebugLoggingAccess:
+        """
+        取得当前真实命令可用的诊断设置入口
+
+        返回:
+        - 绑定插件代次和当前对象的宿主管理接口
+        """
+        from satrap.core.plugin_interop.debug_logging import DebugLoggingAccess
+
+        self._runtime()
+        return DebugLoggingAccess(self)
 
 
 @dataclass(frozen=True)

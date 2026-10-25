@@ -166,7 +166,7 @@ class ChatPluginRegistry:
         with self._lock:
             for entry in self.catalog.scan():
                 name = entry.name
-                state = self._states.get(name, {"enabled": False, "capabilities": {}})
+                state = self._states.get(name, {"enabled": name == "debug_logger", "capabilities": {}})
                 if name == "friend_manager" and name in self._states:
                     from satrap.edictum.friend_migration import migrate_friend_switch_specs
                     state = migrate_friend_switch_specs([{"name": name, **state}], PluginConfigManager())[0]
@@ -270,7 +270,7 @@ class ChatPluginRegistry:
         for entry in catalog.scan():
             state: dict[str, Any] = states.get(
                 entry.name,
-                {"enabled": False, "capabilities": {}},
+                {"enabled": entry.name == "debug_logger", "capabilities": {}},
             )
             raw_items.append({
                 "name": entry.name,
@@ -303,7 +303,7 @@ class ChatPluginRegistry:
         - bool: 插件是否启用
         """
         with self._lock:
-            return bool(self._states.get(name, {}).get("enabled", False))
+            return bool(self._states.get(name, {}).get("enabled", name == "debug_logger"))
 
     def set_enabled(self, name: str, enabled: bool) -> None:
         """

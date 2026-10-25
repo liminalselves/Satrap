@@ -133,12 +133,17 @@ def _request(session: SimpleSession | AsyncSimpleSession, engine: PermissionEngi
     if isinstance(state, SessionApproval) and state.engine is engine:
         session_approval(session)   # 请求只读取已成功发布的插件配置
     turn_id, actor_id = _turn_identity(session)
-    return ApprovalRequest.create(
+    request = ApprovalRequest.create(
         session_id=str(getattr(session, "session_id", "")),
         turn_id=turn_id,
         actor_id=actor_id,
         tool=tool_name, operation=operation, risk=int(risk), description=description,
         mode=engine.mode, revision=engine.revision, action={**action, "source": asdict(origin) if origin else {"turn_id": turn_id}}, evidence=_evidence(session) if engine.mode != "full-access" else [])
+    from satrap.core.log.debug.capture import record_debug
+
+    record_debug("approval", "start", span_id=request.request_id, metadata={"mode": engine.mode, "operation": operation,
+                 "tool": tool_name, "risk": int(risk), "revision": engine.revision}, bodies={"action": action})
+    return request
 
 
 def _review_messages(request: ApprovalRequest) -> list[dict[str, str]]:
@@ -226,6 +231,10 @@ def _finish(session: SimpleSession | AsyncSimpleSession, engine: PermissionEngin
             or str(getattr(session, "session_id", "")) != request.session_id):
         result = ApprovalResult.for_request(request, "error", "执行已取消: 审批期间权限, 来源或有效期发生变化", "policy")
     engine.record(request, result)
+    from satrap.core.log.debug.capture import record_debug
+
+    record_debug("approval", "end", span_id=request.request_id, status=result.decision,
+                 metadata={"reviewer": result.reviewer, "reason": result.reason, "revision": engine.revision})
     if result.decision == "allow":
         return True, ""
     code = "approval_denied" if result.decision == "deny" else "approval_required"

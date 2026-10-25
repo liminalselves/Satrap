@@ -481,6 +481,7 @@ def _make_llm(fake_completions: _FakeCompletions) -> LLM:
     llm.temperature = 0.7
     llm.top_p = 0.95
     llm.max_tokens = 1000
+    llm.network_timeout = 60.0
     llm.suppress_error = True
     llm.return_false = False
     llm.thinking_field_name = "reasoning_content"
@@ -497,6 +498,7 @@ def _make_async_llm(fake_completions: _FakeAsyncCompletions) -> AsyncLLM:
     llm.temperature = 0.7
     llm.top_p = 0.95
     llm.max_tokens = 1000
+    llm.network_timeout = 60.0
     llm.suppress_error = True
     llm.return_false = False
     llm.thinking_field_name = "reasoning_content"

@@ -529,7 +529,87 @@ async function storage_audit(runtime) {
   }
 }
 
+async function advanced_debug(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  await runtime.listen(server);
+  const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const page = await (await runtime.browser).newPage({ viewport: { width: 1440, height: 1100 } });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:\d+\/ws\/status/, () => {});
+  const object = { platform_id: 'qq', self_id: 'bot', conversation_kind: 'group', target_id: 'room' };
+  let snapshot = { policy: { version: 1, default_enabled: false, retention_days: 7, max_total_mb: 512, max_body_mb: 8, max_request_mb: 32, objects: [] }, revision: 'v1' };
+  let bodyReads = 0, writes = 0, traceClosed = false;
+  const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,PUT,POST,OPTIONS' };
+  await page.route('**/*', async (route) => {
+    const request = route.request(), url = new URL(request.url());
+    if (url.origin === origin && url.pathname !== '/ui-config.json') return route.continue();
+    const fulfill = (data, status = 200) => route.fulfill({ status, headers: cors, json: data });
+    if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    if (url.pathname === '/ui-config.json') return fulfill({ backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' });
+    if (url.pathname === '/auth/session') return fulfill({ ok: true });
+    if (url.pathname === '/status') return fulfill({ running: false, run_state: 'stopped' });
+    if (url.pathname === '/config/debug-logging') {
+      if (request.method() === 'PUT') {
+        const payload = request.postDataJSON();
+        assert.equal(payload.expected_revision, snapshot.revision);
+        writes++;
+        snapshot = { policy: payload.policy, revision: `v${writes+1}` };
+      }
+      return fulfill(snapshot);
+    }
+    if (url.pathname === '/config/debug-logging/contexts') return fulfill({ contexts: url.searchParams.get('platform_id') === 'qq' ? [{ object_key: 'group-key', context_id: 'cold-context', title: '未产生日志上下文', updated_at: 1, request_count: 0, error_count: 0, object, service: 'backend' }] : [], platforms: ['chat', 'qq'], has_more: false, next_cursor: null, unconfirmed: 0 });
+    if (url.pathname === '/api/debug/status') return fulfill({ database_bytes: 120000, wal_bytes: 0, used_bytes: 110000, pending_events: 0, write_error: '', maintenance_error: '' });
+    if (url.pathname === '/api/debug/contexts') return fulfill({ contexts: ['before-new', 'after-new'].map((id) => ({ object_key: 'group-key', context_id: id, title: id, updated_at: 1, request_count: 1, error_count: 0, object, service: url.port === '19872' ? 'chat' : 'backend' })), has_more: false, next_cursor: null });
+    const requestSummary = (id) => ({ request_id: id, status: id === 'r-after-new' && !traceClosed ? 'running' : 'success', context_id: id.slice(2), parent_request_id: '', started_at: 1, updated_at: 2, incomplete: 0, settings_revision: 'v1' });
+    if (url.pathname === '/api/debug/requests') return fulfill({ requests: [requestSummary(`r-${url.searchParams.get('context_id')}`)], has_more: false });
+    if (url.pathname === '/api/debug/request') return fulfill({ request: requestSummary(url.searchParams.get('request_id')) });
+    if (url.pathname === '/api/debug/events') return fulfill({ events: [{ event_id: 'event1', request_id: url.searchParams.get('request_id'), sequence: 0, category: 'model', phase: 'start', span_id: 'model1', parent_span_id: '', recorded_at: 1, status: '', metadata: { model: 'synthetic' }, body_slots: ['input'] }], has_more: false });
+    if (url.pathname === '/api/debug/body') { bodyReads++; return fulfill({ body: { messages: [{ role: 'user', content: '按需读取的测试正文' }] } }); }
+    return fulfill({ error: '此浏览器场景未提供该接口' }, 404);
+  });
+  try {
+    await page.goto(`${origin}/logs/debug`);
+    await page.getByRole('heading', { name: '高级 Debug', exact: true }).waitFor();
+    await page.getByRole('button', { name: /before-new/ }).click();
+    await page.getByRole('button', { name: /继承默认/ }).click();
+    await page.getByRole('button', { name: '强制开启', exact: true }).click();
+    await page.getByRole('button', { name: '强制开启', exact: true }).waitFor();
+    assert.equal(writes, 1);
+    await page.getByRole('button', { name: /after-new/ }).click();
+    await page.getByRole('button', { name: '强制开启', exact: true }).waitFor();
+    assert.equal(snapshot.policy.objects.length, 1);
+    assert.equal(bodyReads, 0);
+    await page.getByRole('button', { name: /r-after-new/ }).click();
+    await page.getByRole('button', { name: '查看 input', exact: true }).waitFor();
+    assert.equal(bodyReads, 0);
+    await page.getByRole('button', { name: '查看 input', exact: true }).click();
+    await page.getByText('按需读取的测试正文', { exact: false }).waitFor();
+    assert.equal(bodyReads, 1);
+    await page.getByRole('button', { name: '刷新后续事件', exact: true }).waitFor();
+    traceClosed = true;
+    await page.getByRole('button', { name: '刷新后续事件', exact: true }).click();
+    await page.getByRole('button', { name: /已完成.*r-after-new/ }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '刷新后续事件', exact: true }).count(), 0);
+    await page.getByRole('button', { name: /为已有上下文开启记录/ }).click();
+    await page.getByRole('button', { name: 'chat', exact: true }).click();
+    await page.getByRole('button', { name: 'qq', exact: true }).click();
+    await page.getByRole('button', { name: /cold-context/ }).click();
+    assert.equal(snapshot.policy.objects[0].object.target_id, 'room');
+    assert.equal(snapshot.policy.objects[0].mode, 'on');
+    assert.deepEqual(errors, []);
+    await mkdir(path.join(root, 'test-results', 'advanced-debug'), { recursive: true });
+    await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', 'page.png'), fullPage: true });
+    console.log('PASS: 新旧上下文共用对象开关, 冷目录可选, 正文按需读取, 运行请求刷新后显示实际终态');
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
+  ["advanced-debug", advanced_debug],
   ["storage-audit", storage_audit],
   ["log-retention", log_retention],
   ["log-stream", log_stream]

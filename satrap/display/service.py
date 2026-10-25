@@ -1213,6 +1213,9 @@ class ChatService:
             session_kwargs["db_path"] = self._chat_db_path
 
         session = AsyncSimpleSession(conversation_id, llm, plugin_environment=PluginEnvironment("chat"), **session_kwargs)
+        from satrap.core.log.debug.contracts import DebugObject, bind_debug_object
+
+        bind_debug_object(session, DebugObject(self._platform_id, "local", "chat", conversation_id))
         session.apply_context_config(cfg)
         self._apply_project(session, project)
         # 会话存储与项目工作区绑定需在插件安装前完成
@@ -1815,6 +1818,9 @@ class ChatService:
             session_kwargs["db_path"] = self._chat_db_path
 
         session = AsyncSimpleSession(conversation_id, llm, plugin_environment=PluginEnvironment("chat"), **session_kwargs)
+        from satrap.core.log.debug.contracts import DebugObject, bind_debug_object
+
+        bind_debug_object(session, DebugObject(self._platform_id, "local", "chat", conversation_id))
         session.apply_context_config(cfg)
         self._apply_project(session, project)
         conv = _Conversation(
@@ -2103,6 +2109,42 @@ class ChatService:
         return {"ok": True, "conversation_id": conversation_id, **turn}
 
     async def _run_turn(
+        self, conv: _Conversation, text: str, think: str, *, img_urls: list[str] | None = None,
+        video_urls: list[str] | None = None, context_start: int, resume_run_id: str | None = None,
+        model_metadata: dict[str, object] | None = None,
+    ) -> None:
+        """
+        为实际 Chat 执行创建独立诊断请求
+
+        参数:
+        - conv: 实际持久会话
+        - text: 本轮输入
+        - think: 思考设置
+        - img_urls: 输入图片
+        - video_urls: 输入视频
+        - context_start: 上下文起点
+        - resume_run_id: 可选恢复任务
+        - model_metadata: 已完成任务回放资料
+        """
+        from satrap.core.log.debug.capture import debug_request, record_debug, previous_chat_request
+        from satrap.core.log.debug.contracts import DebugObject
+
+        obj = DebugObject(self._platform_id, "local", "chat", conv.conversation_id)
+        version = conv.recorder.recovery_origin()
+        with debug_request(obj, "chat-" + uuid.uuid4().hex,
+                           context_id=conv.conversation_id,
+                           input_data={"text": text, "images": img_urls, "videos": video_urls}) as trace:
+            if trace is not None:
+                try:
+                    trace.parent_request_id = await asyncio.to_thread(previous_chat_request, obj, conv.conversation_id, version, resume_run_id)
+                except Exception:
+                    trace.incomplete = True
+            record_debug("chat", "start", metadata={"resume_run_id": resume_run_id,
+                         "reply_version": version})
+            await self._run_turn_traced(conv, text, think, img_urls=img_urls, video_urls=video_urls,
+                                        context_start=context_start, resume_run_id=resume_run_id, model_metadata=model_metadata)
+
+    async def _run_turn_traced(
         self,
         conv: _Conversation,
         text: str,
@@ -2152,6 +2194,9 @@ class ChatService:
                     result = (await conv.session.resume_run(resume_run_id) if resume_run_id is not None
                               else await conv.session.run(text, img_urls=img_urls, video_urls=video_urls, thinking=think))
                 answer = result.message if isinstance(result, CommandAction) else result
+                from satrap.core.log.debug.capture import record_debug
+
+                record_debug("reply", "end", status="completed", bodies={"output": answer})
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
                 context_stats = conv.session.get_context_stats()
                 completed = conv.recorder.end_turn(
@@ -2164,8 +2209,23 @@ class ChatService:
                     conv,
                     {"type": MSG_TURN_DONE, "answer": answer, "context_stats": context_stats, **completed},
                 )
+                record_debug("chat_delivery", "end", status="queued", metadata={"client_acknowledged": False, "context_stats": context_stats})
+            except asyncio.CancelledError:
+                from satrap.core.log.debug.capture import current_trace, record_debug
+
+                debug = current_trace()
+                if debug is not None:
+                    debug.status = "cancelled"
+                record_debug("reply", "end", status="cancelled")
+                raise
             except Exception as e:
                 info = model_error_info(e)
+                from satrap.core.log.debug.capture import current_trace, record_debug
+
+                debug = current_trace()
+                if debug is not None:
+                    debug.status = "timeout" if info.code.endswith("timeout") else "failed"
+                record_debug("reply", "end", status="failed", metadata={"code": info.code, "reason": info.message})
                 log = logger.error if info.code == "internal_error" else logger.warning
                 log(f"[聊天] 会话 {conv.conversation_id} run 失败: {info.text}")
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
@@ -2372,6 +2432,36 @@ class ChatService:
         variant_index: int,
     ) -> dict[str, Any]:
         """
+        记录用户切换回复版本的实际结果, 不复制来源历史
+
+        参数:
+        - conversation_id: 当前持久会话 ID
+        - turn_index: 目标展示轮次
+        - variant_index: 目标回复版本
+
+        返回:
+        - 原有切换结果, 诊断开关不影响业务路径
+        """
+        from satrap.core.log.debug.capture import debug_request, record_debug
+        from satrap.core.log.debug.contracts import DebugObject
+
+        with debug_request(DebugObject(self._platform_id, "local", "chat", conversation_id), "variant-" + uuid.uuid4().hex,
+                           context_id=conversation_id, input_data={"turn_index": turn_index, "variant_index": variant_index}) as trace:
+            result = await self._select_variant(conversation_id, turn_index, variant_index)
+            status = "success" if result.get("ok") else "failed"
+            record_debug("context_variant", "end", status=status, metadata={"turn_index": turn_index,
+                         "variant_index": variant_index, "reason": result.get("error", "")})
+            if trace is not None:
+                trace.status = status
+            return result
+
+    async def _select_variant(
+        self,
+        conversation_id: str,
+        turn_index: int,
+        variant_index: int,
+    ) -> dict[str, Any]:
+        """
         切换最后一轮的已持久化回复版本并同步模型上下文
 
         参数:
@@ -2488,6 +2578,29 @@ class ChatService:
         ]
 
     async def fork(self, conversation_id: str, turn_index: int) -> dict[str, Any]:
+        """
+        关联实际 Fork 操作, 新对象继续按自己的设置决定是否采集
+
+        参数:
+        - conversation_id: 已校验的来源会话
+        - turn_index: 来源轮次
+
+        返回:
+        - 原 Fork 结果, 诊断不复制原链路或对象开关
+        """
+        from satrap.core.log.debug.capture import debug_request, record_debug
+        from satrap.core.log.debug.contracts import DebugObject
+
+        with debug_request(DebugObject(self._platform_id, "local", "chat", conversation_id), "fork-" + uuid.uuid4().hex,
+                           context_id=conversation_id, input_data={"action": "fork", "turn_index": turn_index}) as trace:
+            result = await self._fork(conversation_id, turn_index)
+            if trace is not None:
+                trace.status = "success" if result.get("ok") else "failed"
+            record_debug("context_fork", "end", status="completed" if result.get("ok") else "failed",
+                         metadata={"source_context": conversation_id, "source_turn_index": turn_index, "target_context": result.get("conversation_id")})
+            return result
+
+    async def _fork(self, conversation_id: str, turn_index: int) -> dict[str, Any]:
         """
         从指定轮次 fork 新会话 (复制该轮之前的上下文, 继承 model 与默认 think)
 

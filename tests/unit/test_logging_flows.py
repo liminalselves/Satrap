@@ -24,11 +24,570 @@ from satrap.core.log import logger
 def store_for(tmp_path):
     return LoggingPolicyStore(tmp_path / "logging.json", tmp_path / "logs")
 
+
+def test_advanced_debug_object_policy_survives_context_replacement_and_reload(tmp_path):
+    """对象开关独立持久化, 新上下文与跨进程读取保留覆盖并核验修订和身份隔离"""
+    from dataclasses import replace
+    from satrap.core.call_context import CallOrigin
+    from satrap.core.config.document import ConfigRevisionConflict
+    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.log.debug.policy import DebugPolicy, DebugPolicyStore
+
+    origin = CallOrigin("qq", "bot1", "GroupMessage", "group1", "member1", "msg1", "req1", conversation_kind="group")
+    obj = DebugObject.from_origin(origin)
+    assert DebugObject.from_origin(replace(origin, actor_id="member2", request_id="req2", conversation_id="new-context")) == obj
+    store = DebugPolicyStore(tmp_path / "config" / "debug.json")
+    second_process = DebugPolicyStore(store.path)
+    initial = store.read()
+    assert not initial.resolve(obj).enabled and initial.resolve(obj).mode == "inherit"
+    assert not store.path.exists()
+    store.set_object(obj, "on", initial.revision)
+    active = second_process.read().resolve(obj)
+    assert active.enabled and active.mode == "on"
+    assert DebugPolicyStore(store.path).read().resolve(obj) == active
+    for changed in (replace(obj, platform_id="other"), replace(obj, self_id="bot2"),
+                    replace(obj, conversation_kind="private"), replace(obj, target_id="group2")):
+        assert not second_process.read().resolve(changed).enabled
+    with pytest.raises(ConfigRevisionConflict):
+        second_process.set_default(True, initial.revision)
+    store.set_default(True, active.revision)
+    assert second_process.read().resolve(obj).mode == "on"
+    other = replace(obj, target_id="group2")
+    assert second_process.read().resolve(other).enabled
+    store.set_object(other, "off", store.read().revision)
+    assert not second_process.read().resolve(other).enabled
+    store.set_object(obj, "inherit", store.read().revision)
+    assert second_process.read().resolve(obj).mode == "inherit" and second_process.read().resolve(obj).enabled
+    store.set_default(False, store.read().revision)
+    assert not second_process.read().resolve(obj).enabled
+    assert active.enabled   # 已受理请求继续使用冻结快照
+    valid = DebugPolicy().payload()
+    for broken in ({**valid, "default_enabled": "false"}, {**valid, "max_body_mb": 100, "max_request_mb": 1},
+                   {**valid, "retention_days": False}, {**valid, "objects": [{"object": obj.payload(), "mode": "inherit"}]},
+                   {**valid, "objects": [{"object": obj.payload(), "mode": "on"}]*2}):
+        with pytest.raises(ValueError):
+            DebugPolicy.parse(broken)
+    store.path.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError):
+        second_process.read()
+
+
+def test_advanced_debug_chain_store_preserves_shared_bodies_and_event_ownership(tmp_path):
+    """诊断链路分页不解码正文, 多请求共享及清理保留活跃引用, 损坏内容明确拒绝"""
+    from dataclasses import replace
+    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.log.debug.store import DebugStore
+
+    store = DebugStore(tmp_path / "debug" / "backend.sqlite", "backend")
+    assert store.contexts()["contexts"] == [] and not store.path.exists()
+    obj = DebugObject("qq", "bot", "group", "group")
+    old = time.time() - 9 * 86400
+    first = DebugEvent("request-old", obj, "context-before-new", "群标题", "event-old", 0, "model", "start",
+                       "model1", "", old, "running", {}, {"input": {"model": "example", "messages": [{"role": "system", "content": "稳定提示"*200}, {"role": "user", "content": "问题"}]}}, "revision")
+    store.append([first, replace(first, event_id="end-old", sequence=1, category="request", phase="end", status="success", bodies={})])
+    second = replace(first, request_id="request-new", context_id="context-after-new", event_id="event-new", recorded_at=time.time())
+    store.append([second])
+    assert len(store.contexts()["contexts"]) == 2
+    assert store.events("request-new")["events"][0]["body_slots"] == ["input"]
+    assert store.body("request-new", "event-new", "input") == second.bodies["input"]
+    with pytest.raises(ValueError, match="不属于"):
+        store.body("request-old", "event-new", "input")
+    with store.connect() as db:
+        roots = db.execute("SELECT count(DISTINCT body_key),count(*) FROM debug_event_bodies").fetchone()
+        assert tuple(roots) == (1, 2)
+    result = store.cleanup(retention_days=7, target_bytes=100_000_000)
+    assert result["deleted_requests"] == 1
+    assert store.requests()["requests"][0]["request_id"] == "request-new"
+    assert store.body("request-new", "event-new", "input") == second.bodies["input"]
+    with store.connect(write=True) as db:
+        key = db.execute("SELECT body_key FROM debug_event_bodies WHERE event_id='event-new'").fetchone()[0]
+        db.execute("UPDATE debug_bodies SET body=? WHERE key=?", (b"broken", key))
+    with pytest.raises(ValueError):
+        store.body("request-new", "event-new", "input")
+
+
+def test_advanced_debug_ordered_message_prefixes_share_bounded_sequence_nodes(tmp_path):
+    """连续增长的模型消息保留真实顺序, 新前缀只增量保存正文块和目录"""
+    import sqlite3
+    from satrap.core.log.debug.codec import DebugBodyCodec
+
+    with sqlite3.connect(":memory:") as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        DebugBodyCodec.initialize(db)
+        messages = []
+        keys = []
+        for index in range(256):
+            messages.append({"role": "user", "content": f"消息{index}"})
+            codec = DebugBodyCodec(db)
+            keys.append(codec.put({"model": "example", "messages": messages}))
+        codec = DebugBodyCodec(db)
+        for length in (1, 31, 32, 33, 127, 128, 255, 256):
+            assert codec.read(keys[length-1]) == {"model": "example", "messages": messages[:length]}
+        count = db.execute("SELECT count(*) FROM debug_bodies").fetchone()[0]
+        assert count < 256 * 5
+        assert codec.read(codec.put({"messages": []})) == {"messages": []}
+        escaped = {"content": "\x01" * 1_500_000}
+        assert codec.read(codec.put(escaped)) == escaped   # 原始正文未超默认预算, JSON 转义不能导致已采集正文无法读取
+        with pytest.raises(ValueError, match="预算"):
+            codec.read(keys[-1], max_bytes=10)
+
+
+def test_advanced_debug_existing_store_maintenance_restarts_without_new_capture(tmp_path, monkeypatch):
+    """重启后已有库继续清理, 默认关闭且没有库时不创建诊断线程或文件"""
+    from dataclasses import replace
+    from unittest.mock import Mock
+    from satrap.core.log.debug import capture
+    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.log.debug.store import DebugStore
+    store = DebugStore(tmp_path / "backend.sqlite", "backend")
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    monkeypatch.setattr(capture, "debug_store", lambda service=None: store)
+    writer_factory = Mock()
+    monkeypatch.setattr(capture, "debug_writer", writer_factory)
+    capture.maintain_existing_debug("backend")
+    writer_factory.assert_not_called()
+    assert not store.path.exists()
+    event = DebugEvent("expired", DebugObject("qq", "bot", "group", "room"), "context", "", "start", 0,
+                       "request", "start", "", "", time.time() - 9 * 86400, "", {}, {}, "v1")
+    store.append([event, replace(event, event_id="end", sequence=1, phase="end", status="success")])
+    capture.maintain_existing_debug("backend")
+    writer_factory.assert_called_once_with("backend")
+    writer = capture.DebugWriter(store)
+    try:
+        writer._maintain()
+        assert store.requests()["requests"] == []
+    finally:
+        writer.close()
+
+
+def test_advanced_debug_capture_freezes_policy_redacts_and_keeps_tools_across_new_contexts(tmp_path, monkeypatch):
+    """高级采集冻结设置, 脱敏正文, 保留工具和新上下文, 关闭后下一请求不再写入"""
+    from dataclasses import replace
+    from satrap.core.log.debug import capture
+    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.log.debug.policy import policy_store
+    from satrap.core.log.debug.store import DebugStore
+
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    obj = DebugObject("qq", "bot", "group", "group")
+    store = DebugStore(tmp_path / "logs" / "debug.sqlite", "backend")
+    writer = capture.DebugWriter(store)
+    monkeypatch.setattr(capture, "debug_writer", lambda: writer)
+    settings = policy_store()
+    try:
+        with capture.debug_request(obj, "off-request", input_data="不应保存") as trace:
+            assert trace is None
+        assert not store.path.exists()
+        settings.set_object(obj, "on", settings.read().revision)
+        with capture.debug_request(obj, "first-request", context_id="first-context", input_data={"text": "第一条消息"}) as trace:
+            assert trace is not None
+            with capture.debug_span("tool", metadata={"name": "read_file"}, bodies={"arguments": {"path": "example.txt"}}):
+                capture.record_debug("tool_result", "end", status="completed", bodies={"result": {"ok": True, "text": "返回正文"}})
+        with capture.debug_request(obj, "second-request", context_id="new-context", input_data="/new 之后的消息") as trace:
+            assert trace is not None
+            settings.set_object(obj, "off", settings.read().revision)
+            capture.record_debug("model", "end", bodies={"output": {"api_key": "should-not-appear", "text": "Bearer secret-token"}})
+        with capture.debug_request(obj, "third-request", input_data="关闭之后") as trace:
+            assert trace is None
+        assert writer.flush()
+        requests = store.requests()["requests"]
+        assert {row["request_id"] for row in requests} == {"first-request", "second-request"}
+        model = next(row for row in store.events("second-request")["events"] if row["category"] == "model")
+        body = store.body("second-request", model["event_id"], "output")
+        assert body == {"api_key": "[REDACTED]", "text": "[REDACTED]"}
+        assert {row["context_id"] for row in store.contexts()["contexts"]} == {"first-context", "new-context"}
+        selection = replace(settings.read().resolve(obj), enabled=True, max_body_mb=1, max_request_mb=1)
+        oversized = capture.DebugTrace(selection, "large-request", writer=writer)
+        oversized.emit("request", "start", bodies={"input": "中"*1_000_000})
+        oversized.finish()
+        assert writer.flush()
+        large = next(row for row in store.requests()["requests"] if row["request_id"] == "large-request")
+        assert large["incomplete"]
+        assert capture.current_trace() is None
+    finally:
+        writer.close()
+
 def expired(root, identity="123-aaaaaaaaaaaaaaaa"):
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"SATRAP-test-20200101-{identity}.log"
     path.write_text("过期", encoding="utf-8")
     return path
+
+
+@pytest.mark.asyncio
+async def test_advanced_debug_observes_sdk_streams_without_changing_results(tmp_path, monkeypatch):
+    """真实 SDK 数据类型覆盖同步, 异步, 流式和异常, 诊断故障不能触发额外模型调用"""
+    from openai.types.chat import ChatCompletion, ChatCompletionChunk
+    from satrap.core.log.debug import capture
+    from satrap.core.log.debug.model import complete_sync, complete_async
+    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.log.debug.policy import DebugPolicy
+    from satrap.core.log.debug.store import DebugStore
+    from dataclasses import replace
+
+    obj = DebugObject("qq", "bot", "group", "group")
+    writer = capture.DebugWriter(DebugStore(tmp_path / "debug.sqlite", "backend"))
+    monkeypatch.setattr(capture, "debug_writer", lambda: writer)
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    capture.policy_store().save(DebugPolicy(default_enabled=True), DebugPolicy().revision)
+    response = ChatCompletion.model_validate({"id": "response", "created": 1, "model": "model", "object": "chat.completion",
+        "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "真实答案"}}]})
+    chunks = [ChatCompletionChunk.model_validate({"id": "stream", "created": 1, "model": "model", "object": "chat.completion.chunk",
+              "choices": [{"index": 0, "delta": {"content": text, "reasoning_content": f"公开思考{index}"}, "finish_reason": "stop" if index else None}]}) for index, text in enumerate(("真实", "分块"))]
+    calls = []
+    def create(**params):
+        calls.append(params)
+        return iter(chunks) if params.get("stream") else response
+    async def async_create(**params):
+        calls.append(params)
+        async def stream():
+            for chunk in chunks:
+                yield chunk
+        return stream() if params.get("stream") else response
+    try:
+        with capture.debug_request(obj, "sdk", context_id="context"):
+            assert complete_sync(create, {"messages": [], "model": "model"}, 60) is response
+            assert list(complete_sync(create, {"messages": [], "stream": True}, 60)) == chunks
+            assert await complete_async(async_create, {"messages": []}, 60) is response
+            stream = await complete_async(async_create, {"messages": [], "stream": True}, 60)
+            assert [chunk async for chunk in stream] == chunks
+        assert len(calls) == 4 and writer.flush()
+        events = writer.store.events("sdk")["events"]
+        assert len([entry for entry in events if entry["category"] == "model" and entry["phase"] == "end"]) == 4
+        output = [entry for entry in events if "output" in entry["body_slots"]][0]
+        assert writer.store.body("sdk", output["event_id"], "output")["choices"][0]["message"]["content"] == "真实答案"
+        partial = [entry for entry in events if "output_chunk" in entry["body_slots"]][0]
+        assert writer.store.body("sdk", partial["event_id"], "output_chunk") == [{"index": 0, "content": "真实分块", "reasoning_content": "公开思考0公开思考1", "tool_calls": []}]
+        with capture.debug_request(obj, "failed-sdk"):
+            def fail(**params):
+                raise TimeoutError("不得泄露 sk-secret-credentials-value")
+            with pytest.raises(TimeoutError):
+                complete_sync(fail, {"messages": []}, 60)
+        assert writer.flush()
+        failed = [entry for entry in writer.store.events("failed-sdk")["events"] if entry["category"] == "model"][-1]
+        assert failed["status"] == "timeout" and "sk-secret" not in str(failed)
+        broken = capture.DebugTrace(replace(DebugPolicy().resolve(obj), enabled=True), "broken", writer=writer)
+        monkeypatch.setattr(writer, "submit", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("故障")))
+        broken.emit("request", "start", bodies={"input": "实际输入"})
+        broken.finish()
+        assert broken.incomplete
+    finally:
+        writer.close()
+
+
+def test_advanced_debug_cold_catalog_and_stable_tied_pagination(tmp_path):
+    """已有路由无需日志即可选择, 同刻分页不遗漏, 旧式身份不猜测且不创建数据库"""
+    from satrap.core.log.debug.catalog import available_contexts
+    from satrap.core.storage.layout import StorageLayout
+    from satrap.core.framework.UserManager import UserInfoStore
+    from satrap.core.conversation import ConversationRoute
+    from satrap.core.log.debug.store import DebugStore
+    from satrap.core.log.debug.contracts import DebugObject, DebugEvent
+    from dataclasses import replace
+    layout = StorageLayout(tmp_path / "data")
+    layout.ensure_platform("qq", platform_type="onebot")
+    users = UserInfoStore(layout.platform_db("qq"))
+    route = ConversationRoute("user", "qq", "async_simple", scope="group", self_id="bot", group_id="group")
+    with users._connect() as db:
+        db.execute("INSERT INTO context_sessions VALUES(?,?,?,?,?,?,?,?)", (route.key, "", "qq", "edictum", "async_simple", "old-context", 1, 2))
+    page = available_contexts(layout, "qq", limit=1)
+    assert page["contexts"][0]["object"]["target_id"] == "group"
+    assert page["contexts"][0]["context_id"] == "old-context"
+    assert available_contexts(layout, "chat")["contexts"] == []
+    assert not layout.platform_db("chat").exists()
+    store = DebugStore(tmp_path / "debug.sqlite", "backend")
+    event = DebugEvent("req0", DebugObject("qq", "bot", "group", "group"), "context", "标题", "e0", 0, "request", "start", "", "", 1.0, "", {}, {}, "rev")
+    for index in range(7):
+        store.append([replace(event, request_id=f"req{index}", event_id=f"e{index}")])
+    first = store.requests(limit=3)
+    second = store.requests(limit=3, cursor=first["next_cursor"])
+    third = store.requests(limit=3, cursor=second["next_cursor"])
+    assert [item["request_id"] for page in (first, second, third) for item in page["requests"]] == [f"req{index}" for index in range(7)]
+    assert not third["has_more"]
+
+
+@pytest.mark.asyncio
+async def test_advanced_debug_http_auth_settings_export_and_source_isolation(tmp_path, monkeypatch):
+    """真实 HTTP 分派验证三服务认证隔离, 配置 CAS, 懒读正文及逐行导出"""
+    from satrap.core.backend import control_server as control
+    from satrap.core.server_auth import ServerAuth
+    from satrap.core.utils.minihttp import MiniHTTPServer
+    from satrap.core.log.debug.capture import debug_store
+    from satrap.core.log.debug.policy import DebugPolicy
+    from satrap.core.log.debug.contracts import DebugObject, DebugEvent
+    from dataclasses import replace
+    monkeypatch.setenv("SATRAP_LOG_ROOT", str(tmp_path / "logs"))
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    obj = DebugObject("qq", "bot", "group", "group")
+    for source in ("control", "backend", "chat"):
+        event = DebugEvent(source+"-request", obj, "context", "标题", source+"-event", 0, "request", "start", "", "", 1.0, "", {}, {"input": source+"正文"}, "rev")
+        debug_store(source).append([event, replace(event, sequence=1, event_id=source+"-end", phase="end", status="success", bodies={})])
+    servers, endpoints = [], []
+    async def request(port, token, path, method="GET", payload=None):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        raw_body = json.dumps(payload).encode() if payload is not None else b""
+        try:
+            writer.write(f"{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Length: {len(raw_body)}\r\n\r\n".encode() + raw_body)
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.read(), 10)
+            head, body = raw.split(b"\r\n\r\n", 1)
+            return int(head.split()[1]), body
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    try:
+        server = await asyncio.start_server(control._handle_request, "127.0.0.1", 0)
+        servers.append(server); endpoints.append(("control", server.sockets[0].getsockname()[1], control._CONTROL_AUTH.token))
+        for source in ("backend", "chat"):
+            token = source+"-debug-token-at-least-32-characters"
+            http = MiniHTTPServer("127.0.0.1", 0, session_namespace=source, auth=ServerAuth.create("127.0.0.1", 0, token=token))
+            server = await asyncio.start_server(http._handle_connection, "127.0.0.1", 0)
+            servers.append(server); endpoints.append((source, server.sockets[0].getsockname()[1], token))
+        for source, port, token in endpoints:
+            assert (await request(port, "invalid", "/api/debug/contexts"))[0] == 401
+            assert (await request(port, "invalid", "/api/debug/export?request_id="+source+"-request"))[0] == 401
+            status, raw = await request(port, token, "/api/debug/contexts")
+            assert status == 200 and json.loads(raw)["contexts"][0]["service"] == source
+            status, raw = await request(port, token, f"/api/debug/body?request_id={source}-request&event_id={source}-event&slot=input")
+            assert status == 200 and json.loads(raw)["body"] == source+"正文"
+            assert (await request(port, token, "/api/debug/body?request_id=foreign&event_id="+source+"-event&slot=input"))[0] == 400
+            status, raw = await request(port, token, f"/api/debug/export?request_id={source}-request")
+            lines = [json.loads(line) for line in raw.splitlines()]
+            assert status == 200 and lines[0]["request"]["request_id"] == source+"-request"
+            assert lines[1]["bodies"]["input"] == source+"正文" and lines[-1]["export_complete"]
+            assert (await request(port, token, "/api/debug/contexts?limit=101"))[0] == 400
+            assert (await request(port, token, "/api/debug/contexts?service=foreign"))[0] == 400
+        _, port, token = endpoints[0]
+        status, raw = await request(port, token, "/config/debug-logging")
+        snapshot = json.loads(raw)
+        assert status == 200 and not snapshot["policy"]["default_enabled"]
+        payload = {"policy": DebugPolicy(default_enabled=True).payload(), "expected_revision": snapshot["revision"]}
+        assert (await request(port, token, "/config/debug-logging", "PUT", payload))[0] == 200
+        assert (await request(port, token, "/config/debug-logging", "PUT", payload))[0] == 409
+    finally:
+        for server in servers:
+            server.close()
+            await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_advanced_debug_real_session_model_tool_approval_and_runtime_interruption(tmp_path, monkeypatch):
+    """真实会话执行两次模型调用和一次审批拒绝, 保留父子步骤, 工作流归属及中断证据"""
+    from unittest.mock import AsyncMock
+    from openai.types.chat import ChatCompletion
+    from satrap import AsyncLLM
+    from satrap.edictum import AsyncSimpleSession
+    from satrap.core.utils.TCBuilder import AsyncTool
+    from satrap.core.approval.coordinator import approve_async
+    from satrap.core.approval.policy import RiskLevel
+    from satrap.core.approval.state import session_approval
+    from satrap.core.approval.contracts import ApprovalResult
+    from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
+    from satrap.core.log.debug import capture
+    from satrap.core.log.debug.policy import DebugPolicy
+    from satrap.core.log.debug.store import DebugStore
+    from satrap.core.log.debug.contracts import DebugObject
+    from dataclasses import replace
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    capture.policy_store().save(DebugPolicy(default_enabled=True), DebugPolicy().revision)
+    store = DebugStore(tmp_path / "chat.sqlite", "chat")
+    writer = capture.DebugWriter(store)
+    monkeypatch.setattr(capture, "debug_writer", lambda: writer)
+    monkeypatch.setattr(capture, "debug_store", lambda service=None: store)
+    llm = AsyncLLM(api_key="synthetic-key", base_url="http://127.0.0.1:9/v1", model="synthetic", supports_visual_input=False)
+    first = ChatCompletion.model_validate({"id": "m1", "created": 1, "model": "synthetic", "object": "chat.completion",
+             "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": None,
+                 "tool_calls": [{"id": "call-guard", "type": "function", "function": {"name": "guarded_action", "arguments": "{}"}}]}}]})
+    final = ChatCompletion.model_validate({"id": "m2", "created": 1, "model": "synthetic", "object": "chat.completion",
+             "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "审批拒绝, 未执行操作"}}]})
+    create = AsyncMock(side_effect=[first, final])
+    monkeypatch.setattr(llm.client.chat.completions, "create", create)
+    session = AsyncSimpleSession("actual-chat", llm, db_path=str(tmp_path / "platform.db"))
+    bind_environment(session, replace(environment_snapshot(session), session_root=tmp_path / "session"))
+    engine = session_approval(session)
+    engine.set_mode("user")
+    session.approval_provider = lambda request: ApprovalResult.for_request(request, "deny", "本次操作未授权", "user")
+    class Guard(AsyncTool):
+        tool_name = "guarded_action"
+        description = "集成场景中的审批动作"
+        params_dict = {}
+
+        async def execute(self):
+            """
+            验证真实审批分派, 不执行外部副作用
+
+            返回:
+            - 放行状态及拒绝原因
+            """
+            allowed, reason = await approve_async(session, engine, "shell", RiskLevel.HIGH, "验证审批", action={"command": "synthetic"}, tool_name=self.tool_name)
+            return {"ok": allowed, "reason": reason}
+    obj = DebugObject("chat", "local", "chat", "actual-chat")
+    try:
+        await session.initialize()
+        session.tools_manager.register_tool(Guard())
+        with capture.debug_request(obj, "actual-request", context_id="actual-chat"):
+            capture.record_debug("chat", "start", metadata={"reply_version": {"turn_id": 1, "variant_index": 0}})
+            answer = await session.run("执行测试动作")
+        assert answer == "审批拒绝, 未执行操作" and create.call_count == 2 and writer.flush()
+        events = store.events("actual-request")["events"]
+        assert {"context_preparation", "model", "tool", "tool_result", "approval"} <= {event["category"] for event in events}
+        approval = next(event for event in events if event["category"] == "approval" and event["phase"] == "end")
+        assert approval["status"] == "deny" and approval["parent_span_id"] == "call-guard"
+        assert store.find_link("turn", json.dumps([obj.key, "actual-chat", 1, 0])) == "actual-request"
+        assert capture.previous_chat_request(obj, "actual-chat", {"turn_id": 1, "variant_index": 1}, None) == "actual-request"
+        assert any(item["context_kind"] == "workflow" for item in store.contexts()["contexts"])
+        unfinished = capture.DebugTrace(capture.policy_store().read().resolve(obj), "unfinished", context_id="actual-chat", writer=writer)
+        unfinished.emit("request", "start", bodies={"input": "未完成的请求"})
+        assert writer.flush()
+        assert next(item for item in store.requests()["requests"] if item["request_id"] == "unfinished")["status"] == "running"
+        writer.close()
+        row = next(item for item in store.requests()["requests"] if item["request_id"] == "unfinished")
+        assert row["status"] == "interrupted" and row["incomplete"]
+    finally:
+        writer.close()
+        await llm.client.close()
+
+
+def test_advanced_debug_concurrent_objects_and_capacity_pause_keep_business_running(tmp_path, monkeypatch):
+    """并发对象不串正文, 容量耗尽暂停采集并显式标记缺口, 业务仍可完成"""
+    from concurrent.futures import ThreadPoolExecutor
+    from dataclasses import replace
+    from satrap.core.log.debug import capture
+    from satrap.core.log.debug.policy import DebugPolicy
+    from satrap.core.log.debug.store import DebugStore
+    from satrap.core.log.debug.contracts import DebugObject
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    capture.policy_store().save(DebugPolicy(default_enabled=True), DebugPolicy().revision)
+    store = DebugStore(tmp_path / "backend.sqlite", "backend")
+    writer = capture.DebugWriter(store)
+    monkeypatch.setattr(capture, "debug_writer", lambda: writer)
+    obj = DebugObject("qq", "bot", "group", "room0")
+    def execute(index):
+        with capture.debug_request(replace(obj, target_id=f"room{index%2}"), f"thread{index}", context_id=f"context{index}", input_data=f"input{index}"):
+            capture.record_debug("tool_result", "end", bodies={"result": f"result{index}"})
+            assert capture.current_trace().request_id == f"thread{index}"
+        assert capture.current_trace() is None
+        return index * 2
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            assert list(pool.map(execute, range(16))) == [index*2 for index in range(16)]
+        assert writer.flush()
+        for index in range(16):
+            events = store.events(f"thread{index}")["events"]
+            assert [entry["sequence"] for entry in events] == [0, 1, 2]
+            assert store.body(f"thread{index}", events[0]["event_id"], "input") == f"input{index}"
+            assert store.body(f"thread{index}", events[1]["event_id"], "result") == f"result{index}"
+        assert len(store.contexts()["contexts"]) == 16
+        assert len(store.contexts(query="context1")["contexts"]) == 7
+        assert not store.contexts(query="%")["contexts"]
+        assert not store.contexts(context_kind="workflow")["contexts"]
+        assert len(store.contexts(recording_keys=[obj.key])["contexts"]) == 8
+        assert len(store.contexts(recording_keys=[obj.key], exclude_keys=True)["contexts"]) == 8
+        with capture.debug_request(obj, "capacity-active", context_id="capacity", input_data="继续执行") as trace:
+            assert trace is not None and writer.flush()
+            monkeypatch.setattr(writer, "_quota", lambda: 1)
+            writer._maintain()
+            assert writer.quota_blocked
+            monkeypatch.setattr(writer, "_maintain", lambda: None)
+            capture.record_debug("tool_result", "end", bodies={"result": "容量不足时省略"})
+            with capture.debug_request(obj, "capacity-paused") as paused:
+                assert paused is None
+                from satrap.core.log.debug.model import complete_sync
+                result = {"answer": "业务仍能正常返回"}
+                assert complete_sync(lambda **kwargs: result, {"messages": []}, 60) is result
+        assert writer.flush()
+        row = next(item for item in store.requests()["requests"] if item["request_id"] == "capacity-active")
+        assert row["status"] == "success" and row["incomplete"]
+        assert writer.dropped_events == 1 and writer.dropped_requests == 1
+    finally:
+        writer.close()
+
+
+def test_advanced_debug_deferred_group_and_friend_decisions_link_to_original_object(tmp_path, monkeypatch):
+    """群和好友审批在原请求结束后仍关联真实来源, 相同动作 ID 不跨业务命名空间串链"""
+    from satrap.core.log.debug import capture
+    from satrap.core.log.debug.policy import DebugPolicy
+    from satrap.core.log.debug.store import DebugStore
+    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.config.group_actions import GroupActionStore
+    from satrap.core.friends.store import FriendStore
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    capture.policy_store().save(DebugPolicy(default_enabled=True), DebugPolicy().revision)
+    store = DebugStore(tmp_path / "backend.sqlite", "backend")
+    writer = capture.DebugWriter(store)
+    monkeypatch.setattr(capture, "debug_writer", lambda: writer)
+    monkeypatch.setattr(capture, "debug_store", lambda service=None: store)
+    groups = GroupActionStore(tmp_path / "platform.db")
+    friends = FriendStore(tmp_path / "platform.db")
+    obj = DebugObject("qq", "100", "group", "200")
+    try:
+        with capture.debug_request(obj, "action-initial", context_id="before-new"):
+            with capture.debug_span("tool", span_id="action-tool"):
+                groups.submit("shared-action", "100", "200", "set_group_name", {"name": "测试群"}, "model", 1, approval_required=True)
+                friends.register("100", "shared-action", "delete_friend", {"user_id": "300"}, "model", actor_id="400")
+        assert writer.flush()
+        assert groups.decide("100", "200", "shared-action", approve=True, policy_revision=1)["state"] == "executing"
+        assert writer.flush()
+        assert groups.settle("100", "200", "shared-action", "succeeded", "platform_confirmed")["state"] == "succeeded"
+        assert friends.transition("100", "shared-action", "pending", "rejected")
+        assert writer.flush()
+        requests = store.requests()["requests"]
+        assert len(requests) == 4 and {item["object_key"] for item in requests} == {obj.key}
+        decisions = {}
+        for request in requests:
+            for event in store.events(request["request_id"])["events"]:
+                if event["category"] == "platform_approval" and event["status"] != "pending":
+                    decisions[(event["metadata"]["domain"], event["status"])] = request
+                    assert event["parent_span_id"] == ""
+        approved = decisions[("group", "executing")]
+        assert approved["parent_request_id"] == "action-initial"
+        assert decisions[("group", "succeeded")]["parent_request_id"] == approved["request_id"]
+        assert decisions[("friend", "rejected")]["parent_request_id"] == "action-initial"
+        assert {item["context_id"] for item in requests} == {"before-new"}
+    finally:
+        writer.close()
+
+
+def test_advanced_debug_end_frame_cannot_overtake_queued_events(tmp_path, monkeypatch):
+    """阻塞首批写入后排入跨批次事件, 收尾落盘前必须已保存全部更早序号"""
+    import threading
+    from satrap.core.log.debug import capture
+    from satrap.core.log.debug.policy import DebugPolicy
+    from satrap.core.log.debug.store import DebugStore
+    from satrap.core.log.debug.contracts import DebugObject
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    store = DebugStore(tmp_path / "backend.sqlite", "backend")
+    entered, release = threading.Event(), threading.Event()
+    original = store.append
+    closed = []
+    def append(events):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        original(events)
+        for event in events:
+            if event.category == "request" and event.phase == "end":
+                with store.connect() as db:
+                    sequences = [row[0] for row in db.execute("SELECT sequence FROM debug_events WHERE request_id=? ORDER BY sequence", (event.request_id,))]
+                assert sequences == list(range(event.sequence + 1))
+                closed.append(event.request_id)
+    monkeypatch.setattr(store, "append", append)
+    writer = capture.DebugWriter(store, capacity=256)
+    trace = capture.DebugTrace(DebugPolicy(default_enabled=True).resolve(DebugObject("qq", "bot", "group", "room")), "ordered", writer=writer)
+    try:
+        trace.emit("request", "start")
+        assert entered.wait(10)
+        for index in range(100):
+            trace.emit("model", "update", metadata={"part": index})
+        trace.finish()
+        release.set()
+        assert writer.flush(20) and closed == ["ordered"]
+        first = store.events("ordered", limit=64)
+        second = store.events("ordered", after=first["events"][-1]["sequence"], limit=64)
+        assert [item["sequence"] for page in (first, second) for item in page["events"]] == list(range(102))
+    finally:
+        release.set()
+        writer.close()
 
 def test_default_policy_and_compare_and_swap(tmp_path):
     store = store_for(tmp_path)
