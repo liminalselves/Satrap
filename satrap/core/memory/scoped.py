@@ -244,9 +244,10 @@ class ScopedMemories:
         except ValueError as exc:
             raise MemoryError("invalid_cursor", "筛选或记忆内容已变化, 请重新查询") from exc
 
-    def mutate(self, operation: str, values: dict[str, Any], *, actor: str, current_message: str = "", operator: bool = False, operation_id: str) -> dict[str, Any]:
+    def mutate(self, operation: str, values: dict[str, Any], *, actor: str, current_message: str = "", operator: bool = False,
+               require_approval: bool = True, operation_id: str) -> dict[str, Any]:
         """
-        事务保存本人偏好或群记忆提案, 人工管理可直接应用
+        事务保存本人偏好或按宿主策略处理群记忆, 人工管理直接应用
 
         参数:
         - operation: create, update 或 delete
@@ -254,13 +255,16 @@ class ScopedMemories:
         - actor: 宿主确认的发起者
         - current_message: 当前可信来源消息
         - operator: 是否由已认证管理入口调用
+        - require_approval: 群共享记忆是否需要审批, 默认 True; 仅由宿主设置, 不放宽来源和所有者校验
         - operation_id: 绑定当前范围的幂等标识
 
         返回:
-        - saved, deleted, already_exists 或 pending 及真实记录状态
+        - saved, deleted, already_exists 或 pending 及真实记录状态; 已登记操作始终返回首次结果, 不随审批设置变化
         """
         if operation not in {"create", "update", "delete"} or not actor or not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 512:
             raise MemoryError("invalid_argument", "记忆操作或发起者无效")
+        if type(require_approval) is not bool:
+            raise MemoryError("invalid_argument", "记忆审批设置必须为布尔值")
         fingerprint = hashlib.sha256(json.dumps([operation, values, actor, operator], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with closing(self.store._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -309,7 +313,7 @@ class ScopedMemories:
             if existing is not None:
                 return {"ok": True, "status": "already_exists", "memory": self._record(connection, existing)}
             payload = {"title": title, "content": content, "kind": kind, "owner_user_id": owner, "key": key, "source_message_ids": sources}
-            if kind == "group_rule" and not operator:
+            if kind == "group_rule" and not operator and require_approval:
                 if connection.execute("SELECT COUNT(*) FROM memory_proposals WHERE scope_key=? AND state='pending'", (self.scope.key,)).fetchone()[0] >= 50:
                     raise MemoryError("quota_exceeded", "当前群待审批提案已达上限")
                 proposal = "mp_" + uuid.uuid4().hex

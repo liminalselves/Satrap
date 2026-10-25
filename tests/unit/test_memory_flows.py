@@ -79,6 +79,9 @@ async def test_approval_api_returns_applied_result(monkeypatch, tmp_path):
     proposal = repository.mutate("create", {"kind": "group_rule", "key": "meeting", "title": "会议", "content": "周五开会", "source_message_ids": ["source"]},
                                  actor="member", current_message="source", operation_id="propose")
     query = urlencode({"self_id": "bot", "chat_id": "group"})
+    listed = _json_body(await _request(f"/api/platforms/future/memory/proposals?{query}"))
+    assert listed["ok"] is True and listed["items"][0]["proposal_id"] == proposal["proposal_id"]
+    assert listed["items"][0]["state"] == "pending" and listed["items"][0]["proposed"]["content"] == "周五开会"
     root = f"/api/platforms/future/memory/proposals/{proposal['proposal_id']}/decision?{query}"
     result = _json_body(await _request(root, "POST", json.dumps({"approve": True, "expected_revision": 0}).encode()))
     assert result["status"] == "approved" and result["memory"]["content"] == "周五开会"
@@ -116,6 +119,77 @@ async def test_memory_plugin_works_without_group_chat_or_base_take(tmp_path, asy
     await PipelineScheduler(Invoker(instance, asynchronous)).execute(next_event)
     assert "称呼我为小明" in str(script.requests[-1][0])
     assert "长期记忆资料" in str(script.requests[-1][0])
+
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_group_memory_auto_approval_through_model_tools(tmp_path: Path, asynchronous: bool) -> None:
+    """
+    通过真实插件和模型工具完成群共享记忆的免审批新增, 修改和删除
+
+    参数:
+    - tmp_path: 隔离的平台与会话目录
+    - asynchronous: 是否使用异步会话, 同步会话经生产线程桥接
+    """
+    adapter, event, _ = setup(tmp_path)
+    repository = ScopedMemories(adapter.message_archive, SCOPE)
+    source = event.call_origin.source_message_id
+    observed: list[dict[str, Any]] = []
+
+    def update_call(_messages: object, _options: object) -> LLMCallResponse:
+        """
+        在新增完成后检查真实记录并发起模型修改
+
+        参数:
+        - _messages: 实际模型历史, 本阶段不读取
+        - _options: 实际模型调用选项, 本阶段不读取
+
+        返回:
+        - 带当前记忆 ID 和修订的工具请求
+        """
+        item = repository.list(kind="group_rule")["items"][0]
+        observed.append(item)
+        assert item["revision"] == 1 and item["origin"] == "model"
+        return LLMCallResponse("tools_call", "", tool_calls=[{"id": "change-rule", "name": "update_memory", "arguments": {
+            "memory_id": item["memory_id"], "expected_revision": item["revision"], "content": "修正后的群约定", "source_message_ids": [source]}}])
+
+    def delete_call(_messages: object, _options: object) -> LLMCallResponse:
+        """
+        在修改完成后检查真实记录并发起模型删除
+
+        参数:
+        - _messages: 实际模型历史, 本阶段不读取
+        - _options: 实际模型调用选项, 本阶段不读取
+
+        返回:
+        - 带当前修订和本轮删除来源的工具请求
+        """
+        item = repository.get(observed[0]["memory_id"])["memory"]
+        observed.append(item)
+        assert item["revision"] == 2 and item["content"] == "修正后的群约定"
+        return LLMCallResponse("tools_call", "", tool_calls=[{"id": "forget-rule", "name": "delete_memory", "arguments": {
+            "memory_id": item["memory_id"], "expected_revision": item["revision"], "request_message_id": source}}])
+
+    script = Script([
+        LLMCallResponse("tools_call", "", tool_calls=[{"id": "save-rule", "name": "add_memory", "arguments": {
+            "kind": "group_rule", "key": "rule", "title": "群约定", "content": "最初的群约定", "source_message_ids": [source]}}]),
+        update_call, delete_call, LLMCallResponse("message", "群记忆操作已生效"),
+    ])
+    instance = await _memory_platform_session(tmp_path, script, asynchronous, False)
+    instance.memory_db = str(adapter.message_archive.database)
+    plugin_dir = str(Path(__file__).resolve().parents[2] / "satrap/expend/plugins/memory")
+    config = {"group_write_enabled": True, "group_auto_approve": True}
+    if asynchronous:
+        await instance.install_plugin(plugin_dir, config=config)
+    else:
+        instance.install_plugin(plugin_dir, config=config)
+    await PipelineScheduler(Invoker(instance, asynchronous)).execute(event)
+    assert len(script.requests) == 4 and len(observed) == 2
+    assert repository.list()["items"] == [] and repository.proposals()["items"] == []
+    with closing(repository.store._connect()) as db:
+        outcomes = [json.loads(row[0])["status"] for row in db.execute("SELECT result_json FROM memory_operations ORDER BY rowid")]
+        assert outcomes == ["saved", "saved", "deleted"]
 
 
 async def _platform_memory_command_session(tmp_path, asynchronous, private=False, config=None):
@@ -216,9 +290,9 @@ async def test_memory_commands_through_platform_session(tmp_path, asynchronous, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize(("config", "error_message"), [
-    ({"group_write_enabled": False}, "群记忆写入未在记忆插件中开启"),
-    ({"group_write_enabled": True, "memory_mode": "base"}, "群记忆写入未在记忆插件中开启"),
-    ({"group_write_enabled": True, "memory_mode": "disabled"}, "记忆功能已禁用"),
+    ({"group_write_enabled": False, "group_auto_approve": True}, "群记忆写入未在记忆插件中开启"),
+    ({"group_write_enabled": True, "group_auto_approve": True, "memory_mode": "base"}, "群记忆写入未在记忆插件中开启"),
+    ({"group_write_enabled": True, "group_auto_approve": True, "memory_mode": "disabled"}, "记忆功能已禁用"),
 ])
 async def test_group_memory_commands_preserve_write_restrictions(tmp_path, asynchronous, config, error_message):
     """
@@ -331,6 +405,8 @@ async def test_group_write_switch_and_main_workflow_are_checked(tmp_path):
         assert child["error_type"] == "read_only_workflow"
         spoof = await service.group_operation("create", {**values, "owner_user_id": "other"}, access=lambda: {"memory_mode": "full", "group_write_enabled": True})
         assert spoof["error_type"] == "invalid_argument"
+        spoof_approval = await service.group_operation("create", {**values, "require_approval": False}, access=lambda: {"memory_mode": "full", "group_write_enabled": True})
+        assert spoof_approval["error_type"] == "invalid_argument"
     assert ScopedMemories(adapter.message_archive, SCOPE).list()["items"] == []
 
 @pytest.mark.usefixtures('restore_manager')
@@ -754,6 +830,44 @@ def test_group_rule_is_pending_until_transactionally_approved(memories):
     assert result["status"] == "approved"
     assert repository.list()["items"][0]["content"] == "周五开会"
     assert repository.decide(proposal["proposal_id"], True, 0)["status"] == "approved"
+
+def test_auto_approval_keeps_sources_ownership_revisions_and_existing_proposals(memories):
+    """
+    免审批保留来源, 所有者和修订限制, 开关变化不重放旧提案
+
+    参数:
+    - memories: 带两位成员有效来源及固定时钟的群记忆仓储
+    """
+    repository, _ = memories
+    values = {"kind": "group_rule", "key": "pending-rule", "title": "待审约定", "content": "仍需审批", "source_message_ids": ["m1"]}
+    pending = repository.mutate("create", values, actor="user:a", current_message="m1", operation_id="pending-rule")
+    repeated = repository.mutate("create", values, actor="user:a", current_message="m1", require_approval=False, operation_id="pending-rule")
+    assert repeated == pending and pending["status"] == "pending"
+    values = {**values, "key": "automatic-rule", "title": "自动生效约定"}
+    saved = repository.mutate("create", values, actor="user:a", current_message="m1", require_approval=False, operation_id="auto-create")
+    assert saved["status"] == "saved" and saved["memory"]["source_message_ids"] == ["m1"]
+    assert repository.mutate("create", values, actor="user:a", current_message="m1", operation_id="auto-create")["status"] == "saved"
+    memory_id = saved["memory_id"]
+    update = {"memory_id": memory_id, "content": "新约定", "expected_revision": 1, "source_message_ids": ["m2"]}
+    with pytest.raises(MemoryError, match="来源不可用"):
+        repository.mutate("update", {**update, "source_message_ids": ["missing"]}, actor="user:a", current_message="missing", require_approval=False, operation_id="bad-source")
+    with pytest.raises(MemoryError, match="已更新"):
+        repository.mutate("update", {**update, "expected_revision": 2}, actor="user:a", current_message="m2", require_approval=False, operation_id="stale")
+    other = add_preference(repository, owner="user:b", source="m3", operation="other-owner")["memory"]
+    with pytest.raises(MemoryError, match="本人"):
+        repository.mutate("update", {**update, "memory_id": other["memory_id"]}, actor="user:a", current_message="m2", require_approval=False, operation_id="other-owner-update")
+    updated = repository.mutate("update", update, actor="user:a", current_message="m2", require_approval=False, operation_id="auto-update")
+    assert updated["memory"]["revision"] == 2 and updated["memory"]["origin"] == "model"
+    with pytest.raises(MemoryError, match="本轮消息"):
+        repository.mutate("delete", {"memory_id": memory_id, "expected_revision": 2, "request_message_id": "m1"},
+                          actor="user:a", current_message="m2", require_approval=False, operation_id="old-delete-request")
+    deleted = repository.mutate("delete", {"memory_id": memory_id, "expected_revision": 2, "request_message_id": "m2"},
+                                actor="user:a", current_message="m2", require_approval=False, operation_id="auto-delete")
+    assert deleted["status"] == "deleted"
+    assert repository.proposals()["items"][0]["proposal_id"] == pending["proposal_id"]
+    assert repository.proposals()["items"][0]["state"] == "pending"
+    assert repository.get(other["memory_id"])["memory"]["revision"] == 1
+
 
 def test_pending_update_cannot_overwrite_newer_operator_decision(memories):
     repository, _ = memories

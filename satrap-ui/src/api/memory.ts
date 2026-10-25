@@ -11,6 +11,7 @@ export interface MemoryProposal {
   actor_id: string; state: string; created_at: number; expires_at: number;
   proposed: Partial<Pick<ScopedMemory, 'title' | 'content' | 'key' | 'source_message_ids'>>;
 }
+export interface MemoryProposalPage { ok: boolean; items: MemoryProposal[] }
 export interface MemoryPage { ok: boolean; items: ScopedMemory[]; has_more: boolean; next_cursor: string | null }
 export interface MemoryWrite {
   kind?: MemoryKind; owner_user_id?: string; key?: string; title?: string; content?: string;
@@ -29,7 +30,7 @@ export const memoryApi = {
     (await controlClient.patch(`${root(record)}/memories/${encodeURIComponent(id)}`, values, { params: scope(record) })).data,
   remove: async (record: PlatformArchiveRecord, memory: ScopedMemory, key: string): Promise<{ status: string }> =>
     (await controlClient.delete(`${root(record)}/memories/${encodeURIComponent(memory.memory_id)}`, { params: scope(record), data: { expected_revision: memory.revision, idempotency_key: key } })).data,
-  proposals: async (record: PlatformArchiveRecord): Promise<{ items: MemoryProposal[] }> =>
+  proposals: async (record: PlatformArchiveRecord): Promise<MemoryProposalPage> =>
     (await controlClient.get(`${root(record)}/proposals`, { params: scope(record) })).data,
   decide: async (record: PlatformArchiveRecord, proposal: MemoryProposal, approve: boolean): Promise<{ status: string }> =>
     (await controlClient.post(`${root(record)}/proposals/${encodeURIComponent(proposal.proposal_id)}/decision`, { approve, expected_revision: proposal.base_revision }, { params: scope(record) })).data,

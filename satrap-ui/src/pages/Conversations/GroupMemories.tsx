@@ -43,12 +43,12 @@ export function GroupMemories({ record, refresh, onDirty }: { record: PlatformAr
   useEffect(() => {
     let live = true;
     setLoading(true); setError('');
-    const task = tab === 'proposals' ? memoryApi.proposals(record) : memoryApi.list(record, { kind: tab, keyword, user_id: tab === 'member_preference' ? member : undefined, cursor });
-    task.then((result) => {
-      if (!live) return;
-      // 按 ok 字段收窄联合返回, 避免类型断言
-      if ('ok' in result) setPage(result); else setProposals(result.items);
-    }).catch((reason) => { if (live) setError(errorText(reason)); }).finally(() => { if (live) setLoading(false); });
+    const task = tab === 'proposals'
+      ? memoryApi.proposals(record).then((result) => { if (live) setProposals(result.items); })
+      : memoryApi.list(record, { kind: tab, keyword, user_id: tab === 'member_preference' ? member : undefined, cursor })
+        .then((result) => { if (live) setPage(result); });
+    // 两种接口都返回 ok, 按发起请求的页签分派结果, 不把成功标记当成响应类型
+    task.catch((reason) => { if (live) setError(errorText(reason)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [record, tab, keyword, member, cursor, refresh, version]);
 
@@ -101,7 +101,7 @@ export function GroupMemories({ record, refresh, onDirty }: { record: PlatformAr
 
   return <Card className="min-w-0 space-y-4">
     <h2 className="break-all text-lg font-medium">{record.label || record.chat_id} · 长期记忆</h2>
-    <p className="text-sm text-text-secondary">群记忆对本群生效，成员偏好按成员 ID 分开保存。修改在下一轮读取生效；清空模型上下文不会删除这里的记录。人工修改直接生效，模型提交的群记忆需要审批。</p>
+    <p className="text-sm text-text-secondary">群记忆对本群生效，成员偏好按成员 ID 分开保存。修改在下一轮读取生效；清空模型上下文不会删除这里的记录。人工修改直接生效，模型操作群记忆是否需要审批由记忆插件配置决定；待审批提案不会提前生效。</p>
     <div className="flex flex-wrap gap-2">{([['group_rule', '群记忆'], ['member_preference', '成员偏好'], ['proposals', '待审批与处理记录']] as const).map(([kind, label]) => <Button key={kind} variant={tab === kind ? 'primary' : 'ghost'} onClick={() => { setTab(kind); setCursors([]); }}>{label}</Button>)}</div>
     {tab !== 'proposals' && <form className="flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); setKeyword(query); setCursors([]); setVersion((value) => value + 1); }}>
       <label className="min-w-0 flex-1 text-sm">标题或正文<input className="glass-input mt-1 w-full" value={query} onChange={(event) => setQuery(event.target.value)} /></label>

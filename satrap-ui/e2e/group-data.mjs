@@ -323,7 +323,7 @@ async function group_chat_memory_reminders(runtime) {
         assert.equal(url.port, '19871');
         assert.equal(url.searchParams.get('conversation_kind'), 'group');
         assert.equal(url.searchParams.get('chat_id'), '群/中文');
-        if (pathname.endsWith('/proposals')) return reply({ items: [proposal] });
+        if (pathname.endsWith('/proposals')) return reply({ ok: true, items: [proposal] });
         if (pathname.endsWith('/decision')) {
           const body = request.postDataJSON();
           assert.deepEqual(body, { approve: true, expected_revision: 0 });
