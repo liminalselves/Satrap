@@ -50,6 +50,23 @@ from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import FINAL_RESPONSE_PROMPT
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_temporary_agent_model_failure_keeps_structured_error(tmp_path, asynchronous, stream):
+    from satrap.core.type import LLMErrorInfo
+    info = LLMErrorInfo("rate_limit", "服务商限流", status=429)
+    wf, _ = await make_workflow(tmp_path, Script([LLMCallResponse("error", info.text, error_info=info)]), asynchronous, False)
+    method = wf.stream_tools_agent if stream else wf.tools_agent
+    with pytest.raises(ModelCallError, match="429") as failure:
+        if asynchronous:
+            await method("临时任务")
+        else:
+            method("临时任务")
+    assert failure.value.info == info
+    assert not any(message.get("role") != "system" for message in wf.ctx.get_context())
+
+
 CALL = {"id": "c1", "name": "noop", "arguments": {}}
 TOOLS = LLMCallResponse("tools_call", "工具说明", tool_calls=[CALL], thinking="思考")
 ANSWER = LLMCallResponse("message", "完成", thinking="思考")

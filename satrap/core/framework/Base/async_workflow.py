@@ -361,6 +361,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
 
         返回:
         - str: 使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出
+        - 模型失败抛出 ModelCallError 并保留错误资料, finally 仍恢复临时上下文
         """
         system_messages = self._get_system_messages(self.ctx.get_context())
         self.reset_context_stats()
@@ -373,7 +374,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
                 img_urls=img_urls, video_urls=video_urls, recoverable=False, request_blocks=request_blocks,
             )
         except ModelCallError:
-            return "模型调用失败"
+            raise
         except Exception as error:
             logger.error(f"临时工具会话执行失败: {error}")
             return "执行失败"

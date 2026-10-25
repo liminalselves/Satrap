@@ -18,7 +18,9 @@
 
 - Windows Python 3.13.5: LLM protocol, workflow execution contract, display service, pipeline scheduler 四模块 265 passed
 - 前端 TypeScript 检查通过, Vitest 322 passed
-- Pyright 与最终差异检查在批次提交前复核
+- A 批次 11 个变更生产模块 Pyright: 0 errors, 0 warnings; 差异检查通过
+- 补查 tools_agent 后, 同步/异步临时 Agent 的非流式入口不再把模型失败转成固定成功文本; 与流式入口一致抛出带资料的 ModelCallError
+- 补查后的 workflow execution contract: 87 passed, 包括四种同步/异步和流式/非流式临时 Agent 失败组合
 
 ## B. 日志改动前基线
 
