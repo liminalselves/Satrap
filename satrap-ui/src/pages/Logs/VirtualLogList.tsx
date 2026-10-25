@@ -1,6 +1,6 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-export interface LogEntry { id: number; content: string; level: string }
+export interface LogEntry { id: number; content: string; level: string; source?: string; timestamp?: number; sequence?: number }
 const ESTIMATED_HEIGHT = 28;
 const OVERSCAN = 8;
 
@@ -36,6 +36,7 @@ export const VirtualLogList = memo(function VirtualLogList({ logs, render, empty
   const container = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ id: number; offset: number }>();
   const scrollFrame = useRef<number>();
+  const dragging = useRef(false);
   const [viewport, setViewport] = useState({ top: 0, height: 600 });
   const heights = useRef(new Map<number, number>());
   const [heightRevision, setHeightRevision] = useState(0);
@@ -93,13 +94,18 @@ export const VirtualLogList = memo(function VirtualLogList({ logs, render, empty
   const scroll = () => {
     const element = container.current;
     if (!element) return;
-    if (scrollFrame.current !== undefined) { cancelAnimationFrame(scrollFrame.current); scrollFrame.current = undefined; }
+    if ((!autoScroll || dragging.current) && scrollFrame.current !== undefined) { cancelAnimationFrame(scrollFrame.current); scrollFrame.current = undefined; }
     const index = Math.min(logs.length - 1, indexAt(offsets, element.scrollTop));
     anchor.current = index >= 0 ? { id: logs[index].id, offset: element.scrollTop - offsets[index] } : undefined;
-    onBottomChange(element.scrollHeight - element.scrollTop - element.clientHeight < 50);
+    if (!autoScroll || dragging.current) onBottomChange(element.scrollHeight - element.scrollTop - element.clientHeight < 50);
+    // 自动追加与行高测量产生的滚动不代表用户向上阅读, 避免连续批次意外关闭跟随
     captureViewport();
   };
-  return <div ref={container} onScroll={scroll} aria-label="日志内容" style={{ overflowAnchor: 'none' }}
+  return <div ref={container} onScroll={scroll} aria-label="日志内容" style={{ overflowAnchor: 'none' }} tabIndex={0}
+    onWheel={(event) => { if (event.deltaY < 0) onBottomChange(false); }}
+    onTouchMove={() => onBottomChange(false)}
+    onKeyDown={(event) => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) onBottomChange(false); }}
+    onPointerDown={() => { dragging.current = true; }} onPointerUp={() => { dragging.current = false; }} onPointerCancel={() => { dragging.current = false; }}
     className="flex-1 min-h-0 overflow-auto custom-scrollbar p-4 font-mono text-sm">
     {logs.length === 0 ? empty : <>
       <div aria-hidden="true" style={{ height: offsets[start] }} />

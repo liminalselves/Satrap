@@ -170,7 +170,7 @@ from satrap.core.log.policy import LoggingPolicyStore
 store = LoggingPolicyStore(Path(sys.argv[1]), Path(sys.argv[2]))
 handler = ManagedDailyHandler(store.root, 'parallel')
 for i in range(50):
-    handler.handle(logging.LogRecord('probe', 30, '', 0, f'中文-{i}', (), None))
+    handler.handle(logging.LogRecord('probe', 30, '', 0, f'中文-{i}\\n尾行-{i}', (), None))
 result = store.cleanup(automatic=True, now=10000)
 print(json.dumps({'file': handler.current_file.name, 'cleaned': result is not None}), flush=True)
 handler.close()
@@ -183,9 +183,12 @@ handler.close()
             assert child.returncode == 0, error
             outputs.append(json.loads(out))
         assert sum(item["cleaned"] for item in outputs) == 1
-        assert len({item["file"] for item in outputs}) == 2 and not old.exists()
+        assert len({item["file"] for item in outputs}) == 1 and not old.exists()
         for item in outputs:
-            assert (store.root / item["file"]).read_text(encoding="utf-8").splitlines() == [f"中文-{i}" for i in range(50)]
+            lines = (store.root / item["file"]).read_text(encoding="utf-8").splitlines()
+            assert len(lines) == 200
+            pairs = list(zip(lines[::2], lines[1::2]))
+            assert sorted(pairs) == sorted([(f"中文-{i}", f"尾行-{i}") for i in range(50)] * 2)
     finally:
         for child in children:
             if child.poll() is None:
@@ -251,6 +254,60 @@ async def test_http_dispatch_keeps_logging_api_authenticated(tmp_path, monkeypat
         server.close()
         await server.wait_closed()
 
+
+@pytest.mark.asyncio
+async def test_independent_log_http_sources_authentication_and_incremental_queries(monkeypatch):
+    from satrap.core.backend import control_server as control
+    from satrap.core.log import api
+    from satrap.core.server_auth import ServerAuth
+    from satrap.core.utils.minihttp import MiniHTTPServer
+    stream = StandardLogStream()
+    stream.publish("独立日志, 无需 Backend 管理器", "DEBUG")
+    monkeypatch.setattr(api, "standard_log_stream", stream)
+    servers = []
+    endpoints = []
+    try:
+        control_server = await asyncio.start_server(control._handle_request, "127.0.0.1", 0)
+        servers.append(control_server)
+        endpoints.append((control_server.sockets[0].getsockname()[1], control._CONTROL_AUTH.token))
+        for label in ("backend", "chat"):
+            token = f"independent-{label}-token-at-least-32-characters"
+            service = MiniHTTPServer("127.0.0.1", 0, auth=ServerAuth.create("127.0.0.1", 0, token=token))
+            server = await asyncio.start_server(service._handle_connection, "127.0.0.1", 0)
+            servers.append(server)
+            endpoints.append((server.sockets[0].getsockname()[1], token))
+        async def request(port, token, path="/api/logs"):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            try:
+                writer.write(f"GET {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n".encode("utf-8"))
+                await writer.drain()
+                raw = await asyncio.wait_for(reader.read(), 5)
+                head, body = raw.split(b"\r\n\r\n", 1)
+                status = int(head.split(b" ")[1])
+                return status, json.loads(body) if status == 200 else {}
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        for index, (port, token) in enumerate(endpoints):
+            assert (await request(port, "invalid"))[0] == 401
+            other = endpoints[(index + 1) % len(endpoints)][1]
+            assert (await request(port, other))[0] == 401
+            status, initial = await request(port, token)
+            assert status == 200 and initial["entries"][0]["level"] == "DEBUG"
+            status, empty = await request(port, token, f"/api/logs?after={initial['next_cursor']}&stream_id={initial['stream_id']}")
+            assert status == 200 and empty["entries"] == []
+            assert (await request(port, token, "/api/logs?limit=501"))[0] == 400
+            assert (await request(port, token, "/api/logs?after=1"))[0] == 400
+        servers[1].close()
+        await servers[1].wait_closed()
+        stream.publish("平台 Backend 停止后仍可查看", "INFO")
+        for port, token in (endpoints[0], endpoints[2]):
+            assert (await request(port, token))[1]["entries"][-1]["content"] == "平台 Backend 停止后仍可查看"
+    finally:
+        for server in servers:
+            server.close()
+            await server.wait_closed()
+
 def _record(text):
     return logging.LogRecord("probe", logging.WARNING, __file__, 1, text, (), None)
 
@@ -293,6 +350,60 @@ def test_date_boundary_and_active_file_protection(tmp_path):
     result = cleanup_logs(tmp_path, 30, today=date(2026, 10, 3))
     assert saved.name in result["deleted"]
 
+
+def test_shared_file_stays_active_until_last_writer_exits_and_restarts_append(tmp_path):
+    first = ManagedDailyHandler(tmp_path, "chat", clock=lambda: date(2020, 1, 1))
+    second = ManagedDailyHandler(tmp_path, "chat", clock=lambda: date(2020, 1, 1))
+    try:
+        first.handle(_record("第一进程"))
+        second.handle(_record("第二进程"))
+        path = first.current_file
+        assert path == second.current_file == tmp_path / "SATRAP-chat-20200101.log"
+        first.close()
+        result = cleanup_logs(tmp_path, 30, today=date(2026, 10, 25))
+        assert path.exists() and path.name not in result["deleted"]
+        second.handle(_record("退出一个后继续"))
+    finally:
+        first.close()
+        second.close()
+    restarted = ManagedDailyHandler(tmp_path, "chat", clock=lambda: date(2020, 1, 1))
+    try:
+        restarted.handle(_record("重启后追加"))
+        assert path.read_text(encoding="utf-8").splitlines() == ["第一进程", "第二进程", "退出一个后继续", "重启后追加"]
+    finally:
+        restarted.close()
+    assert path.name in cleanup_logs(tmp_path, 30, today=date(2026, 10, 25))["deleted"]
+
+
+def test_incremental_log_snapshots_reset_boundaries_and_utf8_budget():
+    stream = StandardLogStream(history_size=5000)
+    stream.service = "chat"
+    for index in range(5010):
+        stream.publish(f"中文-{index}", "DEBUG")
+    initial = stream.snapshot(limit=100)
+    assert initial["service"] == "chat" and len(initial["entries"]) == 100
+    assert initial["next_cursor"] == 5010 and not initial["reset"]
+    stream.publish("新日志", "INFO")
+    increment = stream.snapshot(after=initial["next_cursor"], stream_id=initial["stream_id"])
+    assert [entry["content"] for entry in increment["entries"]] == ["新日志"]
+    assert stream.snapshot(after=0, stream_id=initial["stream_id"])["reset"]
+    assert stream.snapshot(after=5011, stream_id="old-process")["reset"]
+    assert stream.snapshot(after=9999, stream_id=initial["stream_id"])["reset"]
+    for _ in range(40):
+        stream.publish("中文" * 10000, "WARNING")
+    batch = stream.snapshot(after=5011, stream_id=initial["stream_id"], limit=500)
+    assert batch["has_more"] and sum(len(entry["content"].encode("utf-8")) for entry in batch["entries"]) <= 256 * 1024
+    assert all(entry["truncated"] and "\ufffd" not in entry["content"] for entry in batch["entries"])
+    rest = stream.snapshot(after=batch["next_cursor"], stream_id=batch["stream_id"], limit=500)
+    assert rest["entries"][0]["sequence"] == batch["next_cursor"] + 1
+    while rest["has_more"]:
+        rest = stream.snapshot(after=rest["next_cursor"], stream_id=rest["stream_id"], limit=500)
+    assert rest["next_cursor"] == 5051
+    with pytest.raises(ValueError):
+        stream.snapshot(after=1)
+    with pytest.raises(ValueError):
+        stream.snapshot(limit=501)
+
 def test_multiprocess_lease_and_crash_release(tmp_path):
     script = """
 from datetime import date
@@ -304,19 +415,25 @@ handler.handle(logging.LogRecord('probe', 30, '', 0, '子进程日志', (), None
 print(handler.current_file.name, flush=True)
 sys.stdin.readline()
 """
-    child = subprocess.Popen([sys.executable, "-c", script, str(tmp_path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env={**os.environ, "PYTHONUTF8": "1"})
+    children = [subprocess.Popen([sys.executable, "-c", script, str(tmp_path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env={**os.environ, "PYTHONUTF8": "1"}) for _ in range(2)]
     try:
-        filename = child.stdout.readline().strip()
+        filename = children[0].stdout.readline().strip()
+        assert children[1].stdout.readline().strip() == filename
         assert filename.startswith("SATRAP-worker-")
         result = cleanup_logs(tmp_path, 30, today=date(2026, 10, 3))
         assert (tmp_path / filename).exists() and result["skipped"]
-        child.kill()
-        child.communicate(timeout=10)
+        children[0].kill()
+        children[0].communicate(timeout=10)
+        result = cleanup_logs(tmp_path, 30, today=date(2026, 10, 3))
+        assert (tmp_path / filename).exists() and filename not in result["deleted"]
+        children[1].kill()
+        children[1].communicate(timeout=10)
         assert filename in cleanup_logs(tmp_path, 30, today=date(2026, 10, 3))["deleted"]
     finally:
-        if child.poll() is None:
-            child.kill()
-            child.communicate(timeout=10)
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                child.communicate(timeout=10)
 
 def test_legacy_compatibility(tmp_path):
     old = tmp_path / "SATRAP-20200101.log"

@@ -1,13 +1,21 @@
-"""标准日志实时流与有界历史缓冲"""
+"""
+标准日志实时流与有界历史缓冲
+
+为各服务提供按运行流和序号读取的增量快照, 同时保留 WebSocket 订阅,
+标准输出捕获与日志级别解析共用发布入口
+"""
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
 from threading import Lock
 import asyncio
-from typing import TextIO, cast
+from typing import TextIO, TypedDict, cast
 import sys
 import re
+import os
+import time
+import secrets
 
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -45,6 +53,30 @@ class StandardLogEntry:
 
     content: str
     level: str
+    sequence: int = 0
+    timestamp: float = 0.0
+    pid: int = 0
+    truncated: bool = False
+
+
+class LogEntryPayload(TypedDict):
+    """增量日志公开记录"""
+    content: str
+    level: str
+    sequence: int
+    timestamp: float
+    pid: int
+    truncated: bool
+
+
+class LogSnapshot(TypedDict):
+    """按运行流与序号读取的有限日志快照"""
+    service: str
+    stream_id: str
+    entries: list[LogEntryPayload]
+    next_cursor: int
+    has_more: bool
+    reset: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +108,9 @@ class StandardLogStream:
         self._subscribers: dict[int, _Subscriber] = {}
         self._next_subscription_id = 1
         self._lock = Lock()
+        self._sequence = 0
+        self.stream_id = secrets.token_hex(16)
+        self.service = "process"
 
     def publish(self, content: str, level: str) -> None:
         """
@@ -85,8 +120,13 @@ class StandardLogStream:
         - content: 已格式化的标准日志文本
         - level: 日志级别
         """
-        entry = StandardLogEntry(content=content, level=level)
+        encoded = content.encode("utf-8", errors="replace")
+        truncated = len(encoded) > 16 * 1024
+        if truncated:
+            content = encoded[:16 * 1024].decode("utf-8", errors="ignore")
         with self._lock:
+            self._sequence += 1
+            entry = StandardLogEntry(content, level, self._sequence, time.time(), os.getpid(), truncated)
             self._history.append(entry)
             subscribers = tuple(self._subscribers.values())
 
@@ -99,6 +139,47 @@ class StandardLogStream:
                 )
             except RuntimeError:
                 continue
+
+    def snapshot(self, *, after: int | None = None, stream_id: str | None = None, limit: int = 100) -> LogSnapshot:
+        """
+        获取有限历史或指定游标后的日志, 不读取磁盘
+
+        参数:
+        - after: 上次已读取的序号, 默认读取最近记录
+        - stream_id: 上次服务运行流标识, 变化时返回 reset
+        - limit: 最大记录数, 必须为 1 至 500
+
+        返回:
+        - 携带游标, 重置标记和截断说明的快照
+        """
+        if isinstance(limit, bool) or not 1 <= limit <= 500 or after is not None and (isinstance(after, bool) or after < 0):
+            raise ValueError("日志 limit 必须为 1 至 500, after 必须为非负整数")
+        if after is not None and not stream_id:
+            raise ValueError("增量读取必须提供 stream_id")
+        with self._lock:
+            history = tuple(self._history)
+            latest = self._sequence
+            identity = self.stream_id
+            service = self.service
+        oldest = history[0].sequence if history else latest + 1
+        reset = stream_id is not None and stream_id != identity or after is not None and (after < oldest - 1 or after > latest)
+        initial = after is None or reset
+        cursor_after = after if after is not None else 0
+        candidates = history[-limit:] if initial else tuple(entry for entry in history if entry.sequence > cursor_after)
+        entries: list[LogEntryPayload] = []
+        budget = 256 * 1024
+        for entry in candidates[:limit]:
+            data = entry.content.encode("utf-8")
+            if len(data) > budget and entries:
+                break
+            text = data[:budget].decode("utf-8", errors="ignore")
+            entries.append(LogEntryPayload(content=text, level=entry.level, sequence=entry.sequence,
+                                           timestamp=entry.timestamp, pid=entry.pid, truncated=entry.truncated or len(data) > budget))
+            budget -= len(text.encode("utf-8"))
+        cursor = entries[-1]["sequence"] if entries else latest if initial else after
+        assert cursor is not None
+        return LogSnapshot(service=service, stream_id=identity, entries=entries, next_cursor=cursor,
+                           has_more=bool(history and cursor < latest), reset=bool(reset))
 
     def subscribe(
         self,

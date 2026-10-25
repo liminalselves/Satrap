@@ -26,6 +26,7 @@ from http import HTTPStatus
 import json
 
 from satrap.core.server_auth import ServerAuth
+from satrap.core.log.api import log_response
 from satrap.core.utils.async_worker import WorkerBusyError
 from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError
 
@@ -422,7 +423,8 @@ class MiniHTTPServer:
                 timeout=self._body_timeout,
             )
 
-            status, data = await self._route(method, path, body)
+            logs = log_response(method, path)
+            status, data = logs if logs is not None else await self._route(method, path, body)
             self._send_json(writer, status, data, origin)
         except HTTPRequestError as error:
             self._send_json(writer, error.status, {"error": error.message}, origin)

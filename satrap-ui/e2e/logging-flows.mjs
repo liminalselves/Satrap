@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import fs, { mkdir } from "node:fs/promises";
 import { runSuite, mockConfigVersions } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 async function log_retention(runtime) {
 
@@ -179,7 +180,7 @@ async function log_retention(runtime) {
 
 }
 
-async function log_stream(runtime) {
+async function log_stream_baseline(runtime) {
 
 
 
@@ -190,7 +191,10 @@ async function log_stream(runtime) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const production = process.env.LOG_STREAM_PRODUCTION === '1';
   const server = production ? await runtime.preview({ root, preview: { host: '127.0.0.1', port: 0 } })
-    : await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+    : await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'log-baseline', enforce: 'pre',
+      load(id) { const file = id.replaceAll('\\', '/').match(/\/src\/pages\/Logs\/(index\.tsx|VirtualLogList\.tsx)$/)?.[1];
+        if (file) return execFileSync('git', ['show', `97114c6:satrap-ui/src/pages/Logs/${file}`], { cwd: root, encoding: 'utf8' }); },
+    }] }, 'logs-baseline');
   let browser;
   try {
     if (!production) await runtime.listen(server);
@@ -320,6 +324,145 @@ async function log_stream(runtime) {
 
 }
 
+async function log_stream(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  try {
+    await runtime.listen(server);
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const page = await runtime.browser.newPage({ viewport: { width: 1280, height: 1000 }, acceptDownloads: true });
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
+    const records = { 19871: [], 19872: [] };
+    const identities = { 19871: 'control-run', 19872: 'chat-run' };
+    const reads = { 19870: 0, 19871: 0, 19872: 0 };
+    let bodyBytes = 0;
+    let chatAuthorized = false;
+    await page.route(origin + '/ui-config.json', (route) => route.fulfill({ json: {
+      backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
+    } }));
+    await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, async (route) => {
+      const url = new URL(route.request().url());
+      const port = Number(url.port);
+      if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/auth/password/login') {
+        assert.equal(port, 19872);
+        assert.equal(route.request().postDataJSON().password, 'test-chat-password');
+        chatAuthorized = true;
+        return route.fulfill({ json: { ok: true }, headers: cors });
+      }
+      if (url.pathname === '/auth/password/status') return route.fulfill({ json: { password_required: true }, headers: cors });
+      if (port === 19872 && !chatAuthorized) return route.fulfill({ status: 401, json: { error: '需要密码' }, headers: cors });
+      if (url.pathname === '/api/logs') {
+        reads[port]++;
+        if (port === 19870) return route.abort('connectionrefused');
+        const after = Number(url.searchParams.get('after') ?? 0);
+        const limit = Number(url.searchParams.get('limit') ?? 100);
+        const reset = url.searchParams.has('stream_id') && url.searchParams.get('stream_id') !== identities[port];
+        const history = records[port];
+        const entries = !url.searchParams.has('after') || reset ? history.slice(-limit) : history.filter((entry) => entry.sequence > after).slice(0, limit);
+        const next = entries.at(-1)?.sequence ?? (reset ? 0 : after);
+        const payload = { service: port === 19871 ? 'control' : 'chat', stream_id: identities[port], entries,
+          next_cursor: next, reset, has_more: next < (history.at(-1)?.sequence ?? 0) };
+        bodyBytes += Buffer.byteLength(JSON.stringify(payload));
+        return route.fulfill({ json: payload, headers: cors });
+      }
+      return route.fulfill({ json: { ok: true, running: false, adapters: {} }, headers: cors });
+    });
+    await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
+    await mockConfigVersions(page, origin, () => '{}');
+    await page.goto(origin + '/logs');
+    await page.getByText('Control: 已连接', { exact: true }).waitFor();
+    await page.getByText('Chat需要访问密码', { exact: true }).waitFor();
+    assert.equal(await page.getByText('正在连接服务…', { exact: true }).count(), 0);
+    await page.getByLabel('Chat访问密码', { exact: true }).fill('test-chat-password');
+    await Promise.all([page.waitForEvent('load'), page.getByRole('button', { name: '登录Chat', exact: true }).click()]);
+    await page.getByText('Chat: 已连接', { exact: true }).waitFor();
+    const terminal = page.getByLabel('日志内容', { exact: true });
+    const append = (port, count, content) => {
+      for (let index = 0; index < count; index++) {
+        const sequence = records[port].length + 1;
+        records[port].push({ sequence, timestamp: sequence, pid: 123, level: sequence % 2 ? 'WARNING' : 'INFO',
+          content: content?.(sequence) ?? `日志-${sequence - 1}`, truncated: false });
+      }
+    };
+    const started = performance.now();
+    const beforeReads = { ...reads };
+    append(19871, 5000);
+    await page.waitForFunction(() => document.querySelector('[data-log-id]'));
+    const firstLogMs = performance.now() - started;
+    await page.getByText('共 5000 条日志', { exact: true }).waitFor();
+    await terminal.getByText('[Control] 日志-4999', { exact: true }).waitFor();
+    const burstMs = performance.now() - started;
+    const burstBytes = bodyBytes;
+    const burstRequests = Object.fromEntries(Object.keys(reads).map((key) => [key, reads[key] - beforeReads[key]]));
+    assert.ok(await terminal.locator('[data-log-id]').count() < 100);
+    const downloaded = page.waitForEvent('download');
+    await page.getByRole('button', { name: '导出', exact: true }).click();
+    const text = await fs.readFile(await (await downloaded).path(), 'utf8');
+    assert.deepEqual(text.split('\n'), Array.from({ length: 5000 }, (_, index) => `[Control] 日志-${index}`));
+    await page.getByPlaceholder('搜索日志...').fill('日志-1234');
+    await page.getByText('共 1 条日志', { exact: true }).waitFor();
+    await page.getByPlaceholder('搜索日志...').fill('');
+    await page.getByRole('button', { name: 'WARNING', exact: true }).click();
+    await page.getByText('共 2500 条日志', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'WARNING', exact: true }).click();
+    await terminal.hover();
+    await page.mouse.wheel(0, -1200);
+    await page.getByText('已暂停滚动', { exact: true }).waitFor();
+    const anchor = await terminal.evaluate((element) => {
+      const row = [...element.querySelectorAll('[data-log-id]')].find((item) => item.getBoundingClientRect().top >= element.getBoundingClientRect().top);
+      return { id: row.dataset.logId, top: row.getBoundingClientRect().top };
+    });
+    const appended = page.waitForResponse(async (response) => {
+      const url = new URL(response.url());
+      return url.port === '19871' && url.pathname === '/api/logs' && (await response.json()).next_cursor === 5020;
+    });
+    append(19871, 20);
+    await appended;
+    await page.waitForTimeout(250);
+    const afterTop = await terminal.locator(`[data-log-id="${anchor.id}"]`).evaluate((element) => element.getBoundingClientRect().top);
+    assert.ok(Math.abs(afterTop - anchor.top) < 2);
+    await terminal.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await page.getByText('自动滚动', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '暂停', exact: true }).click();
+    append(19871, 20);
+    await page.getByText('共 5000 条日志, 暂停期间收到 20 条', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '继续', exact: true }).click();
+    await terminal.getByText('[Control] 日志-5039', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '清空', exact: true }).click();
+    await page.getByText('共 0 条日志', { exact: true }).waitFor();
+    append(19871, 1, () => '清空后增量');
+    append(19872, 1, () => 'Chat 独立日志');
+    await terminal.getByText('[Control] 清空后增量', { exact: true }).waitFor();
+    await terminal.getByText('[Chat] Chat 独立日志', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '全部来源', exact: true }).click();
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
+    await page.getByText('共 1 条日志', { exact: true }).waitFor();
+    assert.equal(await terminal.getByText('[Control] 清空后增量', { exact: true }).count(), 0);
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(1200);
+    const hiddenReads = reads[19872];
+    await page.waitForTimeout(1300);
+    assert.equal(reads[19872], hiddenReads);
+    identities[19872] = 'chat-restarted'; records[19872] = [];
+    append(19872, 1, () => '重启后日志');
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); });
+    await terminal.getByText('[Chat] 重启后日志', { exact: true }).waitFor();
+    await terminal.getByText(/服务已重启或日志游标已过期/).waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await terminal.getByText('[Chat] 重启后日志', { exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+    console.log('PASS: Backend 离线仍显示 Control/Chat, Chat 独立密码恢复, 5000 条有界增量/导出/筛选, 暂停/清空, 隐藏补取与重启提示');
+    console.log(JSON.stringify({ firstLogMs, burstMs, burstBytes, burstRequests, totalBodyBytes: bodyBytes, maxBuffer: 5000 }));
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 async function storage_audit(runtime) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
@@ -382,4 +525,6 @@ export const scenarios = [
   ["log-retention", log_retention],
   ["log-stream", log_stream]
 ];
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) await runSuite(scenarios);
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  await runSuite(process.argv.includes('log-stream-baseline') ? [["log-stream-baseline", log_stream_baseline]] : scenarios);
+}

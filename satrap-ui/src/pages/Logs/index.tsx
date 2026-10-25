@@ -6,9 +6,10 @@ import { Badge } from '@/components/ui/Badge';
 import { Select } from '@/components/ui/Select';
 import { LOG_LEVELS } from '@/utils/constants';
 import { filterLogs } from '@/utils/adminMigration';
-import { LogBuffer } from '@/utils/logBuffer';
+import { LogBuffer, mergeLogSources } from '@/utils/logBuffer';
 import { VirtualLogList, type LogEntry } from './VirtualLogList';
-import { useWebSocket } from '@/hooks/useWebSocket';
+import { logServices, readLogSource, type LogSource } from '@/api/logging';
+import { isPasswordRequiredError } from '@/api/auth';
 import { PageHeader } from '@/components/common';
 import { Play, Pause, Trash2, Download, Search, Wifi, WifiOff } from 'lucide-react';
 
@@ -65,6 +66,11 @@ export function Logs() {
   const [levelFilter, setLevelFilter] = useState<string[]>(LOG_LEVELS.slice());
   const [historyLines, setHistoryLines] = useState(100);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [source, setSource] = useState<LogSource | 'all'>('all');
+  const [statuses, setStatuses] = useState<Partial<Record<LogSource, string>>>({});
+  const [reconnect, setReconnect] = useState(0);
+  const cursors = useRef<Partial<Record<LogSource, { after: number; stream_id: string }>>>({});
+  const seen = useRef(new Set<string>());
   const logIdRef = useRef(0);
   const buffer = useRef(new LogBuffer<LogEntry>());
   const flushTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -72,23 +78,22 @@ export function Logs() {
     if (flushTimer.current !== undefined) clearTimeout(flushTimer.current);
     flushTimer.current = undefined;
     const snapshot = buffer.current.read();
-    setLogs(snapshot.logs); setBufferedCount(snapshot.bufferedCount);
+    setLogs(mergeLogSources(snapshot.logs)); setBufferedCount(snapshot.bufferedCount);
   }, []);
 
-  const { connect, disconnect, isConnected } = useWebSocket(`/ws/logs?lines=${historyLines}`);
+  const isConnected = logServices().some((service) => (source === 'all' || service.id === source) && statuses[service.id] === '已连接');
 
-  const handleLog = useCallback((data: { content: string; level: string }) => {
+  const handleLog = useCallback((data: Omit<LogEntry, 'id'>) => {
     const newLog: LogEntry = {
       id: logIdRef.current++,
-      content: data.content,
-      level: data.level,
+      ...data,
     };
     buffer.current.append(newLog);
     if (flushTimer.current === undefined) flushTimer.current = setTimeout(flush, 100);
   }, [flush]);
 
   useEffect(() => {
-    buffer.current.clear(); flush();
+    buffer.current.clear(); seen.current.clear(); cursors.current = {}; flush();
   }, [historyLines, flush]);
 
   useEffect(() => {
@@ -102,12 +107,64 @@ export function Logs() {
   }, [flush]);
 
   useEffect(() => {
-    connect({
-      onLog: handleLog,
-      onError: (msg) => console.error('WebSocket error:', msg),
-    });
-    return () => disconnect();
-  }, [connect, disconnect, handleLog]);
+    let disposed = false;
+    const timers = new Map<LogSource, ReturnType<typeof setTimeout>>();
+    const pending = new Map<LogSource, AbortController>();
+    const services = logServices().filter((service) => source === 'all' || service.id === source);
+    const poll = async (service: typeof services[number]) => {
+      if (disposed || pending.has(service.id)) return;
+      if (document.hidden) {
+        timers.set(service.id, setTimeout(() => void poll(service), 5000));
+        return;
+      }
+      const controller = new AbortController();
+      pending.set(service.id, controller);
+      const deadline = setTimeout(() => controller.abort(), 8000);
+      let delay = 1000;
+      try {
+        const cursor = cursors.current[service.id];
+        const result = await readLogSource(service.url, { limit: cursor ? 500 : historyLines, ...cursor }, controller.signal);
+        // 历史行数只控制初始快照, 增量使用有界大批次避免积压时逐百条追赶
+        if (disposed) return;
+        if (result.reset) handleLog({ content: `[${service.name}] 服务已重启或日志游标已过期, 已重新取得有限快照, 中间日志可能未保留`,
+          level: 'WARNING', source: service.id, timestamp: result.entries[0]?.timestamp ?? Date.now() / 1000 });
+        for (const entry of result.entries) {
+          const key = `${service.id}:${result.stream_id}:${entry.sequence}`;
+          if (seen.current.has(key)) continue;
+          seen.current.add(key);
+          if (seen.current.size > 5000) seen.current.delete(seen.current.values().next().value!);
+          handleLog({ content: `[${service.name}] ${entry.content}${entry.truncated ? ' [内容已截断]' : ''}`,
+            level: entry.level, source: service.id, timestamp: entry.timestamp, sequence: entry.sequence });
+        }
+        cursors.current[service.id] = { after: result.next_cursor, stream_id: result.stream_id };
+        setStatuses((current) => ({ ...current, [service.id]: '已连接' }));
+        if (result.has_more) delay = 250;
+      } catch (error) {
+        if (!disposed) setStatuses((current) => ({ ...current, [service.id]: isPasswordRequiredError(error) ? '需要认证'
+          : `离线: ${error instanceof Error ? error.message : '连接失败'}` }));
+        delay = 5000;
+      } finally {
+        clearTimeout(deadline);
+        pending.delete(service.id);
+        if (!disposed) timers.set(service.id, setTimeout(() => void poll(service), delay));
+      }
+    };
+    const resume = () => {
+      if (document.hidden) return;
+      for (const service of services) {
+        clearTimeout(timers.get(service.id));
+        void poll(service);
+      }
+    };
+    document.addEventListener('visibilitychange', resume);
+    for (const service of services) void poll(service);
+    return () => {
+      disposed = true;
+      document.removeEventListener('visibilitychange', resume);
+      for (const timer of timers.values()) clearTimeout(timer);
+      for (const controller of pending.values()) controller.abort();
+    };
+  }, [source, historyLines, reconnect, handleLog]);
 
   const clearLogs = useCallback(() => {
     buffer.current.clear(); flush();
@@ -126,8 +183,8 @@ export function Logs() {
   }, []);
 
   const filteredLogs = useMemo(
-    () => filterLogs(logs, levelFilter, searchQuery),
-    [levelFilter, logs, searchQuery]
+    () => filterLogs(logs.filter((entry) => source === 'all' || entry.source === source), levelFilter, searchQuery),
+    [levelFilter, logs, searchQuery, source]
   );
   const empty = useMemo(() => <div className="text-text-tertiary text-center py-8">
     {isConnected ? '等待日志...' : '未连接到日志服务'}
@@ -160,11 +217,19 @@ export function Logs() {
     <div className="h-full min-h-0 overflow-hidden flex flex-col gap-4">
       <PageHeader
         title="日志监控"
-        description="实时查看后端进程的标准输出和标准错误"
+        description="独立查看 Control、平台 Backend 和 Chat 的实时日志"
         actions={headerActions}
         className="shrink-0"
       />
 
+      <Card className="p-3 shrink-0">
+        <div className="flex flex-wrap items-center gap-3">
+          <Select value={source} onChange={(event) => setSource(event.target.value as LogSource | 'all')}
+            options={[{ value: 'all', label: '全部来源' }, ...logServices().map((service) => ({ value: service.id, label: service.name }))]} className="w-40" />
+          {logServices().map((service) => <span key={service.id} className="text-xs text-text-secondary">{service.name}: {statuses[service.id] ?? '等待连接'}</span>)}
+          <Button size="sm" onClick={() => setReconnect((value) => value + 1)}>重新连接</Button>
+        </div>
+      </Card>
       {/* 工具栏 */}
       <Card className="p-4 shrink-0">
         <div className="flex flex-wrap items-center gap-4">

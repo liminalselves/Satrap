@@ -643,7 +643,7 @@ def _is_control_api_path(path: str) -> bool:
     返回:
     - 路径属于控制 API 时返回 True
     """
-    return path == "/api/skills" or path.startswith((
+    return path in {"/api/skills", "/api/logs"} or path.startswith((
         "/status",
         "/start",
         "/stop",
@@ -1612,6 +1612,11 @@ async def _route_logging(ctx: _RouteContext) -> ControlResponse | None:
     返回:
     - 策略快照或清理结果, 无关路径返回 None; 失败返回明确状态
     """
+    from satrap.core.log.api import log_response
+
+    logs = log_response(ctx.method, ctx.raw_path)
+    if logs is not None:
+        return logs
     if ctx.path not in {"/config/logging", "/config/logging/cleanup"}:
         return None
     try:
