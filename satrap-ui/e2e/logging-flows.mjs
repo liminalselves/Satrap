@@ -540,7 +540,7 @@ async function advanced_debug(runtime) {
   await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:\d+\/ws\/status/, () => {});
   const object = { platform_id: 'qq', self_id: 'bot', conversation_kind: 'group', target_id: 'room' };
   let snapshot = { policy: { version: 1, default_enabled: false, retention_days: 7, max_total_mb: 512, max_body_mb: 8, max_request_mb: 32, objects: [] }, revision: 'v1' };
-  let bodyReads = 0, writes = 0, traceClosed = false;
+  let bodyReads = 0, contextReads = 0, writes = 0, traceClosed = false;
   let releaseBody, enterBody;
   const bodyEntered = new Promise((resolve) => { enterBody = resolve; });
   const bodyReleased = new Promise((resolve) => { releaseBody = resolve; });
@@ -564,7 +564,17 @@ async function advanced_debug(runtime) {
     }
     if (url.pathname === '/config/debug-logging/contexts') return fulfill({ contexts: url.searchParams.get('platform_id') === 'qq' ? [{ object_key: 'group-key', context_id: 'cold-context', title: '未产生日志上下文', updated_at: 1, request_count: 0, error_count: 0, object, service: 'backend' }] : [], platforms: ['chat', 'qq'], has_more: false, next_cursor: null, unconfirmed: 0 });
     if (url.pathname === '/api/debug/status') return fulfill({ database_bytes: 120000, wal_bytes: 0, used_bytes: 110000, pending_events: 0, write_error: '', maintenance_error: '' });
-    if (url.pathname === '/api/debug/contexts') return fulfill({ contexts: ['before-new', 'after-new'].map((id) => ({ object_key: 'group-key', context_id: id, title: id, updated_at: 1, request_count: 1, error_count: 0, object, service: url.port === '19872' ? 'chat' : 'backend' })), has_more: false, next_cursor: null });
+    if (url.pathname === '/api/debug/objects') return fulfill({ objects: [{ object_key: url.searchParams.has('cursor') ? 'private-key' : 'group-key',
+      object: url.searchParams.has('cursor') ? { ...object, conversation_kind: 'private' } : object,
+      updated_at: 1, context_count: 2, request_count: 6, error_count: 1, service: 'backend' }],
+      has_more: !url.searchParams.has('cursor'), next_cursor: url.searchParams.has('cursor') ? null : 'objects-page2' });
+    if (url.pathname === '/api/debug/contexts') {
+      contextReads++;
+      assert.equal(url.searchParams.get('object_key'), 'group-key');
+      const more = url.searchParams.has('cursor');
+      return fulfill({ contexts: [more ? 'after-new' : 'before-new'].map((id) => ({ object_key: 'group-key', context_id: id, title: id,
+        updated_at: 1, request_count: 1, error_count: 0, object, service: 'backend' })), has_more: !more, next_cursor: more ? null : 'contexts-page2' });
+    }
     const requestSummary = (id) => ({ request_id: id, status: id === 'r-after-new' && !traceClosed ? 'running' : id === 'r-cancelled' ? 'cancelled' : 'success',
       diagnostic_level: id === 'r-hard-error' ? 'error' : id === 'r-after-new' ? 'warning' : id === 'r-legacy' ? 'unknown' : 'info',
       context_id: 'after-new', parent_request_id: '', started_at: 1, updated_at: 2, incomplete: 0, settings_revision: 'v1' });
@@ -587,23 +597,34 @@ async function advanced_debug(runtime) {
       const selected = events.filter((item) => item.sequence > after), visible = after === -1 && id === 'r-after-new' ? selected.slice(0, 2) : selected;
       return fulfill({ events: visible, has_more: visible.length < selected.length });
     }
-    if (url.pathname === '/api/debug/body') {
+    if (url.pathname === '/api/debug/body' || url.pathname === '/api/debug/body-delta') {
       bodyReads++;
       const delayed = url.searchParams.get('event_id') === 'r-after-new-1';
       if (delayed) { enterBody(); await bodyReleased; }
-      return fulfill({ body: { messages: [{ role: 'user', content: delayed ? '延迟到达的工具结果' : '按需读取的测试正文' }] } });
+      const messages = [{ role: 'user', content: delayed ? '延迟到达的工具结果' : '按需读取的测试正文' }];
+      return fulfill({ body: delayed ? { messages } : url.pathname === '/api/debug/body' ? { messages: [{ role: 'system', content: '完整输入才显示的旧历史' }, ...messages] }
+        : { view: 'delta', basis: 'latest_user_message', total_messages: 4, hidden_prefix_messages: 3, hidden_suffix_messages: 0,
+          removed_messages: 0, messages, changed_parameters: { model: 'synthetic' }, removed_parameters: [] } });
     }
     return fulfill({ error: '此浏览器场景未提供该接口' }, 404);
   });
   try {
     await page.goto(`${origin}/logs/debug`);
     await page.getByRole('heading', { name: '高级 Debug', exact: true }).waitFor();
+    await page.locator('[data-debug-object="group-key"]').waitFor();
+    assert.equal(contextReads, 0);
+    assert.equal(await page.locator('[data-debug-context]').count(), 0);
+    await page.getByRole('button', { name: '加载更多对象', exact: true }).click();
+    await page.locator('[data-debug-object="private-key"]').waitFor();
+    assert.equal(await page.locator('[data-debug-object]').count(), 2);
+    await page.locator('[data-debug-object="group-key"]').getByRole('button').click();
     await page.getByRole('button', { name: /before-new/ }).click();
     await page.getByRole('button', { name: /继承默认/ }).click();
     await page.getByRole('button', { name: '强制开启', exact: true }).click();
     await page.getByRole('button', { name: '强制开启', exact: true }).waitFor();
     assert.equal(writes, 1);
-    await page.getByRole('button', { name: /after-new/ }).click();
+    await page.getByRole('button', { name: '加载更多会话', exact: true }).click();
+    await page.locator('[data-debug-context="after-new"]').click();
     await page.getByRole('button', { name: '强制开启', exact: true }).waitFor();
     assert.equal(snapshot.policy.objects.length, 1);
     assert.equal(bodyReads, 0);
@@ -622,13 +643,15 @@ async function advanced_debug(runtime) {
     assert.equal(await modelNode.locator('details').getAttribute('open'), null);
     assert.equal(await modelNode.locator('pre').isVisible(), false);
     assert.equal(bodyReads, 0);
-    await page.getByRole('button', { name: '查看 input', exact: true }).click();
+    await page.getByRole('button', { name: '查看 新增输入', exact: true }).click();
     await page.getByText('按需读取的测试正文', { exact: false }).waitFor();
+    await page.getByText('更早历史 3 条已隐藏', { exact: false }).waitFor();
+    assert.equal(await page.getByText('完整输入才显示的旧历史', { exact: false }).count(), 0);
     assert.equal(bodyReads, 1);
     await page.getByRole('button', { name: '全部收起', exact: true }).click();
     assert.equal(await page.getByText('按需读取的测试正文', { exact: false }).count(), 0);
     await modelNode.getByRole('button').click();
-    await page.getByRole('button', { name: '查看 input', exact: true }).click();
+    await page.getByRole('button', { name: '查看 新增输入', exact: true }).click();
     assert.equal(bodyReads, 1);
     await page.getByRole('button', { name: '加载更多事件', exact: true }).click();
     await page.locator('[data-debug-event="r-after-new-3"]').waitFor();
@@ -648,7 +671,7 @@ async function advanced_debug(runtime) {
     await warningNode.getByRole('button', { name: '查看 result', exact: true }).click();
     await waitForRequestEntry(bodyEntered);
     await page.getByRole('button', { name: '全部收起', exact: true }).click();
-    const response = page.waitForResponse((value) => new URL(value.url()).pathname === '/api/debug/body');
+    const response = page.waitForResponse((value) => new URL(value.url()).pathname === '/api/debug/body-delta');
     releaseBody();
     await (await response).finished();
     await warningNode.getByRole('button').click();
@@ -658,6 +681,11 @@ async function advanced_debug(runtime) {
     await warningNode.getByRole('button', { name: '查看 result', exact: true }).click();
     await page.getByText('延迟到达的工具结果', { exact: false }).waitFor();
     assert.equal(bodyReads, 2);
+    await modelNode.getByRole('button').click();
+    await modelNode.getByRole('button', { name: '查看完整输入', exact: true }).click();
+    await page.getByText('完整输入才显示的旧历史', { exact: false }).waitFor();
+    assert.equal(bodyReads, 3);
+    await page.getByRole('button', { name: '全部收起', exact: true }).click();
     await page.getByRole('button', { name: /r-hard-error/ }).click();
     const hardCard = page.locator('[data-debug-request="r-hard-error"]');
     assert.equal(await hardCard.getAttribute('data-diagnostic-tone'), 'error');
@@ -691,7 +719,7 @@ async function advanced_debug(runtime) {
     assert.equal(await modelNode.getByRole('button').first().getAttribute('aria-expanded'), 'true');
     assert.equal(await modelNode.locator('details').getAttribute('open'), null);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '窄屏不应出现横向页面溢出');
-    assert.equal(bodyReads, 2);
+    assert.equal(bodyReads, 3);
     await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', 'mobile.png'), fullPage: true });
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.getByRole('button', { name: /为已有上下文开启记录/ }).click();
@@ -703,7 +731,7 @@ async function advanced_debug(runtime) {
     assert.deepEqual(errors, []);
     await mkdir(path.join(root, 'test-results', 'advanced-debug'), { recursive: true });
     await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', 'page.png'), fullPage: true });
-    console.log('PASS: 对象开关与冷目录, 标题及正文折叠, 蓝黄红灰完整外框, 分页刷新与迟到正文, 深浅色/窄屏/键盘, 成功后保留警告');
+    console.log('PASS: 对象与会话分层分页, 新增输入与完整快照按需读取, 对象开关与冷目录, 折叠与分色, 迟到正文, 深浅色/窄屏/键盘');
   } finally {
     releaseBody();
     await runtime.closeContexts();

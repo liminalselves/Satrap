@@ -61,7 +61,7 @@ async def debug_response(method: str, path: str, service: str) -> tuple[int, dic
         limit = int(value("limit", "50"))
         if parsed.path == "/api/debug/status":
             return 200, await RAG_WORKERS.run(debug_health, service)
-        if parsed.path == "/api/debug/contexts":
+        if parsed.path in {"/api/debug/contexts", "/api/debug/objects"}:
             recording = value("recording")
             if recording not in ("", "on", "off"):
                 raise ValueError("对象记录过滤只能为 on 或 off")
@@ -74,7 +74,7 @@ async def debug_response(method: str, path: str, service: str) -> tuple[int, dic
                 exclude = enabled == policy.default_enabled
             return 200, await RAG_WORKERS.run(store.contexts, limit=limit, cursor=value("cursor"), object_key=value("object_key"),
                                               query=value("q"), platform_id=value("platform_id"), context_kind=value("context_kind"),
-                                              recording_keys=keys, exclude_keys=exclude)
+                                              recording_keys=keys, exclude_keys=exclude, group_objects=parsed.path.endswith("/objects"))
         if parsed.path == "/api/debug/requests":
             return 200, await RAG_WORKERS.run(store.requests, limit=limit, cursor=value("cursor"), object_key=value("object_key"),
                                               context_id=value("context_id") if "context_id" in query else None, status=value("status"),
@@ -86,6 +86,9 @@ async def debug_response(method: str, path: str, service: str) -> tuple[int, dic
             return 200, dict(await RAG_WORKERS.run(store.events, value("request_id"), after=int(value("after", "-1")), limit=limit))
         if parsed.path == "/api/debug/body":
             body = await RAG_WORKERS.run(store.body, value("request_id"), value("event_id"), value("slot"))
+            return 200, {"body": body}
+        if parsed.path == "/api/debug/body-delta":
+            body = await RAG_WORKERS.run(store.body_delta, value("request_id"), value("event_id"), value("slot"))
             return 200, {"body": body}
         return 404, {"error": "高级诊断接口不存在"}
     except (ValueError, TypeError) as error:

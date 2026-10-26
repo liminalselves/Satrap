@@ -235,3 +235,51 @@ class DebugBodyCodec:
             return result
 
         return restore(key)
+
+    def read_delta(self, key: str, previous_key: str = "", *, max_bytes: int = 64_000_000) -> DebugData:
+        """
+        生成模型输入的浏览增量, 原始记录与完整导出保持独立
+
+        参数:
+        - key: 当前已授权正文根
+        - previous_key: 同请求同父步骤内的上一份模型输入, 首次调用为空
+        - max_bytes: 两份快照合计解码预算, 默认 64 MB
+
+        返回:
+        - 新增或变更的消息及参数, 无 messages 的正文原样返回
+        """
+        # Step.1 独立还原当前快照, 共享存储不转换为依赖历史请求的差量记录
+        current = self.read(key, max_bytes=max_bytes // 2)
+        if not isinstance(current, dict) or not isinstance(current.get("messages"), list):
+            return current
+        messages = cast(list[DebugData], current["messages"])
+        previous: DebugData = None
+        unavailable = False
+        if previous_key:
+            try:
+                previous = self.read(previous_key, max_bytes=max_bytes // 2)
+            except ValueError:
+                unavailable = True   # 旧正文缺失不伪装为没有变化, 当前快照仍可单独浏览
+        old = previous.get("messages") if isinstance(previous, dict) else None
+        # Step.2 仅省略确认相同的前后片段, 中间修改和删除均明确报告
+        prefix, suffix = 0, 0
+        if isinstance(old, list):
+            while prefix < min(len(messages), len(old)) and messages[prefix] == old[prefix]:
+                prefix += 1
+            while suffix < min(len(messages), len(old)) - prefix and messages[-1 - suffix] == old[-1 - suffix]:
+                suffix += 1
+            removed = len(old) - prefix - suffix
+            basis = "previous_model_input"
+        else:
+            last_user = next((index for index in range(len(messages) - 1, -1, -1)
+                              if isinstance(messages[index], dict) and cast(dict[str, DebugData], messages[index]).get("role") == "user"), None)
+            prefix = last_user if last_user is not None else 0
+            removed, basis = 0, "latest_user_message" if last_user is not None else "initial_input"
+        # Step.3 参数变化单独展示, 模型切换和上下文重写不伪装成仅有新消息
+        changed = {name: value for name, value in current.items() if name != "messages"
+                   and (not isinstance(old, list) or not isinstance(previous, dict) or name not in previous or previous[name] != value)}
+        removed_parameters = [name for name in previous if name != "messages" and name not in current] if isinstance(previous, dict) and isinstance(old, list) else []
+        return {"view": "delta", "basis": basis, "baseline_unavailable": unavailable,
+                "total_messages": len(messages), "hidden_prefix_messages": prefix, "hidden_suffix_messages": suffix,
+                "removed_messages": removed, "messages": messages[prefix:len(messages) - suffix if suffix else len(messages)],
+                "changed_parameters": changed, "removed_parameters": cast(list[DebugData], removed_parameters)}

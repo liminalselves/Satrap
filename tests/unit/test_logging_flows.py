@@ -307,6 +307,72 @@ def test_advanced_debug_cold_catalog_and_stable_tied_pagination(tmp_path):
     third = store.requests(limit=3, cursor=second["next_cursor"])
     assert [item["request_id"] for page in (first, second, third) for item in page["requests"]] == [f"req{index}" for index in range(7)]
     assert not third["has_more"]
+    other = DebugObject("qq", "other-bot", "group", "group")
+    private = DebugObject("qq", "bot", "private", "group")
+    store.append([replace(event, request_id="new-context-request", context_id="after-new", event_id="new-context-event"),
+                  replace(event, request_id="other-account-request", object=other, event_id="other-account-event"),
+                  replace(event, request_id="private-request", object=private, event_id="private-event")])
+    grouped, cursor = [], ""
+    while True:
+        page = store.contexts(group_objects=True, limit=1, cursor=cursor)
+        grouped.extend(page["objects"])
+        if not page["has_more"]:
+            break
+        cursor = page["next_cursor"]
+    assert len(grouped) == 3   # 相同目标号的不同账号和群/私聊分别归类
+    main = next(item for item in grouped if item["object_key"] == event.object.key)
+    assert main["context_count"] == 2 and main["request_count"] == 8
+    assert len(store.contexts(object_key=event.object.key)["contexts"]) == 2
+    assert store.contexts(group_objects=True, query="after-new")["objects"][0]["context_count"] == 1
+    assert store.contexts(group_objects=True, recording_keys=[private.key])["objects"][0]["object_key"] == private.key
+    assert not store.contexts(group_objects=True, platform_id="missing")["objects"]
+    store.append([replace(event, event_id="child-context-event", sequence=1, category="execution_run", metadata={"context_id": "child-context"})])
+    main = next(item for item in store.contexts(group_objects=True)["objects"] if item["object_key"] == event.object.key)
+    assert main["context_count"] == 3 and main["request_count"] == 8   # 一个请求关联主/子上下文时只计一次
+
+
+def test_advanced_debug_model_input_view_shows_only_new_actions_and_preserves_full_snapshots(tmp_path):
+    """同轮模型输入按变化浏览, 首次隐藏旧历史, 压缩与并行父步骤不混用, 原始导出可独立还原"""
+    from dataclasses import replace
+    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.log.debug.store import DebugStore
+
+    store = DebugStore(tmp_path / "debug.sqlite", "backend")
+    history = [{"role": "system", "content": "系统资料"}, {"role": "user", "content": "旧问题"},
+               {"role": "assistant", "content": "旧回答"}, {"role": "user", "content": "本轮问题"}]
+    first = DebugEvent("request", DebugObject("qq", "bot", "group", "room"), "context", "群", "first", 0,
+                       "model", "start", "model1", "flow", 1, "", {}, {"input": {"model": "example", "messages": history}}, "rev")
+    store.append([first])
+    delta = store.body_delta("request", "first", "input")
+    assert delta["messages"] == history[-1:] and delta["hidden_prefix_messages"] == 3
+    assert delta["basis"] == "latest_user_message"
+    new_actions = [{"role": "assistant", "tool_calls": [{"id": "call", "function": {"name": "read_file", "arguments": "{}"}}]},
+                   {"role": "tool", "tool_call_id": "call", "content": "文件正文"}]
+    second = replace(first, event_id="second", sequence=1, span_id="model2", bodies={"input": {"model": "example", "messages": history + new_actions}})
+    store.append([second])
+    delta = store.body_delta("request", "second", "input")
+    assert delta["messages"] == new_actions and delta["hidden_prefix_messages"] == 4
+    assert delta["changed_parameters"] == {} and delta["removed_messages"] == 0
+    compressed = replace(first, event_id="compressed", sequence=2, bodies={"input": {"model": "other", "messages": [history[0], {"role": "system", "content": "历史摘要"}, *new_actions]}})
+    store.append([compressed])
+    delta = store.body_delta("request", "compressed", "input")
+    assert delta["messages"] == [{"role": "system", "content": "历史摘要"}]
+    assert delta["removed_messages"] == 3 and delta["hidden_suffix_messages"] == 2
+    assert delta["changed_parameters"] == {"model": "other"}
+    parallel = replace(second, event_id="parallel", sequence=3, parent_span_id="other-flow")
+    store.append([parallel])
+    assert store.body_delta("request", "parallel", "input")["basis"] == "latest_user_message"
+    next_request = replace(second, event_id="next-request", request_id="request2", sequence=0)
+    store.append([next_request])
+    assert store.body_delta("request2", "next-request", "input")["basis"] == "latest_user_message"
+    raw = replace(second, event_id="tool", sequence=4, category="tool_result", phase="end", bodies={"result": {"messages": history}})
+    store.append([raw])
+    assert store.body_delta("request", "tool", "result") == raw.bodies["result"]
+    with pytest.raises(ValueError, match="不属于"):
+        store.body_delta("request2", "second", "input")
+    assert store.body("request", "second", "input") == second.bodies["input"]
+    with store.connect() as db:
+        assert db.execute("SELECT count(*) FROM debug_events").fetchone()[0] == 6
 
 
 @pytest.mark.asyncio
@@ -348,8 +414,14 @@ async def test_advanced_debug_http_auth_settings_export_and_source_isolation(tmp
             servers.append(server); endpoints.append((source, server.sockets[0].getsockname()[1], token))
         for source, port, token in endpoints:
             assert (await request(port, "invalid", "/api/debug/contexts"))[0] == 401
+            assert (await request(port, "invalid", "/api/debug/objects"))[0] == 401
             assert (await request(port, "invalid", "/api/debug/export?request_id="+source+"-request"))[0] == 401
             status, raw = await request(port, token, "/api/debug/contexts")
+            assert status == 200
+            status, objects = await request(port, token, "/api/debug/objects?limit=1")
+            assert status == 200 and json.loads(objects)["objects"][0]["context_count"] == 1
+            status, delta = await request(port, token, f"/api/debug/body-delta?request_id={source}-request&event_id={source}-event&slot=input")
+            assert status == 200 and json.loads(delta)["body"] == source+"正文"
             assert status == 200 and json.loads(raw)["contexts"][0]["service"] == source
             status, raw = await request(port, token, f"/api/debug/body?request_id={source}-request&event_id={source}-event&slot=input")
             assert status == 200 and json.loads(raw)["body"] == source+"正文"

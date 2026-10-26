@@ -30,6 +30,15 @@ export interface DebugContext {
   service: string;
   context_kind?: 'main' | 'workflow';
 }
+export interface DebugObjectSummary {
+  object_key: string;
+  object: DebugObject;
+  updated_at: number;
+  context_count: number;
+  request_count: number;
+  error_count: number;
+  service: string;
+}
 export interface DebugRequest {
   request_id: string;
   context_id: string;
@@ -58,6 +67,7 @@ export interface DebugPage {
   next_cursor?: string | null;
 }
 export type ContextPage = DebugPage & { contexts: DebugContext[] };
+export type ObjectPage = DebugPage & { objects: DebugObjectSummary[] };
 export type RequestPage = DebugPage & { requests: DebugRequest[] };
 export interface EventPage { events: DebugEvent[]; has_more: boolean }
 export interface AvailableContextPage extends ContextPage { platforms: string[]; unconfirmed: number }
@@ -102,6 +112,7 @@ export const debugLoggingApi = {
   health: async (base: string, signal?: AbortSignal): Promise<{ database_bytes: number; wal_bytes: number; used_bytes: number; pending_events: number; write_error: string; maintenance_error: string; quota_blocked?: boolean; dropped_events?: number; dropped_requests?: number }> =>
     (await debugFetch(base, '/api/debug/status', signal)).json(),
   contexts: (base: string, query: Record<string, string>, signal?: AbortSignal) => readPage<ContextPage>(base, 'contexts', 'contexts', query, signal),
+  objects: (base: string, query: Record<string, string>, signal?: AbortSignal) => readPage<ObjectPage>(base, 'objects', 'objects', query, signal),
   requests: (base: string, query: Record<string, string>, signal?: AbortSignal) => readPage<RequestPage>(base, 'requests', 'requests', query, signal),
   request: async (base: string, requestId: string, signal?: AbortSignal): Promise<DebugRequest> => {
     const response = await debugFetch(base, `/api/debug/request?${new URLSearchParams({ request_id: requestId })}`, signal);
@@ -110,8 +121,8 @@ export const debugLoggingApi = {
     return data.request;
   },
   events: (base: string, query: Record<string, string>, signal?: AbortSignal) => readPage<EventPage>(base, 'events', 'events', query, signal),
-  body: async (base: string, query: Record<string, string>, signal?: AbortSignal): Promise<unknown> => {
-    const response = await debugFetch(base, `/api/debug/body?${new URLSearchParams(query)}`, signal);
+  body: async (base: string, query: Record<string, string>, signal?: AbortSignal, full = false): Promise<unknown> => {
+    const response = await debugFetch(base, `/api/debug/${full ? 'body' : 'body-delta'}?${new URLSearchParams(query)}`, signal);
     const data: unknown = await response.json();
     if (!data || typeof data !== 'object' || !('body' in data)) throw new Error('高级 Debug 正文响应格式无效');
     return data.body;

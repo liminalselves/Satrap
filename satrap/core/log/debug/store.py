@@ -346,7 +346,7 @@ class DebugStore:
 
     def contexts(self, *, limit: int = 50, cursor: str = "", object_key: str = "", query: str = "",
                  platform_id: str = "", context_kind: str = "", recording_keys: Sequence[str] | None = None,
-                 exclude_keys: bool = False) -> dict[str, object]:
+                 exclude_keys: bool = False, group_objects: bool = False) -> dict[str, object]:
         """
         按最近活动读取上下文目录, 不解码任何正文
 
@@ -359,6 +359,7 @@ class DebugStore:
         - context_kind: main 或 workflow
         - recording_keys: 设置服务解析出的对象键, None 时不过滤
         - exclude_keys: 是否排除这些键, 用于动态继承默认
+        - group_objects: 是否先按完整对象聚合, 默认保留上下文分页
 
         返回:
         - 含身份和上下文标识的有界目录
@@ -367,10 +368,10 @@ class DebugStore:
         if len(query) > 512 or len(platform_id) > 512 or context_kind not in ("", "main", "workflow"):
             raise ValueError("上下文过滤参数无效")
         if not self.path.is_file():
-            return {"contexts": [], "has_more": False}
+            return {"objects" if group_objects else "contexts": [], "has_more": False}
         with self.connect() as db:
             where, args = ["EXISTS(SELECT 1 FROM debug_request_contexts l CROSS JOIN debug_requests r ON r.request_id=l.request_id WHERE l.context_id=c.context_id AND r.object_key=c.object_key)"], []
-            if cursor:
+            if cursor and not group_objects:
                 before, keys = _parse_cursor(cursor, 2)
                 where.append("(c.updated_at<? OR (c.updated_at=? AND (c.object_key>? OR (c.object_key=? AND c.context_id>?))))")
                 args.extend((before, before, keys[0], keys[0], keys[1]))
@@ -389,6 +390,32 @@ class DebugStore:
             if recording_keys is not None:
                 where.append("c.object_key " + ("NOT IN" if exclude_keys else "IN") + " (SELECT value FROM json_each(?))")
                 args.append(json.dumps(list(recording_keys)))
+            if group_objects:
+                page_where, page_args = "", []
+                if cursor:
+                    before, keys = _parse_cursor(cursor, 1)
+                    page_where = "WHERE (updated_at<? OR (updated_at=? AND object_key>?))"
+                    page_args.extend((before, before, keys[0]))
+                rows = db.execute(f"""WITH matching AS (
+                          SELECT c.* FROM debug_contexts c JOIN debug_objects o ON o.object_key=c.object_key
+                          WHERE {' AND '.join(where)}
+                        ), related AS (
+                          SELECT DISTINCT r.request_id,r.object_key,r.status FROM matching c
+                          JOIN debug_request_contexts l ON l.context_id=c.context_id
+                          JOIN debug_requests r ON r.request_id=l.request_id AND r.object_key=c.object_key
+                        ), grouped AS (
+                          SELECT object_key,max(updated_at) updated_at,count(*) context_count FROM matching GROUP BY object_key
+                        ) SELECT g.*,o.identity_json,
+                          (SELECT count(*) FROM related r WHERE r.object_key=g.object_key) request_count,
+                          (SELECT count(*) FROM related r WHERE r.object_key=g.object_key AND r.status IN ('failed','timeout','unknown','interrupted')) error_count
+                        FROM (SELECT * FROM grouped {page_where} ORDER BY updated_at DESC,object_key LIMIT ?) g
+                        JOIN debug_objects o ON o.object_key=g.object_key ORDER BY g.updated_at DESC,g.object_key""",
+                                  (*args, *page_args, limit + 1)).fetchall()
+                object_values = [{**{key: row[key] for key in row.keys() if key != "identity_json"},
+                           "object": json.loads(row["identity_json"]), "service": self.service} for row in rows[:limit]]
+                last = rows[limit - 1] if len(rows) > limit else None
+                return {"objects": object_values, "has_more": len(rows) > limit,
+                        "next_cursor": _cursor([last["updated_at"], last["object_key"]]) if last else None}
             rows = db.execute(f"""SELECT c.*,o.identity_json,
                        (SELECT count(*) FROM debug_request_contexts l CROSS JOIN debug_requests r ON r.request_id=l.request_id WHERE l.context_id=c.context_id AND r.object_key=c.object_key) request_count,
                        (SELECT count(*) FROM debug_request_contexts l CROSS JOIN debug_requests r ON r.request_id=l.request_id WHERE l.context_id=c.context_id AND r.object_key=c.object_key AND r.status IN ('failed','timeout','unknown','interrupted')) error_count,
@@ -507,6 +534,32 @@ class DebugStore:
             if row is None:
                 raise ValueError("诊断正文不存在, 已清理或不属于当前事件")
             return DebugBodyCodec(db).read(row[0], max_bytes=max_bytes)
+
+    def body_delta(self, request_id: str, event_id: str, slot: str) -> DebugData:
+        """
+        按需读取动作正文, 模型输入只返回当前新增或变更部分
+
+        参数:
+        - request_id: 当前请求
+        - event_id: 请求内事件
+        - slot: 正文槽位, 非模型输入保持原样
+
+        返回:
+        - 浏览增量或原始动作正文, 不跨请求或父步骤比较模型历史
+        """
+        with self.connect() as db:
+            row = db.execute("""SELECT e.*,b.body_key FROM debug_events e JOIN debug_event_bodies b ON b.event_id=e.event_id
+                                WHERE e.request_id=? AND e.event_id=? AND b.slot=?""", (request_id, event_id, slot)).fetchone()
+            if row is None:
+                raise ValueError("诊断正文不存在, 已清理或不属于当前事件")
+            codec = DebugBodyCodec(db)
+            if row["category"] != "model" or row["phase"] != "start" or slot != "input":
+                return codec.read(row["body_key"])
+            previous = db.execute("""SELECT b.body_key FROM debug_events e JOIN debug_event_bodies b ON b.event_id=e.event_id
+                                     WHERE e.request_id=? AND e.parent_span_id=? AND e.category='model' AND e.phase='start'
+                                     AND e.sequence<? AND b.slot='input' ORDER BY e.sequence DESC LIMIT 1""",
+                                  (request_id, row["parent_span_id"], row["sequence"])).fetchone()
+            return codec.read_delta(row["body_key"], previous[0] if previous else "")
 
     def cleanup(self, *, retention_days: int, target_bytes: int) -> dict[str, int]:
         """

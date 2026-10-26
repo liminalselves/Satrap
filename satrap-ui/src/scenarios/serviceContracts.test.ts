@@ -7,7 +7,7 @@ import { loggingError } from "@/api/logging";
 import { ragErrorMessage } from "@/api/rag";
 import { errorText } from "@/utils/errorText";
 import { debugMode, withDebugMode, sameDebugObject, type DebugPolicy } from '@/api/debugLogging';
-import { diagnosticTone, eventPresentation, requestHint } from '@/pages/Logs/debugPresentation';
+import { diagnosticTone, eventPresentation, inputDeltaPresentation, requestHint } from '@/pages/Logs/debugPresentation';
 
 describe('高级诊断对象设置', () => {
   it('覆盖绑定完整对象, 切换上下文不复制覆盖, reset 恢复默认且不修改原草稿', () => {
@@ -26,6 +26,17 @@ describe('高级诊断对象设置', () => {
 });
 
 describe('高级诊断标题与级别', () => {
+  it('输入增量说明隐藏历史和移除范围, 不把压缩后的改变伪装成只追加', () => {
+    const delta = { view: 'delta', basis: 'previous_model_input', hidden_prefix_messages: 10, hidden_suffix_messages: 2,
+      removed_messages: 3, messages: [{ role: 'system', content: '新摘要' }], changed_parameters: {}, removed_parameters: ['temperature'] };
+    const presentation = inputDeltaPresentation(delta);
+    expect(presentation.summary).toContain('移除 3 条');
+    expect(presentation.summary).toContain('隐藏未变消息 12 条');
+    expect(presentation.text).toContain('新摘要');
+    expect(presentation.text).toContain('temperature');
+    expect(inputDeltaPresentation({ ...delta, basis: 'latest_user_message', baseline_unavailable: true }).summary).toContain('基线不可用');
+    expect(inputDeltaPresentation({ original: '旧正文' }).summary).toBeUndefined();
+  });
   it('业务终态与异常颜色分别保留, 旧记录不猜测, 标题不读取动态正文', () => {
     const request = { request_id: 'request', context_id: 'context', parent_request_id: '', status: 'success', incomplete: 0,
       updated_at: 2, started_at: 1, settings_revision: 'v1' };

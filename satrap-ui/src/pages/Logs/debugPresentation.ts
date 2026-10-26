@@ -96,3 +96,25 @@ export function eventPresentation(event: DebugEvent): { title: string; tone: Dia
   return { title: [categories[event.category] || event.category, name, stage].filter(Boolean).join(' · '), tone,
     label: problem || (tone === 'unknown' ? '旧记录未分类' : tone === 'neutral' ? states[status] || status : '正常') };
 }
+
+/**
+ * 将浏览增量转换为可读摘要, 完整快照仍由独立入口读取
+ *
+ * 参数:
+ * - value: 已授权的模型输入增量响应
+ *
+ * 返回:
+ * - 默认正文及变化范围说明, 旧格式直接显示原始资料
+ */
+export function inputDeltaPresentation(value: unknown): { text: string; summary?: string } {
+  if (!value || typeof value !== 'object' || !('view' in value) || value.view !== 'delta'
+    || !('messages' in value) || !Array.isArray(value.messages)) return { text: JSON.stringify(value, null, 2) };
+  const data = value as Record<string, unknown>;
+  const count = (key: string) => typeof data[key] === 'number' ? data[key] : 0;
+  const summary = data.basis === 'previous_model_input'
+    ? `相对本次请求的上一次模型输入: 新增或变更 ${value.messages.length} 条, 移除 ${count('removed_messages')} 条, 隐藏未变消息 ${Number(count('hidden_prefix_messages')) + Number(count('hidden_suffix_messages'))} 条`
+    : data.basis === 'initial_input' ? `首次输入没有用户消息分界, 展示当前 ${value.messages.length} 条`
+      : `首次输入: 从最近一条用户消息开始展示 ${value.messages.length} 条, 更早历史 ${count('hidden_prefix_messages')} 条已隐藏`;
+  return { summary: summary + (data.baseline_unavailable ? '; 对比基线不可用, 已改为展示最近输入' : ''),
+    text: JSON.stringify({ messages: value.messages, changed_parameters: data.changed_parameters, removed_parameters: data.removed_parameters }, null, 2) };
+}
