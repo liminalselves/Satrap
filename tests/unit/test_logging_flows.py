@@ -407,6 +407,10 @@ async def test_advanced_debug_tool_outcomes_keep_warning_and_hard_error_after_re
             return tool_error("sample", "当前用户没有权限", "permission_denied")
         if value == "pending":
             return {"ok": True, "status": "pending"}
+        if value == "nested":
+            return {"ok": False, "error": {"code": "invalid_argument", "message": "请使用独立 quote 组件"}}
+        if value == "unknown":
+            return {"ok": False, "status": "unknown", "error": {"code": "action_unconfirmed", "message": "平台回执未确认"}}
         if value == "unclassified":
             return {"ok": False, "error_type": "custom_failure", "diagnostic_level": "info"}
         return {"ok": True, "data": {"ok": False, "error_type": "execution_error"}}
@@ -458,6 +462,8 @@ async def test_advanced_debug_tool_outcomes_keep_warning_and_hard_error_after_re
         with capture.debug_request(obj, "business", context_id="context"):
             await call("denied", arguments={"value": "denied"})
             await call("unclassified", arguments={"value": "unclassified"})
+            await call("nested", arguments={"value": "nested"})
+            await call("unknown", arguments={"value": "unknown"})
         with capture.debug_request(obj, "normal", context_id="context"):
             await call("normal", arguments={"value": "good"})
         with pytest.raises(asyncio.CancelledError):
@@ -474,6 +480,9 @@ async def test_advanced_debug_tool_outcomes_keep_warning_and_hard_error_after_re
         assert rows["cancelled"]["status"] == "cancelled" and rows["cancelled"]["diagnostic_level"] == "info"
         assert rows["timed-out"]["diagnostic_level"] == "error"
         assert rows["business"]["diagnostic_level"] == "warning"
+        business = [event["metadata"] for event in store.events("business")["events"] if event["category"] == "tool_result"]
+        assert any(item.get("error_kind") == "model_input" and item.get("reason") == "请使用独立 quote 组件" for item in business)
+        assert any(item.get("result_status") == "unknown" and item.get("error_kind") == "uncertain_result" for item in business)
         events = store.events("corrected")["events"]
         assert any(event["metadata"].get("error_kind") == "model_input" for event in events)
         assert next(event for event in events if event["span_id"] == "missing-value" and event["category"] == "tool" and event["phase"] == "end")["metadata"]["diagnostic_level"] == "warning"

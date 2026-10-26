@@ -792,7 +792,7 @@ class PipelineScheduler:
                             debug.status = "failed"
                         if command_text is None:
                             self._record_diagnostic(event, "model", "failed", reason_code="session_execution_failed",
-                                                    reason="会话执行失败, 已撤销本轮回复草稿", turn_id=self._request_turn_ids(event))
+                                                    reason="会话执行失败, 已禁止本轮后续回复", turn_id=self._request_turn_ids(event))
                         manual_detail = "session_execution_failed"
                         return
                     if user_call.context_reset_at is not None:
@@ -802,7 +802,7 @@ class PipelineScheduler:
 
                     debug = current_trace()
                     if debug is not None:
-                        debug.status = "success"
+                        debug.status = event.last_business_receipt.status if event.last_business_receipt is not None else "success"
                     record_debug("session_result", "end", status="returned", bodies={"output": response})
                     if command_text is None:
                         self._record_diagnostic(
@@ -812,8 +812,7 @@ class PipelineScheduler:
                         )
                     # 命令未调用模型: 不为它写 model 阶段记录, 其结论由 projection 阶段的原因码与发送阶段给出
 
-                    handled = await reply_turn.commit(response)
-                    if not handled and response and not event.has_send_operation():
+                    if response and not event.has_send_operation():
                         await event.send(MessageChain.from_text(response))
                     # ---------- 后处理: 兜底发送回复 ----------
                     # 如果 Session 内部已通过 content_callback 发送过消息

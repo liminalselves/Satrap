@@ -230,7 +230,58 @@ async def test_onebot_outbound_falls_back_to_file_when_no_url(tmp_path, monkeypa
     source.write_bytes(b"image")
     segments = await message_chain_to_onebot_segments([Image(file=str(source))])
 
-    assert segments[0] == {"type": "image", "data": {"file": source.as_uri()}}
+    assert segments[0] == {"type": "image", "data": {"file": "base64://aW1hZ2U="}}
+
+
+@pytest.mark.asyncio
+async def test_cross_container_images_and_forward_nodes_use_bounded_bytes(tmp_path, monkeypatch):
+    """
+    接收端只取得字节来源, 普通图片与转发节点共用预算, 超限不产生发送
+
+    参数:
+    - tmp_path: 独立的临时目录
+    - monkeypatch: 隔离平台状态和工作线程
+    """
+    import base64
+    import asyncio
+    from satrap.core.components import Node
+    from satrap.core.platform.onebot import onebot_utils
+    from satrap.core.utils import paths
+    from support.media import png
+    monkeypatch.setattr(paths, '_configured_media_roots', (str(tmp_path),))
+    source = tmp_path / 'local-image.png'
+    source.write_bytes(png())
+    payload = png()
+    segments = await message_chain_to_onebot_segments([Image(file=str(source)), Node([Image(file=str(source))], name='bot', uin='1')])
+    for segment in (segments[0], segments[1]['data']['content'][0]):
+        value = segment['data']['file']
+        assert value.startswith('base64://') and base64.b64decode(value[9:]) == payload
+        assert str(tmp_path) not in value
+    monkeypatch.setattr(onebot_utils, 'IMAGE_BYTES_LIMIT', len(payload) * 2 - 1)
+    with pytest.raises(ValueError, match='预算'):
+        await message_chain_to_onebot_segments([Image(file=str(source)), Node([Image(file=str(source))], name='bot', uin='1')])
+    import threading
+    original = onebot_utils._encode_local_image
+    started, released = threading.Event(), threading.Event()
+    def slow_encode(*args):
+        started.set()
+        assert released.wait(3)
+        return original(*args)
+    monkeypatch.setattr(onebot_utils, '_encode_local_image', slow_encode)
+    task = asyncio.create_task(message_chain_to_onebot_segments([Image(file=str(source))]))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done(), '取消时必须等待仍使用文件的编码线程退出'
+    finally:
+        released.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    monkeypatch.setattr(onebot_utils, '_encode_local_image', original)
+    source.unlink()
+    with pytest.raises(FileNotFoundError):
+        await message_chain_to_onebot_segments([Image(file=str(source))])
 
 
 def test_create_platform_message_private_and_group():

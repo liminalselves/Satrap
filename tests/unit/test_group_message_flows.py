@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from unittest.mock import AsyncMock
 import asyncio
+import json
 import logging
 import sqlite3
 from aiocqhttp.exceptions import ActionFailed, ApiNotAvailable
@@ -688,150 +689,168 @@ async def test_route_change_while_revision_read_is_pending_denies_old_origin(tmp
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-async def test_prepare_is_atomic_sender_based_and_sends_only_once(tmp_path):
+async def test_direct_reply_waits_for_receipt_and_allows_explicit_followup(tmp_path):
+    """
+    工具等待真实回执, 每个显式调用独立执行, 引用与提及保持正确
+
+    参数:
+    - tmp_path: 独立的临时目录
+    """
     adapter, event, service = setup(tmp_path)
-    with owner(event) as turn:
-        result = await service.execute("group_chat_reply", {"components": COMPONENTS})
-        assert result["status"] == "prepared" and result["sent"] is False
-        send_mock(adapter).assert_not_awaited()
-        again = await service.execute("group_chat_reply", {"components": COMPONENTS})
-        assert again["error"]["code"] == "already_prepared"
-        # 并发重复准备同样只保留一个草稿
-        concurrent = await asyncio.gather(*(service.execute("group_chat_reply", {"components": COMPONENTS}) for _ in range(2)))
-        assert all(item["error"]["code"] == "already_prepared" for item in concurrent)
-        assert await turn.commit("模型重复的最终文本")
-        assert await turn.commit("再次调用宿主也不能重发")
+    started, release = asyncio.Event(), asyncio.Event()
+    async def slow(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return SendReceipt("success", ("sent-1",))
+    send_mock(adapter).side_effect = slow
+    with owner(event):
+        task=asyncio.create_task(service.execute("group_chat_reply", {"components": COMPONENTS}))
+        await asyncio.wait_for(started.wait(), 2)
+        assert not task.done()
+        release.set()
+        result=await task
+        assert result["status"] == "sent" and result["message_ids"] == ["sent-1"]
+        assert (await service.execute("group_chat_reply", {"components": COMPONENTS}))["ok"]
     assert current_reply_turn() is None
-    send_mock(adapter).assert_awaited_once()
-    chain = send_mock(adapter).call_args.args[1]
+    assert send_mock(adapter).await_count == 2
+    chain=send_mock(adapter).call_args.args[1]
     assert [c.type for c in chain.components] == [PlatformComponentType.Reply, PlatformComponentType.Plain, PlatformComponentType.At,
                                                 PlatformComponentType.Plain, PlatformComponentType.At, PlatformComponentType.Plain]
     assert [c.qq for c in chain.components if c.type == PlatformComponentType.At] == ["123", "789"]
-    assert chain.components[0].id == "77"
-    assert "重复" not in "".join(c.text for c in chain.components if c.type == PlatformComponentType.Plain)
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("components", [[], [{"type": "image", "url": "x"}], [{"type": "mention", "user_id": "789", "source_message_id": "77"}],
     [{"type": "quote", "message_id": "77"}, {"type": "quote", "message_id": "77"}, {"type": "text", "text": "x"}],
     [{"type": "text", "text": "x", "group_id": "other"}], [{"type": "mention", "user_id": True}],
-    [{"type": "quote", "message_id": "77"}], [{"type": "text", "text": "x" * 100001}],
-])
-async def test_invalid_components_never_leave_half_a_draft(tmp_path, components):
-    adapter, event, service = setup(tmp_path)
-    with owner(event) as turn:
-        result = await service.execute("group_chat_reply", {"components": components})
-        assert result["ok"] is False and turn.draft is None
-        result = await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "完整草稿"}]})
-        assert result["ok"]
-    send_mock(adapter).assert_not_awaited()
+    [{"type": "quote", "message_id": "77"}], [{"type": "text", "text": "x" * 100001}]])
+async def test_invalid_components_do_not_send_and_allow_correction(tmp_path, components):
+    """
+    验证真实工具调用与平台发送的边界
+
+    参数:
+    - tmp_path: 独立的临时目录
+    - components: 待核验的工具组件
+    """
+    adapter, event, service=setup(tmp_path)
+    with owner(event):
+        result=await service.execute("group_chat_reply", {"components": components})
+        assert not result["ok"]
+        send_mock(adapter).assert_not_awaited()
+        assert (await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "完整回复"}]}))["ok"]
+    send_mock(adapter).assert_awaited_once()
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["deleted", "recalled", "unverified", "foreign", "connection", "disabled", "failed", "subagent", "route", "instance"])
-async def test_untrusted_or_changed_targets_are_not_submitted(tmp_path, change):
-    adapter, event, service = setup(tmp_path)
-    store = adapter.message_archive
-    assert store is not None
-    if change == "unverified":
-        import time
-        store.record(_group_chat_reply_SCOPE, ArchiveMessage("bad", "123", time.time(), "未核验"))
-        import sqlite3
-        with sqlite3.connect(store.database) as connection:
-            connection.execute("UPDATE platform_messages SET verified=0 WHERE message_id='bad'")
-    if change == "foreign":
-        adapter._bot.get_msg.return_value = {"message_type": "group", "self_id": 10000, "group_id": 999, "message_id": 88,
-                                             "user_id": 123, "sender": {"user_id": 123}, "time": 1800000000, "message": []}
+@pytest.mark.parametrize("change", ["deleted", "recalled", "unverified", "foreign", "disabled", "failed", "subagent", "route", "instance", "connection"])
+async def test_untrusted_or_changed_targets_are_not_sent(tmp_path, change, monkeypatch):
+    """
+    验证真实工具调用与平台发送的边界
+
+    参数:
+    - tmp_path: 独立的临时目录
+    - change: 等待期间或执行前发生的状态变更
+    - monkeypatch: 隔离平台状态和工作线程
+    """
+    adapter, event, service=setup(tmp_path)
+    components = COMPONENTS
     with owner(event) as turn:
+        if change == "deleted":
+            adapter.message_archive.delete(_group_chat_reply_SCOPE, message_ids=["77"], expected_revision=0)
+        elif change == "recalled":
+            adapter.message_archive.recall(_group_chat_reply_SCOPE, "77")
+        elif change == "unverified":
+            with sqlite3.connect(adapter.message_archive.database) as db:
+                db.execute("UPDATE platform_messages SET verified=0 WHERE message_id='77'")
+        elif change == "foreign":
+            adapter._bot.get_msg.return_value = {"message_type": "group", "self_id": 10000, "group_id": 999, "message_id": 88,
+                                                 "user_id": 123, "sender": {"user_id": 123}, "time": 1800000000, "message": []}
+            components = [{"type": "quote", "message_id": "88"}, {"type": "text", "text": "跨群引用应拒绝"}]
+        elif change == "disabled":
+            adapter.config.enable=False
+        elif change == "failed":
+            turn.abort()
+        elif change == "route":
+            adapter.config.session_bindings={"group": {"mode": "value", "provider": "edictum", "config_name": "new-agent"}}
+            adapter.apply_agent_routes()
+        elif change == "instance":
+            set_current_adapter_manager(PlatformAdapterManager(PlatformAdapterRegistry()))
+        elif change == "connection":
+            original=service._reply_components
+            async def changed(*args):
+                result=await original(*args)
+                adapter._bot=AsyncMock()
+                return result
+            monkeypatch.setattr(service, '_reply_components', changed)
         if change == "subagent":
             with bind_tool_workflow(object()):
-                result = await service.execute("group_chat_reply", {"components": COMPONENTS})
-            assert result["error"]["code"] == "wrong_executor" and turn.draft is None
-        elif change in {"unverified", "foreign"}:
-            result = await service.execute("group_chat_reply", {"components": [{"type": "mention", "source_message_id": "bad" if change == "unverified" else "88"}]})
-            assert result["ok"] is False and turn.draft is None
+                result=await service.execute("group_chat_reply", {"components": COMPONENTS})
+            assert result["error"]["code"] == "wrong_executor"
         else:
-            assert (await service.execute("group_chat_reply", {"components": COMPONENTS}))["ok"]
-            if change == "deleted":
-                store.delete(_group_chat_reply_SCOPE, message_ids=["77"], expected_revision=0)
-            elif change == "recalled":
-                store.recall(_group_chat_reply_SCOPE, "77")
-            elif change == "connection":
-                adapter._bot = AsyncMock()
-            elif change == "disabled":
-                adapter.config.enable = False
-            elif change == "failed":
-                turn.abort()
-            elif change == "route":
-                adapter.config.session_bindings = {"group": {"mode": "value", "provider": "edictum", "config_name": "new-agent"}}
-                adapter.apply_agent_routes()
-            elif change == "instance":
-                set_current_adapter_manager(PlatformAdapterManager(PlatformAdapterRegistry()))
-            await turn.commit("不能兜底发送此正文")
+            result=await service.execute("group_chat_reply", {"components": components})
+        assert not result["ok"]
     send_mock(adapter).assert_not_awaited()
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["success", "partial", "failed", "unknown"])
-async def test_receipts_are_preserved_without_fallback_resend(tmp_path, status):
-    adapter, event, service = setup(tmp_path)
-    receipt = SendReceipt(status, ("segment-1",) if status in {"success", "partial"} else (), reason="test")
-    send_mock(adapter).return_value = receipt
-    with owner(event) as turn:
-        assert (await service.execute("group_chat_reply", {"components": COMPONENTS}))["ok"]
-        await turn.commit("正文")
-        await turn.commit("正文")
-    assert event.last_business_receipt is receipt
-    send_mock(adapter).assert_awaited_once()
+async def test_receipts_are_returned_and_uncertain_sends_cannot_repeat(tmp_path, status):
+    """
+    验证真实工具调用与平台发送的边界
+
+    参数:
+    - tmp_path: 独立的临时目录
+    - status: 平台回执状态
+    """
+    adapter, event, service=setup(tmp_path)
+    receipt=SendReceipt(status, ("segment-1",) if status in {"success", "partial"} else (), reason="test", error_message="测试原因")
+    send_mock(adapter).return_value=receipt
+    with owner(event):
+        result=await service.execute("group_chat_reply", {"components": COMPONENTS})
+        assert result["ok"] is (status == "success")
+        assert result["status"] == ("sent" if status == "success" else status)
+        if status in {"partial", "unknown"}:
+            again=await service.execute("group_chat_reply", {"components": COMPONENTS})
+            assert again == result
+        if status == "partial":
+            send_mock(adapter).return_value=SendReceipt("success", ("followup",))
+            assert (await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "独立后续消息"}]}))["status"] == "sent"
+        if status == "failed":
+            send_mock(adapter).return_value=SendReceipt("success", ("fixed",))
+            assert (await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "修正后回复"}]}))["status"] == "sent"
+    assert send_mock(adapter).await_count == (2 if status in {"failed", "partial"} else 1)
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
 async def test_cancellation_after_submit_is_unknown_and_cannot_resend(tmp_path):
-    adapter, event, service = setup(tmp_path)
-    started = asyncio.Event()
+    adapter, event, service=setup(tmp_path)
+    started=asyncio.Event()
     async def slow(*args, **kwargs):
         started.set()
         await asyncio.Future()
-    send_mock(adapter).side_effect = slow
-    with owner(event) as turn:
-        assert (await service.execute("group_chat_reply", {"components": COMPONENTS}))["ok"]
-        task = asyncio.create_task(turn.commit("正文"))
-        await started.wait()
+    send_mock(adapter).side_effect=slow
+    with owner(event):
+        task=asyncio.create_task(service.execute("group_chat_reply", {"components": COMPONENTS}))
+        await asyncio.wait_for(started.wait(), 2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert event.last_business_receipt is not None and event.last_business_receipt.status == "unknown"
-        await turn.commit("不能重发")
+        assert event.last_business_receipt.status == "unknown"
+        result=await service.execute("group_chat_reply", {"components": COMPONENTS})
+        assert result["status"] == "unknown"
     send_mock(adapter).assert_awaited_once()
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
-@pytest.mark.parametrize("response", ["", "最终正文"])
-async def test_fallback_uses_only_final_response_not_tool_preface(tmp_path, response):
-    adapter, event, _ = setup(tmp_path)
-    with owner(event) as turn:
-        turn.capture("查询前的说明, 不能作为最终回复")
-        assert await turn.commit(response)
-    if not response:
-        send_mock(adapter).assert_not_awaited()
-    else:
-        send_mock(adapter).assert_awaited_once()
-        text = "".join(component.text for component in send_mock(adapter).call_args.args[1].components if component.type == PlatformComponentType.Plain)
-        assert text.lstrip() == response
-
-@pytest.mark.usefixtures('restore_manager')
-@pytest.mark.asyncio
 async def test_explicit_text_suppresses_auto_quote_and_mention_but_fallback_keeps_them(tmp_path):
-    adapter, event, service = setup(tmp_path)
-    with owner(event) as turn:
+    from satrap.core.platform.event import MessageChain
+    adapter, event, service=setup(tmp_path)
+    with owner(event):
         assert (await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "显式文本"}]}))["ok"]
-        await turn.commit("不重复")
-    assert [component.type for component in send_mock(adapter).call_args.args[1].components] == [PlatformComponentType.Plain]
+    assert [c.type for c in send_mock(adapter).call_args.args[1].components] == [PlatformComponentType.Plain]
     send_mock(adapter).reset_mock()
-    with owner(event) as turn:
-        event._has_send_oper = False
-        await turn.commit("兜底文本")
-    assert [component.type for component in send_mock(adapter).call_args.args[1].components] == [PlatformComponentType.Reply, PlatformComponentType.At, PlatformComponentType.Plain]
+    await event.send(MessageChain.from_text("兜底文本"))
+    assert [c.type for c in send_mock(adapter).call_args.args[1].components] == [PlatformComponentType.Reply, PlatformComponentType.At, PlatformComponentType.Plain]
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
@@ -845,12 +864,12 @@ async def test_structured_reply_uses_actual_onebot_split_queue_and_archives_conf
     components = [{"type": "quote", "message_id": "77"}, {"type": "mention", "source_message_id": "77"},
                   {"type": "text", "text": "甲" * 150}, {"type": "mention", "user_id": "789"}]
     with owner(event) as turn:
-        assert (await service.execute("group_chat_reply", {"components": components}))["ok"]
-        await turn.commit("不能重发")
-        await turn.commit("再次提交")
+        assert (await service.execute("group_chat_reply", {"components": components}))["ok"] is (not failed)
     receipt = event.last_business_receipt
     assert receipt is not None and receipt.status == ("partial" if failed else "success")
     assert receipt.message_ids == (("900",) if failed else ("900", "901", "902"))
+    if failed:
+        assert receipt.error_code == "100" and receipt.error_message == "模拟失败" and receipt.stage == "publish"
     calls = adapter._bot.send_group_msg.await_args_list
     assert len(calls) == (2 if failed else 3)
     assert [segment["type"] for segment in calls[0].kwargs["message"][:2]] == ["reply", "at"]
@@ -915,7 +934,6 @@ async def test_new_adapter_and_opaque_ids_use_same_reply_contract(tmp_path):
             {"type": "text", "text": " 保留字符"},
         ]})
         assert result["ok"]
-        await turn.commit("只发送草稿")
     sent = cast(AsyncMock, adapter.send_message)
     sent.assert_awaited_once()
     assert sent.call_args.args[1].components[0].id == 'msg:"<a>'
@@ -937,7 +955,7 @@ async def test_first_model_request_has_skill_tools_environment_and_no_early_outp
         seen.append(text)
     output = output_async if asynchronous else output_sync
     instance._wf.content_callback = output
-    script.observe = lambda: send_mock(adapter).assert_not_awaited()
+    script.observe = lambda: send_mock(adapter).assert_awaited_once() if script.requests else send_mock(adapter).assert_not_awaited()
     await PipelineScheduler(cast(SessionManager, Invoker(instance, asynchronous))).execute(event)
     assert seen == []
     assert instance._wf.content_callback is output
@@ -958,12 +976,54 @@ async def test_first_model_request_has_skill_tools_environment_and_no_early_outp
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_failed_model_after_prepared_draft_never_sends(tmp_path, asynchronous):
+async def test_failed_model_after_direct_reply_preserves_sent_message(tmp_path, asynchronous):
+    """
+    验证真实工具调用与平台发送的边界
+
+    参数:
+    - tmp_path: 独立的临时目录
+    - asynchronous: 是否使用异步主工作流
+    """
     adapter, event, _ = setup(tmp_path)
     script = Script([LLMCallResponse("tools_call", "", tool_calls=[{"id": "r", "name": "group_chat_reply", "arguments": {"components": COMPONENTS}}]), RuntimeError("模型失败")])
     instance = await session(tmp_path, script, asynchronous, False)
     await PipelineScheduler(cast(SessionManager, Invoker(instance, asynchronous))).execute(event)
-    send_mock(adapter).assert_not_awaited()
+    send_mock(adapter).assert_awaited_once()
+
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_platform_failure_reaches_next_model_and_correction_does_not_repeat_completed_tools(tmp_path, asynchronous):
+    """
+    真实主工作流在下一次推理收到发送错误, 修正后不补发收尾正文
+
+    参数:
+    - tmp_path: 独立的临时目录
+    - asynchronous: 是否使用异步主工作流
+    """
+    adapter, event, _ = setup(tmp_path)
+    send_mock(adapter).side_effect = [
+        SendReceipt("failed", reason="action_rejected", error_code="100", error_message="接收端无法读取图片", stage="publish"),
+        SendReceipt("success", ("fixed-message",)),
+    ]
+    def correct(messages, kwargs):
+        result = json.loads(next(message['content'] for message in messages if message.get('tool_call_id') == 'first-reply'))
+        assert result['ok'] is False and result['error']['message'] == '接收端无法读取图片'
+        assert result['error']['platform_code'] == '100' and result['error']['stage'] == 'publish'
+        assert send_mock(adapter).await_count == 1
+        return LLMCallResponse('tools_call', '', tool_calls=[{'id': 'fixed-reply', 'name': 'group_chat_reply',
+            'arguments': {'components': [{'type': 'text', 'text': '改成文字'}]}}])
+    def finish(messages, kwargs):
+        result = json.loads(next(message['content'] for message in messages if message.get('tool_call_id') == 'fixed-reply'))
+        assert result['status'] == 'sent' and result['message_ids'] == ['fixed-message']
+        return LLMCallResponse('message', '这段收尾不应重复外发')
+    script = Script([LLMCallResponse('tools_call', '', tool_calls=[{'id': 'first-reply', 'name': 'group_chat_reply',
+        'arguments': {'components': [{'type': 'text', 'text': '首次回复'}]}}]), correct, finish])
+    instance = await session(tmp_path, script, asynchronous, False)
+    await PipelineScheduler(cast(SessionManager, Invoker(instance, asynchronous))).execute(event)
+    assert send_mock(adapter).await_count == 2 and len(script.requests) == 3
+    assert event.last_business_receipt.message_ids == ('fixed-message',)
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio

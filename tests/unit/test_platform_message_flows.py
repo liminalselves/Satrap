@@ -766,7 +766,7 @@ async def test_misskey_actual_clipped_text_and_sent_files(tmp_path: Path, sessio
     result = await adapter.send_message(session, MessageChain.from_text("abcdefgh"))
     await adapter.drain_message_archive()
     item = _platform_message_outgoing_item(adapter, MessageScope("mk", "bot", kind, chat_id), message_id)
-    assert isinstance(result, dict) and item["text"].endswith("abcd...")
+    assert result.status == "success" and result.message_ids == (message_id,) and item["text"].endswith("abcd...")
     assert item["media"] == [{"type": "File", "native_id": "file-1"},
                               *([{"type": "File", "native_id": "file-2"}] if kind == "discussion" else [])]
     assert item["time_source"] == "local" and item["direction"] == "outbound"
@@ -777,7 +777,8 @@ async def test_misskey_actual_clipped_text_and_sent_files(tmp_path: Path, sessio
 async def test_misskey_unconfirmed_or_mismatched_receipt_not_archived(tmp_path: Path, result: Any) -> None:
     adapter = _misskey(tmp_path)
     cast(Any, adapter._client).send_room_message = AsyncMock(return_value=result)
-    assert await adapter.send_message("room%r", MessageChain.from_text("消息")) == result
+    receipt = await adapter.send_message("room%r", MessageChain.from_text("消息"))
+    assert receipt.status == "unknown" and not receipt.message_ids
     await adapter.drain_message_archive()
     assert not _platform_message_outgoing_store(adapter).database.exists()
 
@@ -790,7 +791,8 @@ async def test_misskey_frozen_account_and_native_timestamp(tmp_path: Path) -> No
         return {"id": "confirmed", "fromUserId": "bot", "createdAt": "2026-10-03T12:00:00+08:00"}
 
     cast(Any, adapter._client).send_room_message = AsyncMock(side_effect=send)
-    await adapter.send_message("room%r", MessageChain.from_text("原账号"))
+    receipt = await adapter.send_message("room%r", MessageChain.from_text("原账号"))
+    assert receipt.status == "success" and receipt.message_ids == ("confirmed",)
     await adapter.drain_message_archive()
     item = _platform_message_outgoing_item(adapter, MessageScope("mk", "bot", "group", "r"), "confirmed")
     assert item["sender_id"] == "bot" and item["time_source"] == "platform"

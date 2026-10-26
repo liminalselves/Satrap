@@ -42,6 +42,9 @@ describe('高级诊断标题与级别', () => {
     expect(warning.title).toBe('工具返回 · read_document · 参数或调用错误');
     expect(warning.tone).toBe('warning');
     expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'info', result_status: 'pending' } }).tone).toBe('neutral');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'info', result_status: 'sent' } }).title).toBe('工具返回 · 已发送');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'error', result_status: 'partial' } }).title).toBe('工具返回 · 部分完成 · 系统错误');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'warning', result_status: 'unknown', error_kind: 'uncertain_result' } }).title).toBe('工具返回 · 结果待确认');
     expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'info', data: { ok: false, error_type: 'execution_error' } } }).tone).toBe('normal');
   });
 });

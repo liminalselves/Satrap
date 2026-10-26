@@ -578,7 +578,7 @@ async function advanced_debug(runtime) {
       const events = id === 'r-after-new' ? [
         event(0, 'model', '', { model: 'synthetic', diagnostic_level: 'info', network_timeout: 60 }, ['input']),
         event(1, 'tool', 'completed', { name: 'read_document', diagnostic_level: 'warning', error_kind: 'model_input', error_code: 'invalid_arguments', reason: '缺少 path 参数' }, ['result']),
-        event(2, 'tool_result', 'returned', { name: 'read_document', diagnostic_level: 'info' }, ['result']),
+        event(2, 'tool_result', 'returned', { name: 'group_chat_reply', diagnostic_level: 'info', result_status: 'sent' }, ['result']),
         event(3, 'approval', 'pending', { diagnostic_level: 'info' }),
         ...(traceClosed ? [event(4, 'model', 'completed', { model: 'synthetic', diagnostic_level: 'info' }), event(5, 'request', 'success', { diagnostic_level: 'info' })] : []),
       ] : [event(0, 'tool_result', id === 'r-cancelled' ? 'cancelled' : 'returned', id === 'r-legacy' ? {} : {
@@ -632,6 +632,7 @@ async function advanced_debug(runtime) {
     assert.equal(bodyReads, 1);
     await page.getByRole('button', { name: '加载更多事件', exact: true }).click();
     await page.locator('[data-debug-event="r-after-new-3"]').waitFor();
+    await page.locator('[data-debug-event="r-after-new-2"]').getByRole('button', { name: /已发送/ }).waitFor();
     assert.equal(await page.locator('[data-debug-event="r-after-new-3"]').getAttribute('data-diagnostic-tone'), 'neutral');
     assert.equal(await modelNode.getByRole('button').first().getAttribute('aria-expanded'), 'true');
     await page.getByText('按需读取的测试正文', { exact: false }).waitFor();

@@ -55,7 +55,7 @@ from satrap.core.storage import (
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.call_context import bind_call_origin
 from satrap.core.conversation import bind_conversation_route, HistoryWindow
-from satrap.core.group_chat.reply import buffer_session_reply, abort_reply_turn
+from satrap.core.group_chat.reply import bind_session_reply, abort_reply_turn
 
 from satrap.core.log import logger
 
@@ -3016,7 +3016,7 @@ class SessionManager:
             record_session_start(session)
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), buffer_session_reply(session):
+            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), bind_session_reply(session):
                 return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
             abort_reply_turn()
@@ -3041,7 +3041,7 @@ class SessionManager:
             record_session_start(session)
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), buffer_session_reply(session):
+            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), bind_session_reply(session):
                 return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
             abort_reply_turn()

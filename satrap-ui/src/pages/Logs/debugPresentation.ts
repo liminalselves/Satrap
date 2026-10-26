@@ -21,6 +21,7 @@ const states: Record<string, string> = {
   cancelled: '已取消', skipped: '未执行', pending: '待审批', ready: '待执行', waiting: '等待中', needs_attention: '待处理',
   ask: '等待确认', deny: '已拒绝', rejected: '已拒绝', expired: '已过期', queued: '已排队', saved: '已保存', deleted: '已删除',
   already_exists: '已存在', approved: '已批准', unknown: '结果未确认', partial: '部分完成', interrupted: '未确认中断',
+  sent: '已发送', published: '已发布', uploaded: '已上传',
 };
 
 /**
@@ -89,7 +90,8 @@ export function eventPresentation(event: DebugEvent): { title: string; tone: Dia
     : kind === 'business_rejection' ? code === 'revision_conflict' ? '版本冲突' : '调用被拒绝'
       : kind === 'observation_gap' ? '记录不完整' : kind === 'uncertain_result' ? '结果待确认'
         : tone === 'error' ? '系统错误' : tone === 'warning' ? '未分类失败' : '';
-  const stage = problem || states[status] || (event.phase === 'start' ? '开始' : event.phase === 'end' ? '结束' : '更新');
+  const stage = problem ? (status === 'partial' ? `部分完成 · ${problem}` : problem)
+    : states[status] || (event.phase === 'start' ? '开始' : event.phase === 'end' ? '结束' : '更新');
   const name = text(event.metadata.name) || text(event.metadata.model);
   return { title: [categories[event.category] || event.category, name, stage].filter(Boolean).join(' · '), tone,
     label: problem || (tone === 'unknown' ? '旧记录未分类' : tone === 'neutral' ? states[status] || status : '正常') };

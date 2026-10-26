@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock
 from satrap.core.call_context import bind_call_origin
 from satrap.core.group_chat.types import GroupChatLimits
 from satrap.core.components import Image as _group_chat_media_service_Image
-from support.group_reply import setup, owner, SCOPE
+from support.group_reply import setup, owner, SCOPE, send_mock
 from satrap.core.storage import StorageLayout as _group_chat_media_service_StorageLayout
 from satrap.core.utils import paths
 from urllib.parse import urlencode
@@ -105,7 +105,7 @@ async def test_queue_holds_file_until_actual_child_settles(tmp_path: Path, monke
     assert rejected.released
 
 @pytest.mark.asyncio
-async def test_reply_revalidates_images_and_releases_failed_draft(tmp_path: Path) -> None:
+async def test_reply_validates_images_before_send_and_releases_leases(tmp_path: Path) -> None:
     from support.group_reply import setup, owner, SCOPE, send_mock
 
     adapter, event, service = setup(tmp_path)
@@ -116,15 +116,16 @@ async def test_reply_revalidates_images_and_releases_failed_draft(tmp_path: Path
         bad = await service.execute("group_chat_reply", {"components": [
             {"type": "image", "asset_id": entry["asset_id"]}, {"type": "image", "asset_id": "ga_foreign"},
         ]})
-        assert not bad["ok"] and turn.draft is None and not _LEASES
+        assert not bad["ok"] and not _LEASES
         result = await service.execute("group_chat_reply", {"components": [
             {"type": "text", "text": "图片"}, {"type": "image", "asset_id": entry["asset_id"]},
         ]})
-        assert result["status"] == "prepared" and _LEASES
+        assert result["status"] == "sent" and not _LEASES
         adapter.message_archive.recall(SCOPE, "77")
-        await turn.commit("重复正文")
-        assert event.last_business_receipt.status == "failed"
-    send_mock(adapter).assert_not_awaited()
+        rejected = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": entry["asset_id"]}]})
+        assert not rejected["ok"]
+        assert event.last_business_receipt.status == "success"
+    send_mock(adapter).assert_awaited_once()
     assert not _LEASES
 
 @pytest.mark.asyncio
@@ -141,8 +142,6 @@ async def test_reply_commits_media_once_and_preserves_order(tmp_path: Path) -> N
             {"type": "text", "text": "前"}, {"type": "image", "asset_id": entry["asset_id"]}, {"type": "text", "text": "后"},
         ]})
         assert result["ok"]
-        await turn.commit("不重复发送")
-        await turn.commit("不重复发送")
         chain = send_mock(adapter).call_args.args[1]
         assert [type(item) for item in chain.components] == [Plain, ComponentImage, Plain]
     send_mock(adapter).assert_awaited_once()
@@ -152,6 +151,40 @@ async def test_reply_commits_media_once_and_preserves_order(tmp_path: Path) -> N
 def _group_chat_media_service_managed_media_layout(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "_media_storage_root", tmp_path)
     monkeypatch.setattr(paths, "_configured_media_roots", ())
+
+
+@pytest.mark.usefixtures('_group_chat_media_service_managed_media_layout')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['connection', 'route'])
+async def test_onebot_revalidates_after_image_encoding_before_rpc(tmp_path, monkeypatch, change):
+    """
+    编码在工作线程中等待后再次核验连接与路由, 失效消息不触发平台动作
+
+    参数:
+    - tmp_path: 独立平台存储目录
+    - monkeypatch: 隔离编码期间的平台状态变化
+    - change: 连接或路由变更
+    """
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+    from satrap.core.platform.onebot import onebot_utils
+    adapter, event, service = setup(tmp_path)
+    adapter.send_message = OneBotAdapter.send_message.__get__(adapter, OneBotAdapter)
+    asset = AssetStore(adapter.message_archive).register(SCOPE, png(), source_message_id='77')
+    original = onebot_utils._encode_local_image
+    def changed(*args):
+        result = original(*args)
+        if change == 'connection':
+            adapter._connection_generation += 1
+        else:
+            adapter.config.session_bindings = {'group': {'mode': 'value', 'provider': 'edictum', 'config_name': 'new-agent'}}
+            adapter.apply_agent_routes()
+        return result
+    monkeypatch.setattr(onebot_utils, '_encode_local_image', changed)
+    with owner(event):
+        result = await service.execute('group_chat_reply', {'components': [{'type': 'image', 'asset_id': asset['asset_id']}]})
+        assert not result['ok'] and result['error']['code'] == 'stale_call', result
+    adapter._bot.send_group_msg.assert_not_awaited()
+    assert not _LEASES
 
 @pytest.mark.usefixtures('_group_chat_media_service_managed_media_layout')
 @pytest.mark.asyncio
@@ -229,7 +262,7 @@ async def test_resolved_inbound_image_is_copied_before_temporary_cleanup(tmp_pat
         assert result["items"][0]["available"]
         temporary.unlink()
         prepared = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": result["items"][0]["asset_id"]}]})
-        assert prepared["status"] == "prepared" and turn.draft.components[0].path != str(temporary)
+        assert prepared["status"] == "sent" and send_mock(adapter).call_args.args[1].components[0].path != str(temporary)
     download.assert_not_awaited()
     assert not _LEASES
 
@@ -410,7 +443,7 @@ async def test_sandbox_image_import_scope_paths_and_live_permissions(tmp_path: P
         renewed = await instance.tools_manager.execute_tool("group_chat_import_sandbox_image", {"path": "image.png"})
         assert renewed["ok"] and renewed["asset"]["asset_id"] != asset_id
         prepared = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": renewed["asset"]["asset_id"]}]})
-        assert prepared["ok"] and prepared["status"] == "prepared"
+        assert prepared["ok"] and prepared["status"] == "sent"
     assert not _LEASES
 
 @pytest.mark.usefixtures('_group_chat_media_service_managed_media_layout')
@@ -455,7 +488,6 @@ async def test_real_onebot_queue_sends_scoped_image_with_receipt(tmp_path: Path)
     with owner(event) as turn:
         result = await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "图片"}, {"type": "image", "asset_id": entry["asset_id"]}]})
         assert result["ok"]
-        await turn.commit("不重复")
         assert event.last_business_receipt.status == "success" and event.last_business_receipt.message_ids == ("987",)
     assert adapter._bot.send_group_msg.await_count == 1
     segments = adapter._bot.send_group_msg.call_args.kwargs["message"]
@@ -491,12 +523,11 @@ async def test_misskey_one_attachment_and_upload_failure_never_send_partial_text
     entry = AssetStore(adapter.message_archive).register(scope, png(), source_message_id="source")
     with owner(event) as turn:
         result = await service.execute("group_chat_reply", {"components": [{"type": "image", "asset_id": entry["asset_id"]}] * 2})
-        assert result["error"]["code"] == "quota_exceeded" and turn.draft is None and not _LEASES
-        result = await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "图片"}, {"type": "image", "asset_id": entry["asset_id"]}]})
-        assert result["ok"]
+        assert result["error"]["code"] == "quota_exceeded" and not _LEASES
         if upload_failure:
             monkeypatch.setattr(adapter, "_upload_component", AsyncMock(return_value=None))
-        await turn.commit("不重复")
+        result = await service.execute("group_chat_reply", {"components": [{"type": "text", "text": "图片"}, {"type": "image", "asset_id": entry["asset_id"]}]})
+        assert result["ok"] is (not upload_failure)
         if upload_failure:
             assert event.last_business_receipt.status == "failed" and event.last_business_receipt.reason == "media_upload_failed"
         else:
@@ -688,7 +719,7 @@ def test_control_process_purge_respects_backend_file_lease(tmp_path: Path):
 
 @pytest.mark.usefixtures('_group_chat_stickers_managed_media_layout')
 @pytest.mark.asyncio
-async def test_reply_sticker_authorization_is_rechecked_before_commit(tmp_path: Path):
+async def test_reply_sticker_authorization_is_checked_for_each_send(tmp_path: Path):
     from support.group_reply import setup, owner, SCOPE, send_mock
     from satrap.core.group_chat.stickers import library_for
     from satrap.core.group_chat.assets import _LEASES
@@ -701,10 +732,10 @@ async def test_reply_sticker_authorization_is_rechecked_before_commit(tmp_path: 
         result = await service.execute("group_chat_reply", args)
         assert result["error"]["code"] == "asset_unavailable" and not _LEASES
         store.settings(SCOPE, {"collections": ["常用"], "expected_revision": 0, "idempotency_key": "enable"})
-        assert (await service.execute("group_chat_reply", args))["status"] == "prepared"
+        assert (await service.execute("group_chat_reply", args))["status"] == "sent"
         store.settings(SCOPE, {"collections": [], "expected_revision": 1, "idempotency_key": "disable"})
-        await turn.commit("没有二次发送")
-    send_mock(adapter).assert_not_awaited()
+        assert not (await service.execute("group_chat_reply", args))["ok"]
+    send_mock(adapter).assert_awaited_once()
     assert not _LEASES
 
 @pytest.mark.usefixtures('_group_chat_stickers_managed_media_layout')
@@ -727,7 +758,6 @@ async def test_native_sticker_and_image_keep_original_onebot_order(tmp_path: Pat
             {"type": "image", "asset_id": entry["asset_id"]}, {"type": "text", "text": "后"},
         ]})
         assert result["ok"]
-        await turn.commit("忽略重复正文")
         chain = send_mock(adapter).call_args.args[1]
         assert [type(component) for component in chain.components] == [Plain, Face, Image, Plain]
         segments = await message_chain_to_onebot_segments(chain)

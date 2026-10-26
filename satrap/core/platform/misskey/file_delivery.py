@@ -78,8 +78,11 @@ async def deliver(adapter: MisskeyAdapter, origin: CallOrigin, artifact: FileArt
             return {"ok": True, "status": "published", "file": artifact.public(), "platform_file_id": uploaded, "message_id": message_id}
     except (APIConnectionError, TimeoutError):
         return {"ok": False, "status": "unknown" if submitted else "failed", "reason": "file_delivery_unconfirmed", "platform_file_id": uploaded}
-    except APIError:
-        return {"ok": False, "status": "failed", "reason": "file_upload_rejected" if uploaded is None else "file_publish_rejected", "platform_file_id": uploaded}
+    except APIError as error:
+        reason = "file_upload_rejected" if uploaded is None else "file_publish_rejected"
+        return {"ok": False, "status": "failed", "reason": reason, "platform_file_id": uploaded,
+                "error": {"code": reason, "message": str(error), "platform_code": error.code,
+                          "stage": "upload" if uploaded is None else "publish", "retryable": False}}
     except PermissionError:
         return {"ok": False, "status": "failed", "reason": "file_source_stale", "platform_file_id": uploaded}
     except asyncio.CancelledError:

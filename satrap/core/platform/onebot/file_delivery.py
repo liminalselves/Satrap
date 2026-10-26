@@ -81,10 +81,15 @@ async def deliver(adapter: OneBotAdapter, origin: CallOrigin, artifact: FileArti
             submitted = True
             receipt = await adapter._send_uploaded_file(target, complete["file_path"], artifact.name)
             if receipt.status != "success":
-                return {"ok": False, "status": receipt.status, "reason": receipt.reason}
+                return {"ok": False, "status": receipt.status, "reason": receipt.reason, "error": receipt.public_error()}
             return {"ok": True, "status": "uploaded", "file": artifact.public(), "platform_file_id": receipt.message_ids[0]}
     except (ActionFailed, ApiNotAvailable) as error:
-        return {"ok": False, "status": "failed", "reason": "file_upload_unsupported" if is_missing_action_error(error) else "file_upload_rejected"}
+        reason = "file_upload_unsupported" if is_missing_action_error(error) else "file_upload_rejected"
+        target = group_session_id(scope.chat_id) if scope.conversation_kind == "group" else private_session_id(scope.chat_id)
+        receipt = adapter._failed_receipt(target, "file", reason, error)
+        details = receipt.public_error()
+        details["stage"] = "upload"
+        return {"ok": False, "status": "failed", "reason": reason, "error": details}
     except asyncio.CancelledError:
         raise
     except PermissionError:

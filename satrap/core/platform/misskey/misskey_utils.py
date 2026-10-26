@@ -544,12 +544,9 @@ async def upload_local_with_retries(
     返回:
     - str | None: 上传本地文件并提取 file id
     """
-    try:
-        result = await api.upload_file(local_path, preferred_name, folder_id)
-        if isinstance(result, dict):
-            result = cast(dict[str, Any], result)
-            file_id = result.get("id") or FileIDExtractor.extract_file_id(result.get("raw"))
-            return str(file_id) if file_id else None
-    except Exception:
-        return None
+    result = await api.upload_file(local_path, preferred_name, folder_id)
+    if isinstance(result, dict):
+        result = cast(dict[str, Any], result)
+        file_id = result.get("id") or FileIDExtractor.extract_file_id(result.get("raw"))
+        return str(file_id) if file_id else None
     return None

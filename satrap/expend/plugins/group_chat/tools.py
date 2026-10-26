@@ -76,7 +76,7 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
     "group_chat_get_group_info": ("查看当前群的群名, 群号及人数, 不读取其它群", {}, []),
     "group_chat_list_members": ("分页查看当前群成员的 ID, 昵称, 群昵称及角色; has_more=true 时可用 next_cursor 继续读取", {"limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, []),
     "group_chat_set_group_nickname": ("修改机器人自己在当前群的群昵称，空字符串表示清空；succeeded 才表示已执行，结果未知时不要重试", {"nickname": {"type": "string", "maxLength": 60, "description": "机器人自己的新群昵称, 空字符串表示清空"}}, ["nickname"]),
-    "group_chat_reply": ("回复当前群，可组合文字、引用、@、图片和表情；prepared 表示等待本轮结束后发送，之后不要重复调用或提交正文", {"components": _COMPONENTS}, ["components"]),
+    "group_chat_reply": ("直接回复当前群，可组合文字、引用、@、图片和表情；等待平台发送回执后返回，sent 才表示成功，失败时依据错误修正，partial 或 unknown 不要重发已发送或未确认的内容", {"components": _COMPONENTS}, ["components"]),
     "group_chat_get_message_assets": ("读取当前群某条消息中的图片，取得回复可用的 asset_id；失效或无法下载时会注明原因", {"message_id": _MESSAGE_ID}, ["message_id"]),
     "group_chat_import_sandbox_image": ("登记当前会话沙箱中已生成的图片，取得本轮回复可用的 asset.asset_id；只接受沙箱相对路径，不会直接发送", {"path": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "当前会话沙箱内已生成图片的相对路径, 例如 heart.png 或 charts/plot.png; 支持 PNG/JPEG/WebP/GIF"}}, ["path"]),
     "group_chat_list_stickers": ("查看当前群已启用的表情, 返回名称, 标签和 sticker_id; 选择符合语境的表情后放进回复组件. 未在该群启用的表情不会出现在结果中", {"keyword": _string("想找的表情名称或标签, 不填则查看可用目录"), "limit": _LIMIT, "cursor": _CURSOR}, []),
@@ -142,7 +142,7 @@ class _GroupChatMixin(_ToolBase):
 
     config: Mapping[str, object]
     session: SessionType
-    deferred_platform_reply = False
+    direct_platform_reply = False
     _plugin_entry_binding: PluginEntryBinding
     _plugin_host: PluginHost | None = None
     _static_limits: GroupChatLimits | None = None
@@ -553,7 +553,7 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
         tool._plugin_host = plugin_host
         tool.session = cast("SessionType", session)
         bind_tool_session(tool, session)
-        tool.deferred_platform_reply = name == "group_chat_reply"
+        tool.direct_platform_reply = name == "group_chat_reply"
         tool.recovery_policy = "manual" if name in {"group_chat_reply", "group_chat_set_group_nickname", "group_chat_create_reminder"} else "retry"
         result.append(tool)
     bind_plugin_factory_tools(result, __file__)

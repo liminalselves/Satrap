@@ -12,10 +12,10 @@ DiagnosticLevel = Literal["info", "warning", "error", "unknown"]
 LEVEL_RANK = {"unknown": -1, "info": 0, "warning": 1, "error": 2}
 RANK_LEVEL: dict[int, DiagnosticLevel] = {-1: "unknown", 0: "info", 1: "warning", 2: "error"}
 _INPUT_ERRORS = frozenset({"invalid_arguments", "invalid_argument", "invalid_tool_call", "validation_error", "invalid_parameters"})
-_SYSTEM_ERRORS = frozenset({"execution_error", "internal_error", "storage_unavailable", "network_timeout", "session_timeout",
+_SYSTEM_ERRORS = frozenset({"execution_error", "internal_error", "storage_unavailable", "media_upload_failed", "action_rejected", "network_timeout", "session_timeout",
                             "operation_timeout", "connection_error", "authentication_error", "provider_error", "rate_limit"})
 _BUSINESS_ERRORS = frozenset({"permission_denied", "not_owner", "disabled", "entry_disabled", "plugin_disabled", "wrong_conversation",
-                              "read_only", "write_disabled", "memory_disabled", "revision_conflict", "invalid_source", "not_found", "stale_call"})
+                              "read_only", "write_disabled", "memory_disabled", "revision_conflict", "invalid_source", "not_found", "stale_call", "asset_unavailable"})
 
 
 def _code(value: object) -> str:
@@ -66,14 +66,20 @@ def tool_diagnostic(result: object, name: str, *, missing_tool: bool = False) ->
     """
     meta: dict[str, DebugData] = {"name": name, "diagnostic_level": "info"}
     status = result.get("status") if isinstance(result, Mapping) else None
-    if isinstance(status, str) and status in ("pending", "ready", "waiting", "needs_attention", "saved", "deleted", "already_exists", "approved", "rejected", "expired"):
+    if isinstance(status, str) and status in ("pending", "ready", "waiting", "needs_attention", "saved", "deleted", "already_exists", "approved", "rejected", "expired",
+                                              "sent", "published", "uploaded", "failed", "partial", "unknown"):
         meta["result_status"] = status
     if not isinstance(result, Mapping) or result.get("ok") is not False:
         return meta
-    code = _code(result.get("error_type")) or _code(result.get("code"))
+    error = result.get("error")
+    nested = error if isinstance(error, Mapping) else {}
+    code = _code(result.get("error_type")) or _code(result.get("code")) or _code(nested.get("code"))
+    if status == "unknown":
+        meta.update(_problem("warning", "uncertain_result", code, nested.get("message", error)))
+        return meta
     kind = ("model_input" if code in _INPUT_ERRORS or missing_tool and code == "not_found" else
             "runtime_error" if code in _SYSTEM_ERRORS else "business_rejection" if code in _BUSINESS_ERRORS else "unclassified_failure")
-    meta.update(_problem("error" if code in _SYSTEM_ERRORS else "warning", kind, code, result.get("error")))
+    meta.update(_problem("error" if code in _SYSTEM_ERRORS else "warning", kind, code, nested.get("message", error)))
     return meta
 
 

@@ -27,6 +27,10 @@ from satrap.core.utils.outbound import (
 from satrap.core.type import safe_getattr_str
 
 from satrap.core.log import logger
+from satrap.core.platform.receipt import public_delivery_message
+from satrap.core.utils.async_worker import BoundedAsyncWorker
+
+_UPLOAD_WORKERS = BoundedAsyncWorker("satrap-misskey-file", workers=2, capacity=8)
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -86,6 +90,18 @@ class _SecretRedactionFilter(logging.Filter):
 
 class APIError(Exception):
     """Misskey API 基础异常"""
+
+    def __init__(self, message: str, *, code: str = "api_error", status: int | None = None) -> None:
+        """
+        保存可安全返回模型的平台错误字段
+
+        参数:
+        - message: 平台原因, 将统一截断并脱敏
+        - code: 平台错误码, 默认 api_error
+        - status: HTTP 状态, 无回执时为 None
+        """
+        super().__init__(public_delivery_message(message))
+        self.code, self.status, self.stage = code[:80], status, ""
 
 
 class APIConnectionError(APIError):
@@ -450,21 +466,24 @@ class MisskeyAPI:
             self.streaming = StreamingClient(self.instance_url, self.access_token)
         return self.streaming
 
-    def _handle_response_status(self, status: int, endpoint: str) -> NoReturn:
+    def _handle_response_status(self, status: int, endpoint: str, error: dict[str, Any] | None = None) -> NoReturn:
         """
         处理 Misskey API HTTP 状态码
 
         参数:
         - status: HTTP 状态码
         - endpoint: API 路径
+        - error: 已提取的错误对象, 无结构化回包时为 None
         """
-        if status in (401, 403):
-            raise AuthenticationError(f"Unauthorized access for {endpoint}")
-        if status == 429:
-            raise APIRateLimitError(f"Rate limit exceeded for {endpoint}")
-        if status in (500, 502, 503, 504):
-            raise APIConnectionError(f"HTTP {status} for {endpoint}")
-        raise APIError(f"HTTP {status} for {endpoint}")
+        details = error or {}
+        raw = details.get("message")
+        message = raw if isinstance(raw, str) and raw else f"HTTP {status} for {endpoint}"
+        if self.access_token:
+            message = message.replace(self.access_token, "[redacted]")
+        raw_code = details.get("code")
+        code = raw_code if isinstance(raw_code, str) else f"http_{status}"
+        error_type = AuthenticationError if status in (401, 403) else APIRateLimitError if status == 429 else APIConnectionError if status in (500, 502, 503, 504) else APIError
+        raise error_type(message, code=code, status=status)
 
     async def _process_response(self, response: aiohttp.ClientResponse, endpoint: str) -> Any:
         """
@@ -482,12 +501,15 @@ class MisskeyAPI:
                 return await response.json()
             except json.JSONDecodeError as e:
                 raise APIConnectionError("Invalid JSON response") from e
+        details = None
         try:
-            error_text = await response.text()
-            logger.error(f"[Misskey API] 请求失败: {endpoint} - HTTP {response.status}, 响应: {error_text}")
-        except Exception:
-            logger.error(f"[Misskey API] 请求失败: {endpoint} - HTTP {response.status}")
-        self._handle_response_status(response.status, endpoint)
+            body = await response.json()
+            nested = body.get("error", body) if isinstance(body, dict) else None
+            details = nested if isinstance(nested, dict) else None
+        except (ValueError, aiohttp.ContentTypeError):
+            pass
+        logger.warning(f"[Misskey API] 请求失败: {endpoint} - HTTP {response.status}")
+        self._handle_response_status(response.status, endpoint, details)
 
     @retry_async()
     async def _make_request(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
@@ -575,7 +597,7 @@ class MisskeyAPI:
         if channel_id is not None:
             payload["channelId"] = channel_id
         payload.update({k: v for k, v in extra.items() if v is not None})
-        return await self._make_request("notes/create", payload)
+        return await self.request_once("notes/create", payload)
 
     async def get_current_user(self) -> dict[str, Any]:
         """
@@ -601,7 +623,7 @@ class MisskeyAPI:
             payload = cast(dict[str, Any], user_id_or_payload)
         else:
             payload: dict[str, Any] = {"toUserId": user_id_or_payload, "text": text}
-        return await self._make_request("chat/messages/create-to-user", payload)
+        return await self.request_once("chat/messages/create-to-user", payload)
 
     async def send_room_message(self, room_id_or_payload: Any, text: str | None = None) -> dict[str, Any]:
         """
@@ -618,7 +640,7 @@ class MisskeyAPI:
             payload = cast(dict[str, Any], room_id_or_payload)
         else:
             payload: dict[str, Any] = {"toRoomId": room_id_or_payload, "text": text}
-        return await self._make_request("chat/messages/create-to-room", payload)
+        return await self.request_once("chat/messages/create-to-room", payload)
 
     async def get_mentions(self, limit: int = 10, since_id: str | None = None) -> list[dict[str, Any]]:
         """
@@ -663,7 +685,7 @@ class MisskeyAPI:
         filename = name or os.path.basename(file_path)
         try:
             # 磁盘读取移到工作线程, 事件循环只负责网络提交
-            data = await asyncio.to_thread(_read_file_bytes, file_path)
+            data = await _UPLOAD_WORKERS.run(_read_file_bytes, file_path)
         except FileNotFoundError as e:
             raise APIError(f"File not found: {file_path}") from e
         return await self._upload_bytes(data, filename, folder_id)

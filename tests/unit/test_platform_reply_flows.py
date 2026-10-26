@@ -809,7 +809,7 @@ async def test_platform_explicit_rejection_is_distinct_from_timeout():
     adapter, event = await make_event()
     adapter._bot.send_group_msg.side_effect = ActionFailed({"retcode": 100, "wording": "private details"})
     await event.send(MessageChain.from_text("回复"))
-    assert event.last_send_receipt == SendReceipt("failed", reason="action_rejected")
+    assert event.last_send_receipt == SendReceipt("failed", reason="action_rejected", error_code="100", error_message="private details", stage="publish")
     assert not event.has_send_operation()
 
 @pytest.mark.asyncio
@@ -824,6 +824,8 @@ async def test_stream_explicit_failure_returns_partial():
             yield MessageChain.from_text(text)
 
     await event.send_streaming(chunks(), use_fallback=True)
-    assert event.last_send_receipt == SendReceipt("partial", ("42",), 1, "action_rejected")
+    receipt = event.last_send_receipt
+    assert receipt.status == "partial" and receipt.message_ids == ("42",) and receipt.failed_index == 1
+    assert receipt.reason == "action_rejected" and receipt.error_code == "100" and receipt.stage == "publish"
     assert event.has_send_operation()
     assert adapter._bot.send_group_msg.await_count == 2
