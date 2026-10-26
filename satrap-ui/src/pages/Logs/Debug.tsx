@@ -8,6 +8,7 @@ import { Select } from '@/components/ui/Select';
 import { debugLoggingApi, debugMode, withDebugMode, type DebugContext, type DebugEvent, type DebugMode, type DebugPolicySnapshot, type DebugRequest } from '@/api/debugLogging';
 import { logServices, type LogSource } from '@/api/logging';
 import { errorText } from '@/utils/errorText';
+import { diagnosticBorders, diagnosticTone, eventPresentation, requestHint } from './debugPresentation';
 
 const time = (value: number) => new Date(value * 1000).toLocaleString();
 const statusNames: Record<string, string> = { running: '执行中', success: '已完成', failed: '失败', timeout: '超时', cancelled: '已取消', skipped: '未执行', unknown: '结果未确认', partial: '部分完成', interrupted: '未确认中断' };
@@ -122,7 +123,7 @@ export function DebugLogs() {
       {health && <span className="text-sm text-text-secondary">库 {(health.database_bytes / 1e6).toFixed(2)} MB · WAL {(health.wal_bytes / 1e6).toFixed(2)} MB · 有效页 {(health.used_bytes / 1e6).toFixed(2)} MB · 待写 {health.pending_events}</span>}
     </Card>
     {error && <p role="alert" className="text-error">{error}</p>}
-    {health && (health.write_error || health.maintenance_error) && <p role="alert" className="text-warning">高级日志记录可能不完整: {health.write_error || health.maintenance_error}</p>}
+    {health && (health.write_error || health.maintenance_error) && <Card role="alert" className={`p-3 text-error ${diagnosticBorders.error}`}>高级日志存储故障: {health.write_error || health.maintenance_error}</Card>}
     {health && (health.quota_blocked || !!health.dropped_events || !!health.dropped_requests) && <p role="status" className="text-warning">
       {health.quota_blocked ? '容量不足, 新请求的高级采集已暂停; 自动清理后恢复。' : ''} 本进程未记录事件 {health.dropped_events ?? 0} 条, 未采集请求 {health.dropped_requests ?? 0} 个。
     </p>}
@@ -247,6 +248,7 @@ function Requests({ base, context }: { base: string; context: DebugContext }) {
     finally { if (mounted.current && current === generation.current) setBusy(false); }
   }
   return <div className="space-y-3">
+    <p className="text-xs text-text-secondary">外框说明: 蓝色正常 · 黄色调用问题或待确认 · 红色系统错误 · 灰色等待、取消或旧记录未分类</p>
     <div className="flex flex-wrap gap-2 items-end">
       <Select className="w-36" value={status} options={[{ value: '', label: '全部结果' }, ...Object.entries(statusNames).map(([value, label]) => ({ value, label }))]} onChange={(event) => setStatus(event.target.value)} />
       <label className="text-sm">开始时间<Input type="datetime-local" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
@@ -254,11 +256,15 @@ function Requests({ base, context }: { base: string; context: DebugContext }) {
     </div>
     {error && <p role="alert" className="text-error">{error}</p>}
     {!items.length && !error && <p className="text-text-secondary">此上下文暂无请求记录</p>}
-    {items.map((item) => <Card key={item.request_id} className="p-4 space-y-3">
-      <button className="w-full text-left break-all" onClick={() => setSelected(selected === item.request_id ? undefined : item.request_id)} aria-expanded={selected === item.request_id}>
-        <strong>{statusNames[item.status] || item.status}</strong>{!!item.incomplete && <span className="ml-2 text-warning">记录不完整</span>}
-        <p className="text-sm">{time(item.started_at)} · {item.request_id}</p>
-        {item.parent_request_id && <p className="text-xs text-text-secondary">来源请求: {item.parent_request_id}</p>}
+    {items.map((item) => <Card key={item.request_id} data-debug-request={item.request_id}
+      data-diagnostic-tone={diagnosticTone(item.diagnostic_level, item.status, !!item.incomplete)}
+      className={`p-4 space-y-3 ${diagnosticBorders[diagnosticTone(item.diagnostic_level, item.status, !!item.incomplete)]}`}>
+      <button className="w-full text-left flex flex-wrap items-center gap-x-3 gap-y-1" onClick={() => setSelected(selected === item.request_id ? undefined : item.request_id)}
+        aria-label={`${statusNames[item.status] || item.status} ${requestHint(item)} ${item.request_id}`} aria-expanded={selected === item.request_id}>
+        <span aria-hidden="true">{selected === item.request_id ? '▾' : '▸'}</span>
+        <strong>{statusNames[item.status] || item.status}</strong>
+        {requestHint(item) && <span className="text-xs">{requestHint(item)}</span>}
+        <span className="text-xs text-text-secondary ml-auto">{time(item.started_at)} · {item.request_id.slice(0, 12)}</span>
       </button>
       {selected === item.request_id && <Timeline base={base} request={item} onState={updateRequest} />}
     </Card>)}
@@ -272,11 +278,14 @@ function Timeline({ base, request, depth = 0, onState }: { base: string; request
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [body, setBody] = useState<{ key: string; text: string }>();
+  const [openBody, setOpenBody] = useState<string>();
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const mounted = useRef(true);
   const controller = useRef<AbortController>();
   useEffect(() => {
     mounted.current = true;
     const abort = new AbortController(); controller.current = abort;
+    setEvents([]); setExpanded(new Set()); setBody(undefined); setOpenBody(undefined); setError(''); setBusy(false);
     void debugLoggingApi.events(base, { request_id: request.request_id }, abort.signal).then(async (page) => {
       if (!abort.signal.aborted) { setEvents(page.events); setHasMore(page.has_more); }
       if (!abort.signal.aborted && !page.has_more && request.status === 'running') {
@@ -289,25 +298,36 @@ function Timeline({ base, request, depth = 0, onState }: { base: string; request
   async function more() {
     if (busy) return;
     setBusy(true);
+    const signal = controller.current?.signal;
     try {
-      const page = await debugLoggingApi.events(base, { request_id: request.request_id, after: String(events[events.length - 1]?.sequence ?? -1) }, controller.current?.signal);
-      if (mounted.current) { setEvents((items) => [...items, ...page.events]); setHasMore(page.has_more); setError(''); }
-      if (mounted.current && !page.has_more && request.status === 'running') {
-        const summary = await debugLoggingApi.request(base, request.request_id, controller.current?.signal);
-        if (mounted.current) onState?.(summary);
+      const page = await debugLoggingApi.events(base, { request_id: request.request_id, after: String(events[events.length - 1]?.sequence ?? -1) }, signal);
+      if (mounted.current && !signal?.aborted) { setEvents((items) => [...items, ...page.events]); setHasMore(page.has_more); setError(''); }
+      if (mounted.current && !signal?.aborted && !page.has_more && request.status === 'running') {
+        const summary = await debugLoggingApi.request(base, request.request_id, signal);
+        if (mounted.current && !signal?.aborted) onState?.(summary);
       }
-    } catch (reason) { if (mounted.current) setError(errorText(reason)); }
-    finally { if (mounted.current) setBusy(false); }
+    } catch (reason) { if (mounted.current && !signal?.aborted) setError(errorText(reason)); }
+    finally { if (mounted.current && !signal?.aborted) setBusy(false); }
+  }
+  function toggleEvent(eventId: string) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      next.has(eventId) ? next.delete(eventId) : next.add(eventId);
+      return next;
+    });
+    if (openBody?.startsWith(`${eventId}:`)) setOpenBody(undefined);
   }
   async function readBody(event: DebugEvent, slot: string) {
     const key = `${event.event_id}:${slot}`;
-    if (body?.key === key) { setBody(undefined); return; }
+    if (body?.key === key) { setOpenBody(openBody === key ? undefined : key); return; }
     setBusy(true);
+    setOpenBody(key);   // 在等待前记录用户选择, 收起操作不会被迟到的响应撤销
+    const signal = controller.current?.signal;
     try {
-      const value = await debugLoggingApi.body(base, { request_id: request.request_id, event_id: event.event_id, slot }, controller.current?.signal);
-      if (mounted.current) { setBody({ key, text: JSON.stringify(value, null, 2) }); setError(''); }
-    } catch (reason) { if (mounted.current) setError(errorText(reason)); }
-    finally { if (mounted.current) setBusy(false); }
+      const value = await debugLoggingApi.body(base, { request_id: request.request_id, event_id: event.event_id, slot }, signal);
+      if (mounted.current && !signal?.aborted) { setBody({ key, text: JSON.stringify(value, null, 2) }); setError(''); }
+    } catch (reason) { if (mounted.current && !signal?.aborted) setError(errorText(reason)); }
+    finally { if (mounted.current && !signal?.aborted) setBusy(false); }
   }
   async function exportRequest() {
     setBusy(true);
@@ -323,18 +343,43 @@ function Timeline({ base, request, depth = 0, onState }: { base: string; request
   }
   return <div className="space-y-3 border-t border-glass-border pt-3">
     {request.parent_request_id && <SourceRequest base={base} requestId={request.parent_request_id} depth={depth} />}
-    <Button size="sm" disabled={busy} onClick={() => void exportRequest()}>导出本次链路</Button>
+    <div className="flex flex-wrap gap-2">
+      <Button size="sm" disabled={busy} onClick={() => void exportRequest()}>导出本次链路</Button>
+      <Button size="sm" disabled={!events.length} onClick={() => setExpanded(new Set(events.map((event) => event.event_id)))}>展开全部节点</Button>
+      <Button size="sm" disabled={!expanded.size} onClick={() => { setExpanded(new Set()); setOpenBody(undefined); }}>全部收起</Button>
+    </div>
+    <details className="text-xs text-text-secondary"><summary className="cursor-pointer">请求信息</summary>
+      <p className="break-all">请求 ID: {request.request_id}</p>
+      <p className="break-all">上下文: {request.context_id}</p>
+      <p className="break-all">设置修订: {request.settings_revision}</p>
+    </details>
     {error && <p role="alert" className="text-error">{error}</p>}
-    {events.map((event) => <div key={event.event_id} className="border-l-2 border-accent pl-3 space-y-2">
-      <p className="break-all text-sm"><strong>#{event.sequence} {event.category} · {event.phase}</strong> {event.status} · {time(event.recorded_at)}</p>
-      {!!event.parent_span_id && <p className="text-xs break-all text-text-secondary">父步骤: {event.parent_span_id}</p>}
-      <pre className="text-xs whitespace-pre-wrap break-all max-h-48 overflow-auto">{JSON.stringify(event.metadata, null, 2)}</pre>
-      <div className="flex flex-wrap gap-2">{event.body_slots.map((slot) => <Button key={slot} size="sm" disabled={busy} onClick={() => void readBody(event, slot)}>查看 {slot}</Button>)}</div>
-      {body && body.key.startsWith(`${event.event_id}:`) && <div>
-        <pre className="text-xs whitespace-pre-wrap break-all max-h-96 overflow-auto bg-glass-hover rounded p-3">{body.text.slice(0, 50000)}</pre>
-        {body.text.length > 50000 && <p className="text-sm text-text-secondary">页面仅显示前 50000 字符, 完整正文可通过链路导出查看</p>}
-      </div>}
-    </div>)}
+    {events.map((event) => {
+      const presentation = eventPresentation(event), open = expanded.has(event.event_id);
+      return <div key={event.event_id} data-debug-event={event.event_id} data-diagnostic-tone={presentation.tone}
+        className={`rounded-lg p-3 space-y-2 ${diagnosticBorders[presentation.tone]}`}>
+        <button className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 text-left text-sm" aria-expanded={open} onClick={() => toggleEvent(event.event_id)}>
+          <span aria-hidden="true">{open ? '▾' : '▸'}</span><strong className="break-all">#{event.sequence} {presentation.title}</strong>
+          {!presentation.title.endsWith(presentation.label) && <span className="text-xs">{presentation.label}</span>}<time className="text-xs text-text-secondary ml-auto">{time(event.recorded_at)}</time>
+        </button>
+        {open && <div className="space-y-2">
+          {typeof event.metadata.reason === 'string' && event.metadata.reason && <p className="text-sm break-words">{event.metadata.reason}</p>}
+          <details className="text-xs"><summary className="cursor-pointer text-text-secondary">技术信息</summary>
+            <p className="break-all">事件 ID: {event.event_id} · {event.category} / {event.phase} / {event.status}</p>
+            {event.parent_span_id && <p className="break-all">父步骤: {event.parent_span_id}</p>}
+            <pre className="whitespace-pre-wrap break-all max-h-48 overflow-auto">{JSON.stringify(event.metadata, null, 2)}</pre>
+          </details>
+          <div className="flex flex-wrap gap-2">{event.body_slots.map((slot) => <Button key={slot} size="sm" disabled={busy}
+            aria-expanded={openBody === `${event.event_id}:${slot}`} onClick={() => void readBody(event, slot)}>
+            {openBody === `${event.event_id}:${slot}` ? '收起' : '查看'} {slot}
+          </Button>)}</div>
+          {body && openBody === body.key && body.key.startsWith(`${event.event_id}:`) && <div>
+            <pre className="text-xs whitespace-pre-wrap break-all max-h-96 overflow-auto bg-glass-hover rounded p-3">{body.text.slice(0, 50000)}</pre>
+            {body.text.length > 50000 && <p className="text-sm text-text-secondary">页面仅显示前 50000 字符, 完整正文可通过链路导出查看</p>}
+          </div>}
+        </div>}
+      </div>;
+    })}
     {(hasMore || request.status === 'running') && <Button size="sm" disabled={busy} onClick={() => void more()}>{hasMore ? '加载更多事件' : '刷新后续事件'}</Button>}
   </div>;
 }

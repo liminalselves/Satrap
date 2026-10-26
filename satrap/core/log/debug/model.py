@@ -64,6 +64,7 @@ class ModelObservation:
         """
         self.span = uuid4().hex
         self.timeout = timeout
+        self.model = request.get("model") if isinstance(request.get("model"), str) else ""
         self.started = self.last_flush = time.monotonic()
         self.first_chunk_ms: float | None = None
         self.parts: dict[int, _ChoiceDelta] = {}
@@ -71,7 +72,7 @@ class ModelObservation:
         self.finish_reason: object = None
         self.usage: object = None
         self.finished = False
-        record_debug("model", "start", span_id=self.span, bodies={"input": dict(request)}, metadata={"network_timeout": timeout})
+        record_debug("model", "start", span_id=self.span, bodies={"input": dict(request)}, metadata={"network_timeout": timeout, "model": self.model})
 
     def chunk(self, chunk: object) -> None:
         """
@@ -144,7 +145,7 @@ class ModelObservation:
             merged = [{"index": index, "content": "".join(part.content), **({"reasoning_content": "".join(part.reasoning)} if part.reasoning else {}), "tool_calls": [
                 {"index": slot, "id": "".join(tool.ids), "function": {"name": "".join(tool.names), "arguments": "".join(tool.arguments)}}
                 for slot, tool in sorted(part.tools.items())]} for index, part in sorted(self.parts.items())]
-            record_debug("model", "update", span_id=self.span, bodies={"output_chunk": merged})
+            record_debug("model", "update", span_id=self.span, metadata={"model": self.model}, bodies={"output_chunk": merged})
             self.parts = {}
             self.buffer_bytes = 0
         self.last_flush = time.monotonic()
@@ -185,7 +186,7 @@ class ModelObservation:
                 reasons = [getattr(choice, "finish_reason", None) for choice in choices]
                 self.finish_reason = reasons[0] if len(reasons) == 1 else reasons
             self.usage = _data(getattr(response, "usage", None))
-        metadata: dict[str, object] = {"duration_ms": (time.monotonic()-self.started)*1000,
+        metadata: dict[str, object] = {"model": self.model, "duration_ms": (time.monotonic()-self.started)*1000,
                                        "first_chunk_ms": self.first_chunk_ms, "finish_reason": self.finish_reason,
                                        "usage": self.usage}
         status = "completed"

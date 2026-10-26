@@ -8,6 +8,7 @@ export interface DebugObject {
   target_id: string;
 }
 export type DebugMode = 'inherit' | 'on' | 'off';
+export type DiagnosticLevel = 'info' | 'warning' | 'error' | 'unknown';
 export interface DebugPolicy {
   version: 1;
   default_enabled: boolean;
@@ -38,6 +39,7 @@ export interface DebugRequest {
   updated_at: number;
   started_at: number;
   settings_revision: string;
+  diagnostic_level?: DiagnosticLevel;
 }
 export interface DebugEvent {
   event_id: string;

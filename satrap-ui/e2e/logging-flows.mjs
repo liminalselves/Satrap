@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs, { mkdir } from "node:fs/promises";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, waitForRequestEntry } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
@@ -541,6 +541,9 @@ async function advanced_debug(runtime) {
   const object = { platform_id: 'qq', self_id: 'bot', conversation_kind: 'group', target_id: 'room' };
   let snapshot = { policy: { version: 1, default_enabled: false, retention_days: 7, max_total_mb: 512, max_body_mb: 8, max_request_mb: 32, objects: [] }, revision: 'v1' };
   let bodyReads = 0, writes = 0, traceClosed = false;
+  let releaseBody, enterBody;
+  const bodyEntered = new Promise((resolve) => { enterBody = resolve; });
+  const bodyReleased = new Promise((resolve) => { releaseBody = resolve; });
   const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,PUT,POST,OPTIONS' };
   await page.route('**/*', async (route) => {
     const request = route.request(), url = new URL(request.url());
@@ -562,11 +565,34 @@ async function advanced_debug(runtime) {
     if (url.pathname === '/config/debug-logging/contexts') return fulfill({ contexts: url.searchParams.get('platform_id') === 'qq' ? [{ object_key: 'group-key', context_id: 'cold-context', title: '未产生日志上下文', updated_at: 1, request_count: 0, error_count: 0, object, service: 'backend' }] : [], platforms: ['chat', 'qq'], has_more: false, next_cursor: null, unconfirmed: 0 });
     if (url.pathname === '/api/debug/status') return fulfill({ database_bytes: 120000, wal_bytes: 0, used_bytes: 110000, pending_events: 0, write_error: '', maintenance_error: '' });
     if (url.pathname === '/api/debug/contexts') return fulfill({ contexts: ['before-new', 'after-new'].map((id) => ({ object_key: 'group-key', context_id: id, title: id, updated_at: 1, request_count: 1, error_count: 0, object, service: url.port === '19872' ? 'chat' : 'backend' })), has_more: false, next_cursor: null });
-    const requestSummary = (id) => ({ request_id: id, status: id === 'r-after-new' && !traceClosed ? 'running' : 'success', context_id: id.slice(2), parent_request_id: '', started_at: 1, updated_at: 2, incomplete: 0, settings_revision: 'v1' });
-    if (url.pathname === '/api/debug/requests') return fulfill({ requests: [requestSummary(`r-${url.searchParams.get('context_id')}`)], has_more: false });
+    const requestSummary = (id) => ({ request_id: id, status: id === 'r-after-new' && !traceClosed ? 'running' : id === 'r-cancelled' ? 'cancelled' : 'success',
+      diagnostic_level: id === 'r-hard-error' ? 'error' : id === 'r-after-new' ? 'warning' : id === 'r-legacy' ? 'unknown' : 'info',
+      context_id: 'after-new', parent_request_id: '', started_at: 1, updated_at: 2, incomplete: 0, settings_revision: 'v1' });
+    if (url.pathname === '/api/debug/requests') return fulfill({ requests: (url.searchParams.get('context_id') === 'after-new'
+      ? ['r-after-new', 'r-hard-error', 'r-normal', 'r-cancelled', 'r-legacy'] : ['r-before-new']).map(requestSummary), has_more: false });
     if (url.pathname === '/api/debug/request') return fulfill({ request: requestSummary(url.searchParams.get('request_id')) });
-    if (url.pathname === '/api/debug/events') return fulfill({ events: [{ event_id: 'event1', request_id: url.searchParams.get('request_id'), sequence: 0, category: 'model', phase: 'start', span_id: 'model1', parent_span_id: '', recorded_at: 1, status: '', metadata: { model: 'synthetic' }, body_slots: ['input'] }], has_more: false });
-    if (url.pathname === '/api/debug/body') { bodyReads++; return fulfill({ body: { messages: [{ role: 'user', content: '按需读取的测试正文' }] } }); }
+    if (url.pathname === '/api/debug/events') {
+      const id = url.searchParams.get('request_id'), after = Number(url.searchParams.get('after') ?? -1);
+      const event = (sequence, category, status, metadata, body_slots = []) => ({ event_id: `${id}-${sequence}`, request_id: id, sequence, category,
+        phase: sequence === 0 && category === 'model' ? 'start' : 'end', span_id: `span${sequence}`, parent_span_id: '', recorded_at: 1, status, metadata, body_slots });
+      const events = id === 'r-after-new' ? [
+        event(0, 'model', '', { model: 'synthetic', diagnostic_level: 'info', network_timeout: 60 }, ['input']),
+        event(1, 'tool', 'completed', { name: 'read_document', diagnostic_level: 'warning', error_kind: 'model_input', error_code: 'invalid_arguments', reason: '缺少 path 参数' }, ['result']),
+        event(2, 'tool_result', 'returned', { name: 'read_document', diagnostic_level: 'info' }, ['result']),
+        event(3, 'approval', 'pending', { diagnostic_level: 'info' }),
+        ...(traceClosed ? [event(4, 'model', 'completed', { model: 'synthetic', diagnostic_level: 'info' }), event(5, 'request', 'success', { diagnostic_level: 'info' })] : []),
+      ] : [event(0, 'tool_result', id === 'r-cancelled' ? 'cancelled' : 'returned', id === 'r-legacy' ? {} : {
+        name: 'example', diagnostic_level: id === 'r-hard-error' ? 'error' : 'info', ...(id === 'r-hard-error' ? { error_kind: 'runtime_error', error_code: 'execution_error', reason: '内部执行故障' } : {}),
+      }, ['result'])];
+      const selected = events.filter((item) => item.sequence > after), visible = after === -1 && id === 'r-after-new' ? selected.slice(0, 2) : selected;
+      return fulfill({ events: visible, has_more: visible.length < selected.length });
+    }
+    if (url.pathname === '/api/debug/body') {
+      bodyReads++;
+      const delayed = url.searchParams.get('event_id') === 'r-after-new-1';
+      if (delayed) { enterBody(); await bodyReleased; }
+      return fulfill({ body: { messages: [{ role: 'user', content: delayed ? '延迟到达的工具结果' : '按需读取的测试正文' }] } });
+    }
     return fulfill({ error: '此浏览器场景未提供该接口' }, 404);
   });
   try {
@@ -581,17 +607,92 @@ async function advanced_debug(runtime) {
     await page.getByRole('button', { name: '强制开启', exact: true }).waitFor();
     assert.equal(snapshot.policy.objects.length, 1);
     assert.equal(bodyReads, 0);
+    const requestCard = page.locator('[data-debug-request="r-after-new"]');
+    assert.equal(await requestCard.getAttribute('data-diagnostic-tone'), 'warning');
     await page.getByRole('button', { name: /r-after-new/ }).click();
-    await page.getByRole('button', { name: '查看 input', exact: true }).waitFor();
+    const modelNode = page.locator('[data-debug-event="r-after-new-0"]');
+    const warningNode = page.locator('[data-debug-event="r-after-new-1"]');
+    await modelNode.getByRole('button').waitFor();
+    assert.equal(await modelNode.getByRole('button').getAttribute('aria-expanded'), 'false');
+    assert.equal(await modelNode.getAttribute('data-diagnostic-tone'), 'normal');
+    assert.equal(await warningNode.getAttribute('data-diagnostic-tone'), 'warning');
+    assert.equal(await page.getByRole('button', { name: '查看 input', exact: true }).count(), 0);
+    assert.equal(bodyReads, 0);
+    await page.getByRole('button', { name: '展开全部节点', exact: true }).click();
+    assert.equal(await modelNode.locator('details').getAttribute('open'), null);
+    assert.equal(await modelNode.locator('pre').isVisible(), false);
     assert.equal(bodyReads, 0);
     await page.getByRole('button', { name: '查看 input', exact: true }).click();
     await page.getByText('按需读取的测试正文', { exact: false }).waitFor();
     assert.equal(bodyReads, 1);
+    await page.getByRole('button', { name: '全部收起', exact: true }).click();
+    assert.equal(await page.getByText('按需读取的测试正文', { exact: false }).count(), 0);
+    await modelNode.getByRole('button').click();
+    await page.getByRole('button', { name: '查看 input', exact: true }).click();
+    assert.equal(bodyReads, 1);
+    await page.getByRole('button', { name: '加载更多事件', exact: true }).click();
+    await page.locator('[data-debug-event="r-after-new-3"]').waitFor();
+    assert.equal(await page.locator('[data-debug-event="r-after-new-3"]').getAttribute('data-diagnostic-tone'), 'neutral');
+    assert.equal(await modelNode.getByRole('button').first().getAttribute('aria-expanded'), 'true');
+    await page.getByText('按需读取的测试正文', { exact: false }).waitFor();
     await page.getByRole('button', { name: '刷新后续事件', exact: true }).waitFor();
     traceClosed = true;
     await page.getByRole('button', { name: '刷新后续事件', exact: true }).click();
     await page.getByRole('button', { name: /已完成.*r-after-new/ }).waitFor();
     assert.equal(await page.getByRole('button', { name: '刷新后续事件', exact: true }).count(), 0);
+    assert.equal(await requestCard.locator('[data-debug-event]').count(), 6);
+    assert.equal(await requestCard.getAttribute('data-diagnostic-tone'), 'warning');
+    assert.equal(bodyReads, 1);
+    await warningNode.getByRole('button').click();
+    await warningNode.getByRole('button', { name: '查看 result', exact: true }).click();
+    await waitForRequestEntry(bodyEntered);
+    await page.getByRole('button', { name: '全部收起', exact: true }).click();
+    const response = page.waitForResponse((value) => new URL(value.url()).pathname === '/api/debug/body');
+    releaseBody();
+    await (await response).finished();
+    await warningNode.getByRole('button').click();
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some((button) => button.textContent === '导出本次链路' && !button.disabled));
+    assert.equal(await warningNode.getByRole('button', { name: '查看 result', exact: true }).getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.getByText('延迟到达的工具结果', { exact: false }).count(), 0);
+    await warningNode.getByRole('button', { name: '查看 result', exact: true }).click();
+    await page.getByText('延迟到达的工具结果', { exact: false }).waitFor();
+    assert.equal(bodyReads, 2);
+    await page.getByRole('button', { name: /r-hard-error/ }).click();
+    const hardCard = page.locator('[data-debug-request="r-hard-error"]');
+    assert.equal(await hardCard.getAttribute('data-diagnostic-tone'), 'error');
+    await hardCard.locator('[data-debug-event]').waitFor();
+    assert.equal(await hardCard.locator('[data-debug-event]').getAttribute('data-diagnostic-tone'), 'error');
+    assert.equal(await page.locator('[data-debug-request="r-normal"]').getAttribute('data-diagnostic-tone'), 'normal');
+    assert.equal(await page.locator('[data-debug-request="r-cancelled"]').getAttribute('data-diagnostic-tone'), 'neutral');
+    assert.equal(await page.locator('[data-debug-request="r-legacy"]').getAttribute('data-diagnostic-tone'), 'unknown');
+    await mkdir(path.join(root, 'test-results', 'advanced-debug'), { recursive: true });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
+      const colors = [];
+      for (const id of ['r-normal', 'r-after-new', 'r-hard-error', 'r-cancelled']) {
+        const border = await page.locator(`[data-debug-request="${id}"]`).evaluate((element) => {
+          const style = getComputedStyle(element);
+          return { widths: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth], color: style.borderTopColor };
+        });
+        assert.deepEqual(border.widths, ['2px', '2px', '2px', '2px']);
+        colors.push(border.color);
+      }
+      assert.equal(new Set(colors).size, 4, `${theme} 主题的四类外框应可区分`);
+      await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', `${theme}.png`), fullPage: true });
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole('button', { name: /r-hard-error/ }).click();
+    await page.getByRole('button', { name: /r-after-new/ }).focus();
+    await page.keyboard.press('Enter');
+    await modelNode.getByRole('button').waitFor();
+    await modelNode.getByRole('button').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await modelNode.getByRole('button').first().getAttribute('aria-expanded'), 'true');
+    assert.equal(await modelNode.locator('details').getAttribute('open'), null);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '窄屏不应出现横向页面溢出');
+    assert.equal(bodyReads, 2);
+    await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', 'mobile.png'), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1100 });
     await page.getByRole('button', { name: /为已有上下文开启记录/ }).click();
     await page.getByRole('button', { name: 'chat', exact: true }).click();
     await page.getByRole('button', { name: 'qq', exact: true }).click();
@@ -601,8 +702,9 @@ async function advanced_debug(runtime) {
     assert.deepEqual(errors, []);
     await mkdir(path.join(root, 'test-results', 'advanced-debug'), { recursive: true });
     await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', 'page.png'), fullPage: true });
-    console.log('PASS: 新旧上下文共用对象开关, 冷目录可选, 正文按需读取, 运行请求刷新后显示实际终态');
+    console.log('PASS: 对象开关与冷目录, 标题及正文折叠, 蓝黄红灰完整外框, 分页刷新与迟到正文, 深浅色/窄屏/键盘, 成功后保留警告');
   } finally {
+    releaseBody();
     await runtime.closeContexts();
     await runtime.releaseServer(server);
   }

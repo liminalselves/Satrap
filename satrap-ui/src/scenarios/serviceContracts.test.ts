@@ -7,6 +7,7 @@ import { loggingError } from "@/api/logging";
 import { ragErrorMessage } from "@/api/rag";
 import { errorText } from "@/utils/errorText";
 import { debugMode, withDebugMode, sameDebugObject, type DebugPolicy } from '@/api/debugLogging';
+import { diagnosticTone, eventPresentation, requestHint } from '@/pages/Logs/debugPresentation';
 
 describe('高级诊断对象设置', () => {
   it('覆盖绑定完整对象, 切换上下文不复制覆盖, reset 恢复默认且不修改原草稿', () => {
@@ -21,6 +22,27 @@ describe('高级诊断对象设置', () => {
     }
     expect(withDebugMode(enabled, group, 'inherit').objects).toEqual([]);
     expect(debugMode(withDebugMode(enabled, group, 'off'), group)).toBe('off');
+  });
+});
+
+describe('高级诊断标题与级别', () => {
+  it('业务终态与异常颜色分别保留, 旧记录不猜测, 标题不读取动态正文', () => {
+    const request = { request_id: 'request', context_id: 'context', parent_request_id: '', status: 'success', incomplete: 0,
+      updated_at: 2, started_at: 1, settings_revision: 'v1' };
+    expect(requestHint({ ...request, diagnostic_level: 'warning' })).toBe('含调用问题');
+    expect(requestHint({ ...request, diagnostic_level: 'error' })).toBe('含系统错误');
+    expect(requestHint(request)).toBe('旧记录未分类');
+    expect(diagnosticTone('info', 'cancelled')).toBe('neutral');
+    expect(diagnosticTone('error', 'cancelled')).toBe('error');
+    expect(diagnosticTone('info', 'success', true)).toBe('warning');
+    const event = { event_id: 'event', sequence: 1, category: 'tool_result', phase: 'end', span_id: '', parent_span_id: '',
+      status: 'returned', recorded_at: 1, body_slots: ['result'], metadata: {} };
+    expect(eventPresentation(event).tone).toBe('unknown');
+    const warning = eventPresentation({ ...event, metadata: { diagnostic_level: 'warning', name: 'read_document', error_kind: 'model_input', error_code: 'invalid_arguments' } });
+    expect(warning.title).toBe('工具返回 · read_document · 参数或调用错误');
+    expect(warning.tone).toBe('warning');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'info', result_status: 'pending' } }).tone).toBe('neutral');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'info', data: { ok: false, error_type: 'execution_error' } } }).tone).toBe('normal');
   });
 });
 

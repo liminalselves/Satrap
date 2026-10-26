@@ -670,11 +670,12 @@ def debug_span(category: str, *, metadata: Mapping[str, object] | None = None,
         yield identity
     except BaseException as error:
         record_debug(category, "end", status="cancelled" if type(error).__name__ == "CancelledError" else "failed",
-                     metadata={"error_type": type(error).__name__, "duration_ms": (time.monotonic()-started)*1000},
+                     metadata={**{key: value for key, value in (metadata or {}).items() if key not in {"diagnostic_level", "error_kind", "error_code", "reason"}},
+                               "error_type": type(error).__name__, "duration_ms": (time.monotonic()-started)*1000},
                      span_id=identity, parent_span_id=parent)
         raise
     else:
-        record_debug(category, "end", status="completed", metadata={"duration_ms": (time.monotonic()-started)*1000},
+        record_debug(category, "end", status="completed", metadata={**(metadata or {}), "duration_ms": (time.monotonic()-started)*1000},
                      span_id=identity, parent_span_id=parent)
     finally:
         _SPAN.reset(token)

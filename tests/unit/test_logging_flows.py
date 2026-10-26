@@ -254,6 +254,7 @@ async def test_advanced_debug_observes_sdk_streams_without_changing_results(tmp_
         assert len(calls) == 4 and writer.flush()
         events = writer.store.events("sdk")["events"]
         assert len([entry for entry in events if entry["category"] == "model" and entry["phase"] == "end"]) == 4
+        assert next(entry for entry in events if entry["category"] == "model")["metadata"]["model"] == "model"
         output = [entry for entry in events if "output" in entry["body_slots"]][0]
         assert writer.store.body("sdk", output["event_id"], "output")["choices"][0]["message"]["content"] == "真实答案"
         partial = [entry for entry in events if "output_chunk" in entry["body_slots"]][0]
@@ -266,6 +267,8 @@ async def test_advanced_debug_observes_sdk_streams_without_changing_results(tmp_
         assert writer.flush()
         failed = [entry for entry in writer.store.events("failed-sdk")["events"] if entry["category"] == "model"][-1]
         assert failed["status"] == "timeout" and "sk-secret" not in str(failed)
+        assert failed["metadata"]["diagnostic_level"] == "error"
+        assert writer.store.request_info("failed-sdk")["diagnostic_level"] == "error"
         broken = capture.DebugTrace(replace(DebugPolicy().resolve(obj), enabled=True), "broken", writer=writer)
         monkeypatch.setattr(writer, "submit", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("故障")))
         broken.emit("request", "start", bodies={"input": "实际输入"})
@@ -368,6 +371,159 @@ async def test_advanced_debug_http_auth_settings_export_and_source_isolation(tmp
         for server in servers:
             server.close()
             await server.wait_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_advanced_debug_tool_outcomes_keep_warning_and_hard_error_after_recovery(tmp_path, monkeypatch, asynchronous):
+    """
+    真实工具调用区分参数错误和内部异常, 后续成功不抹除诊断级别
+
+    参数:
+    - tmp_path: 独立配置和诊断库目录
+    - monkeypatch: 隔离策略和写入器
+    - asynchronous: 是否使用异步工具管理器
+    """
+    from satrap.core.log.debug import capture
+    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.log.debug.policy import DebugPolicy
+    from satrap.core.log.debug.store import DebugStore
+    from satrap.core.utils.TCBuilder import Tool, AsyncTool, ToolsManager, AsyncToolsManager
+    from satrap.core.utils.TCBuilder.utils import tool_error
+
+    def outcome(value: str):
+        """
+        提供有明确错误边界的同一工具行为
+
+        参数:
+        - value: 控制本次测试动作
+
+        返回:
+        - 原始业务返回, crash 分支抛出内部 TypeError
+        """
+        if value == "crash":
+            raise TypeError("工具内部错误, 不是参数绑定错误")
+        if value == "denied":
+            return tool_error("sample", "当前用户没有权限", "permission_denied")
+        if value == "pending":
+            return {"ok": True, "status": "pending"}
+        if value == "unclassified":
+            return {"ok": False, "error_type": "custom_failure", "diagnostic_level": "info"}
+        return {"ok": True, "data": {"ok": False, "error_type": "execution_error"}}
+
+    class SyncSample(Tool):
+        tool_name = "sample"
+        description = "诊断集成场景"
+        params_dict = {"value": ("string", "测试动作")}
+
+        def execute(self, value: str):
+            return outcome(value)
+
+    class AsyncSample(AsyncTool):
+        tool_name = "sample"
+        description = "诊断集成场景"
+        params_dict = {"value": ("string", "测试动作")}
+
+        async def execute(self, value: str):
+            return outcome(value)
+
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    capture.policy_store().save(DebugPolicy(default_enabled=True), DebugPolicy().revision)
+    store = DebugStore(tmp_path / "backend.sqlite", "backend")
+    writer = capture.DebugWriter(store)
+    monkeypatch.setattr(capture, "debug_writer", lambda: writer)
+    manager = AsyncToolsManager() if asynchronous else ToolsManager()
+    manager.register_tool(AsyncSample() if asynchronous else SyncSample())
+    obj = DebugObject("qq", "bot", "group", "room")
+
+    async def call(identity, name="sample", arguments=None):
+        """通过对应管理器透传同一真实工具请求与结果"""
+        info = {"id": identity, "name": name, "arguments": {} if arguments is None else arguments}
+        return await manager.execute_tool_call(info) if asynchronous else manager.execute_tool_call(info)
+
+    try:
+        with capture.debug_request(obj, "corrected", context_id="context"):
+            _, bad = await call("missing-value")
+            assert bad["error_type"] == "invalid_arguments"
+            await call("unknown-tool", name="missing")
+            await call("malformed", arguments='not-json')
+            _, good = await call("fixed", arguments={"value": "good"})
+            assert good["ok"] is True
+        with capture.debug_request(obj, "hard-error", context_id="context"):
+            _, failed = await call("crashed", arguments={"value": "crash"})
+            assert failed["error_type"] == "execution_error"
+            await call("later-fixed", arguments={"value": "good"})
+        with capture.debug_request(obj, "neutral", context_id="context"):
+            await call("waiting", arguments={"value": "pending"})
+        with capture.debug_request(obj, "business", context_id="context"):
+            await call("denied", arguments={"value": "denied"})
+            await call("unclassified", arguments={"value": "unclassified"})
+        with capture.debug_request(obj, "normal", context_id="context"):
+            await call("normal", arguments={"value": "good"})
+        with pytest.raises(asyncio.CancelledError):
+            with capture.debug_request(obj, "cancelled", context_id="context"):
+                raise asyncio.CancelledError()
+        with pytest.raises(TimeoutError):
+            with capture.debug_request(obj, "timed-out", context_id="context"):
+                raise TimeoutError()
+        assert writer.flush()
+        rows = {row["request_id"]: row for row in store.requests()["requests"]}
+        assert rows["corrected"]["status"] == "success" and rows["corrected"]["diagnostic_level"] == "warning"
+        assert rows["hard-error"]["status"] == "success" and rows["hard-error"]["diagnostic_level"] == "error"
+        assert rows["normal"]["diagnostic_level"] == "info" and rows["neutral"]["diagnostic_level"] == "info"
+        assert rows["cancelled"]["status"] == "cancelled" and rows["cancelled"]["diagnostic_level"] == "info"
+        assert rows["timed-out"]["diagnostic_level"] == "error"
+        assert rows["business"]["diagnostic_level"] == "warning"
+        events = store.events("corrected")["events"]
+        assert any(event["metadata"].get("error_kind") == "model_input" for event in events)
+        assert next(event for event in events if event["span_id"] == "missing-value" and event["category"] == "tool" and event["phase"] == "end")["metadata"]["diagnostic_level"] == "warning"
+        hard = store.events("hard-error")["events"]
+        assert next(event for event in hard if event["category"] == "tool_result" and event["span_id"] == "crashed")["metadata"]["diagnostic_level"] == "error"
+        assert any(event["metadata"].get("result_status") == "pending" for event in store.events("neutral")["events"])
+    finally:
+        writer.close()
+
+
+def test_advanced_debug_v1_migration_keeps_legacy_unknown_without_reading_bodies(tmp_path, monkeypatch):
+    """
+    旧库只升级汇总列, 旧记录分类不依赖解码正文, 新请求累积最高级别
+
+    参数:
+    - tmp_path: 独立诊断库目录
+    - monkeypatch: 阻止读取任何正文以验证摘要读取边界
+    """
+    import sqlite3
+    from satrap.core.log.debug.store import DebugStore
+    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.log.debug.codec import DebugBodyCodec
+    obj = DebugObject("qq", "bot", "group", "room")
+    path = tmp_path / "v1.sqlite"
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            CREATE TABLE debug_requests (request_id TEXT PRIMARY KEY,object_key TEXT,context_id TEXT,title TEXT,parent_request_id TEXT,
+                started_at REAL,updated_at REAL,status TEXT,incomplete INTEGER,settings_revision TEXT);
+            CREATE TABLE debug_events (event_id TEXT PRIMARY KEY,request_id TEXT,sequence INTEGER,category TEXT,phase TEXT,
+                span_id TEXT,parent_span_id TEXT,recorded_at REAL,status TEXT,metadata_json TEXT,UNIQUE(request_id,sequence));
+            CREATE TABLE debug_event_bodies (event_id TEXT,slot TEXT,body_key TEXT,PRIMARY KEY(event_id,slot));
+            PRAGMA user_version=1;
+        """)
+        db.execute("INSERT INTO debug_requests VALUES('legacy',?,'context','','',1,1,'success',0,'v1')", (obj.key,))
+        db.execute("INSERT INTO debug_events VALUES('old','legacy',0,'tool_result','end','','',1,'returned','{}')")
+        db.execute("INSERT INTO debug_requests VALUES('known-error',?,'context','','',1,1,'failed',0,'v1')", (obj.key,))
+        db.execute("INSERT INTO debug_events VALUES('old-error','known-error',0,'model','end','','',1,'failed','{\"code\":\"provider_error\"}')")
+    store = DebugStore(path, "backend")
+    monkeypatch.setattr(DebugBodyCodec, "read", lambda *args, **kwargs: pytest.fail("摘要读取不能解码正文"))
+    assert store.request_info("legacy")["diagnostic_level"] == "unknown"
+    assert store.events("legacy")["events"][0]["metadata"]["diagnostic_level"] == "unknown"
+    assert store.events("known-error")["events"][0]["metadata"]["diagnostic_level"] == "error"
+    event = DebugEvent("new", obj, "context", "", "new-event", 0, "request", "end", "", "", 2, "success", {"code": "invalid_arguments"}, {}, "v2")
+    store.append([event, event])
+    assert store.request_info("new")["diagnostic_level"] == "warning"
+    assert store.request_info("legacy")["diagnostic_level"] == "unknown"
+    with store.connect() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("SELECT metadata_json FROM debug_events WHERE event_id='old'").fetchone()[0] == '{}'
+        assert db.execute("SELECT diagnostic_level FROM debug_requests WHERE request_id='legacy'").fetchone()[0] is None
 
 
 @pytest.mark.asyncio

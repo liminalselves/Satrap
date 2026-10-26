@@ -20,6 +20,7 @@ from typing import cast
 from .codec import DebugBodyCodec, encoded_json
 from .contracts import DebugData, DebugEvent, DebugObject, EventPage, EventSummary
 from .runtime import runtime_alive
+from .diagnostics import LEVEL_RANK, RANK_LEVEL, event_diagnostic
 
 
 def _cursor(values: list[DebugData]) -> str:
@@ -115,7 +116,7 @@ class DebugStore:
         - db: 当前写连接
         """
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in {0, 1}:
+        if version not in {0, 1, 2}:
             raise ValueError("高级诊断库版本不支持")
         if version == 0:
             db.execute("PRAGMA auto_vacuum=INCREMENTAL")
@@ -133,7 +134,8 @@ class DebugStore:
                 request_id TEXT PRIMARY KEY, object_key TEXT NOT NULL REFERENCES debug_objects(object_key),
                 context_id TEXT NOT NULL, title TEXT NOT NULL, parent_request_id TEXT NOT NULL,
                 started_at REAL NOT NULL, updated_at REAL NOT NULL, status TEXT NOT NULL,
-                incomplete INTEGER NOT NULL DEFAULT 0, settings_revision TEXT NOT NULL
+                incomplete INTEGER NOT NULL DEFAULT 0, settings_revision TEXT NOT NULL,
+                diagnostic_level INTEGER
             );
             CREATE INDEX IF NOT EXISTS debug_request_context ON debug_requests(object_key,context_id,updated_at DESC,request_id);
             CREATE INDEX IF NOT EXISTS debug_request_time ON debug_requests(updated_at DESC,request_id);
@@ -165,8 +167,13 @@ class DebugStore:
                 PRIMARY KEY(event_id,slot)
             );
             CREATE INDEX IF NOT EXISTS debug_body_roots ON debug_event_bodies(body_key);
-            PRAGMA user_version=1;
         """)
+        with db:
+            db.execute("BEGIN IMMEDIATE")
+            if "diagnostic_level" not in {row[1] for row in db.execute("PRAGMA table_info(debug_requests)")}:
+                db.execute("ALTER TABLE debug_requests ADD COLUMN diagnostic_level INTEGER")
+            db.execute("PRAGMA user_version=2")
+        # 只添加可空汇总列, 旧请求保持未分类, 不还原历史正文或逐条回填
 
     def append(self, events: Sequence[DebugEvent]) -> None:
         """
@@ -180,13 +187,20 @@ class DebugStore:
         with self.connect(write=True) as db:
             codec = DebugBodyCodec(db)
             for event in events:
+                metadata = {**event.metadata, **event_diagnostic(event.category, event.status, event.metadata)}
+                level = metadata["diagnostic_level"]
+                rank = LEVEL_RANK.get(str(level), -1)
+                if event.incomplete:
+                    rank = max(rank, 1)
                 obj = event.object
                 db.execute("INSERT OR IGNORE INTO debug_objects VALUES(?,?)", (obj.key, json.dumps(obj.payload(), ensure_ascii=False)))
                 db.execute("""INSERT INTO debug_contexts VALUES(?,?,?,?) ON CONFLICT(object_key,context_id)
                               DO UPDATE SET title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE title END,
                               updated_at=MAX(updated_at,excluded.updated_at)""",
                            (obj.key, event.context_id, event.title, event.recorded_at))
-                db.execute("""INSERT INTO debug_requests VALUES(?,?,?,?,?,?,?,'running',?,?) ON CONFLICT(request_id)
+                db.execute("""INSERT INTO debug_requests
+                              (request_id,object_key,context_id,title,parent_request_id,started_at,updated_at,status,incomplete,settings_revision,diagnostic_level)
+                              VALUES(?,?,?,?,?,?,?,'running',?,?,0) ON CONFLICT(request_id)
                               DO UPDATE SET context_id=CASE WHEN excluded.context_id<>'' THEN excluded.context_id ELSE context_id END,
                               title=CASE WHEN excluded.title<>'' THEN excluded.title ELSE title END,
                               parent_request_id=CASE WHEN excluded.parent_request_id<>'' THEN excluded.parent_request_id ELSE parent_request_id END,
@@ -208,8 +222,11 @@ class DebugStore:
                 inserted = db.execute("INSERT OR IGNORE INTO debug_events VALUES(?,?,?,?,?,?,?,?,?,?)",
                                       (event.event_id, event.request_id, event.sequence, event.category, event.phase,
                                        event.span_id, event.parent_span_id, event.recorded_at, event.status,
-                                       encoded_json(event.metadata).decode("utf-8")))
+                                       encoded_json(metadata).decode("utf-8")))
                 if inserted.rowcount:
+                    db.execute("""UPDATE debug_requests SET diagnostic_level=CASE
+                                  WHEN diagnostic_level IS NULL AND ?<=0 THEN NULL
+                                  ELSE MAX(COALESCE(diagnostic_level,-1),?) END WHERE request_id=?""", (rank, rank, event.request_id))
                     for slot, body in event.bodies.items():
                         key = codec.put(body)
                         db.execute("INSERT INTO debug_event_bodies VALUES(?,?,?)", (event.event_id, slot, key))
@@ -308,9 +325,13 @@ class DebugStore:
         - 带当前完整性和已确认中断状态的请求摘要
         """
         item = dict(row)
+        stored_level = item.get("diagnostic_level")
+        item["diagnostic_level"] = RANK_LEVEL.get(stored_level, "unknown") if isinstance(stored_level, int) else "unknown"
         count, first, last_sequence = db.execute("SELECT count(*),min(sequence),max(sequence) FROM debug_events WHERE request_id=?", (row["request_id"],)).fetchone()
         complete = first == 0 and last_sequence is not None and count == last_sequence+1
         item["incomplete"] = int(bool(row["incomplete"]) or (row["status"] != "running" and not complete))
+        if item["incomplete"] and item["diagnostic_level"] != "error":
+            item["diagnostic_level"] = "warning"
         if row["status"] == "running":
             start = db.execute("SELECT metadata_json FROM debug_events WHERE request_id=? AND category='request' AND phase='start' ORDER BY sequence LIMIT 1", (row["request_id"],)).fetchone()
             identity = json.loads(start[0]).get("runtime_id") if start else None
@@ -319,6 +340,8 @@ class DebugStore:
                     runtimes[identity] = runtime_alive(self.path.parent, self.service, identity)
                 if runtimes[identity] is False:
                     item.update(status="interrupted", incomplete=1)
+                    if item["diagnostic_level"] != "error":
+                        item["diagnostic_level"] = "warning"
         return item
 
     def contexts(self, *, limit: int = 50, cursor: str = "", object_key: str = "", query: str = "",
@@ -459,7 +482,8 @@ class DebugStore:
                     slots.setdefault(row[0], []).append(row[1])
             for row in rows[:limit]:
                 item = dict(row)
-                item["metadata"] = json.loads(item.pop("metadata_json"))
+                metadata = json.loads(item.pop("metadata_json"))
+                item["metadata"] = {**metadata, **event_diagnostic(row["category"], row["status"], metadata, legacy=True)}
                 item["body_slots"] = slots.get(row["event_id"], [])
                 values.append(cast(EventSummary, item))
             return {"events": values, "has_more": len(rows) > limit}
