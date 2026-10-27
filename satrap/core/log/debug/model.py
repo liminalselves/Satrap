@@ -6,11 +6,9 @@ SDK 请求边界的高级诊断
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-import inspect
 import time
-from typing import cast
 from uuid import uuid4
 
 from satrap.core.APICall.LLMCall.errors import model_error_info
@@ -204,93 +202,31 @@ class ModelObservation:
 
 def complete_sync(create: Callable[..., object], request: Mapping[str, object], timeout: float | None) -> object:
     """
-    观察同步 SDK 调用并保持返回值协议
+    兼容已有同步观察入口, 实际消费集中在共用 SDK 边界
 
     参数:
-    - create: SDK 原始 create 方法
-    - request: 实际最终参数
-    - timeout: 当前网络超时
+    - create: 原始 SDK 方法
+    - request: 最终参数
+    - timeout: SDK 网络超时
 
     返回:
-    - 非流式响应或同步流式迭代器
+    - 原始响应或观察迭代器
     """
-    if current_trace() is None:
-        return create(**request)
-    observation = ModelObservation(request, timeout)
-    try:
-        response = create(**request)
-    except BaseException as error:
-        observation.finish(error=error)
-        raise
-    if not request.get("stream"):
-        observation.finish(response=response)
-        return response
-
-    def chunks() -> Iterator[object]:
-        """逐块透传原始同步流, 取消与中断也写入结束记录"""
-        try:
-            for chunk in cast(Iterator[object], response):
-                observation.chunk(chunk)
-                yield chunk
-        except BaseException as error:
-            observation.finish(error=error)
-            raise
-        else:
-            observation.finish()
-        finally:
-            close = getattr(response, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception as error:
-                    _failure(type(error).__name__)
-
-    return chunks()
+    from satrap.core.telemetry.model import complete_sync as observe
+    return observe(create, request, timeout)
 
 
 async def complete_async(create: Callable[..., Awaitable[object]], request: Mapping[str, object], timeout: float | None) -> object:
     """
-    观察异步 SDK 调用, 等待模型时不持有诊断库事务
+    兼容已有异步观察入口, 不额外包装或消费一次响应流
 
     参数:
-    - create: SDK 原始异步 create 方法
-    - request: 实际最终参数
-    - timeout: 当前网络超时
+    - create: 原始异步 SDK 方法
+    - request: 最终参数
+    - timeout: SDK 网络超时
 
     返回:
-    - 非流式响应或异步流式迭代器
+    - 原始响应或观察迭代器
     """
-    if current_trace() is None:
-        return await create(**request)
-    observation = ModelObservation(request, timeout)
-    try:
-        response = await create(**request)
-    except BaseException as error:
-        observation.finish(error=error)
-        raise
-    if not request.get("stream"):
-        observation.finish(response=response)
-        return response
-
-    async def chunks() -> AsyncIterator[object]:
-        """逐块透传异步流, 保留取消时已收到的输出"""
-        try:
-            async for chunk in cast(AsyncIterator[object], response):
-                observation.chunk(chunk)
-                yield chunk
-        except BaseException as error:
-            observation.finish(error=error)
-            raise
-        else:
-            observation.finish()
-        finally:
-            close = getattr(response, "close", None)
-            if callable(close):
-                try:
-                    pending = close()
-                    if inspect.isawaitable(pending):
-                        await pending
-                except Exception as error:
-                    _failure(type(error).__name__)
-
-    return chunks()
+    from satrap.core.telemetry.model import complete_async as observe
+    return await observe(create, request, timeout)

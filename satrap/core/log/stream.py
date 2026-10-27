@@ -111,6 +111,8 @@ class StandardLogStream:
         self._sequence = 0
         self.stream_id = secrets.token_hex(16)
         self.service = "process"
+        self._counter_started_at = time.time()
+        self._level_buckets: dict[int, dict[str, int]] = {}
 
     def publish(self, content: str, level: str) -> None:
         """
@@ -128,6 +130,13 @@ class StandardLogStream:
             self._sequence += 1
             entry = StandardLogEntry(content, level, self._sequence, time.time(), os.getpid(), truncated)
             self._history.append(entry)
+            bucket = int(entry.timestamp // 10) * 10
+            normalized = {"WARN": "WARNING", "FATAL": "CRITICAL"}.get(level.upper(), level.upper())
+            normalized = normalized if normalized in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"} else "OTHER"
+            counters = self._level_buckets.setdefault(bucket, {})
+            counters[normalized] = counters.get(normalized, 0) + 1
+            if len(self._level_buckets) > 181:
+                self._level_buckets.pop(min(self._level_buckets))
             subscribers = tuple(self._subscribers.values())
 
         for subscriber in subscribers:
@@ -139,6 +148,42 @@ class StandardLogStream:
                 )
             except RuntimeError:
                 continue
+
+    def stats(self, *, window_seconds: int = 120, bucket_seconds: int = 10) -> dict[str, object]:
+        """
+        从独立计数桶读取日志速率, 正文被淘汰后仍保留计数
+
+        参数:
+        - window_seconds: 120/600/1800 秒窗口
+        - bucket_seconds: 10 或 60 秒桶
+
+        返回:
+        - 各级别计数, 趋势和实际覆盖时间, 不读取日志文件
+        """
+        if window_seconds not in {120, 600, 1800} or bucket_seconds not in {10, 60}:
+            raise ValueError("日志统计窗口或粒度无效")
+        now = time.time()
+        start = int((now - window_seconds) // 10) * 10
+        with self._lock:
+            rows = [(stamp, dict(values)) for stamp, values in self._level_buckets.items() if stamp + 10 > start and stamp <= now]
+            coverage_from = max(self._counter_started_at, start)
+        totals = {level: 0 for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OTHER")}
+        series: dict[int, dict[str, int]] = {}
+        for stamp in range(int(start // bucket_seconds) * bucket_seconds, int(now) + 1, bucket_seconds):
+            series[stamp] = dict(totals)
+        for stamp, counts in rows:
+            target = series.get(stamp // bucket_seconds * bucket_seconds)
+            if target is not None:
+                for level, count in counts.items():
+                    target[level] += count
+                    totals[level] += count
+        observed = max(0.0, now - coverage_from)
+        return {"service": self.service, "stream_id": self.stream_id, "generated_at": now, "coverage_from": coverage_from,
+                "complete": self._counter_started_at <= start, "window_seconds": window_seconds, "bucket_seconds": bucket_seconds,
+                "window_from": start, "window_to": now, "boundary_resolution_seconds": 10,
+                "by_level": totals, "error_count": totals["ERROR"] + totals["CRITICAL"],
+                "lines_per_minute": sum(totals.values()) * 60 / observed if observed else None, "rate_window_seconds": observed,
+                "series": [{"from": max(float(stamp), start), "to": min(float(stamp + bucket_seconds), now), "by_level": counts} for stamp, counts in series.items()]}
 
     def snapshot(self, *, after: int | None = None, stream_id: str | None = None, limit: int = 100) -> LogSnapshot:
         """

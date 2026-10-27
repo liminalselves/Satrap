@@ -91,4 +91,8 @@ def build_llm_from_config(cfg: LLMConfig, *, async_: bool = False) -> "LLM | Asy
         val = safe_getattr(cfg, name)
         if val is not None:
             kwargs[name] = val
-    return cls(**kwargs)
+    client = cls(**kwargs)
+    client.model_config_name = safe_getattr_str(cfg, "name")
+    window = safe_getattr(cfg, "context_window")
+    client.model_context_window = window if isinstance(window, int) and not isinstance(window, bool) and window > 0 else None
+    return client

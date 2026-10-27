@@ -18,13 +18,18 @@ def log_response(method: str, path: str) -> tuple[int, dict[str, object]] | None
     - 有界日志响应, 输入无效返回 400, 无关路径返回 None
     """
     parsed = urlsplit(path)
-    if parsed.path != "/api/logs":
+    if parsed.path not in {"/api/logs", "/api/logs/stats"}:
         return None
     if method != "GET":
         logger.warning("[日志查询] 不支持的 HTTP 方法")
         return 405, {"error": "日志接口仅支持 GET"}
     try:
         query = parse_qs(parsed.query, keep_blank_values=True)
+        if parsed.path == "/api/logs/stats":
+            if set(query) - {"window_seconds", "bucket_seconds"} or any(len(values) != 1 for values in query.values()):
+                raise ValueError("日志统计参数无效")
+            return 200, standard_log_stream.stats(window_seconds=int(query.get("window_seconds", ["120"])[0]),
+                                                   bucket_seconds=int(query.get("bucket_seconds", ["10"])[0]))
         snapshot = standard_log_stream.snapshot(
             after=int(query["after"][0]) if "after" in query else None,
             stream_id=query.get("stream_id", [None])[0], limit=int(query.get("limit", ["100"])[0]),

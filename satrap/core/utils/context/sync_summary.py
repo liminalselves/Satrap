@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 from satrap.core.type import RequestContextBlock
+from satrap.core.telemetry.capture import bind_scope
 from satrap.core.utils.context.request import freeze_request_blocks, attach_request_blocks, attach_system_suffix
 from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING
 import copy
@@ -50,18 +51,20 @@ class _SyncSummary(_SyncCheckpoints):
         for chunk in text_chunks:
             previous = f"\n\n已有摘要:\n{summary}" if summary else ""
             prompt = f"{self._SUMMARY_PROMPT}{previous}\n\n新增对话:\n{chunk}"
-            result = llm.chat(
-                [{"role": "user", "content": prompt}],
-                thinking="off",
-                max_tokens=_summary_output_budget(self.floor_tokens // 2),
-            )
-            if not isinstance(result, str) or not result.strip():
-                logger.warning("[上下文管理] 摘要正文为空, 使用扩展输出预算重试")
+            with bind_scope(purpose="summary"):
                 result = llm.chat(
                     [{"role": "user", "content": prompt}],
                     thinking="off",
-                    max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
+                    max_tokens=_summary_output_budget(self.floor_tokens // 2),
                 )
+            if not isinstance(result, str) or not result.strip():
+                logger.warning("[上下文管理] 摘要正文为空, 使用扩展输出预算重试")
+                with bind_scope(purpose="summary"):
+                    result = llm.chat(
+                        [{"role": "user", "content": prompt}],
+                        thinking="off",
+                        max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
+                    )
             if not isinstance(result, str) or not result.strip():
                 raise RuntimeError("上下文总结模型未返回有效文本")
             summary = result.strip()
@@ -80,18 +83,20 @@ class _SyncSummary(_SyncCheckpoints):
             "保留关键事实、决定和待办事项:\n\n"
             f"{self._runtime_state.summary}"
         )
-        result = llm.chat(
-            [{"role": "user", "content": prompt}],
-            thinking="off",
-            max_tokens=_summary_output_budget(target_tokens),
-        )
-        if not isinstance(result, str) or not result.strip():
-            logger.warning("[上下文管理] 二次压缩正文为空, 使用扩展输出预算重试")
+        with bind_scope(purpose="summary"):
             result = llm.chat(
                 [{"role": "user", "content": prompt}],
                 thinking="off",
-                max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
+                max_tokens=_summary_output_budget(target_tokens),
             )
+        if not isinstance(result, str) or not result.strip():
+            logger.warning("[上下文管理] 二次压缩正文为空, 使用扩展输出预算重试")
+            with bind_scope(purpose="summary"):
+                result = llm.chat(
+                    [{"role": "user", "content": prompt}],
+                    thinking="off",
+                    max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
+                )
         if not isinstance(result, str) or not result.strip():
             raise RuntimeError("上下文摘要二次压缩未返回有效文本")
         self._runtime_state.summary = result.strip()

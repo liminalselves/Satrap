@@ -76,6 +76,22 @@ _SETTLEMENT_POLL_SECONDS = 0.05
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 
 
+def _record_command_metric(event: MessageEvent, command_text: str | None) -> None:
+    """
+    补记已经识别的真实平台命令, 与入站消息共用去重身份
+
+    参数:
+    - event: 当前真实消息事件
+    - command_text: 已冻结命令, 合成消息或非命令为 None
+    """
+    if command_text is not None:
+        from satrap.core.telemetry.capture import bind_scope, record_message, scope_from_origin
+
+        with bind_scope(service="backend"):
+            record_message(scope_from_origin(event.call_origin), event.call_origin.source_message_id,
+                           received_at=event.platform_message.received_at, command=True)
+
+
 class PipelineScheduler:
     """
     消息管线调度器
@@ -554,6 +570,7 @@ class PipelineScheduler:
                 if manual_ticket is None and deadline_ticket is None
                 else None
             )
+            _record_command_metric(event, command_text)
             pending = manual_ticket.snapshot if manual_ticket is not None else ()
             automatic_eligible = (
                 not event.is_private_chat()

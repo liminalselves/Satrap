@@ -2087,6 +2087,12 @@ class ChatService:
             display_text = "\n".join(att_lines) + "\n" + text if text.strip() else "\n".join(att_lines)
 
         turn = conv.recorder.start_turn(text, attachments=attachments)
+        from satrap.core.telemetry.capture import bind_scope, record_message
+        from satrap.core.telemetry.contracts import MetricScope
+
+        with bind_scope(service="chat"):
+            record_message(MetricScope(platform_id=self._platform_id, self_id="local", conversation_kind="chat", target_id=conversation_id),
+                           f"input:{turn['turn_id']}", command=conv.session.command_handler._is_cmd(text))
         context_start = conv.session.ctx.static_message()
         self._broadcast(
             conv,
@@ -2128,10 +2134,14 @@ class ChatService:
         """
         from satrap.core.log.debug.capture import debug_request, record_debug, previous_chat_request
         from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.telemetry.capture import bind_scope
+        from satrap.core.telemetry.contracts import MetricScope
 
         obj = DebugObject(self._platform_id, "local", "chat", conv.conversation_id)
         version = conv.recorder.recovery_origin()
-        with debug_request(obj, "chat-" + uuid.uuid4().hex,
+        with bind_scope(MetricScope(platform_id=self._platform_id, self_id="local", conversation_kind="chat", target_id=conv.conversation_id,
+                                    session_id=conv.conversation_id, context_id=conv.conversation_id, model_config=conv.model), service="chat"), \
+             debug_request(obj, "chat-" + uuid.uuid4().hex,
                            context_id=conv.conversation_id,
                            input_data={"text": text, "images": img_urls, "videos": video_urls}) as trace:
             if trace is not None:
@@ -2205,6 +2215,10 @@ class ChatService:
                     context_stats=context_stats,
                     response_metadata={"status": "completed", **response_model},
                 ) or {}
+                from satrap.core.telemetry.capture import current_scope, record_message, record_session_completed
+
+                record_message(current_scope(), f"output:{completed.get('turn_id')}:{completed.get('variant_index')}", outbound=True)
+                record_session_completed()
                 self._broadcast(
                     conv,
                     {"type": MSG_TURN_DONE, "answer": answer, "context_stats": context_stats, **completed},

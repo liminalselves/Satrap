@@ -64,6 +64,7 @@ class _Operation:
     result: dict[str, Any] | None = None
     error: str = ""
     stage: _Stage = field(default_factory=_Stage)
+    activity_kind: str = "config"
     instances: OrderedDict[tuple[str, str], _Stage] = field(default_factory=OrderedDict)
     instances_limited: bool = False
     task: asyncio.Task[None] | None = None
@@ -132,6 +133,9 @@ class ApplicationOperations:
             if sum(item.status == "running" for item in self._operations.values()) >= self._max_active:
                 raise ApplicationProgressError(503, "应用任务队列已满, 未接受本次应用")
             operation = _Operation(fingerprint)
+            operation.activity_kind = "plugin" if "plugin" in str(request.get("route", "")) else "config"
+            operation.stage.platform_id = request.get("platform_id", "") if isinstance(request.get("platform_id", ""), str) else ""
+            operation.stage.session_id = request.get("session_id", "") if isinstance(request.get("session_id", ""), str) else ""
             self._operations[key] = operation
             operation.task = asyncio.create_task(self._run(key, operation, action), name=f"application:{key}")
             operation.task.add_done_callback(lambda task: self._task_done(key, operation, task))
@@ -151,6 +155,7 @@ class ApplicationOperations:
             operation.task = None
             self._prune()
         logger.error(f"[应用任务] 任务 {key} 未正常终结: {operation.error}\n" + ("" if error is None else "".join(traceback.format_exception(error))))
+        self._record_activity(key, operation)
 
     async def _run(self, key: str, operation: _Operation, action: Callable[[], Awaitable[dict[str, Any]]]) -> None:
         """捕获失败和取消, 终态保留实际结果, 不把部分失败解释为成功"""
@@ -185,6 +190,29 @@ class ApplicationOperations:
                 operation.task = None
                 self._prune()
             _REPORTER.reset(token)
+            self._record_activity(key, operation)
+
+    @staticmethod
+    def _record_activity(key: str, operation: _Operation) -> None:
+        """
+        任务终结后记录实际应用结果, 不保存配置正文或异常正文
+
+        参数:
+        - key: 宿主已验证的任务 ID
+        - operation: 已更新的最终任务状态
+        """
+        from satrap.core.telemetry.capture import current_writer, record_activity
+        from satrap.core.telemetry.contracts import MetricScope
+
+        writer = current_writer()
+        if writer is None:
+            return
+        success = operation.status == "completed"
+        category = operation.activity_kind
+        record_activity(category + (".applied" if success else ".failed"), "插件已应用" if category == "plugin" and success else "配置已应用" if success else "应用任务未完成",
+                        tone="info" if success else "error", scope=MetricScope(platform_id=operation.stage.platform_id, session_id=operation.stage.session_id),
+                        event_key=f"{writer.runtime.runtime_id}:{category}:{key}",
+                        reference={"kind": "plugin_application", "service": writer.store.service, "operation_id": key} if category == "plugin" else None)
 
     def get(self, operation_id: object) -> dict[str, Any]:
         """返回独立读取快照, 不存在可能表示重启/淘汰/尚未接受, 不触发应用"""

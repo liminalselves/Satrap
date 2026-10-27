@@ -1,6 +1,7 @@
 """异步模型调用入口"""
 
 import asyncio
+import inspect
 
 from openai import AsyncOpenAI, APIError
 from typing import (
@@ -41,9 +42,10 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         返回:
         - SDK 响应或相同迭代协议的观察流
         """
-        from satrap.core.log.debug.model import complete_async
+        from satrap.core.telemetry.model import complete_async
 
-        return await complete_async(self.client.chat.completions.create, request, self.network_timeout)
+        return await complete_async(self.client.chat.completions.create, request, self.network_timeout,
+                                    provider=str(self.base_url or ""), model_config=self.model_config_name, context_window=self.model_context_window)
 
     async def chat(
         self,
@@ -348,10 +350,20 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                     stream = cast(
                         Any, await self._complete(**request_params)
                     )
-                    async for chunk in stream:
-                        received_chunk = True
-                        for event in accumulator.consume(chunk):
-                            yield event
+                    try:
+                        async for chunk in stream:
+                            received_chunk = True
+                            for event in accumulator.consume(chunk):
+                                yield event
+                    finally:
+                        close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
+                        if callable(close):
+                            try:
+                                closed = close()
+                                if inspect.isawaitable(closed):
+                                    await closed
+                            except Exception as error:
+                                logger.warning(f"[AsyncLLM] 关闭响应流失败: {type(error).__name__}")
                     break
                 except APIError as error:
                     if (

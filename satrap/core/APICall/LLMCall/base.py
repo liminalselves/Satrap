@@ -16,6 +16,8 @@ _ClientT = TypeVar("_ClientT")
 
 
 class _LLMBase(Generic[_ClientT]):
+    model_config_name: str = ""
+    model_context_window: int | None = None
     def __init__(
         self,
         api_key: str,

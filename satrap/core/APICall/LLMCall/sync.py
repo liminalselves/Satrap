@@ -39,9 +39,10 @@ class LLM(_LLMBase[OpenAI]):
         返回:
         - SDK 响应或同协议的观察流
         """
-        from satrap.core.log.debug.model import complete_sync
+        from satrap.core.telemetry.model import complete_sync
 
-        return complete_sync(self.client.chat.completions.create, request, self.network_timeout)
+        return complete_sync(self.client.chat.completions.create, request, self.network_timeout,
+                             provider=str(self.base_url or ""), model_config=self.model_config_name, context_window=self.model_context_window)
 
     def chat(
         self,
@@ -345,9 +346,17 @@ class LLM(_LLMBase[OpenAI]):
                     stream = cast(
                         Any, self._complete(**request_params)
                     )
-                    for chunk in stream:
-                        received_chunk = True
-                        yield from accumulator.consume(chunk)
+                    try:
+                        for chunk in stream:
+                            received_chunk = True
+                            yield from accumulator.consume(chunk)
+                    finally:
+                        close = getattr(stream, "close", None)
+                        if callable(close):
+                            try:
+                                close()
+                            except Exception as error:
+                                logger.warning(f"[LLM] 关闭响应流失败: {type(error).__name__}")
                     break
                 except APIError as error:
                     if (

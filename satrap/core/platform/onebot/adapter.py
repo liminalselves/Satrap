@@ -711,9 +711,13 @@ class OneBotAdapter(PlatformAdapter):
         if meta_type == "lifecycle":
             sub_type = str(event.get("sub_type") or "")
             if sub_type == "connect":
+                if self._connection_generation:
+                    self.note_connection(False)
                 self._connection_generation += 1
                 self._self_identity.clear()
                 self._client_connected = True
+                self.note_connection(True)
+                self._bot_profile = None
                 self._heartbeats = 0
                 self._last_heartbeat_at = 0.0
                 self._capability_states.clear()
@@ -726,8 +730,11 @@ class OneBotAdapter(PlatformAdapter):
                         logger.warning(f"[OneBotAdapter] 连接后群目录同步未启动: {type(error).__name__}: {error}")
             elif sub_type == "disable":
                 self._client_connected = False
+                self.note_connection(False)
         elif meta_type == "heartbeat":
             self._client_connected = True
+            self.note_connection(True)
+            self._heartbeat_wall_at = time()
             self._heartbeats += 1
             self._last_heartbeat_at = monotonic()
 
@@ -1321,6 +1328,7 @@ class OneBotAdapter(PlatformAdapter):
             logger.info(f"[OneBotAdapter] OneBot 客户端已连接 adapter={self.config.id} self_id={incoming_self}")
         self.bot_self_id = incoming_self
         self.client_self_id = incoming_self
+        self.note_connection(True)
         if str(event.get("user_id")) == incoming_self:
             self._ingress_rejections["self_echo"] += 1
             if self.message_archive is not None:
@@ -2308,7 +2316,11 @@ class OneBotAdapter(PlatformAdapter):
         返回:
         - BotIdentity | None: 同一账号和连接下的确认资料, 查询失败时为 None
         """
-        return await self._self_identity.resolve(self_id, group_id)
+        identity = await self._self_identity.resolve(self_id, group_id)
+        if identity is not None and identity.self_id == self.bot_self_id:
+            self._bot_profile = {"self_id": identity.self_id, "nickname": identity.nickname or None,
+                                 "avatar_url": None, "as_of": time()}
+        return identity
 
     async def check_connection(self) -> None:
         """通过当前 OneBot 连接读取版本信息, 断线或响应异常时抛出错误"""

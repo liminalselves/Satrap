@@ -215,6 +215,8 @@ class MisskeyAdapter(PlatformAdapter):
             self.bot_self_id = str(user_info.get("id", ""))
             self.client_self_id = self.bot_self_id or self.client_self_id
             self._bot_username = str(user_info.get("username", ""))
+            self._bot_profile = {"self_id": self.bot_self_id, "nickname": user_info.get("name") or self._bot_username,
+                                 "avatar_url": user_info.get("avatarUrl"), "as_of": time()}
             logger.info(f"[MisskeyAdapter] 已连接用户: {self._bot_username} ({self.bot_self_id})")
         except Exception as e:
             self._running = False
@@ -251,6 +253,7 @@ class MisskeyAdapter(PlatformAdapter):
                 streaming = self._client.get_streaming_client()
                 self._register_event_handlers(streaming)
                 if await streaming.connect():
+                    self.note_connection(True)
                     attempts = 0
                     backoff_delay = 1.0
                     await streaming.subscribe_channel("main")
@@ -260,6 +263,8 @@ class MisskeyAdapter(PlatformAdapter):
                     await streaming.listen()
             except Exception as e:
                 logger.error(f"[MisskeyAdapter] WebSocket 异常: {type(e).__name__}")
+            finally:
+                self.note_connection(False)
 
             if self._running:
                 sleep_time = backoff_delay + random.uniform(0, 1.0)
