@@ -63,6 +63,8 @@ class _EdictumRuntimeState:
     config_status: str = "applied"
     config_error: str | None = None
     last_restarted_at: float | None = None
+    config_applied_at: float | None = None
+    applied_revision: str | None = None
 
 
 def _runtime_config_fingerprint(config: dict[str, Any]) -> str:
@@ -308,6 +310,8 @@ class EdictumProvider:
                 applied_config_fingerprint=runtime_config_fingerprint,
                 desired_config_fingerprint=runtime_config_fingerprint,
                 last_restarted_at=time.time(),
+                config_applied_at=time.time() if type_definition.plugin_installer is None else None,
+                applied_revision=runtime_config_fingerprint if type_definition.plugin_installer is None else None,
             )
         return session
 
@@ -511,6 +515,8 @@ class EdictumProvider:
                 "desired": state.desired_fingerprint,
             },
             "config": {
+                "config_applied_at": state.config_applied_at,
+                "applied_revision": state.applied_revision,
                 "status": state.config_status,
                 "error": state.config_error,
                 "drift": config_drift,
@@ -864,3 +870,8 @@ class EdictumProvider:
             if item.applied_spec is not None
         ]
         state.applied_fingerprint = plugin_specs_fingerprint(applied_specs)
+        if all(not item.drift and not item.error for item in state.plugins):
+            revision = hashlib.sha256((state.applied_config_fingerprint + ":" + state.applied_fingerprint).encode()).hexdigest()
+            if revision != state.applied_revision:
+                state.applied_revision = revision
+                state.config_applied_at = time.time()

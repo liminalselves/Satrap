@@ -29,6 +29,21 @@ MAX_PENDING_PREVIEWS = 3
 _RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", *(f"COM{i}" for i in "123456789¹²³"), *(f"LPT{i}" for i in "123456789¹²³")}
 
 
+class PluginAlreadyInstalled(ValueError):
+    """重复安装冲突, 不覆盖现有目录"""
+
+    def __init__(self, name: str, installed_version: str | None) -> None:
+        """
+        保留已有安装版本, 目录损坏时版本未知
+
+        参数:
+        - name: 已存在的插件名
+        - installed_version: 已扫描版本或 None
+        """
+        super().__init__(f"已存在同名插件: {name}; 本版本不支持覆盖安装")
+        self.installed_version = installed_version
+
+
 def _safe_parts(name: str) -> tuple[str, ...]:
     """
     校验同时适用于 Windows 和 POSIX 的压缩包相对路径
@@ -113,10 +128,9 @@ class PluginArchiveInstaller:
         参数:
         - name: 已校验的插件名称
         """
-        if os.path.lexists(self.catalog.user_dir / name) or os.path.lexists(self.catalog.preset_dir / name) or any(
-            entry.name.casefold() == name.casefold() for entry in self.catalog.scan()
-        ):
-            raise ValueError(f"已存在同名插件: {name}; 本版本不支持覆盖安装")
+        existing = next((entry for entry in self.catalog.scan() if entry.name.casefold() == name.casefold()), None)
+        if os.path.lexists(self.catalog.user_dir / name) or os.path.lexists(self.catalog.preset_dir / name) or existing is not None:
+            raise PluginAlreadyInstalled(name, existing.version if existing else None)
 
     def preview(self, content: bytes) -> dict[str, Any]:
         """
@@ -233,9 +247,17 @@ class PluginArchiveInstaller:
                 entry = self.catalog._load_entry(preview.plugin_dir)
                 if entry.name != preview.name:
                     raise ValueError("预览元数据已变化, 请重新上传")
-                _move_no_replace(preview.plugin_dir, self.catalog.user_dir / preview.name)
+                try:
+                    _move_no_replace(preview.plugin_dir, self.catalog.user_dir / preview.name)
+                except FileExistsError:
+                    self._check_conflict(preview.name)
+                    raise
                 # 临时目录与目标目录位于同一文件系统, 不暴露半解压状态
                 self.catalog.invalidate()
+                from satrap.core.telemetry.capture import record_activity
+
+                record_activity("plugin.applied", "插件安装完成", event_key=f"plugin.install:{entry.name}:{time.time_ns()}",
+                                reference={"kind": "plugin", "name": entry.name})
                 return {"ok": True, "plugin": {**entry.to_payload(), "source": "user"}}
             finally:
                 preview.temporary.cleanup()

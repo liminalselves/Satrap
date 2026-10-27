@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional, Type, cast
 import json
 import sys
 import os
+import math
+import time
 
 from satrap.core.framework.session_discovery import (
     build_session_module_catalog,
@@ -247,9 +249,12 @@ class SessionClassConfigManager:
             raise ValueError(f"导入 class 失败: {class_path}, 错误: {e}") from e
 
     # ---------- 序列化 ----------
-    def _to_payload_locked(self) -> Dict[str, Dict[str, Any]]:
+    def _to_payload_locked(self, *, include_metadata: bool = False) -> Dict[str, Dict[str, Any]]:
         """
         序列化配置为 JSON 安全结构
+
+        参数:
+        - include_metadata: 仅持久化时附带宿主更新时间, 默认保持原配置正文
 
         返回:
         - Dict[str, Dict[str, Any]]: 序列化配置为 JSON 安全结构
@@ -257,6 +262,7 @@ class SessionClassConfigManager:
         output: Dict[str, Dict[str, Any]] = {}
         for name, entry in self._configs.items():
             output[name] = {
+                **({"_updated_at": entry.get("_updated_at")} if include_metadata else {}),
                 "class_path": entry["class_path"],
                 "is_async": entry["is_async"],
                 "enabled": entry.get("enabled", True),
@@ -271,7 +277,7 @@ class SessionClassConfigManager:
         """保存配置到 JSON 文件"""
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         with self.storage_path.open("w", encoding="utf-8") as f:
-            json.dump(self._to_payload_locked(), f, ensure_ascii=False, indent=2)
+            json.dump(self._to_payload_locked(include_metadata=True), f, ensure_ascii=False, indent=2)
 
     # ---------- 持久化 ----------
     def reload(self):
@@ -295,8 +301,12 @@ class SessionClassConfigManager:
                     if not isinstance(entry, dict):
                         continue
                     entry = cast(dict[str, Any], entry)
+                    updated = entry.get("_updated_at")
+                    if updated is not None and (not isinstance(updated, (int, float)) or isinstance(updated, bool) or not math.isfinite(updated) or updated < 0):
+                        raise ValueError("会话类配置更新时间无效")
                     self._configs[str(_name)] = {
                         "class_path": str(entry.get("class_path", "")),
+                        "_updated_at": updated,
                         "is_async": bool(entry.get("is_async", False)),
                         "enabled": bool(entry.get("enabled", True)),
                         "context_key": str(entry.get("context_key", "")),
@@ -306,6 +316,20 @@ class SessionClassConfigManager:
                     }
             except Exception as e:
                 logger.error(f"[SessionClassConfigManager] 读取配置失败: {e}")
+
+    def config_updated_at(self, name: str) -> float | None:
+        """
+        查询宿主实际保存的单项更新时间
+
+        参数:
+        - name: 命名会话类配置
+
+        返回:
+        - UTC 时间或 None, 旧记录不推测更新时间
+        """
+        with self._lock:
+            value = self._configs.get(name, {}).get("_updated_at")
+            return float(value) if isinstance(value, (int, float)) else None
 
     def save(self):
         """保存配置"""
@@ -342,6 +366,7 @@ class SessionClassConfigManager:
             self._class_cache[key] = session_class
             self._configs[key] = {
                 "class_path": class_path,
+                "_updated_at": time.time(),
                 "is_async": is_async,
                 "enabled": True,
                 "context_key": context_key,
@@ -417,6 +442,7 @@ class SessionClassConfigManager:
                 "class_path": class_path,
                 "is_async": is_async,
                 "enabled": enabled,
+                "_updated_at": time.time(),
                 "context_key": context_key,
                 "model_key": model_key,
                 "description": description,
@@ -535,6 +561,7 @@ class SessionClassConfigManager:
             if key not in self._configs:
                 raise ValueError(f"未知的会话类配置: {key}")
             self._configs[key]["enabled"] = True
+            self._configs[key]["_updated_at"] = time.time()
             self._save_locked()
 
     def disable(self, name: str):
@@ -549,6 +576,7 @@ class SessionClassConfigManager:
             if key not in self._configs:
                 raise ValueError(f"未知的会话类配置: {key}")
             self._configs[key]["enabled"] = False
+            self._configs[key]["_updated_at"] = time.time()
             self._save_locked()
 
     def is_enabled(self, name: str) -> bool:
@@ -598,6 +626,7 @@ class SessionClassConfigManager:
             if key not in self._configs:
                 raise ValueError(f"未知的会话类配置: {key}")
             self._configs[key]["context_key"] = context_key
+            self._configs[key]["_updated_at"] = time.time()
             self._save_locked()
 
     def get_model_key(self, name: str) -> str:
@@ -630,6 +659,7 @@ class SessionClassConfigManager:
             if key not in self._configs:
                 raise ValueError(f"未知的会话类配置: {key}")
             self._configs[key]["model_key"] = model_key
+            self._configs[key]["_updated_at"] = time.time()
             self._save_locked()
 
     def get_class_template(self, name: str) -> Dict[str, Any]:
@@ -664,6 +694,7 @@ class SessionClassConfigManager:
             if key not in self._configs:
                 raise ValueError(f"未知的会话类配置: {key}")
             self._configs[key]["params"] = dict(params)
+            self._configs[key]["_updated_at"] = time.time()
             self._save_locked()
 
     def update_entry(
@@ -724,6 +755,7 @@ class SessionClassConfigManager:
                 entry["model_key"] = model_key
 
             cached_class = self._class_cache.pop(key, None)
+            entry["_updated_at"] = time.time()
             if target_key != key:
                 self._configs.pop(key)
             self._configs[target_key] = entry
@@ -748,6 +780,7 @@ class SessionClassConfigManager:
             if key not in self._configs:
                 raise ValueError(f"未知的会话类配置: {key}")
             self._configs[key]["params"].update(kwargs)
+            self._configs[key]["_updated_at"] = time.time()
             self._save_locked()
 
     def remove_config(self, name: str) -> bool:

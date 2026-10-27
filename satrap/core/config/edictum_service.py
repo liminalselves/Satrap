@@ -78,6 +78,15 @@ class EdictumConfigService:
         """
         return self.manager.list_configs()
 
+    def list_with_metadata(self) -> dict[str, dict[str, Any]]:
+        """
+        为只读目录提供更新时间, 不改变内部配置或 CAS 正文
+
+        返回:
+        - 命名配置及实际保存时间, 旧记录的时间为空
+        """
+        return {name: {**config, "updated_at": self.manager.config_updated_at(name)} for name, config in self.manager.list_configs().items()}
+
     def list_plugins(self) -> list[dict[str, Any]]:
         """
         扫描可供 Edictum 会话使用的插件

@@ -20,7 +20,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 import string
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, cast, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, TypedDict, cast, TYPE_CHECKING
 import json
 import time
 
@@ -104,6 +104,15 @@ class SessionEntry:
     """正在使用此条目的调用数量"""
     retiring: bool = False
     """条目是否已进入淘汰流程"""
+
+
+class AgentInstanceSummary(TypedDict):
+    """同一 Provider 和命名 Agent 的实际驻留与调用实例数量"""
+
+    provider: str
+    agent: str
+    active_instances: int
+    running_instances: int
 
 
 @dataclass
@@ -622,6 +631,7 @@ class SessionPool:
                 entry = self._sessions[session_id]
                 if entry.session is not session:
                     entry.instance_generation = secrets.token_urlsafe(16)
+                    entry.created_at = now
                 entry.session = session
                 entry.session_type = session_type
                 entry.last_used = now
@@ -2700,6 +2710,7 @@ class SessionManager:
             self._apply_storage_scope(session, session_id)
             try:
                 setattr(session, "_satrap_provider_name", provider.provider_name)
+                setattr(session, "_satrap_agent_config", session_cfg.session_type_name or "")
             except Exception:
                 pass
             # 注入 UserManager, 使 Session 能访问当前用户的所有上下文
@@ -3012,12 +3023,17 @@ class SessionManager:
         """
         try:
             from satrap.core.log.debug.capture import record_session_start
+            from satrap.core.telemetry.capture import bind_scope, scope_from_origin, record_session_completed
 
             record_session_start(session)
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), bind_session_reply(session):
-                return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
+            with bind_scope(scope_from_origin(user_call.origin, session_id=str(getattr(session, "session_id", "") or "") or user_call.session_id or "",
+                                              agent=str(getattr(session, "_satrap_agent_config", ""))), service="backend"), \
+                 bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), bind_session_reply(session):
+                result = run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
+                record_session_completed()
+                return result
         except Exception as e:
             abort_reply_turn()
             logger.error(f"[SessionManager] 同步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
@@ -3037,12 +3053,17 @@ class SessionManager:
         """
         try:
             from satrap.core.log.debug.capture import record_session_start
+            from satrap.core.telemetry.capture import bind_scope, scope_from_origin, record_session_completed
 
             record_session_start(session)
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), bind_session_reply(session):
-                return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
+            with bind_scope(scope_from_origin(user_call.origin, session_id=str(getattr(session, "session_id", "") or "") or user_call.session_id or "",
+                                              agent=str(getattr(session, "_satrap_agent_config", ""))), service="backend"), \
+                 bind_call_origin(user_call.origin), bind_conversation_route(user_call.route, user_call.history_window), bind_session_reply(session):
+                result = await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
+                record_session_completed()
+                return result
         except Exception as e:
             abort_reply_turn()
             logger.error(f"[SessionManager] 异步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
@@ -3189,6 +3210,24 @@ class SessionManager:
             return
         await SESSION_WORKERS.run(partial(self._prepare_session_sync, session, apply_snapshot=apply_snapshot))
 
+    def agent_instance_summary(self) -> list[AgentInstanceSummary]:
+        """
+        批量汇总已驻留实例, 不加载冷会话或读取历史
+
+        返回:
+        - 按 Provider 和命名配置聚合的真实实例数
+        """
+        counts: dict[tuple[str, str], AgentInstanceSummary] = {}
+        for entry in self.pool.list_entries().values():
+            if entry.retiring:
+                continue
+            provider = str(safe_getattr(entry.session, "_satrap_provider_name") or "")
+            key = (provider, entry.session_type)
+            item = counts.setdefault(key, AgentInstanceSummary(provider=provider, agent=entry.session_type, active_instances=0, running_instances=0))
+            item["active_instances"] += 1
+            item["running_instances"] += int(entry.active_calls > 0)
+        return list(counts.values())
+
     def get_session_runtime_metadata(self, session_id: str) -> dict[str, Any]:
         """
         获取活跃会话的 Provider 运行时元数据
@@ -3206,9 +3245,14 @@ class SessionManager:
         provider = self.provider_registry.get(provider_name) if provider_name else None
         get_metadata = safe_getattr_callable(provider, "get_runtime_metadata")
         if get_metadata is None:
-            return {}
+            return {"started_at": entry.created_at, "config_applied_at": None, "applied_revision": None}
         metadata = get_metadata(entry.session)
-        return cast(dict[str, Any], metadata).copy() if isinstance(metadata, dict) else {}
+        result = cast(dict[str, Any], metadata).copy() if isinstance(metadata, dict) else {}
+        raw_applied = result.get("config")
+        applied = cast(dict[str, object], raw_applied) if isinstance(raw_applied, dict) else {}
+        return {**result, "started_at": entry.created_at,
+                "config_applied_at": applied.get("config_applied_at") if isinstance(applied, dict) else None,
+                "applied_revision": applied.get("applied_revision") if isinstance(applied, dict) else None}
 
     def _release_session_memory(self, session: Session | AsyncSession):
         """
