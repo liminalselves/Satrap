@@ -1,6 +1,6 @@
 import { useId } from 'react';
 import type { ApprovalMode } from '@/api/chat';
-import { Select } from '@/components/ui/Select';
+import { Select } from './Select';
 import type { ApprovalControl } from './useApprovalMode';
 
 const MODES = [
@@ -20,7 +20,7 @@ export function ApprovalSettings({ approval, compact = false }: { approval: Appr
 
   return (
     <div className={compact ? 'flex flex-wrap items-center gap-2' : 'space-y-2'} role="group" aria-labelledby={labelId}>
-      <label id={labelId} className={compact ? 'text-sm text-text-secondary' : 'block text-sm font-medium text-text-primary'}>
+      <label id={labelId} className={compact ? 'text-sm text-fg-2' : 'block text-sm font-medium text-fg'}>
         {compact ? '审批' : '执行审批模式'}
       </label>
       <div className={compact ? 'w-28' : undefined} title={description}>
@@ -31,9 +31,9 @@ export function ApprovalSettings({ approval, compact = false }: { approval: Appr
           options={state ? MODES : [{ value: '', label: conversationId ? '读取中...' : '未创建对话' }]}
         />
       </div>
-      {!compact && <p className="text-xs text-text-tertiary">{description}; 计划模式和受保护文件的限制仍然有效</p>}
-      {state?.plan_mode && <p className="text-xs text-text-secondary">计划模式已开启{!compact && ', 不能修改文件或运行本机命令'}</p>}
-      {error && <p role="alert" className="text-xs text-error max-w-xs">{error}</p>}
+      {!compact && <p className="text-xs text-fg-3">{description}; 计划模式和受保护文件的限制仍然有效</p>}
+      {state?.plan_mode && <p className="text-xs text-fg-2">计划模式已开启{!compact && ', 不能修改文件或运行本机命令'}</p>}
+      {error && <p role="alert" className="max-w-xs text-xs text-red">{error}</p>}
     </div>
   );
 }

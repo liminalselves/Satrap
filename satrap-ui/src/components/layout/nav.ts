@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, Cpu, Database, Bot, Puzzle, Globe, ShieldCheck, History, Boxes, ScrollText, Bug, Settings,
+  LayoutDashboard, Cpu, Database, Bot, Puzzle, Globe, ShieldCheck, History, Boxes, ScrollText, Bug, Settings, BarChart3,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -40,6 +40,7 @@ export const navGroups: NavGroup[] = [
   { id: 'data', label: '数据', tint: 'green', items: [
     { path: '/conversations', label: '对话记录', icon: History, keywords: 'conversations history dhjl' },
     { path: '/conversations/instances', label: '会话实例', icon: Boxes, keywords: 'instances hhsl' },
+    { path: '/usage', label: '用量统计', icon: BarChart3, keywords: 'usage tokens yltj' },
   ] },
   { id: 'ops', label: '运维', tint: 'orange', items: [
     { path: '/logs', label: '日志监控', icon: ScrollText, keywords: 'logs rzjk' },

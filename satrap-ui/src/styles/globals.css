@@ -1,6 +1,7 @@
 @import './tokens.css';
 @import './motion.css';
 @import './glass.css';
+@import './kit.css';
 
 @tailwind base;
 @tailwind components;
@@ -17,12 +18,12 @@
     --color-bg-layer3: rgba(50, 50, 60, 0.4);
     
     /* 玻璃材质 */
-    --glass-bg: rgba(255, 255, 255, 0.03);
-    --glass-bg-hover: rgba(255, 255, 255, 0.05);
+    --glass-bg: rgba(255, 255, 255, 0.035);
+    --glass-bg-hover: rgba(255, 255, 255, 0.06);
     --glass-bg-active: rgba(255, 255, 255, 0.08);
-    --glass-border: rgba(255, 255, 255, 0.06);
+    --glass-border: rgba(255, 255, 255, 0.07);
     --glass-border-hover: rgba(255, 255, 255, 0.08);
-    --glass-highlight: rgba(255, 255, 255, 0.1);
+    --glass-highlight: rgba(255, 255, 255, 0.12);
     
     /* 染色玻璃 - 蓝色系 */
     --glass-accent-bg: rgba(0, 120, 212, 0.08);
@@ -151,12 +152,12 @@
     --color-bg-layer2: rgba(255, 255, 255, 0.6);
     --color-bg-layer3: rgba(255, 255, 255, 0.5);
     
-    --glass-bg: rgba(255, 255, 255, 0.7);
-    --glass-bg-hover: rgba(255, 255, 255, 0.85);
+    --glass-bg: rgba(255, 255, 255, 0.58);
+    --glass-bg-hover: rgba(255, 255, 255, 0.78);
     --glass-bg-active: rgba(255, 255, 255, 0.95);
-    --glass-border: rgba(0, 0, 0, 0.08);
+    --glass-border: rgba(0, 0, 0, 0.07);
     --glass-border-hover: rgba(0, 0, 0, 0.12);
-    --glass-highlight: rgba(255, 255, 255, 0.9);
+    --glass-highlight: rgba(255, 255, 255, 0.95);
     
     /* 染色玻璃 - 蓝色系 */
     --glass-accent-bg: rgba(0, 120, 212, 0.12);
@@ -418,6 +419,9 @@
   .chat-message-item {
     content-visibility: auto;
     contain-intrinsic-size: auto 120px;
+    /* content-visibility 隐含绘制裁剪, 四周留出余量让头像与气泡的光晕不被切掉, 负外边距抵消, 布局不变 */
+    margin: -12px;
+    padding: 12px;
   }
 
   /* ===== 基础玻璃效果 ===== */

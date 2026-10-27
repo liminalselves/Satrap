@@ -63,29 +63,29 @@ export function RunRecovery({ conversation, generating }: { conversation: string
     }
   }
 
-  return <details className="border-b border-glass-border px-5 py-2 text-xs">
-    <summary className="cursor-pointer text-text-secondary">执行记录与恢复</summary>
-    <label className="flex gap-2 mt-2"><input type="checkbox" checked={unfinished} onChange={event => setUnfinished(event.target.checked)} />仅显示未完成任务</label>
-    {error && <p role="alert" className="mt-2 text-error">{error}</p>}
-    <div className="max-h-48 overflow-y-auto space-y-2 mt-2">
-      {!runs.length && <p className="text-text-tertiary">暂无执行记录</p>}
-      {runs.map(run => <div key={run.id} className="rounded border border-glass-border p-2 space-y-1">
-        <p>{new Date(run.created_at * 1000).toLocaleString()} · {labels[run.status] || run.status}</p>
-        {run.error && <p className="text-text-tertiary break-words">{run.error}</p>}
-        {run.status === 'completed' && <button disabled={busy || generating} className="text-accent disabled:opacity-40"
+  return <details className="flex-none border-b border-line px-4 py-2 text-xs md:px-5">
+    <summary className="cursor-pointer select-none text-fg-3">执行记录与恢复</summary>
+    <label className="mt-2 flex items-center gap-2 text-fg-2"><input type="checkbox" className="accent-[rgb(var(--rgb-accent))]" checked={unfinished} onChange={event => setUnfinished(event.target.checked)} />仅显示未完成任务</label>
+    {error && <p role="alert" className="mt-2 text-red">{error}</p>}
+    <div className="scroll mt-2 max-h-48 space-y-2">
+      {!runs.length && <p className="text-fg-4">暂无执行记录</p>}
+      {runs.map(run => <div key={run.id} className="surface space-y-1 rounded-xl p-2.5">
+        <p className="num text-fg-2">{new Date(run.created_at * 1000).toLocaleString()} · {labels[run.status] || run.status}</p>
+        {run.error && <p className="break-words text-fg-3">{run.error}</p>}
+        {run.status === 'completed' && <button type="button" disabled={busy || generating} className="text-accent transition-colors hover:underline disabled:opacity-40"
           onClick={() => operate(run, 'resume')}>回填已完成结果</button>}
         {!['completed', 'cancelled'].includes(run.status) && <div className="flex gap-3">
-          <button disabled={busy || generating} onClick={() => operate(run, 'resume')} className="text-accent disabled:opacity-40">继续执行</button>
-          <button disabled={busy || generating} onClick={() => operate(run, 'abort')} className="text-text-secondary disabled:opacity-40">终止任务</button>
+          <button type="button" disabled={busy || generating} onClick={() => operate(run, 'resume')} className="text-accent transition-colors hover:underline disabled:opacity-40">继续执行</button>
+          <button type="button" disabled={busy || generating} onClick={() => operate(run, 'abort')} className="text-fg-3 transition-colors hover:text-fg disabled:opacity-40">终止任务</button>
         </div>}
         {run.status === 'needs_attention' && run.steps.filter(step => step.kind === 'tool' && step.status === 'running' && step.recovery_policy === 'manual').map(step => <div key={step.step_key}>
-          <p>步骤 {step.step_key} 可能已经产生效果, 重试可能重复操作</p>
-          <button disabled={busy || generating} className="text-accent disabled:opacity-40" onClick={async () => {
+          <p className="text-fg-2">步骤 {step.step_key} 可能已经产生效果, 重试可能重复操作</p>
+          <button type="button" disabled={busy || generating} className="text-accent transition-colors hover:underline disabled:opacity-40" onClick={async () => {
             if ((await confirm('此工具可能已经执行成功。确认允许再次执行？'))) operate(run, 'authorize_retry', step.step_key);
           }}>确认允许重试此步骤</button>
         </div>)}
       </div>)}
-      {cursor && <button disabled={busy || generating} onClick={loadMore} className="text-accent disabled:opacity-40">加载更多</button>}
+      {cursor && <button type="button" disabled={busy || generating} onClick={loadMore} className="text-accent transition-colors hover:underline disabled:opacity-40">加载更多</button>}
     </div>
   </details>;
 }

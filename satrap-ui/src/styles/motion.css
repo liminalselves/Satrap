@@ -84,6 +84,7 @@
     scroll-behavior: auto !important;
   }
   .fluid-blob { animation: none !important; }
+  .tile:hover { transform: none; }
 }
 [data-motion='reduced'] *, [data-motion='reduced'] *::before, [data-motion='reduced'] *::after {
   animation-duration: 1ms !important;
@@ -91,3 +92,37 @@
   transition-duration: 1ms !important;
 }
 [data-motion='reduced'] .fluid-blob { animation: none !important; }
+[data-motion='reduced'] .tile:hover { transform: none; }
+
+/* ===== 移植自预览的补充动效 ===== */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+@keyframes drawer-in {
+  from { opacity: 0; transform: translateX(48px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes shimmer {
+  from { background-position: -150% 0; }
+  to { background-position: 250% 0; }
+}
+
+@keyframes blob-drift {
+  0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); }
+  20% { transform: translate(8%, 12%) scale(1.15) rotate(8deg); }
+  40% { transform: translate(-5%, 8%) scale(0.92) rotate(-5deg); }
+  60% { transform: translate(12%, -8%) scale(1.08) rotate(3deg); }
+  80% { transform: translate(-8%, -5%) scale(0.95) rotate(-8deg); }
+}
+
+@keyframes typing-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+@keyframes number-tick {
+  from { opacity: 0; transform: translateY(40%); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-fade { animation: fade-in var(--dur-2) var(--ease-standard) both; }

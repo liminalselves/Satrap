@@ -62,7 +62,7 @@ function LevelSlider({ index, count, label, onChange }: { index: number; count: 
       onPointerMove={(event: PointerEvent) => { if (dragging) pick(event.clientX); }}
       onPointerUp={() => setDragging(false)}
       onKeyDown={onKey}
-      className="relative h-11 cursor-pointer touch-none select-none rounded-full border border-glass-border bg-glass p-[3px] shadow-[inset_0_1px_3px_rgba(0,0,0,0.12)]"
+      className="relative h-11 cursor-pointer touch-none select-none rounded-full border border-line bg-glass p-[3px] shadow-[inset_0_1px_3px_rgba(0,0,0,0.12)]"
     >
       <div
         aria-hidden
@@ -123,31 +123,31 @@ export function ThinkDial({ value, options, onChange, disabled }: {
         aria-label={`思考强度: ${current.label}`}
         title={`思考强度: ${current.label}`}
         className={cn('flex h-8 items-center gap-1.5 rounded-full border px-2 text-xs font-medium transition-all duration-200 disabled:opacity-50',
-          off ? 'border-transparent text-text-tertiary hover:bg-glass-hover hover:text-text-primary'
+          off ? 'border-transparent text-fg-3 hover:bg-glass-hover hover:text-fg'
             : 'border-[rgb(var(--rgb-accent)/0.3)] bg-[rgb(var(--rgb-accent)/0.12)] text-accent',
           open && 'bg-glass-hover')}
       >
-        <span className={off ? 'text-text-tertiary' : 'text-text-primary'}><Gauge ratio={ratio} /></span>
+        <span className={off ? 'text-fg-3' : 'text-fg'}><Gauge ratio={ratio} /></span>
         <span className="hidden sm:inline">{off ? '思考' : current.label}</span>
       </button>
 
       {open && (
         <div role="dialog" aria-label="思考强度" className="surface surface-strong absolute bottom-[calc(100%+10px)] left-0 z-[60] w-[300px] max-w-[calc(100vw-32px)] !rounded-[22px] p-4 !shadow-[var(--shadow-3)] animate-pop" style={{ transformOrigin: 'bottom left' }}>
-          <div className="mb-1 text-center text-[11px] font-medium tracking-[0.1em] text-text-disabled">思考强度</div>
+          <div className="mb-1 text-center text-[11px] font-medium tracking-[0.1em] text-fg-4">思考强度</div>
           <div className="relative mb-4 h-9 overflow-hidden text-center">
             {options.map((option, step) => (
               <div key={option.value} aria-hidden={step !== index}
-                className="absolute inset-0 text-2xl font-semibold text-text-primary transition-all duration-500 [transition-timing-function:var(--ease-spring)]"
+                className="absolute inset-0 text-2xl font-semibold text-fg transition-all duration-500 [transition-timing-function:var(--ease-spring)]"
                 style={{ transform: `translateY(${(step - index) * 100}%)`, opacity: step === index ? 1 : 0 }}>
                 {option.label}
               </div>
             ))}
           </div>
           <LevelSlider index={index} count={options.length} label={current.label} onChange={(step) => onChange(options[step].value)} />
-          <div className="mt-2 flex justify-between px-1 text-[11px] text-text-disabled">
+          <div className="mt-2 flex justify-between px-1 text-[11px] text-fg-4">
             {options.map((option, step) => (
               <button key={option.value} type="button" onClick={() => onChange(option.value)}
-                className={cn('transition-colors hover:text-text-primary', step === index && 'font-medium text-accent')}>{option.label}</button>
+                className={cn('transition-colors hover:text-fg', step === index && 'font-medium text-accent')}>{option.label}</button>
             ))}
           </div>
         </div>

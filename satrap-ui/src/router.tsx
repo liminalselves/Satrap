@@ -23,6 +23,7 @@ const GroupOverview = lazy(() => import('@/pages/Groups/GroupOverview').then((mo
 const GroupPolicy = lazy(() => import('@/pages/Groups/GroupPolicy').then((module) => ({ default: module.GroupPolicy })));
 const GroupSession = lazy(() => import('@/pages/Groups/GroupSession').then((module) => ({ default: module.GroupSession })));
 const Logs = lazy(() => import('@/pages/Logs').then((module) => ({ default: module.Logs })));
+const Usage = lazy(() => import('@/pages/Usage').then((module) => ({ default: module.Usage })));
 const DebugLogs = lazy(() => import('@/pages/Logs/Debug').then((module) => ({ default: module.DebugLogs })));
 const Checkpoints = lazy(() => import('@/pages/Checkpoints').then((module) => ({ default: module.Checkpoints })));
 const Conversations = lazy(() => import('@/pages/Conversations').then((module) => ({ default: module.Conversations })));
@@ -86,6 +87,7 @@ export const router = createBrowserRouter([
       ] },
       { path: 'logs', element: lazyRoute(<Logs />) },
       { path: 'logs/debug', element: lazyRoute(<DebugLogs />) },
+      { path: 'usage', element: lazyRoute(<Usage />) },
       { path: 'checkpoints', element: <LegacyAdminRoute destination="/conversations/versions" /> },
       { path: 'users', element: <LegacyUsersRoute /> },
       { path: 'settings', element: lazyRoute(<Settings />) },

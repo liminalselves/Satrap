@@ -131,7 +131,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
           width: pos.width,
           ...(pos.top !== undefined ? { top: pos.top } : { bottom: pos.bottom }),
         }}
-        className="surface surface-strong z-[100] !rounded-xl p-1 !shadow-[var(--shadow-3)] animate-pop"
+        className="surface surface-strong z-[150] !rounded-xl p-1 !shadow-[var(--shadow-3)] animate-pop"
       >
         <div className="max-h-60 overflow-y-auto custom-scrollbar space-y-0.5">
           {options.length === 0 ? (

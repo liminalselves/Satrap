@@ -228,14 +228,14 @@ export function ChatHistoryManager({
   return (
     <Modal open={open} onClose={onClose} title="会话历史管理" size="2xl">
       <div className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <div className="flex gap-2">
             <Button variant={tab === 'history' ? 'primary' : 'ghost'} size="sm" onClick={() => setTab('history')}>历史</Button>
             <Button variant={tab === 'trash' ? 'primary' : 'ghost'} size="sm" onClick={() => setTab('trash')}>回收站</Button>
           </div>
-          <div className="flex items-center gap-2 text-xs text-text-tertiary">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-fg-3">
             <Badge variant={result.mode === 'hot' ? 'success' : 'warning'}>{result.mode === 'hot' ? '热管理' : '冷管理'}</Badge>
-            <span>{tab === 'history' ? `${result.total} 个会话 · ${formatBytes(result.storage_size_bytes)}` : `${trash.length} 个回收项 · ${formatBytes(trashSize)}`}</span>
+            <span className="num">{tab === 'history' ? `${result.total} 个会话 · ${formatBytes(result.storage_size_bytes)}` : `${trash.length} 个回收项 · ${formatBytes(trashSize)}`}</span>
             {tab === 'history' && <Button variant="ghost" size="sm" disabled={working || loading} title={result.storage_size_updated_at ? `上次统计: ${new Date(result.storage_size_updated_at * 1000).toLocaleString()}` : '按需统计文件大小'} onClick={async () => {
               setWorking(true);
               try { const snapshot = await (result.mode === 'cold' ? controlApi.refreshChatHistoryStorage() : chatApi.refreshHistoryStorage()); setResult((current) => ({ ...current, ...snapshot })); }
@@ -248,31 +248,31 @@ export function ChatHistoryManager({
           </div>
         </div>
 
-        {error && <div className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">{error}</div>}
+        {error && <div role="alert" className="rounded-xl border border-[rgb(var(--rgb-red)/0.3)] bg-[rgb(var(--rgb-red)/0.1)] px-3 py-2 text-sm text-red">{error}</div>}
 
         {tab === 'history' ? (
           <>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-5">
-              <input className="glass-input md:col-span-2" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题或会话 ID" />
-              <select className="glass-input" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+              <input className="field md:col-span-2" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题或会话 ID" aria-label="搜索标题或会话 ID" />
+              <select className="field" aria-label="筛选历史项目" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
                 <option value="">全部项目</option>
                 <option value="__none__">无项目</option>
                 {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}
               </select>
-              <select className="glass-input" value={model} onChange={(event) => setModel(event.target.value)}>
+              <select className="field" aria-label="筛选历史模型" value={model} onChange={(event) => setModel(event.target.value)}>
                 <option value="">全部模型</option>
                 {models.map((name) => <option key={name} value={name}>{name}</option>)}
               </select>
-              <select className="glass-input" value={turnCount} onChange={(event) => setTurnCount(event.target.value as typeof turnCount)}>
+              <select className="field" aria-label="筛选历史轮数" value={turnCount} onChange={(event) => setTurnCount(event.target.value as typeof turnCount)}>
                 <option value="all">全部轮数</option>
                 <option value="empty">0 轮</option>
                 <option value="single">仅 1 轮</option>
               </select>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-2 text-sm text-text-secondary">
+              <label className="flex items-center gap-2 text-sm text-fg-2">
                 超过
-                <input className="glass-input w-20" type="number" min="0" value={olderThanDays} onChange={(event) => setOlderThanDays(event.target.value)} placeholder="天数" />
+                <input className="field !h-8 w-20" type="number" min="0" value={olderThanDays} onChange={(event) => setOlderThanDays(event.target.value)} placeholder="天数" aria-label="超过天数" />
                 天未使用
               </label>
               <div className="ml-auto flex flex-wrap gap-2">
@@ -282,44 +282,44 @@ export function ChatHistoryManager({
                 <Button variant="danger" size="sm" disabled={working || selected.size === 0} onClick={() => void deleteHistory('selected')}>删除所选 ({selected.size})</Button>
               </div>
             </div>
-            <div className="h-[28rem] overflow-auto rounded-xl border border-glass-border custom-scrollbar">
+            <div className="scroll h-[28rem] overflow-auto rounded-xl border border-line">
               <table className="w-full min-w-[850px] text-sm">
-                <thead className="sticky top-0 z-10 bg-[var(--glass-bg)] text-left text-text-secondary">
+                <thead className="sticky top-0 z-10 bg-[var(--glass-bg-strong)] text-left text-fg-2 backdrop-blur">
                   <tr>
-                    <th className="p-3"><input type="checkbox" checked={allSelected} onChange={(event) => setSelected(event.target.checked ? new Set(result.items.map((item) => item.conversation_id)) : new Set())} /></th>
+                    <th className="p-3"><input type="checkbox" className="accent-[rgb(var(--rgb-accent))]" checked={allSelected} onChange={(event) => setSelected(event.target.checked ? new Set(result.items.map((item) => item.conversation_id)) : new Set())} aria-label="全选会话" /></th>
                     <th className="p-3">标题</th><th className="p-3">模型</th><th className="p-3">轮数</th><th className="p-3">状态</th><th className="p-3">最近使用</th><th className="p-3">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   {result.items.map((item) => (
-                    <tr key={item.conversation_id} className="border-t border-glass-border hover:bg-glass-active">
-                      <td className="p-3"><input type="checkbox" checked={selected.has(item.conversation_id)} onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(item.conversation_id); else next.delete(item.conversation_id); return next; })} /></td>
-                      <td className="max-w-72 p-3"><div className="truncate font-medium text-text-primary" title={item.title}>{item.title}</div><div className="truncate font-mono text-xs text-text-tertiary" title={item.conversation_id}>{item.conversation_id}</div></td>
-                      <td className="p-3">{item.model}</td><td className="p-3">{item.turn_count}</td>
+                    <tr key={item.conversation_id} className="border-t border-line transition-colors hover:bg-glass-hover">
+                      <td className="p-3"><input type="checkbox" className="accent-[rgb(var(--rgb-accent))]" checked={selected.has(item.conversation_id)} onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(item.conversation_id); else next.delete(item.conversation_id); return next; })} aria-label={`选择 ${item.title}`} /></td>
+                      <td className="max-w-72 p-3"><div className="truncate font-medium text-fg" title={item.title}>{item.title}</div><div className="truncate font-mono text-xs text-fg-4" title={item.conversation_id}>{item.conversation_id}</div></td>
+                      <td className="p-3 text-fg-2">{item.model}</td><td className="num p-3 text-fg-2">{item.turn_count}</td>
                       <td className="p-3"><div className="flex gap-1">{item.conversation_id === activeConversationId && <Badge variant="info">当前</Badge>}{item.generating ? <Badge variant="warning">生成中</Badge> : item.active ? <Badge variant="success">已加载</Badge> : <Badge variant="default">已持久化</Badge>}</div></td>
-                      <td className="whitespace-nowrap p-3">{new Date(item.last_at * 1000).toLocaleString()}</td>
-                      <td className="p-3"><div className="flex gap-1">{result.mode === 'hot' && <Button variant="ghost" size="sm" onClick={() => onOpenConversation(item.conversation_id)}>打开</Button>}<Button variant="ghost" size="sm" className="text-error" onClick={() => void deleteHistory('selected', [item.conversation_id])} title="移入回收站"><Trash2 className="h-4 w-4" /></Button></div></td>
+                      <td className="num whitespace-nowrap p-3 text-fg-2">{new Date(item.last_at * 1000).toLocaleString()}</td>
+                      <td className="p-3"><div className="flex gap-1">{result.mode === 'hot' && <Button variant="ghost" size="sm" onClick={() => onOpenConversation(item.conversation_id)}>打开</Button>}<Button variant="ghost" size="sm" className="text-red" onClick={() => void deleteHistory('selected', [item.conversation_id])} title="移入回收站"><Trash2 className="h-4 w-4" /></Button></div></td>
                     </tr>
                   ))}
-                  {!loading && result.items.length === 0 && <tr><td colSpan={7} className="p-10 text-center text-text-tertiary">暂无匹配历史</td></tr>}
+                  {!loading && result.items.length === 0 && <tr><td colSpan={7} className="p-10 text-center text-fg-3">暂无匹配历史</td></tr>}
                 </tbody>
               </table>
             </div>
-            <div className="flex items-center justify-end gap-2 text-sm text-text-secondary">
+            <div className="flex items-center justify-end gap-2 text-sm text-fg-2">
               <Button variant="ghost" size="sm" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</Button>
-              <span>{page} / {pageCount}</span>
+              <span className="num">{page} / {pageCount}</span>
               <Button variant="ghost" size="sm" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>下一页</Button>
             </div>
           </>
         ) : (
-          <div className="h-[32rem] space-y-2 overflow-auto custom-scrollbar pr-1">
+          <div className="scroll h-[32rem] space-y-2 pr-1">
             {trash.map((item) => (
-              <div key={item.archive_id} className="glass-card flex items-center justify-between gap-4 rounded-xl p-3">
-                <div className="min-w-0"><div className="truncate font-medium text-text-primary">{item.title}</div><div className="mt-1 text-xs text-text-tertiary">{item.turn_count} 轮 · {item.model} · {formatBytes(item.size_bytes)} · {new Date(item.deleted_at * 1000).toLocaleString()}</div></div>
-                <div className="flex shrink-0 gap-1"><Button variant="ghost" size="sm" disabled={working} onClick={() => void restoreArchive(item.archive_id)} title="恢复"><ArchiveRestore className="h-4 w-4" /></Button><Button variant="ghost" size="sm" disabled={working} className="text-error" onClick={() => void purgeArchive(item.archive_id)} title="永久删除"><Trash2 className="h-4 w-4" /></Button></div>
+              <div key={item.archive_id} className="tile flex items-center justify-between gap-4 rounded-xl p-3">
+                <div className="min-w-0"><div className="truncate font-medium text-fg">{item.title}</div><div className="num mt-1 text-xs text-fg-4">{item.turn_count} 轮 · {item.model} · {formatBytes(item.size_bytes)} · {new Date(item.deleted_at * 1000).toLocaleString()}</div></div>
+                <div className="flex flex-none gap-1"><Button variant="ghost" size="sm" disabled={working} onClick={() => void restoreArchive(item.archive_id)} title="恢复"><ArchiveRestore className="h-4 w-4" /></Button><Button variant="ghost" size="sm" disabled={working} className="text-red" onClick={() => void purgeArchive(item.archive_id)} title="永久删除"><Trash2 className="h-4 w-4" /></Button></div>
               </div>
             ))}
-            {!loading && trash.length === 0 && <div className="py-16 text-center text-text-tertiary">回收站为空</div>}
+            {!loading && trash.length === 0 && <div className="py-16 text-center text-fg-3">回收站为空</div>}
           </div>
         )}
       </div>

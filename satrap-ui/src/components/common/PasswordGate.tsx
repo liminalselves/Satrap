@@ -49,7 +49,7 @@ export function PasswordGate() {
           </label>
           {error && <p role="alert" className="text-sm text-error">{error}</p>}
           <button type="submit" disabled={busy || !password}
-            className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+            className="w-full rounded-md bg-[rgb(var(--rgb-accent))] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
             {busy ? '验证中…' : '进入'}
           </button>
         </form>

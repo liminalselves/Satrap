@@ -18,18 +18,18 @@ export default {
         'glass-border': 'var(--glass-border)',
         'glass-border-hover': 'var(--glass-border-hover)',
         
-        // 主色调
-        'accent': 'var(--color-accent)',
+        // 主色调: 文字色取主题前景档, 暗色下更亮以保证玻璃上的对比度
+        'accent': 'var(--fg-accent)',
         'accent-light': 'var(--color-accent-light)',
         'accent-dark': 'var(--color-accent-dark)',
         'accent-subtle': 'var(--color-accent-subtle)',
         
         // 辅助色
-        'purple': 'var(--color-purple)',
+        'purple': 'var(--fg-purple)',
         'purple-light': 'var(--color-purple-light)',
-        'teal': 'var(--color-teal)',
+        'teal': 'var(--fg-teal)',
         'teal-light': 'var(--color-teal-light)',
-        'pink': 'var(--color-pink)',
+        'pink': 'var(--fg-pink)',
         'pink-light': 'var(--color-pink-light)',
         
         // 状态色
@@ -41,11 +41,30 @@ export default {
         'error-light': 'var(--color-error-light)',
         'info': 'var(--color-info)',
         
+        // 新组件库别名 (与预览一致)
+        'green': 'var(--fg-green)',
+        'orange': 'var(--fg-orange)',
+        'red': 'var(--fg-red)',
+        'tint': 'var(--tint-fg)',
+        'line': 'var(--glass-border)',
+        'fg': {
+          DEFAULT: 'var(--text-1)',
+          2: 'var(--text-2)',
+          3: 'var(--text-3)',
+          4: 'var(--text-4)',
+        },
+
         // 文字
         'text-primary': 'var(--color-text-primary)',
         'text-secondary': 'var(--color-text-secondary)',
         'text-tertiary': 'var(--color-text-tertiary)',
         'text-disabled': 'var(--color-text-disabled)',
+      },
+      fontFamily: {
+        mono: ['"Cascadia Code"', 'Consolas', '"JetBrains Mono"', 'monospace'],
+      },
+      fontSize: {
+        '2xs': ['11px', '16px'],
       },
       borderRadius: {
         'sm': 'var(--radius-sm)',

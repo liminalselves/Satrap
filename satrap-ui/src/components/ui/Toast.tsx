@@ -83,7 +83,7 @@ function ToastItem({ toast, onClose }: ToastItemProps) {
 /** 位于顶栏下方右侧, 不遮挡顶栏操作 */
 export function ToastContainer({ toasts, onClose }: { toasts: Toast[]; onClose: (id: string) => void }) {
   return createPortal(
-    <div className="pointer-events-none fixed top-[76px] right-4 z-[100] flex flex-col gap-2" aria-live="polite">
+    <div className="pointer-events-none fixed top-[76px] right-4 z-[210] flex flex-col gap-2" aria-live="polite">
       {toasts.map((toast) => (
         <ToastItem key={toast.id} toast={toast} onClose={onClose} />
       ))}

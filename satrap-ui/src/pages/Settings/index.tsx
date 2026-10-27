@@ -1,94 +1,110 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useShallow } from 'zustand/react/shallow';
-import { Card } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Database, FileCode2, FileText, Info, KeyRound, Palette, ScrollText, Server, SlidersHorizontal, Users,
+  type LucideIcon,
+} from 'lucide-react';
+import * as yaml from 'js-yaml';
+import { cn } from '@/utils/cn';
+import { Badge, Button, PageHeader } from '@/components/kit';
+import type { Tint } from '@/components/kit';
 import { toast } from '@/components/ui/Toast';
 import { useBackendStore } from '@/stores/useBackendStore';
-import { controlApi } from '@/api/control';
-import { PageHeader, AlertCard } from '@/components/common';
-import { Save, RefreshCw, FileText, AlertCircle } from 'lucide-react';
-import { BackendControls, backendStateLabel } from '@/components/common/BackendControls';
-import * as yaml from 'js-yaml';
-import { DataMaintenancePanel } from './DataMaintenancePanel';
-import { LogRetentionPanel } from './LogRetentionPanel';
-import { AdministratorsPanel } from './AdministratorsPanel';
-import { AccessPasswordPanel } from './AccessPasswordPanel';
-import { administratorError } from '@/api/administrators';
-import { Toggle } from '@/components/ui/Toggle';
-import { useTheme } from '@/hooks/useTheme';
 import { usePrefsStore } from '@/stores/usePrefsStore';
+import { controlApi } from '@/api/control';
+import { errorText } from '@/utils/errorText';
+import type { AdministratorGroup, AdministratorOverride } from '@/api/administrators';
+import { extractCommonConfig, mergeCommonConfig, initialCommonConfig, type CommonConfig } from './types';
+import { AppearanceSection } from './AppearanceSection';
+import { CommonConfigSection } from './CommonConfigSection';
+import { BackendControlSection } from './BackendControlSection';
+import { AccessPasswordPanel } from './AccessPasswordPanel';
+import { AdministratorsPanel } from './AdministratorsPanel';
+import { LogRetentionPanel } from './LogRetentionPanel';
+import { DataMaintenancePanel } from './DataMaintenancePanel';
+import { RawConfigSection } from './RawConfigSection';
+import { AboutSection } from './AboutSection';
 
-/** 本机界面偏好: 只存浏览器, 不写入后端配置 */
-function InterfacePreferences() {
-  const { theme, toggleTheme } = useTheme();
-  const { motion, setMotion, sidebarCollapsed, toggleSidebar } = usePrefsStore();
-  const rows = [
-    { label: '深色主题', hint: '也可在顶栏右侧切换', checked: theme === 'dark', onChange: () => toggleTheme() },
-    { label: '减少动效', hint: '关闭进场、流光与主题过渡动画; 系统已开启减少动态效果时自动生效', checked: motion === 'reduced', onChange: (value: boolean) => setMotion(value ? 'reduced' : 'full') },
-    { label: '收起侧栏', hint: '快捷键 Ctrl+B', checked: sidebarCollapsed, onChange: () => toggleSidebar() },
-  ];
-  return (
-    <div className="rounded-xl border border-glass-border bg-glass p-4">
-      <p className="text-sm font-medium text-text-primary">界面偏好</p>
-      <p className="text-xs text-text-tertiary mb-3">保存在当前浏览器</p>
-      <div className="divide-y divide-glass-border">
-        {rows.map((row) => (
-          <div key={row.label} className="flex items-center gap-4 py-2.5">
-            <div className="min-w-0 flex-1">
-              <p className="text-sm text-text-primary">{row.label}</p>
-              <p className="text-xs text-text-tertiary">{row.hint}</p>
-            </div>
-            <Toggle checked={row.checked} title={row.label} onChange={row.onChange} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+type SectionId = 'appearance' | 'common' | 'backend' | 'password' | 'admins' | 'logs' | 'data' | 'raw' | 'about';
+type DirtyId = 'common' | 'admins' | 'logs' | 'raw';
+type SectionActions = { save: () => Promise<boolean>; undo: () => void };
 
-interface ConfigData {
-  api?: {
-    host?: string;
-    port?: number;
-  };
-  default_session_type?: string;
-  max_sessions?: number;
-  idle_timeout?: number;
-  session_timeout?: number | null;
-  rate_limit?: number;
-  rate_burst?: number;
-  platforms?: unknown[];
-  [key: string]: unknown;
+const sections: { id: SectionId; label: string; icon: LucideIcon; tint: Tint; description: string }[] = [
+  { id: 'appearance', label: '外观', icon: Palette, tint: 'purple', description: '主题 · 动效 · 侧栏' },
+  { id: 'common', label: '常用配置', icon: SlidersHorizontal, tint: 'accent', description: '监听 · 会话 · 限流' },
+  { id: 'backend', label: '后端控制', icon: Server, tint: 'green', description: '启动 · 重启 · 服务' },
+  { id: 'password', label: '访问密码', icon: KeyRound, tint: 'accent', description: '启用 · 修改 · 清除' },
+  { id: 'admins', label: '管理员', icon: Users, tint: 'teal', description: '管理组 · 例外 · 权限' },
+  { id: 'logs', label: '日志保留', icon: ScrollText, tint: 'orange', description: '策略 · 清理 · 结果' },
+  { id: 'data', label: '数据维护', icon: Database, tint: 'pink', description: '孤儿数据 · 回收区' },
+  { id: 'raw', label: '原始配置', icon: FileCode2, tint: 'purple', description: 'YAML · 校验 · 差异' },
+  { id: 'about', label: '关于', icon: Info, tint: 'orange', description: '版本 · 环境 · 技术栈' },
+];
+
+const dirtyOrder: DirtyId[] = ['common', 'admins', 'logs', 'raw'];
+const saveOrder: DirtyId[] = ['admins', 'logs', 'common', 'raw'];
+const dirtyLabels: Record<DirtyId, string> = { common: '常用配置', admins: '管理员', logs: '日志保留', raw: '原始配置' };
+
+function dumpConfig(value: Record<string, unknown>): string {
+  return yaml.dump(value, { indent: 2, lineWidth: -1 });
 }
 
 export function Settings() {
-  const backend = useBackendStore(useShallow((state) => ({ health: state.health, isRunning: state.isRunning,
-    controlBackend: state.controlBackend, runState: state.runState, operation: state.operation })));
-  const { health, isRunning, controlBackend } = backend;
-  const [config, setConfig] = useState<ConfigData>({});
-  const [rawConfig, setRawConfig] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const isRunning = useBackendStore((state) => state.isRunning);
+  const runState = useBackendStore((state) => state.runState);
+  const controlBackend = useBackendStore((state) => state.controlBackend);
+  const motion = usePrefsStore((state) => state.motion);
+
+  const [config, setConfig] = useState<Record<string, unknown>>({});
+  const [rawSaved, setRawSaved] = useState('');
+  const [rawDraft, setRawDraft] = useState('');
+  const [commonSaved, setCommonSaved] = useState<CommonConfig>(initialCommonConfig);
+  const [commonDraft, setCommonDraft] = useState<CommonConfig>(initialCommonConfig);
+  const [configRevision, setConfigRevision] = useState<string | undefined>();
   const [configPath, setConfigPath] = useState('');
   const [configExists, setConfigExists] = useState(false);
-  const [configRevision, setConfigRevision] = useState<string | undefined>();
   const [controlAvailable, setControlAvailable] = useState(false);
-  const [settingsTab, setSettingsTab] = useState('general');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [savingAll, setSavingAll] = useState(false);
+  const [active, setActive] = useState<SectionId>('appearance');
+  const [dirty, setDirty] = useState<Record<DirtyId, boolean>>({ common: false, admins: false, logs: false, raw: false });
+  const actionsRef = useRef<Partial<Record<DirtyId, SectionActions>>>({});
+  const navTargetRef = useRef<SectionId | null>(null);
+  const scrollTimerRef = useRef<number | undefined>(undefined);
+  const navFallbackRef = useRef<number | undefined>(undefined);
+  const rawSavedRef = useRef(rawSaved);
+  const rawDraftRef = useRef(rawDraft);
+  const commonSavedRef = useRef(commonSaved);
+  const commonDraftRef = useRef(commonDraft);
 
-  // 从控制服务加载配置
+  rawSavedRef.current = rawSaved;
+  rawDraftRef.current = rawDraft;
+  commonSavedRef.current = commonSaved;
+  commonDraftRef.current = commonDraft;
+
+  const backendRunning = runState === 'running';
+  const controlOnline = controlAvailable;
+  const dirtyCount = dirtyOrder.filter((id) => dirty[id]).length;
+  const commonDirty = JSON.stringify(commonDraft) !== JSON.stringify(commonSaved);
+
   const loadConfig = useCallback(async () => {
     setLoading(true);
     try {
       const result = await controlApi.getConfig();
       if (result.ok && result.config) {
-        const loaded = { ...result.config } as ConfigData;
-        if (!('session_timeout' in loaded) && 'llm_timeout' in loaded) loaded.session_timeout = loaded.llm_timeout as number | null;
+        const loaded = { ...result.config } as Record<string, unknown>;
+        // 兼容旧字段: llm_timeout 已更名为 session_timeout
+        if (!('session_timeout' in loaded) && 'llm_timeout' in loaded) {
+          loaded.session_timeout = loaded.llm_timeout as number | null;
+        }
         delete loaded.llm_timeout;
+        const text = dumpConfig(loaded);
         setConfig(loaded);
         setConfigRevision(result.revision);
-        setRawConfig(yaml.dump(loaded, { indent: 2 }));
+        setRawSaved(text);
+        setRawDraft(text);
+        setCommonSaved(extractCommonConfig(loaded));
+        setCommonDraft(extractCommonConfig(loaded));
         setConfigPath(result.path || '');
         setConfigExists(result.exists !== false);
         setControlAvailable(true);
@@ -102,369 +118,405 @@ export function Settings() {
     }
   }, []);
 
+  /** 原始配置的“重新读取”: 保留有未保存修改的草稿, 只刷新已保存版本与修订号 */
+  const reloadRaw = useCallback(async () => {
+    try {
+      const result = await controlApi.getConfig();
+      if (!result.ok || !result.config) return;
+      const loaded = { ...result.config } as Record<string, unknown>;
+      if (!('session_timeout' in loaded) && 'llm_timeout' in loaded) {
+        loaded.session_timeout = loaded.llm_timeout as number | null;
+      }
+      delete loaded.llm_timeout;
+      const text = dumpConfig(loaded);
+      const rawClean = rawDraftRef.current === rawSavedRef.current;
+      const commonClean = JSON.stringify(commonDraftRef.current) === JSON.stringify(commonSavedRef.current);
+      setConfig(loaded);
+      setConfigRevision(result.revision);
+      setConfigPath(result.path || '');
+      setConfigExists(result.exists !== false);
+      setControlAvailable(true);
+      setRawSaved(text);
+      if (rawClean) setRawDraft(text);
+      const extracted = extractCommonConfig(loaded, commonDraftRef.current);
+      setCommonSaved(extracted);
+      if (commonClean) setCommonDraft(extracted);
+    } catch {
+      // 控制服务不可用时保留当前草稿, 由横幅提示
+    }
+  }, []);
+
   useEffect(() => {
-    loadConfig();
+    void loadConfig();
   }, [loadConfig]);
 
-  const persistConfig = useCallback(async (data: ConfigData) => {
+  const reportDirty = useCallback((id: DirtyId, value: boolean) => {
+    setDirty((current) => (current[id] === value ? current : { ...current, [id]: value }));
+  }, []);
+
+  const dirtyReporters = useMemo(() => ({
+    common: (value: boolean) => reportDirty('common', value),
+    admins: (value: boolean) => reportDirty('admins', value),
+    logs: (value: boolean) => reportDirty('logs', value),
+    raw: (value: boolean) => reportDirty('raw', value),
+  }), [reportDirty]);
+
+  const registerers = useMemo(() => ({
+    common: (value: SectionActions) => { actionsRef.current.common = value; },
+    admins: (value: SectionActions) => { actionsRef.current.admins = value; },
+    logs: (value: SectionActions) => { actionsRef.current.logs = value; },
+    raw: (value: SectionActions) => { actionsRef.current.raw = value; },
+  }), []);
+
+  const applyServerConfig = useCallback((nextConfig: Record<string, unknown>, revision: string | undefined, source: 'common' | 'raw' | 'default') => {
+    const text = dumpConfig(nextConfig);
+    const rawClean = rawDraftRef.current === rawSavedRef.current;
+    const commonClean = JSON.stringify(commonDraftRef.current) === JSON.stringify(commonSavedRef.current);
+    setConfig(nextConfig);
+    if (revision) setConfigRevision(revision);
+    setConfigExists(true);
+    setRawSaved(text);
+    if (source === 'raw' || source === 'default' || rawClean) setRawDraft(text);
+    const extracted = extractCommonConfig(nextConfig, commonDraftRef.current);
+    setCommonSaved(extracted);
+    if (source === 'common' || source === 'default' || commonClean) setCommonDraft(extracted);
+  }, []);
+
+  /** 保存完整配置 (常用配置与原始配置共用同一 CAS 入口) */
+  const persistConfig = useCallback(async (payload: Record<string, unknown>, source: 'common' | 'raw'): Promise<boolean> => {
     setSaving(true);
     try {
-      const result = await controlApi.saveConfig(data, configRevision);
-      if (result.ok) {
-        setConfig(result.config || data);
-        setConfigRevision(result.revision);
-        setRawConfig(yaml.dump(result.config || data, { indent: 2 }));
-        setConfigExists(true);
-        if (isRunning) {
-          const restarted = await controlBackend('restart');
-          toast(
-            restarted.ok ? 'success' : 'warning',
-            restarted.ok ? '配置已保存, 后端已重启' : `配置已保存, 但重启失败: ${restarted.error || '未知错误'}`,
-          );
-        } else {
-          toast('success', '配置已保存');
-        }
-      } else {
+      const result = await controlApi.saveConfig(payload, configRevision);
+      if (!result.ok) {
         toast('error', result.error || '保存失败');
+        return false;
       }
-    } catch (e) {
-      toast('error', '保存失败: ' + administratorError(e));
-    } finally {
-      setSaving(false);
-    }
-  }, [isRunning, controlBackend, configRevision]);
-
-  // 保存配置
-  const handleSave = useCallback(async () => {
-    await persistConfig(config);
-  }, [config, persistConfig]);
-
-  // 保存原始配置
-  const handleSaveRaw = useCallback(async () => {
-    setSaving(true);
-    try {
-      const parsed = yaml.load(rawConfig, { 
-        schema: yaml.JSON_SCHEMA,
-        json: true
-      }) as ConfigData;
-      
-      if (typeof parsed !== 'object' || parsed === null) {
-        toast('error', '配置必须是对象格式');
-        return;
-      }
-      
-      await persistConfig(parsed);
-    } catch (e) {
-      if (e instanceof yaml.YAMLException) {
-        toast('error', 'YAML 格式错误: ' + e.message);
+      const saved = (result.config || payload) as Record<string, unknown>;
+      applyServerConfig(saved, result.revision, source);
+      if (isRunning) {
+        const restarted = await controlBackend('restart');
+        toast(
+          restarted.ok ? 'success' : 'warning',
+          restarted.ok ? '配置已保存, 后端已重启' : `配置已保存, 但重启失败: ${restarted.error || '未知错误'}`,
+        );
       } else {
-        toast('error', '配置处理失败: ' + (e instanceof Error ? e.message : '未知错误'));
+        toast('success', '配置已保存');
       }
+      return true;
+    } catch (cause) {
+      toast('error', '保存失败: ' + errorText(cause, '未知错误'));
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [persistConfig, rawConfig]);
+  }, [applyServerConfig, configRevision, controlBackend, isRunning]);
 
-  const handleCreateDefault = useCallback(async () => {
+  const saveCommon = useCallback(async (): Promise<boolean> => {
+    if (!controlOnline || !configExists) { toast('error', '控制服务未运行或配置文件缺失'); return false; }
+    return persistConfig(mergeCommonConfig(config, commonDraft), 'common');
+  }, [commonDraft, config, configExists, controlOnline, persistConfig]);
+
+  const saveRaw = useCallback(async (): Promise<boolean> => {
+    if (!controlOnline || !configExists) { toast('error', '控制服务未运行或配置文件缺失'); return false; }
+    let parsed: unknown;
+    try {
+      parsed = yaml.load(rawDraft, { schema: yaml.JSON_SCHEMA, json: true });
+    } catch (cause) {
+      toast('error', 'YAML 格式错误: ' + (cause instanceof Error ? cause.message : '未知错误'));
+      return false;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      toast('error', '配置必须是对象格式');
+      return false;
+    }
+    return persistConfig(parsed as Record<string, unknown>, 'raw');
+  }, [controlOnline, configExists, persistConfig, rawDraft]);
+
+  const createDefault = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     try {
       const result = await controlApi.createDefaultConfig();
-      if (!result.ok || !result.config) throw new Error(result.error || '创建失败');
-      setConfig(result.config);
-      setRawConfig(yaml.dump(result.config, { indent: 2 }));
+      if (!result.ok || !result.config) {
+        toast('error', result.error || '创建默认配置失败');
+        return false;
+      }
+      applyServerConfig(result.config, result.revision, 'default');
       setConfigPath(result.path || '');
-      setConfigExists(true);
+      setControlAvailable(true);
       toast('success', '默认配置已创建');
-    } catch (e) {
-      toast('error', '创建默认配置失败: ' + (e instanceof Error ? e.message : '未知错误'));
+      return true;
+    } catch (cause) {
+      toast('error', '创建默认配置失败: ' + errorText(cause, '未知错误'));
+      return false;
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyServerConfig]);
 
-  // 更新配置字段
-  const updateConfig = useCallback((key: string, value: unknown) => {
-    setConfig((prev) => ({ ...prev, [key]: value }));
-  }, []);
+  const handleAdminSaved = useCallback((groups: AdministratorGroup[], overrides: AdministratorOverride[]) => {
+    const nextConfig: Record<string, unknown> = {
+      ...config,
+      administrator_groups: groups,
+      administrator_overrides: overrides,
+    };
+    const text = dumpConfig(nextConfig);
+    setConfig(nextConfig);
+    setRawSaved(text);
+    setRawDraft((current) => (rawDraftRef.current === rawSavedRef.current ? text : current));
+  }, [config]);
 
-  const updateApiConfig = useCallback((key: string, value: unknown) => {
-    setConfig((prev) => ({
-      ...prev,
-      api: { ...(prev.api || {}), [key]: value },
-    }));
-  }, []);
+  const undoCommon = useCallback(() => {
+    setCommonDraft(commonSaved);
+    toast('success', '已撤销常用配置的修改');
+  }, [commonSaved]);
 
-  // 后端地址
-  const backendUrl = useMemo(() => {
-    if (!health?.running || !config.api) return null;
-    return `http://${config.api.host || '127.0.0.1'}:${config.api.port || 19870}`;
-  }, [health?.running, config.api]);
+  const undoRaw = useCallback(() => {
+    setRawDraft(rawSaved);
+    toast('success', '已恢复到已保存的配置');
+  }, [rawSaved]);
+
+  useEffect(() => { registerers.common({ save: saveCommon, undo: undoCommon }); }, [registerers, saveCommon, undoCommon]);
+  useEffect(() => { registerers.raw({ save: saveRaw, undo: undoRaw }); }, [registerers, saveRaw, undoRaw]);
+
+  const saveAll = async () => {
+    if (savingAll) return;
+    setSavingAll(true);
+    try {
+      for (const id of saveOrder) {
+        if (!dirty[id]) continue;
+        await actionsRef.current[id]?.save();
+      }
+    } finally {
+      setSavingAll(false);
+    }
+  };
+
+  const undoAll = () => {
+    for (const id of dirtyOrder) {
+      if (dirty[id]) actionsRef.current[id]?.undo();
+    }
+  };
+
+  const navigateTo = (id: SectionId) => {
+    // 点击导航后锁定目标分节, 直到平滑滚动结束, 避免途中其它分节抢占当前状态
+    navTargetRef.current = id;
+    if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+    if (navFallbackRef.current) window.clearTimeout(navFallbackRef.current);
+    setActive(id);
+    document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: motion === 'full' ? 'smooth' : 'auto', block: 'start' });
+    // 已经位于目标位置时不会产生 scroll 事件, 用兜底定时器解除锁定
+    navFallbackRef.current = window.setTimeout(() => { navTargetRef.current = null; }, 1200);
+  };
+
+  useEffect(() => {
+    // 页面在布局的 <main> 内滚动, window 不会产生 scroll 事件; 取首个分节最近的可滚动祖先
+    const first = document.getElementById(`sec-${sections[0].id}`);
+    let scroller: HTMLElement | null = first?.parentElement ?? null;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    const target: HTMLElement | Window = scroller ?? window;
+    const computeActive = () => {
+      const top = scroller ? scroller.getBoundingClientRect().top : 0;
+      const height = scroller ? scroller.clientHeight : window.innerHeight;
+      // 滚到底部时较短的末尾分节无法到达判定线, 直接归属最后一节
+      const atBottom = scroller
+        ? scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2
+        : window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2;
+      if (atBottom) { setActive(sections[sections.length - 1].id); return; }
+      const band = top + height * 0.25;
+      let current: SectionId = sections[0].id;
+      for (const section of sections) {
+        const element = document.getElementById(`sec-${section.id}`);
+        if (element && element.getBoundingClientRect().top <= band) current = section.id;
+      }
+      setActive(current);
+    };
+    const onScroll = () => {
+      if (navTargetRef.current) {
+        if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = window.setTimeout(() => {
+          const target = navTargetRef.current;
+          navTargetRef.current = null;
+          if (target) setActive(target);
+        }, 150);
+        return;
+      }
+      computeActive();
+    };
+    target.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      target.removeEventListener('scroll', onScroll);
+      if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+      if (navFallbackRef.current) window.clearTimeout(navFallbackRef.current);
+    };
+  }, []);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-28">
       <PageHeader
         title="系统设置"
-        description="配置系统参数和后端控制"
+        description="外观、运行参数、访问控制与运维数据。所有修改在保存前会保留为草稿"
+        actions={<>
+          <Badge tone={controlOnline ? 'green' : 'red'} dot live={controlOnline}>控制服务{controlOnline ? '在线' : '离线'}</Badge>
+          <Badge tone={backendRunning ? 'green' : 'orange'} dot live={backendRunning}>{backendRunning ? '后端运行中' : '后端未运行'}</Badge>
+          {dirtyCount > 0 && (
+            <Button variant="primary" size="sm" loading={savingAll} onClick={() => void saveAll()}>保存全部 ({dirtyCount})</Button>
+          )}
+        </>}
       />
 
-      {/* 控制服务状态 */}
-      {!controlAvailable && (
-        <AlertCard
-          variant="warning"
-          icon={<AlertCircle className="h-6 w-6 text-warning" />}
-          title="控制服务未运行"
-          description={
-            <p>
-              请运行 <code className="px-2 py-1 rounded bg-glass text-accent">python -m satrap.core.backend.control_server</code> 启动控制服务以编辑配置
-            </p>
-          }
-        />
-      )}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-line bg-glass px-4 py-2.5 text-[11.5px] text-fg-3 backdrop-blur-md animate-rise" style={{ animationDelay: '40ms' }}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <FileText className="h-3.5 w-3.5 flex-none" />
+          <code className="max-w-[240px] truncate font-mono text-[11.5px] text-fg-2" title={configPath || undefined}>{configPath || '尚未读取配置路径'}</code>
+        </span>
+        <Badge tone="accent">修订 <span className="num font-mono">{configRevision || '—'}</span></Badge>
+        <span className="num">常用配置与原始配置共享同一文件</span>
+        <span className={cn('ml-auto flex items-center gap-1.5', dirtyCount > 0 ? 'text-orange' : 'text-green')}>
+          <span className={cn('dot', dirtyCount > 0 ? 'tint-orange' : 'tint-green')} data-live={dirtyCount > 0 ? '1' : undefined} />
+          {dirtyCount > 0 ? `${dirtyCount} 个分节有未保存修改` : '所有修改已保存'}
+        </span>
+      </div>
 
-      {/* 后端控制 */}
-      <Card>
-        <h3 className="text-lg font-semibold text-text-primary mb-4">后端控制</h3>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className={`w-3 h-3 rounded-full ${backend.runState === 'unknown' || backend.operation ? 'bg-warning' : isRunning ? 'bg-success' : 'bg-text-tertiary'}`} />
-            <span className="text-text-primary">
-              {backendStateLabel(backend)}
-            </span>
-            {backendUrl && (
-              <span className="text-text-secondary text-sm">{backendUrl}</span>
-            )}
+      <div className="flex gap-1.5 overflow-x-auto pb-1 lg:hidden" aria-label="设置分节快速导航">
+        {sections.map((section) => {
+          const Icon = section.icon;
+          const isDirty = section.id in dirty && dirty[section.id as DirtyId];
+          return (
+            <button key={section.id} type="button" onClick={() => navigateTo(section.id)}
+              className={cn('flex flex-none items-center gap-1.5 rounded-full border px-3 py-1.5 text-[12px] transition-colors',
+                active === section.id
+                  ? 'tint-orange border-[rgb(var(--tint)/0.4)] bg-[rgb(var(--tint)/0.14)] text-tint'
+                  : 'border-line bg-glass text-fg-3 hover:text-fg')}>
+              <Icon className="h-3.5 w-3.5" />{section.label}
+              {isDirty && <span className="h-1.5 w-1.5 rounded-full bg-orange" />}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
+        <nav aria-label="设置分节" className="hidden lg:block">
+          <div className="sticky top-0 space-y-0.5 animate-rise">
+            {sections.map((section) => {
+              const Icon = section.icon;
+              const selected = active === section.id;
+              const isDirty = section.id in dirty && dirty[section.id as DirtyId];
+              return (
+                <button key={section.id} type="button" onClick={() => navigateTo(section.id)}
+                  aria-current={selected ? 'true' : undefined}
+                  className={cn('group relative flex h-9 w-full items-center gap-2.5 rounded-[10px] px-3 text-left text-[13.5px] transition-colors tint-orange',
+                    selected ? 'bg-[rgb(var(--tint)/0.12)] font-medium text-tint' : 'text-fg-3 hover:bg-glass-hover hover:text-fg')}>
+                  <span className={cn('absolute left-0 top-1/2 w-[3px] -translate-y-1/2 rounded-r-full bg-tint transition-all duration-300', selected ? 'h-4' : 'h-0')} />
+                  <Icon className="h-4 w-4 flex-none" />
+                  <span className="min-w-0 flex-1 truncate">{section.label}</span>
+                  {isDirty && <span aria-hidden="true" title="有未保存修改" className="h-1.5 w-1.5 flex-none rounded-full bg-orange shadow-[0_0_8px_var(--fg-orange)]" />}
+                </button>
+              );
+            })}
+
+            <div className="mt-4 rounded-xl border border-line bg-glass p-3 text-[11px] text-fg-4">
+              <p className="flex items-center gap-1.5 text-fg-3"><span className={cn('dot', controlOnline ? 'tint-green' : 'tint-red')} data-live={controlOnline ? '1' : undefined} />控制服务 {controlOnline ? '在线' : '离线'}</p>
+              <p className="mt-1.5 flex items-center gap-1.5"><span className={cn('dot', backendRunning ? 'tint-green' : 'tint-orange')} data-live={backendRunning ? '1' : undefined} />{backendRunning ? '后端运行中' : '后端未运行'}</p>
+              <p className="mt-2 border-t border-line pt-2 text-fg-4">保存配置会写入本地文件; 配置修订用于检测其它会话的并发修改。</p>
+            </div>
           </div>
-          <BackendControls />
+        </nav>
+
+        <div className="stagger min-w-0 space-y-5">
+          <AppearanceSection i={0} />
+
+          <CommonConfigSection
+            i={1}
+            draft={commonDraft}
+            saved={commonSaved}
+            revision={configRevision || '—'}
+            path={configPath}
+            exists={configExists}
+            controlOnline={controlOnline}
+            backendRunning={backendRunning}
+            loading={loading}
+            saving={saving}
+            onChange={setCommonDraft}
+            onSave={saveCommon}
+            onReload={loadConfig}
+            onCreateDefault={createDefault}
+            onDirty={dirtyReporters.common}
+            register={registerers.common}
+          />
+
+          <BackendControlSection
+            i={2}
+            host={commonDraft.host}
+            port={commonDraft.port}
+            commonDirty={commonDirty}
+          />
+
+          <AccessPasswordPanel i={3} active={active === 'password'} />
+
+          <AdministratorsPanel
+            i={4}
+            active={active === 'admins'}
+            backendRunning={backendRunning}
+            onDirty={dirtyReporters.admins}
+            onSaved={handleAdminSaved}
+            register={registerers.admins}
+          />
+
+          <LogRetentionPanel
+            i={5}
+            active={active === 'logs'}
+            onDirty={dirtyReporters.logs}
+            register={registerers.logs}
+          />
+
+          <DataMaintenancePanel
+            i={6}
+            active={active === 'data'}
+            backendRunning={backendRunning}
+            controlAvailable={controlOnline}
+          />
+
+          <RawConfigSection
+            i={7}
+            active={active === 'raw'}
+            draft={rawDraft}
+            saved={rawSaved}
+            revision={configRevision || '—'}
+            path={configPath}
+            backendRunning={backendRunning}
+            controlOnline={controlOnline}
+            onChange={setRawDraft}
+            onSave={saveRaw}
+            onReload={() => { void reloadRaw(); }}
+            onDirty={dirtyReporters.raw}
+            register={registerers.raw}
+          />
+
+          <AboutSection
+            i={8}
+            active={active === 'about'}
+            configPath={configPath}
+            revision={configRevision || '—'}
+            backendRunning={backendRunning}
+            controlOnline={controlOnline}
+          />
         </div>
-      </Card>
+      </div>
 
-      {/* 配置编辑 */}
-      <Card>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-text-primary">配置文件</h3>
-          <div className="flex items-center gap-2">
-            {configPath && (
-              <span className="text-sm text-text-tertiary flex items-center gap-1">
-                <FileText className="h-4 w-4" />
-                {configPath}
-              </span>
-            )}
-            <Button variant="ghost" size="sm" onClick={loadConfig} disabled={loading}>
-              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            </Button>
-          </div>
+      <div className={cn('pointer-events-none fixed bottom-5 left-1/2 z-50 -translate-x-1/2 transition-all duration-500 [transition-timing-function:var(--ease-spring)] md:left-[calc(50%+124px)]',
+        dirtyCount > 0 ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0')}>
+        <div className="surface surface-strong pointer-events-auto flex max-w-[calc(100vw-24px)] flex-wrap items-center gap-2 !rounded-2xl py-2.5 pl-5 pr-2.5 !shadow-[var(--shadow-3)] sm:gap-4" role="region" aria-label="未保存的修改">
+          <span className="flex flex-none items-center gap-2 text-sm text-fg-2">
+            <span className="dot tint-orange" data-live="1" />
+            {dirtyCount} 个分节有未保存修改
+          </span>
+          <span className="hidden max-w-[240px] flex-wrap gap-1 sm:flex">
+            {dirtyOrder.filter((id) => dirty[id]).map((id) => <Badge key={id} tone="orange">{dirtyLabels[id]}</Badge>)}
+          </span>
+          <Button variant="ghost" size="sm" onClick={undoAll} disabled={savingAll || saving}>全部撤销</Button>
+          <Button variant="primary" size="sm" loading={savingAll} onClick={() => void saveAll()}>保存全部</Button>
         </div>
-
-        {!configExists && controlAvailable && (
-          <div className="mb-4 flex items-center justify-between rounded-sm border border-border-glass bg-glass p-4">
-            <div>
-              <p className="font-medium text-text-primary">尚未创建配置文件</p>
-              <p className="text-sm text-text-secondary">可以生成完整的默认配置后再编辑</p>
-            </div>
-            <Button variant="primary" onClick={handleCreateDefault} disabled={loading}>
-              创建默认配置
-            </Button>
-          </div>
-        )}
-
-        <Tabs defaultValue="general" onValueChange={setSettingsTab}>
-          <TabsList>
-            <TabsTrigger value="general">常用配置</TabsTrigger>
-            <TabsTrigger value="administrators">管理员</TabsTrigger>
-            <TabsTrigger value="access">访问密码</TabsTrigger>
-            <TabsTrigger value="raw">原始配置</TabsTrigger>
-            <TabsTrigger value="data">数据维护</TabsTrigger>
-            <TabsTrigger value="logging">日志保留</TabsTrigger>
-            <TabsTrigger value="about">关于</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="administrators" forceMount>
-            <AdministratorsPanel active={settingsTab === 'administrators'} onSaved={(groups, overrides, revision, previousRevision) => {
-              setConfig(current => ({ ...current, administrator_groups: groups, administrator_overrides: overrides }));
-              setConfigRevision(current => current === previousRevision ? revision : current);
-              setRawConfig(current => {
-                try {
-                  const parsed = yaml.load(current, { schema: yaml.JSON_SCHEMA, json: true });
-                  // 原始配置文本必须同步两个区段, 否则切到原始配置页签保存会丢掉成员例外
-                  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-                    ? yaml.dump({ ...parsed, administrator_groups: groups, administrator_overrides: overrides }, { indent: 2 }) : current;
-                } catch { return current; }
-              });
-            }} />
-          </TabsContent>
-
-          <TabsContent value="access" forceMount>
-            <AccessPasswordPanel active={settingsTab === 'access'} />
-          </TabsContent>
-
-          <TabsContent value="logging" forceMount>
-            <LogRetentionPanel active={settingsTab === 'logging'} />
-          </TabsContent>
-
-          <TabsContent value="general">
-            <div className="grid grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  API Host
-                </label>
-                <Input
-                  value={config.api?.host || ''}
-                  onChange={(e) => updateApiConfig('host', e.target.value)}
-                  disabled={!controlAvailable || !configExists}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  API Port
-                </label>
-                <Input
-                  type="number"
-                  value={config.api?.port || 19870}
-                  onChange={(e) => updateApiConfig('port', Number(e.target.value))}
-                  disabled={!controlAvailable || !configExists}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  默认会话类型
-                </label>
-                <Input
-                  value={config.default_session_type || ''}
-                  onChange={(e) => updateConfig('default_session_type', e.target.value)}
-                  disabled={!controlAvailable || !configExists}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  最大会话数
-                </label>
-                <Input
-                  type="number"
-                  value={config.max_sessions || 100}
-                  onChange={(e) => updateConfig('max_sessions', Number(e.target.value))}
-                  disabled={!controlAvailable || !configExists}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  会话闲置超时（秒）
-                </label>
-                <Input
-                  type="number"
-                  value={config.idle_timeout || 3600}
-                  onChange={(e) => updateConfig('idle_timeout', Number(e.target.value))}
-                  disabled={!controlAvailable || !configExists}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  单轮会话限时（秒）
-                </label>
-                <Input
-                  type="number"
-                  min={0.1}
-                  step="any"
-                  placeholder="无限制"
-                  value={config.session_timeout === null ? '' : config.session_timeout ?? 120}
-                  onChange={(e) => updateConfig('session_timeout', e.target.value === '' ? null : Number(e.target.value))}
-                  disabled={!controlAvailable || !configExists}
-                />
-                <p className="mt-1 text-xs text-text-tertiary">留空表示无限制; 包含本轮模型调用、工具执行和审批等待。网络超时在模型配置中单独调整。</p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  限流速率
-                </label>
-                <Input
-                  type="number"
-                  value={config.rate_limit || 10}
-                  onChange={(e) => updateConfig('rate_limit', Number(e.target.value))}
-                  disabled={!controlAvailable || !configExists}
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  限流突发数
-                </label>
-                <Input
-                  type="number"
-                  value={config.rate_burst || 20}
-                  onChange={(e) => updateConfig('rate_burst', Number(e.target.value))}
-                  disabled={!controlAvailable || !configExists}
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-3 mt-6 pt-6 border-t border-border-glass">
-              <Button variant="primary" onClick={handleSave} disabled={!controlAvailable || !configExists || saving}>
-                <Save className="h-4 w-4 mr-2" />
-                {saving ? '保存中…' : '保存配置'}
-              </Button>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="raw">
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  完整配置 (YAML)
-                </label>
-                <textarea
-                  className="glass-input w-full h-96 font-mono text-sm resize-none"
-                  placeholder="# 配置文件内容"
-                  value={rawConfig}
-                  onChange={(e) => setRawConfig(e.target.value)}
-                  disabled={!controlAvailable || !configExists}
-                />
-              </div>
-              <div className="flex gap-3">
-                <Button variant="primary" onClick={handleSaveRaw} disabled={!controlAvailable || !configExists || saving}>
-                  <Save className="h-4 w-4 mr-2" />
-                  {saving ? '保存中…' : '保存原始配置'}
-                </Button>
-              </div>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="data">
-            <DataMaintenancePanel
-              backendRunning={isRunning}
-              controlAvailable={controlAvailable}
-            />
-          </TabsContent>
-
-          <TabsContent value="about">
-            <div className="space-y-4">
-              <InterfacePreferences />
-              <div className="grid grid-cols-2 gap-4">
-                <div className="p-4 rounded-sm bg-glass">
-                  <p className="text-sm text-text-tertiary">前端版本</p>
-                  <p className="text-lg font-semibold text-text-primary">1.0.0</p>
-                </div>
-                <div className="p-4 rounded-sm bg-glass">
-                  <p className="text-sm text-text-tertiary">后端 API</p>
-                  <p className="text-lg font-semibold text-text-primary">
-                    {health?.running ? '已连接' : '未连接'}
-                  </p>
-                </div>
-              </div>
-              <div className="p-4 rounded-sm bg-glass">
-                <p className="text-sm text-text-tertiary mb-2">技术栈</p>
-                <div className="flex flex-wrap gap-2">
-                  {['React 18', 'TypeScript', 'Vite', 'Tailwind CSS', 'Zustand', 'React Router'].map((tech) => (
-                    <span
-                      key={tech}
-                      className="px-3 py-1 rounded-full bg-accent/20 text-accent text-sm"
-                    >
-                      {tech}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </TabsContent>
-        </Tabs>
-      </Card>
+      </div>
     </div>
   );
 }

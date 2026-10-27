@@ -22,7 +22,7 @@ export function Toggle({
       className={cn(
         'group relative inline-flex h-[22px] w-10 shrink-0 items-center rounded-full border px-[2px] transition-all duration-300 disabled:cursor-not-allowed disabled:opacity-40',
         checked
-          ? 'border-accent bg-accent shadow-[0_0_16px_-2px_rgb(var(--rgb-accent)/0.7)]'
+          ? 'border-[rgb(var(--rgb-accent))] bg-[rgb(var(--rgb-accent))] shadow-[0_0_16px_-2px_rgb(var(--rgb-accent)/0.7)]'
           : 'border-[var(--glass-border-strong)] bg-glass-active'
       )}
       title={title}
@@ -30,7 +30,7 @@ export function Toggle({
       <span
         className={cn(
           'h-4 w-4 rounded-full shadow-sm transition-all duration-300 [transition-timing-function:var(--ease-spring)] group-active:scale-x-125',
-          checked ? 'translate-x-[18px] bg-white' : 'translate-x-0 bg-text-tertiary'
+          checked ? 'translate-x-[18px] bg-white' : 'translate-x-0 bg-fg-3'
         )}
       />
     </button>

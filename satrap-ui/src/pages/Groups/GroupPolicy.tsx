@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, CheckCircle2, Clock3, FlaskConical, Play, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { ApiError } from '@/api/client';
 import { groupApi, type GroupPolicyValue } from '@/api/groups';
-import { Card } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/kit/Card';
+import { Badge } from '@/components/kit/Badge';
+import { Button } from '@/components/kit/Button';
+import { Textarea } from '@/components/kit/Field';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { GROUP_OVERRIDE_FIELDS, type OverrideFieldDef } from '@/utils/wakeOverrides';
 import { policyField, validatePolicyValue } from '@/utils/wakePolicyContract';
 import { useGroupContext } from './GroupLayout';
+import { FieldBlock, Note, SectionHead } from './shared';
 
 interface FieldDraft { mode: 'inherit' | 'value'; text: string }
 type PolicyDraft = Record<string, FieldDraft>;
@@ -136,92 +140,116 @@ export function GroupPolicy() {
   };
 
   return (
-    <div className="space-y-4">
-      {error && <Card role="alert" className="border border-error text-error">{error}</Card>}
-      {conflict && <Card role="alert" className="space-y-2 border border-warning">
-        <p>服务器配置已变化。草稿仍保留, 不会自动覆盖其他修改</p>
-        <div className="flex flex-wrap gap-2">
+    <div className="space-y-4 animate-fade">
+      {error && <Note tone="red" title="无法保存">{error}</Note>}
+      {conflict && <Note tone="orange" title="服务器配置已变化, 草稿仍保留" icon={<AlertTriangle className="h-4 w-4" />}
+        action={<div className="flex flex-wrap gap-1.5">
           <Button size="sm" onClick={serverLatest}>查看服务器最新值</Button>
-          <Button size="sm" variant="subtle" onClick={() => {
+          <Button size="sm" variant="ghost" onClick={() => {
             try { void navigator.clipboard.writeText(JSON.stringify(parseDraft(draft, fields), null, 2)); }
             catch (caught) { setError(errorText(caught)); }
           }}>复制我的草稿</Button>
-          <Button size="sm" variant="subtle" onClick={discardDraft}>放弃草稿并重新加载</Button>
-        </div>
-      </Card>}
-      <Card className="space-y-3">
-        <h2 className="text-lg font-semibold">本群是否响应</h2>
-        <p className="text-sm text-text-secondary">有效状态: {config.effective.policy.enabled ? '开启' : '关闭'} · {config.sources.policy.enabled?.source_label || '来源未知'}</p>
-        <label className="block text-sm">本群设置
-          <select className="glass-input mt-1 w-full max-w-sm" value={draft.enabled.mode === 'inherit' ? 'inherit' : draft.enabled.text}
+          <Button size="sm" variant="ghost" onClick={discardDraft}>放弃草稿并重新加载</Button>
+        </div>}>
+        不会自动覆盖其他管理员的修改。
+      </Note>}
+
+      <Card padding="lg">
+        <SectionHead tint="pink" title="本群是否响应" icon={<ShieldCheck className="h-4 w-4" />}
+          description={`有效状态: ${config.effective.policy.enabled ? '开启' : '关闭'} · ${config.sources.policy.enabled?.source_label || '来源未知'}`} />
+        <FieldBlock label="本群设置" hint="继承账号接入模式时, 由平台总开关与群默认决定" className="max-w-sm">
+          <select className="field w-full" value={draft.enabled.mode === 'inherit' ? 'inherit' : draft.enabled.text}
             onChange={(event) => change('enabled', event.target.value === 'inherit' ? { mode: 'inherit', text: '' } : { mode: 'value', text: event.target.value })}
             disabled={historical || saving}>
             <option value="inherit">继承账号接入模式</option><option value="true">开启</option><option value="false">关闭</option>
           </select>
-        </label>
+        </FieldBlock>
         {!config.effective.policy.enabled && config.sources.policy.enabled?.source === 'platform' && (
-          <p className="text-sm text-warning">平台总开关已关闭。本群设置不能越过平台总开关</p>
+          <Note tone="orange" className="mt-3">平台总开关已关闭。本群设置不能越过平台总开关。</Note>
         )}
       </Card>
-      <Card className="space-y-4">
-        <h2 className="text-lg font-semibold">自动参与、显式触发与回复</h2>
-        <p className="text-sm text-text-secondary">字段来自平台策略契约。继承和显式清空分别保存</p>
-        <div className="grid gap-4 lg:grid-cols-2">
+
+      <Card padding="lg">
+        <SectionHead tint="pink" title="自动参与、显式触发与回复" icon={<SlidersHorizontal className="h-4 w-4" />}
+          description="字段来自平台策略契约。继承和显式清空分别保存" />
+        <div className="grid gap-3 lg:grid-cols-2">
           {fields.map((field) => {
             const current = draft[field.key];
             const source = config.sources.policy[field.key]?.source_label || '平台默认';
-            return <div key={field.key} className="space-y-2 rounded-lg border border-glass-border p-3">
-              <label className="block text-sm font-medium" htmlFor={`policy-mode-${field.key}`}>{field.label}</label>
-              <p className="text-xs text-text-secondary">当前有效值: {display(config.effective.policy[field.key]) || '空'} · {source}</p>
-              <select id={`policy-mode-${field.key}`} className="glass-input w-full" value={current.mode}
-                onChange={(event) => change(field.key, { mode: event.target.value as FieldDraft['mode'], text: event.target.value === 'value' ? current.text || display(config.effective.policy[field.key]) : '' })}
-                disabled={historical || saving}>
-                <option value="inherit">继承</option><option value="value">显式设置</option>
-              </select>
-              {current.mode === 'value' && (field.kind === 'lines' ? (
-                <textarea className="glass-input w-full min-h-20" aria-label={field.label} value={current.text}
-                  onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving} />
-              ) : field.kind === 'bool' ? (
-                <select className="glass-input w-full" aria-label={field.label} value={current.text}
-                  onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving}>
-                  <option value="true">开启</option><option value="false">关闭</option>
+            return <div key={field.key} className="space-y-2 rounded-xl border border-line bg-glass p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[12.5px] font-medium text-fg">{field.label}</span>
+                {current.mode === 'value' && <Badge tone="pink">本群覆盖</Badge>}
+                <span className="ml-auto text-[10.5px] text-fg-4">{source}</span>
+              </div>
+              <p className="text-[11px] text-fg-3">当前有效值: {display(config.effective.policy[field.key]) || '空'}</p>
+              <div className="grid gap-2 sm:grid-cols-[108px_1fr]">
+                <select className="field !h-8 !text-[12px]" aria-label={`${field.label}状态`} value={current.mode}
+                  onChange={(event) => change(field.key, { mode: event.target.value as FieldDraft['mode'], text: event.target.value === 'value' ? current.text || display(config.effective.policy[field.key]) : '' })}
+                  disabled={historical || saving}>
+                  <option value="inherit">继承</option><option value="value">显式设置</option>
                 </select>
-              ) : field.kind === 'select' ? (
-                <select className="glass-input w-full" aria-label={field.label} value={current.text}
-                  onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving}>
-                  <option value="">选择值</option>
-                  {field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                  {field.offValue !== undefined && <option value={String(field.offValue)}>{field.offLabel || '显式关闭'}</option>}
-                </select>
-              ) : (
-                <input className="glass-input w-full" aria-label={field.label} type="number" min={field.min} max={field.max}
-                  step={field.integer ? 1 : 'any'} value={current.text} placeholder={field.placeholder}
-                  onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving} />
-              ))}
+                {current.mode === 'value' && (field.kind === 'lines' ? (
+                  <Textarea rows={2} className="!text-[12px] font-mono" aria-label={field.label} value={current.text}
+                    placeholder={field.placeholder} onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving} />
+                ) : field.kind === 'bool' ? (
+                  <select className="field !h-8 !text-[12px]" aria-label={field.label} value={current.text}
+                    onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving}>
+                    <option value="true">开启</option><option value="false">关闭</option>
+                  </select>
+                ) : field.kind === 'select' ? (
+                  <select className="field !h-8 !text-[12px]" aria-label={field.label} value={current.text}
+                    onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving}>
+                    <option value="">选择值</option>
+                    {field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    {field.offValue !== undefined && <option value={String(field.offValue)}>{field.offLabel || '显式关闭'}</option>}
+                  </select>
+                ) : (
+                  <input className="field !h-8 !text-[12px]" aria-label={field.label} type="number" min={field.min} max={field.max}
+                    step={field.integer ? 1 : 'any'} value={current.text} placeholder={field.placeholder}
+                    onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving} />
+                ))}
+              </div>
               {field.offValue !== undefined && current.mode === 'value' && field.kind !== 'select' && (
-                <Button size="sm" variant="subtle" onClick={() => change(field.key, { text: display(field.offValue) })} disabled={historical || saving}>
+                <button type="button" className="text-[11px] text-pink hover:underline" onClick={() => change(field.key, { text: display(field.offValue) })} disabled={historical || saving}>
                   {field.offLabel || '显式关闭'}
-                </Button>
+                </button>
               )}
             </div>;
           })}
         </div>
       </Card>
-      <Card className="space-y-3">
-        <h2 className="text-lg font-semibold">有效策略试算</h2>
-        <p className="text-sm text-text-secondary">用未保存的草稿和示例消息判断唤醒, 不发送消息或调用模型</p>
-        <label className="block text-sm">示例消息
-          <textarea className="glass-input mt-1 w-full min-h-20" value={probeText} onChange={(event) => setProbeText(event.target.value)} />
-        </label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={probeAtSelf} onChange={(event) => setProbeAtSelf(event.target.checked)} />示例消息 @机器人</label>
-        <Button onClick={dryRun} disabled={!isRunning || dryRunning}>试算草稿</Button>
-        {dryRunResult && <p className="text-sm text-text-secondary" role="status">{dryRunResult}</p>}
+
+      <Card padding="lg">
+        <SectionHead tint="pink" title="有效策略试算" icon={<FlaskConical className="h-4 w-4" />}
+          description="用未保存的草稿和示例消息判断唤醒, 不发送消息或调用模型"
+          actions={<Button size="sm" variant="tinted" tint="pink" icon={<Play className="h-3.5 w-3.5" />} loading={dryRunning} onClick={dryRun} disabled={!isRunning}>试算草稿</Button>} />
+        <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+          <FieldBlock label="示例消息">
+            <textarea className="field min-h-20 w-full" value={probeText} placeholder="例如 小萨, 这个订单什么时候发货?"
+              onChange={(event) => setProbeText(event.target.value)} disabled={historical} />
+          </FieldBlock>
+          <div className="flex items-end pb-2">
+            <label className="flex cursor-pointer items-center gap-2 text-[12.5px] text-fg-3">
+              <input type="checkbox" className="accent-[rgb(var(--rgb-pink))]" checked={probeAtSelf} disabled={historical}
+                onChange={(event) => setProbeAtSelf(event.target.checked)} />示例消息 @机器人
+            </label>
+          </div>
+        </div>
+        {dryRunResult && <div className="mt-3 rounded-xl border border-line bg-glass p-3 text-[12px] animate-pop" role="status">
+          <p className="text-fg-2">{dryRunResult}</p>
+        </div>}
       </Card>
-      {!historical && <Card className="flex flex-wrap items-center justify-between gap-3">
-        <span className="text-sm text-text-secondary">{dirty ? '有未保存修改' : config.apply_status === 'applied' ? '配置已生效' : '配置已保存, 尚未生效'}</span>
+
+      {!historical && <Card padding="md" className="flex flex-wrap items-center justify-between gap-3">
+        <span className="flex items-center gap-2 text-[12px] text-fg-3">
+          {dirty ? <><Clock3 className="h-3.5 w-3.5 text-orange" />有未保存修改</>
+            : config.apply_status === 'applied' ? <><CheckCircle2 className="h-3.5 w-3.5 text-green" />配置已生效</>
+              : <><AlertTriangle className="h-3.5 w-3.5 text-orange" />配置已保存, 尚未生效</>}
+        </span>
         <div className="flex gap-2">
-          {config.apply_status !== 'applied' && <Button variant="subtle" onClick={retryApply} disabled={!isRunning || applying || dirty}>重试应用</Button>}
-          <Button variant="primary" onClick={save} disabled={!dirty || saving}>保存并应用</Button>
+          {config.apply_status !== 'applied' && <Button size="sm" variant="ghost" loading={applying} onClick={retryApply} disabled={!isRunning || dirty}>重试应用</Button>}
+          <Button variant="primary" icon={<Save className="h-4 w-4" />} loading={saving} onClick={save} disabled={!dirty || saving}>保存并应用</Button>
         </div>
       </Card>}
     </div>

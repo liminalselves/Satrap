@@ -710,8 +710,13 @@ async function advanced_debug(runtime) {
       await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', `${theme}.png`), fullPage: true });
     }
     await page.setViewportSize({ width: 390, height: 844 });
+    // 请求可同时展开多条: 两条都处于展开状态, 键盘先收起再重新展开
+    assert.equal(await page.getByRole('button', { name: /r-after-new/ }).getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.getByRole('button', { name: /r-hard-error/ }).getAttribute('aria-expanded'), 'true');
     await page.getByRole('button', { name: /r-hard-error/ }).click();
     await page.getByRole('button', { name: /r-after-new/ }).focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.getByRole('button', { name: /r-after-new/ }).getAttribute('aria-expanded'), 'false');
     await page.keyboard.press('Enter');
     await modelNode.getByRole('button').waitFor();
     await modelNode.getByRole('button').focus();

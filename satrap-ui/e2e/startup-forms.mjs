@@ -49,6 +49,7 @@ async function auth_startup(runtime) {
       businessCalls.set(url.port, (businessCalls.get(url.port) || 0) + 1);
       if (url.pathname === '/config/versions') return reply({ ok: true, resources: Object.fromEntries((url.searchParams.get('resources') || '').split(',').map((name) => [name, { change_token: 'v1', state: 'available' }])) });
       if (url.pathname === '/status' || url.pathname === '/api/health') return reply({ running: true, managed: true, adapters: {} });
+      if (url.pathname === '/api/platform-actions/summary') return reply({ items: [], pending_count: 0, complete: true, warnings: [], platforms: [] });
       if (url.pathname === '/config/plugins') return reply({ plugins: [{ name: 'available_probe', source: 'builtin', version: '1', usage_count: 0, capabilities: {}, config_schema: {} }] });
       if (url.pathname === '/config/snapshot') {
         const snapshot = emptyConfigResponse(url.href);
