@@ -79,6 +79,14 @@
 - 门禁: 3,523 通过 / 26 跳过 / 2 本机环境失败 (缺 PowerShell, 基线相同); pyright 334 → 311 error 零新增
 - 附带根治: test_agent_sub_agent 的 isolated_spawn_path fixture 消除 simple_session 插件目录 mcp.py 对 multiprocessing spawn 的遮蔽
 
+## 2026-10 中下旬过程记录归档
+
+- 沙箱隔离与最小 worker 方案, 网页正文提取, Linux / 配置加载 / 会话边界修复, 前端加载与登录, 统一审批, 审计修复, HTTP UUID, Issue #20 / #21 / #27 和高级 Debug 的阶段计划与验收原文已移入本地 `docs/archive/development/`
+- 暂停的 Shell 系统隔离设计不代表当前实现; 现行执行与审批边界见 [Coding 插件](../plugins/satrap-coding-plugin.md) 和 [base_take 插件](../plugins/base-take-plugin.md)
+- [命令历史与媒体输入](command-history-and-media.md) 保留配置, 处理规则和存储说明; [平台工具发送与媒体回执](direct-platform-replies-2026-10-26.md) 保留直接发送与确认协议
+- 前后端重构的接口依据仍保留在 [能力契约](ui-backend-contract-2026-10-27.md); 用量页已接入生产前端, 原“未开始写代码”的交接稿已过期并归档
+- 阶段记录中的测试数量, 部署情况与未验收项只反映记录时点, 归档不补充验证结论, 也不将暂停或未完成事项标记为完成
+
 ## 尚未实施: 插件聊天命令
 
 计划为业务插件补充聊天命令, 宿主侧的命令权限声明 (`command_permissions`) 与原生命令绑定接口已实现, 命令本身未实现:
