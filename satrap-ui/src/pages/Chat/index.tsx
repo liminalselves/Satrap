@@ -35,6 +35,7 @@ import {
 import { formatRelativeTime } from '@/utils/format';
 import { createAnimationFrameLimiter, MAX_UI_FRAME_RATE } from '@/utils/frameLimiter';
 import { useGlassReflect } from '@/hooks/useGlassReflect';
+import { ThinkDial } from './ThinkDial';
 import { useTheme } from '@/hooks/useTheme';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -2149,7 +2150,7 @@ export function Chat() {
                 />
               )}
 
-              <div ref={inputCardRef} className="glass-card glass-card-accent rounded-xl p-3 flex items-end gap-2">
+              <div ref={inputCardRef} className="chat-composer glass-card glass-card-accent rounded-[22px] p-2.5 flex items-end gap-1.5">
                 {/* 隐藏文件选择器 */}
                 <input
                   ref={fileInputRef}
@@ -2169,6 +2170,12 @@ export function Chat() {
                 >
                   <Paperclip className="h-4 w-4" />
                 </Button>
+                <ThinkDial
+                  value={settings.think}
+                  options={thinkingOptions}
+                  disabled={Boolean(activePendingUserInput)}
+                  onChange={(value) => updateSettings('think', value)}
+                />
                 <textarea
                   ref={textareaRef}
                   value={input}
@@ -3285,7 +3292,7 @@ function ChatHeader({
   onBack,
 }: {
   theme: ChatTheme;
-  onToggleTheme: () => void;
+  onToggleTheme: (origin?: { x: number; y: number }) => void;
   onBack: () => void;
 }) {
   const headerRef = useGlassReflect<HTMLElement>({
@@ -3307,7 +3314,7 @@ function ChatHeader({
       </div>
 
       <button
-        onClick={onToggleTheme}
+        onClick={(event) => onToggleTheme({ x: event.clientX, y: event.clientY })}
         className="theme-toggle"
         title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
       >
@@ -3480,12 +3487,15 @@ function EmptyWelcome({ onPromptClick }: { onPromptClick: (text: string) => void
 
   return (
     <div className="h-full flex flex-col items-center justify-center text-center px-6">
-      <div className="w-14 h-14 rounded-xl bg-accent flex items-center justify-center shadow-glow-accent mb-4">
-        <Sparkles className="h-7 w-7 text-white" />
+      <div className="relative mb-6 animate-rise">
+        <div aria-hidden className="absolute -inset-10 rounded-full bg-[radial-gradient(circle,rgb(var(--rgb-accent)/0.35),rgb(var(--rgb-purple)/0.15)_45%,transparent_70%)] blur-xl" />
+        <div className="relative w-16 h-16 rounded-[20px] bg-[linear-gradient(135deg,#2b88d8,#0078d4_45%,#8b62b3)] flex items-center justify-center shadow-[0_16px_40px_-10px_rgb(var(--rgb-accent)/0.9),inset_0_1px_0_rgba(255,255,255,0.35)]">
+          <Sparkles className="h-8 w-8 text-white" />
+        </div>
       </div>
-      <h2 className="text-xl font-semibold text-text-primary mb-1">开始新的对话</h2>
-      <p className="text-sm text-text-tertiary mb-8">输入你的问题, 或从下方建议开始</p>
-      <div className="grid grid-cols-1 gap-3 w-full max-w-md">
+      <h2 className="text-[26px] font-semibold text-text-primary mb-1 animate-rise" style={{ animationDelay: '60ms' }}>开始新的对话</h2>
+      <p className="text-sm text-text-tertiary mb-8 animate-rise" style={{ animationDelay: '120ms' }}>输入你的问题, 或从下方建议开始</p>
+      <div className="stagger grid grid-cols-1 gap-3 w-full max-w-md">
         {suggestions.map((s) => (
           <SuggestionCard key={s.label} suggestion={s} onClick={() => onPromptClick(s.label)} />
         ))}
@@ -3512,13 +3522,49 @@ function SuggestionCard({
       ref={reflectRef}
       onClick={onClick}
       className={cn(
-        'glass-card rounded-lg p-4 flex items-center gap-3 text-left transition-transform hover:scale-[1.02]',
+        'glass-card glass-card-interactive rounded-xl p-4 flex items-center gap-3 text-left',
         COLOR_CARD_CLASS[suggestion.color]
       )}
     >
       <Icon className={cn('h-5 w-5 shrink-0', COLOR_TEXT_CLASS[suggestion.color])} />
       <div className="text-sm text-text-secondary">{suggestion.label}</div>
     </button>
+  );
+}
+
+type SegmentGroup =
+  | { type: 'thinking' | 'content'; index: number; content: string }
+  | { type: 'tools'; index: number; tools: ToolCall[] };
+
+/** 连续的工具调用合并成一行, index 保留组内最后一段的原始下标 */
+function groupSegments(segments: LocalMessageSegment[]): SegmentGroup[] {
+  const groups: SegmentGroup[] = [];
+  segments.forEach((segment, index) => {
+    const last = groups[groups.length - 1];
+    if (segment.type === 'tool') {
+      if (last?.type === 'tools') { last.tools.push(segment.tool); last.index = index; }
+      else groups.push({ type: 'tools', index, tools: [segment.tool] });
+    } else {
+      groups.push({ type: segment.type, index, content: segment.content });
+    }
+  });
+  return groups;
+}
+
+function ToolChipRow({ tools }: { tools: ToolCall[] }) {
+  return (
+    <div className="flex max-w-full flex-wrap gap-1.5">
+      {tools.map((tool, index) => (
+        <div
+          key={tool.call_id || `${tool.seq}-${index}`}
+          className="tint-teal inline-flex max-w-full items-center gap-2 rounded-full border border-[rgb(var(--tint)/0.2)] bg-[rgb(var(--tint)/0.08)] py-1 pl-1.5 pr-2.5 text-xs"
+        >
+          <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[rgb(var(--tint)/0.16)] text-[var(--tint-fg)]"><Wrench className="h-3 w-3" /></span>
+          <span className="truncate font-mono font-medium text-text-primary">{tool.name}</span>
+          <ToolStatusIcon success={tool.success} />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -3623,8 +3669,10 @@ const MessageBubble = memo(function MessageBubble({
       {/* 头像: 用户消息 order-2 在右, AI 消息 order-1 在左 */}
       <div
         className={cn(
-          'w-8 h-8 rounded-md flex items-center justify-center shrink-0',
-          isUser ? 'order-2 bg-purple shadow-glow-purple' : 'order-1 bg-accent shadow-glow-accent'
+          'w-8 h-8 rounded-[10px] flex items-center justify-center shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.3)]',
+          isUser
+            ? 'order-2 bg-[linear-gradient(135deg,#b48fc9,#8b62b3)] shadow-[0_6px_18px_-6px_rgb(var(--rgb-purple)/0.8)]'
+            : 'order-1 bg-[linear-gradient(135deg,#2b88d8,#0078d4_45%,#8b62b3)] shadow-[0_6px_18px_-6px_rgb(var(--rgb-accent)/0.8)]'
         )}
       >
         {isUser ? (
@@ -3648,35 +3696,23 @@ const MessageBubble = memo(function MessageBubble({
 
           {/* AI 消息: 按 segments 时间顺序渲染; 用户消息或旧数据: 聚合渲染 */}
           {!isUser && message.segments && message.segments.length > 0 ? (
-            <>
-              {message.segments.map((seg, idx) => {
-                switch (seg.type) {
+            <div className="flex flex-col items-start gap-2">
+              {groupSegments(message.segments).map((group) => {
+                switch (group.type) {
                   case 'thinking':
-                    return <ThinkingBlock key={`thinking-${idx}`} thinking={seg.content} />;
-                  case 'tool':
-                    return (
-                      <div
-                        key={seg.tool.call_id || `tool-${idx}`}
-                        className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs"
-                      >
-                        <Wrench className="h-3 w-3 text-text-tertiary shrink-0" />
-                        <span className="text-text-primary font-medium">{seg.tool.name}</span>
-                        <ToolStatusIcon success={seg.tool.success} />
-                      </div>
-                    );
+                    return <ThinkingBlock key={`thinking-${group.index}`} thinking={group.content} />;
+                  case 'tools':
+                    return <ToolChipRow key={`tools-${group.index}`} tools={group.tools} />;
                   case 'content':
                     return (
                       <div
-                        key={`content-${idx}`}
-                        ref={idx === message.segments!.length - 1 ? reflectRef : undefined}
-                        className={cn(
-                          'glass-card inline-block max-w-full rounded-lg px-4 py-2.5 text-sm leading-relaxed break-words',
-                          'glass-card-accent'
-                        )}
+                        key={`content-${group.index}`}
+                        ref={group.index === message.segments!.length - 1 ? reflectRef : undefined}
+                        className="glass-card glass-card-accent max-w-full rounded-[18px] rounded-tl-md px-4 py-2.5 text-sm leading-relaxed break-words"
                       >
-                        <MarkdownContent content={seg.content} />
-                        {message.streaming && idx === message.segments!.length - 1 && (
-                          <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
+                        <MarkdownContent content={group.content} />
+                        {message.streaming && group.index === message.segments!.length - 1 && (
+                          <span className="chat-caret" aria-hidden />
                         )}
                       </div>
                     );
@@ -3684,33 +3720,24 @@ const MessageBubble = memo(function MessageBubble({
                     return null;
                 }
               })}
-            </>
+            </div>
           ) : (
-            <>
+            <div className={cn('flex flex-col gap-2', isUser ? 'items-end' : 'items-start')}>
               {/* 兼容旧数据或用户消息: 聚合渲染 */}
               {message.thinking && (
                 <ThinkingBlock thinking={message.thinking} />
               )}
               {message.toolCalls && message.toolCalls.length > 0 && (
-                <div className="space-y-1">
-                  {message.toolCalls.map((tool) => (
-                    <div
-                      key={tool.call_id || tool.seq}
-                      className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs"
-                    >
-                      <Wrench className="h-3 w-3 text-text-tertiary shrink-0" />
-                      <span className="text-text-primary font-medium">{tool.name}</span>
-                      <ToolStatusIcon success={tool.success} />
-                    </div>
-                  ))}
-                </div>
+                <ToolChipRow tools={message.toolCalls} />
               )}
               {(message.content || message.streaming) && (
                 <div
                   ref={reflectRef}
                   className={cn(
-                    'glass-card inline-block max-w-full rounded-lg px-4 py-2.5 text-sm leading-relaxed break-words',
-                    isUser ? 'glass-card-purple whitespace-pre-wrap' : 'glass-card-accent'
+                    'max-w-full px-4 py-2.5 text-sm leading-relaxed break-words',
+                    isUser
+                      ? 'rounded-[20px] rounded-br-md border border-[rgb(var(--rgb-accent)/0.35)] bg-[linear-gradient(135deg,rgb(var(--rgb-accent)/0.88),rgb(var(--rgb-accent)/0.68))] text-white whitespace-pre-wrap shadow-[0_10px_30px_-12px_rgb(var(--rgb-accent)/0.8),inset_0_1px_0_rgba(255,255,255,0.25)]'
+                      : 'glass-card glass-card-accent rounded-[18px] rounded-tl-md'
                   )}
                 >
                   {isUser ? (
@@ -3719,11 +3746,11 @@ const MessageBubble = memo(function MessageBubble({
                     <MarkdownContent content={message.content} />
                   )}
                   {message.streaming && (
-                    <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
+                    <span className="chat-caret" aria-hidden />
                   )}
                 </div>
               )}
-            </>
+            </div>
           )}
 
           {!isUser && Boolean(message.outputFiles?.length) && <OutputFiles conversationId={conversationId} files={message.outputFiles ?? []} />}
@@ -3809,12 +3836,12 @@ const ThinkingBlock = memo(function ThinkingBlock({ thinking }: { thinking: stri
     reflectRange: 60,
   });
   return (
-    <details ref={reflectRef} className="glass-card glass-card-teal rounded-lg px-3 py-2 text-xs">
-      <summary className="cursor-pointer text-teal flex items-center gap-1.5 select-none">
+    <details ref={reflectRef} className="chat-thinking tint-purple w-fit max-w-full rounded-2xl border border-[rgb(var(--tint)/0.2)] bg-[rgb(var(--tint)/0.07)] px-3 py-1.5 text-xs transition-colors open:w-full open:bg-[rgb(var(--tint)/0.05)]">
+      <summary className="cursor-pointer text-[var(--tint-fg)] flex items-center gap-1.5 select-none">
         <Brain className="h-3.5 w-3.5" />
         思考过程
       </summary>
-      <div className="mt-2 text-text-secondary whitespace-pre-wrap break-words leading-relaxed">
+      <div className="mt-2 mb-1 border-l-2 border-[rgb(var(--tint)/0.35)] pl-3 text-text-secondary whitespace-pre-wrap break-words leading-relaxed">
         {thinking}
       </div>
     </details>

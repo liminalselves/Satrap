@@ -131,7 +131,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
           width: pos.width,
           ...(pos.top !== undefined ? { top: pos.top } : { bottom: pos.bottom }),
         }}
-        className="glass-card glass-card-accent z-[100] rounded-lg p-1.5 shadow-glass animate-fade-in"
+        className="surface surface-strong z-[100] !rounded-xl p-1 !shadow-[var(--shadow-3)] animate-pop"
       >
         <div className="max-h-60 overflow-y-auto custom-scrollbar space-y-0.5">
           {options.length === 0 ? (
@@ -145,10 +145,10 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
                   type="button"
                   onClick={() => handleSelect(opt.value)}
                   className={cn(
-                    'w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors text-left',
+                    'w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm transition-colors duration-100 text-left',
                     active
                       ? 'bg-accent-subtle text-accent'
-                      : 'text-text-secondary hover:bg-glass-hover'
+                      : 'text-text-secondary hover:bg-glass-hover hover:text-text-primary'
                   )}
                 >
                   <span className="flex-1 truncate">{opt.label}</span>
@@ -172,6 +172,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
           className={cn(
             'glass-input w-full appearance-none pr-9 cursor-pointer flex items-center justify-between gap-2',
             align === 'right' ? 'text-right' : 'text-left',
+            open && 'border-[rgb(var(--rgb-accent)/0.7)] shadow-[0_0_0_4px_rgb(var(--rgb-accent)/0.16)]',
             error && 'border-error focus:border-error focus:ring-error',
             disabled && 'opacity-50 cursor-not-allowed'
           )}
@@ -181,7 +182,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
           </span>
           <ChevronDown
             className={cn(
-              'absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-tertiary pointer-events-none transition-transform',
+              'absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-tertiary pointer-events-none transition-transform duration-300',
               open && 'rotate-180'
             )}
           />

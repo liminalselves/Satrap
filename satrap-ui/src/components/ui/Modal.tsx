@@ -91,11 +91,11 @@ export function Modal({
 
   return createPortal(
     <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex }}>
-      <div className="glass-overlay" onClick={() => { if (isTop()) onClose(); }} />
+      <div className="glass-overlay" aria-hidden onClick={() => { if (isTop()) onClose(); }} />
       <div
         ref={dialogRef}
         className={cn(
-          'glass-modal relative w-full flex flex-col max-h-[85vh]',
+          'glass-modal relative w-full flex flex-col max-h-[85vh] outline-none',
           sizeClasses[size]
         )}
         role="dialog"
@@ -107,7 +107,7 @@ export function Modal({
           <div className="flex items-center justify-between mb-4 shrink-0">
             {title && <h3 id={titleId} className="text-lg font-semibold text-text-primary">{title}</h3>}
             {showClose && (
-              <Button variant="ghost" size="sm" onClick={onClose} className="ml-auto">
+              <Button variant="ghost" size="sm" onClick={onClose} className="-mr-2 ml-auto h-8 w-8 !p-0">
                 <X className="h-4 w-4" />
               </Button>
             )}

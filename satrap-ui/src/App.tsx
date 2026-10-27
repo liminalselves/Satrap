@@ -6,10 +6,13 @@ import { ApiSessionNotice } from '@/components/common/ApiSessionNotice';
 import { PasswordGate } from '@/components/common/PasswordGate';
 import { ConfirmProvider } from '@/components/common/ConfirmProvider';
 import { ToastContainer, useToasts } from '@/components/ui/Toast';
+import { usePrefsStore } from '@/stores/usePrefsStore';
 
 function App() {
   const { toasts, closeToast } = useToasts();
+  const motion = usePrefsStore((state) => state.motion);
   useBackendStatusSync();
+  useEffect(() => { document.documentElement.setAttribute('data-motion', motion); }, [motion]);
   useEffect(() => {
     const syncBackgroundVisibility = () => {
       document.documentElement.classList.toggle('background-animation-paused', document.hidden);

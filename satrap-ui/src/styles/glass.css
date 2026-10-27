@@ -1,0 +1,213 @@
+/* ===== 玻璃增强层 (重构) =====
+   叠加在 globals.css 的 glass-* 之上: 鼠标跟随的边缘反光, 染色导航反光,
+   新的浮层/徽章/焦点环; 旧类名保持可用 */
+
+/* 卡片/面板边缘反光: 与面内反光共享 --mouse-x/--mouse-y */
+.glass-card,
+.surface {
+  isolation: isolate;
+}
+
+.surface {
+  position: relative;
+  background:
+    linear-gradient(135deg, rgb(var(--tint) / var(--tint-strength)) 0%, transparent 62%),
+    var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+.surface:not([class*='tint-']) { background: var(--glass-bg); }
+
+.surface.surface-strong,
+.surface.surface-strong:not([class*='tint-']) {
+  background: var(--glass-bg-strong);
+}
+
+/* 边缘高光: 只在边框上显出指针位置的光 */
+.glass-card > .glass-rim,
+.surface > .glass-rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  z-index: 2;
+  background: radial-gradient(180px circle at var(--mouse-x, -999px) var(--mouse-y, -999px), var(--rim-color, var(--glass-highlight)), transparent 70%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity var(--dur-3) var(--ease-standard);
+}
+.glass-hovering > .glass-rim { opacity: 1; }
+.glass-nearby > .glass-rim { opacity: 0.6; }
+.glass-card-accent { --rim-color: rgb(var(--rgb-accent) / var(--rim-alpha)); }
+.glass-card-purple { --rim-color: rgb(var(--rgb-purple) / var(--rim-alpha)); }
+.glass-card-teal { --rim-color: rgb(var(--rgb-teal) / var(--rim-alpha)); }
+.glass-card-pink { --rim-color: rgb(var(--rgb-pink) / var(--rim-alpha)); }
+.glass-card-orange, .glass-card-warning { --rim-color: rgb(var(--rgb-orange) / var(--rim-alpha)); }
+.glass-card-green, .glass-card-success { --rim-color: rgb(var(--rgb-green) / var(--rim-alpha)); }
+.glass-card-error { --rim-color: rgb(var(--rgb-red) / var(--rim-alpha)); }
+
+/* 可交互磁片: 染色光晕的悬浮阴影 */
+.glass-card.glass-card-interactive.glass-hovering,
+.glass-card.glass-card-interactive:hover,
+.glass-card.glass-card-interactive:focus-visible {
+  transform: translateY(-3px);
+}
+
+/* ===== 导航项: 按分组染色的反光 (沿用生产交互) ===== */
+.nav-item {
+  position: relative;
+  isolation: isolate;
+  transition:
+    color var(--dur-2) var(--ease-standard),
+    transform var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-standard);
+}
+.nav-item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(circle var(--reflect-size, 90px) at var(--mouse-x, -1000px) var(--mouse-y, -1000px), rgb(var(--tint) / var(--nav-reflect-alpha)) 0%, transparent 100%);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.nav-item.glass-nearby::after { opacity: 0.5; }
+.nav-item.glass-nearby { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05); }
+.nav-item.glass-hovering::after,
+.nav-item:hover::after { opacity: 1; }
+.nav-item.glass-hovering,
+.nav-item:hover {
+  color: var(--tint-fg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
+}
+
+/* ===== 染色徽章 / 状态点 / 分隔线 / 键位 ===== */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--tint-fg);
+  background: rgb(var(--tint) / 0.12);
+  border: 1px solid rgb(var(--tint) / 0.2);
+  border-radius: 999px;
+}
+.chip:not([class*='tint-']) { color: var(--color-text-secondary); background: var(--glass-bg-hover); border-color: var(--glass-border); }
+
+.dot {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--tint-fg);
+  box-shadow: 0 0 10px rgb(var(--tint) / 0.8);
+}
+.dot:not([class*='tint-']) { background: var(--color-text-tertiary); box-shadow: none; }
+.dot[data-live='1']::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  border: 1.5px solid var(--tint-fg);
+  animation: ping 2s var(--ease-out) infinite;
+}
+
+.divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--glass-border-strong) 12%, var(--glass-border-strong) 88%, transparent);
+}
+
+kbd, .kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  background: var(--glass-bg-hover);
+  border: 1px solid var(--glass-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+}
+
+/* ===== 键盘焦点环 ===== */
+:where(a, button, [role='button'], [role='tab'], [role='switch'], [role='option'], [role='slider'], summary, [tabindex]):focus-visible {
+  outline: 2px solid rgb(var(--rgb-accent) / 0.9);
+  outline-offset: 2px;
+}
+:where(input, textarea, select):focus-visible { outline: none; }
+
+/* 选中文字 */
+::selection { background: rgb(var(--rgb-accent) / 0.35); }
+
+.num { font-variant-numeric: tabular-nums; }
+
+/* 滚动区域上下边缘渐隐 */
+.fade-edges {
+  -webkit-mask: linear-gradient(180deg, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+  mask: linear-gradient(180deg, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+}
+
+/* 顶栏承载状态弹层, 不能裁剪溢出; 反光层改为跟随圆角 */
+.glass-header { overflow: visible; }
+.glass-header::after { border-radius: inherit; }
+
+/* ===== Chat ===== */
+.chat-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: -3px;
+  background: var(--color-accent);
+  animation: caret-blink 1s steps(1) infinite;
+}
+@keyframes caret-blink { 50% { opacity: 0; } }
+
+.chat-thinking > summary { list-style: none; }
+.chat-thinking > summary::-webkit-details-marker { display: none; }
+.chat-thinking > summary::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  margin-left: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform var(--dur-3) var(--ease-out);
+}
+.chat-thinking[open] > summary::after { transform: rotate(-135deg) translateY(-1px); }
+
+/* 新消息进场 */
+.chat-message-item { animation: rise-in var(--dur-4) var(--ease-out) backwards; }
+
+/* 输入区承载思考转轮弹层, 不裁剪溢出 */
+.glass-card.chat-composer { overflow: visible; transition: box-shadow var(--dur-3) var(--ease-standard), border-color var(--dur-3); }
+.glass-card.chat-composer::after { border-radius: inherit; }
+.glass-card.chat-composer:focus-within {
+  border-color: rgb(var(--rgb-accent) / 0.35);
+  box-shadow: var(--shadow-2), 0 0 0 4px rgb(var(--rgb-accent) / 0.12);
+  transform: none;
+}
+.glass-card.chat-composer.glass-hovering,
+.glass-card.chat-composer:hover { transform: none; }

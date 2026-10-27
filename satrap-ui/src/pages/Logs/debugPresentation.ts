@@ -1,12 +1,22 @@
 import type { DebugEvent, DebugRequest, DiagnosticLevel } from '@/api/debugLogging';
 
 export type DiagnosticTone = 'normal' | 'warning' | 'error' | 'neutral' | 'unknown';
+// 外框颜色是诊断语义的唯一载体, 四类在深浅主题下都必须可区分
 export const diagnosticBorders: Record<DiagnosticTone, string> = {
-  normal: 'border-2 border-blue-500/70 dark:border-blue-400',
-  warning: 'border-2 border-amber-500/80 dark:border-amber-400',
-  error: 'border-2 border-red-500/80 dark:border-red-400',
-  neutral: 'border-2 border-slate-400/60 dark:border-slate-500',
-  unknown: 'border-2 border-slate-400/60 dark:border-slate-500',
+  normal: 'border-2 !border-[rgb(var(--rgb-accent)/0.55)]',
+  warning: 'border-2 !border-[rgb(var(--rgb-orange)/0.7)]',
+  error: 'border-2 !border-[rgb(var(--rgb-red)/0.7)]',
+  neutral: 'border-2 !border-[var(--glass-border-strong)]',
+  unknown: 'border-2 !border-[var(--glass-border-strong)]',
+};
+
+/** 诊断类别对应的染色, 用于图标, 侧条与提示胶囊 */
+export const diagnosticTints: Record<DiagnosticTone, string> = {
+  normal: 'tint-accent',
+  warning: 'tint-orange',
+  error: 'tint-red',
+  neutral: '',
+  unknown: '',
 };
 const neutralStatuses = new Set(['cancelled', 'skipped', 'pending', 'ready', 'waiting', 'needs_attention', 'ask', 'deny', 'rejected', 'expired']);
 const categories: Record<string, string> = {

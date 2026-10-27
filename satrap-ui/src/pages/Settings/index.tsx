@@ -16,6 +16,37 @@ import { LogRetentionPanel } from './LogRetentionPanel';
 import { AdministratorsPanel } from './AdministratorsPanel';
 import { AccessPasswordPanel } from './AccessPasswordPanel';
 import { administratorError } from '@/api/administrators';
+import { Toggle } from '@/components/ui/Toggle';
+import { useTheme } from '@/hooks/useTheme';
+import { usePrefsStore } from '@/stores/usePrefsStore';
+
+/** 本机界面偏好: 只存浏览器, 不写入后端配置 */
+function InterfacePreferences() {
+  const { theme, toggleTheme } = useTheme();
+  const { motion, setMotion, sidebarCollapsed, toggleSidebar } = usePrefsStore();
+  const rows = [
+    { label: '深色主题', hint: '也可在顶栏右侧切换', checked: theme === 'dark', onChange: () => toggleTheme() },
+    { label: '减少动效', hint: '关闭进场、流光与主题过渡动画; 系统已开启减少动态效果时自动生效', checked: motion === 'reduced', onChange: (value: boolean) => setMotion(value ? 'reduced' : 'full') },
+    { label: '收起侧栏', hint: '快捷键 Ctrl+B', checked: sidebarCollapsed, onChange: () => toggleSidebar() },
+  ];
+  return (
+    <div className="rounded-xl border border-glass-border bg-glass p-4">
+      <p className="text-sm font-medium text-text-primary">界面偏好</p>
+      <p className="text-xs text-text-tertiary mb-3">保存在当前浏览器</p>
+      <div className="divide-y divide-glass-border">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center gap-4 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm text-text-primary">{row.label}</p>
+              <p className="text-xs text-text-tertiary">{row.hint}</p>
+            </div>
+            <Toggle checked={row.checked} title={row.label} onChange={row.onChange} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 interface ConfigData {
   api?: {
@@ -404,6 +435,7 @@ export function Settings() {
 
           <TabsContent value="about">
             <div className="space-y-4">
+              <InterfacePreferences />
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 rounded-sm bg-glass">
                   <p className="text-sm text-text-tertiary">前端版本</p>
