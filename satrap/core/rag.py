@@ -1,20 +1,20 @@
 """分层 RAG 知识库服务, 供管理接口及模型工具共用"""
 from __future__ import annotations
 
-from contextlib import closing, nullcontext
-from functools import wraps
+from contextlib import closing, nullcontext, contextmanager, ExitStack
+from collections.abc import Iterator
 import hashlib
 from pathlib import Path
 import sqlite3
 import shutil
-from typing import Any, Callable, Concatenate, ParamSpec, TypeVar, cast
+from typing import Any, Callable, Generator, cast
 import json
 import math
 import time
 import uuid
 
 from satrap.edictum.plugin_resources import build_model_client, named_model_config
-from satrap.core.storage.file_lock import FileLock, session_storage_lock
+from satrap.core.storage.file_lock import FileLease, FileLock, session_storage_lock
 from satrap.core.utils.text_utils import TextSplitter
 from satrap.core.type import EmbeddingConfig
 from satrap.core.database import DataBase
@@ -30,18 +30,7 @@ DEFAULT_RAG_CONFIG: dict[str, Any] = {
 }
 
 
-_P = ParamSpec("_P")
-_R = TypeVar("_R")
-
-
-def _library_operation(function: Callable[Concatenate[RagService, str, _P], _R]) -> Callable[Concatenate[RagService, str, _P], _R]:
-    """库操作与删除及会话回收共用锁, 嵌套操作可重入"""
-    @wraps(function)
-    def invoke(self: RagService, kb_id: str, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        _, row = self._get(kb_id)
-        with self._library_lock(row):
-            return function(self, kb_id, *args, **kwargs)
-    return invoke
+RagProgress = Callable[[str, str, int, int | None], None]
 
 
 def ensure_rag_tables(connection: sqlite3.Connection) -> None:
@@ -57,6 +46,23 @@ def ensure_rag_tables(connection: sqlite3.Connection) -> None:
     )
     connection.execute("CREATE INDEX IF NOT EXISTS rag_kb_owner ON rag_knowledge_bases(session_id, scope)")
     connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS rag_kb_default ON rag_knowledge_bases(session_id) WHERE is_default=1 AND scope='session'")
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS rag_jobs (job_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, "
+        "owner_service TEXT NOT NULL, owner_runtime_id TEXT NOT NULL, platform_id TEXT NOT NULL, session_id TEXT NOT NULL, "
+        "kb_id TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL, phase TEXT NOT NULL, progress_json TEXT NOT NULL, "
+        "created_at REAL NOT NULL, started_at REAL, finished_at REAL, error_json TEXT, result_json TEXT, "
+        "request_json TEXT NOT NULL, input_name TEXT NOT NULL DEFAULT '', UNIQUE(kb_id, operation_id))"
+    )
+    connection.execute("CREATE INDEX IF NOT EXISTS rag_jobs_owner ON rag_jobs(session_id, kb_id, created_at DESC, job_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS rag_jobs_runtime ON rag_jobs(owner_service, status)")
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS rag_documents (document_id TEXT PRIMARY KEY, kb_id TEXT NOT NULL, source_id TEXT NOT NULL, "
+        "session_id TEXT NOT NULL, name TEXT NOT NULL, size_bytes INTEGER, created_at REAL, updated_at REAL NOT NULL, "
+        "last_indexed_at REAL, status TEXT NOT NULL, error_json TEXT, job_id TEXT, chunk_count INTEGER NOT NULL DEFAULT 0, "
+        "UNIQUE(kb_id, source_id))"
+    )
+    connection.execute("CREATE INDEX IF NOT EXISTS rag_documents_owner ON rag_documents(session_id, kb_id, document_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS rag_documents_library ON rag_documents(kb_id, document_id)")
 
 
 def embedding_identity(config: EmbeddingConfig) -> str:
@@ -127,7 +133,10 @@ class RagService:
         for database in (self.global_database, self.session_database):
             if not database.exists():
                 continue
-            with closing(self._connect(database)) as connection:
+            with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                if not connection.execute("SELECT 1 FROM sqlite_master WHERE name='rag_knowledge_bases'").fetchone():
+                    continue
                 where = "WHERE session_id=?" if database == self.session_database and self.session_id else ""
                 rows = connection.execute(f"SELECT * FROM rag_knowledge_bases {where} ORDER BY created_at", (self.session_id,) if where else ()).fetchall()
                 result.extend(self._payload(row) for row in rows)
@@ -137,7 +146,10 @@ class RagService:
         for database in (self.global_database, self.session_database):
             if not database.exists():
                 continue
-            with closing(self._connect(database)) as connection:
+            with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                if not connection.execute("SELECT 1 FROM sqlite_master WHERE name='rag_knowledge_bases'").fetchone():
+                    continue
                 row = connection.execute("SELECT * FROM rag_knowledge_bases WHERE id=?", (kb_id,)).fetchone()
             if row is not None:
                 if self.session_id and row["scope"] == "session" and row["session_id"] != self.session_id:
@@ -150,10 +162,63 @@ class RagService:
             raise ValueError("知识库 ID 无效")
         return (self.layout.root / "rag" / "indexes" if row["scope"] == "global" else self.layout.session_indexes(self.platform_id, row["session_id"]) / "rag") / row["id"]
 
-    def _library_lock(self, row: dict[str, Any]) -> FileLock:
-        if row["scope"] == "session":
-            return session_storage_lock(self.layout, self.platform_id, row["session_id"])
-        return FileLock(self.layout.root / "rag" / "locks" / f"{row['id']}.lock")
+    def _lock_path(self, row: dict[str, Any], suffix: str = "") -> Path:
+        """
+        返回会话移动范围之外的知识库锁路径
+
+        参数:
+        - row: 已验证的知识库记录
+        - suffix: 可选 generation, 不接受外部路径
+
+        返回:
+        - 稳定的写入锁或版本读取锁路径
+        """
+        base = self.layout.root / "rag" / "locks" if row["scope"] == "global" else self.session_database.parent / "locks"
+        return base / f"rag-{row['id']}{'-' + suffix if suffix else ''}.lock"
+
+    @contextmanager
+    def _library_lock(self, row: dict[str, Any]) -> Iterator[None]:
+        """
+        串行写入同库, 允许查询旧版本, 会话维护仍需等待租约释放
+
+        参数:
+        - row: 已验证的知识库记录
+
+        返回:
+        - 写入期间的维护租约和库锁
+        """
+        with ExitStack() as stack:
+            if row["scope"] == "session":
+                stack.enter_context(FileLease(session_storage_lock(self.layout, self.platform_id, row["session_id"]).path, shared=True))
+            stack.enter_context(FileLock(self._lock_path(row)))
+            yield
+
+    @contextmanager
+    def generation(self, kb_id: str) -> Iterator[dict[str, Any]]:
+        """
+        固定本次读取的已发布版本, 不等待后台向量化
+
+        参数:
+        - kb_id: 已限定范围的知识库 ID
+
+        返回:
+        - 持有读取租约的版本记录
+        """
+        with ExitStack() as stack:
+            _, initial = self._get(kb_id)
+            if initial["scope"] == "session":
+                stack.enter_context(FileLease(session_storage_lock(self.layout, self.platform_id, initial["session_id"]).path, shared=True))
+            for _ in range(5):
+                _, row = self._get(kb_id)
+                lease = FileLease(self._lock_path(row, row["generation"] or "empty"), shared=True)
+                try:
+                    _, current = self._get(kb_id)
+                    if current["generation"] == row["generation"]:
+                        yield row
+                        return
+                finally:
+                    lease.close()
+            raise ValueError("知识库版本正在连续变更, 请稍后重试")
 
     def _discard_inactive(self, row: dict[str, Any], keep: str) -> None:
         """持有库锁时清理失效版本, 删除失败留待下次写操作重试"""
@@ -165,7 +230,11 @@ class RagService:
                 if path.name == keep or len(path.name) != 32 or any(char not in "0123456789abcdef" for char in path.name):
                     continue
                 if path.is_dir() and not path.is_symlink():
-                    shutil.rmtree(path)
+                    try:
+                        with FileLock(self._lock_path(row, path.name), timeout=0):
+                            shutil.rmtree(path)
+                    except TimeoutError:
+                        continue   # 仍在读取的旧版本由后续写入回收
         except OSError:
             logger.warning(f"知识库 {row['id']} 的失效索引版本清理失败")
 
@@ -225,12 +294,58 @@ class RagService:
             raise ValueError("知识库索引文件缺失, 请恢复备份或重建")
         return DataBase(str(path))
 
-    @_library_operation
     def documents(self, kb_id: str, *, include_text: bool = False) -> list[dict[str, Any]]:
-        _, row = self._get(kb_id)
-        index = self._index(row)
-        sources = index.source_documents("chunks") if index else []
-        return [{key: value for key, value in source.items() if include_text or key != "source_text"} for source in sources]
+        """
+        读取发布版本的来源目录, 不等待后台重建
+
+        参数:
+        - kb_id: 已限定范围的知识库
+        - include_text: 显式请求时才读取原文, 默认关闭
+
+        返回:
+        - 原同步管理接口的来源记录
+        """
+        with self.generation(kb_id) as row:
+            return list(self._sources(row, include_text=include_text))
+
+    def _sources(self, row: dict[str, Any], *, include_text: bool = True) -> Generator[dict[str, Any], None, None]:
+        """
+        逐份读取已发布来源, 目录查询不把正文带入 Python
+
+        参数:
+        - row: 已持有读取或写入租约的版本记录
+        - include_text: 重建时才读取首块中保存的正文
+
+        返回:
+        - 每次仅解码一个来源的迭代器
+        """
+        if not row["generation"]:
+            return
+        path = self._root(row) / row["generation"] / "metadata.sqlite"
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            expression = "metadata" if include_text else "json_remove(metadata, '$.source_text')"
+            for item in connection.execute(f"SELECT {expression} FROM documents WHERE collection_name='chunks' "
+                                           "AND json_extract(metadata, '$.chunk_index')=0 ORDER BY id"):
+                yield json.loads(item[0])
+
+    def _stage(self, row: dict[str, Any], generation: str) -> DataBase:
+        """
+        通过 SQLite 在线备份复制已发布元数据, 派生向量缓存按需重建
+
+        参数:
+        - row: 当前发布记录
+        - generation: 新版本 ID
+
+        返回:
+        - 尚未发布且仅由当前写入者修改的索引
+        """
+        target = self._root(row) / generation
+        target.mkdir(parents=True, exist_ok=False)
+        if row["generation"]:
+            source = self._root(row) / row["generation"] / "metadata.sqlite"
+            with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as original, closing(sqlite3.connect(target / "metadata.sqlite")) as output:
+                original.backup(output)
+        return DataBase(str(target))
 
     @staticmethod
     def _close(client: Any) -> None:
@@ -238,26 +353,62 @@ class RagService:
         if callable(close):
             close()
 
-    def _embed_source(self, index: DataBase, config: dict[str, Any], source: dict[str, Any], model: EmbeddingConfig) -> int:
+    def _embed_source(self, index: DataBase, config: dict[str, Any], source: dict[str, Any], model: EmbeddingConfig,
+                      progress: RagProgress | None = None) -> int:
+        """
+        分批向量化一个来源后原子写入暂存索引
+
+        参数:
+        - index: 当前写入者持有的未发布索引
+        - config: 已验证的分块和批量策略
+        - source: 包含原文的一个来源
+        - model: 与目标向量空间对应的配置
+        - progress: 可选阶段回调, 限频由任务持有者负责
+
+        返回:
+        - 实际写入的片段数
+        """
+        if progress:
+            progress("splitting", "chunks", 0, None)
         chunks = TextSplitter(config["chunk_size"], config["chunk_overlap"]).split_text(source["source_text"])
         if not chunks:
             raise ValueError("文档没有可索引的文本")
         vectors: list[list[float]] = []
         client = build_model_client("embed", model)
         try:
+            if progress:
+                progress("embedding", "chunks", 0, len(chunks))
             for start in range(0, len(chunks), config["batch_size"]):
                 batch = chunks[start:start + config["batch_size"]]
                 result = client.embed(batch)
                 if not isinstance(result, list) or len(cast(list[object], result)) != len(batch) or any(not vector for vector in cast(list[object], result)):
                     raise ValueError("文档向量化未完整成功, 原数据保持不变")
                 vectors.extend(cast(list[list[float]], result))
+                if progress:
+                    progress("embedding", "chunks", len(vectors), len(chunks))
         finally:
             self._close(client)
         metadata: list[dict[str, Any]] = [{**{key: value for key, value in source.items() if key != "source_text"}, "chunk_index": number, "chunk_count": len(chunks)} for number in range(len(chunks))]
         metadata[0]["source_text"] = source["source_text"]
         return index.replace_source("chunks", source["source_id"], chunks, vectors, metadata)
 
-    def ingest(self, kb_id: str, text: str, source: str) -> dict[str, Any]:
+    def ingest(self, kb_id: str, text: str, source: str, *, expected_revision: int | None = None,
+               progress: RagProgress | None = None) -> dict[str, Any]:
+        """
+        在独立 generation 导入来源并原子发布, 失败保留原数据
+
+        参数:
+        - kb_id: 目标知识库
+        - text: 最多一百万字符的来源正文
+        - source: 来源名称, 用于构造稳定身份
+        - expected_revision: 后台任务固定的配置修订, 旧同步入口可省略
+        - progress: 可选的阶段内进度回调
+
+        返回:
+        - indexed 或 skipped, 来源 ID 及片段数
+        """
+        if expected_revision is not None:
+            self._validate_revision(expected_revision)
         if not isinstance(text, str) or not text.strip() or len(text) > 1000000:
             raise ValueError("文档正文必须为 1 到 1000000 个字符")
         if not isinstance(source, str) or not source.strip() or len(source) > 1000:
@@ -265,6 +416,8 @@ class RagService:
         _, initial = self._get(kb_id)
         with self._library_lock(initial):
             database, row = self._get(kb_id)
+            if expected_revision is not None and row["revision"] != expected_revision:
+                raise ValueError("知识库配置已变化, 请刷新后重试")
             config = json.loads(row["config_json"])
             model = named_model_config(self.models, "embed", config["embed"])
             if embedding_identity(model) != row["embed_identity"]:
@@ -273,17 +426,19 @@ class RagService:
             current = self.documents(kb_id)
             if config["duplicate_policy"] == "skip" and any(item["source_id"] == source_id for item in current):
                 return {"status": "skipped", "source_id": source_id, "chunks": 0}
-            generation = row["generation"] or uuid.uuid4().hex
-            index = self._index(row) or DataBase(str(self._root(row) / generation))
+            generation = uuid.uuid4().hex
+            index = self._stage(row, generation)
             record: dict[str, Any] = {"source_id": source_id, "source": source.strip(), "source_text": text, "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(), "updated_at": time.time()}
             try:
-                count = self._embed_source(index, config, record, model)
+                count = self._embed_source(index, config, record, model, progress)
+                if progress:
+                    progress("publishing", "chunks", count, count)
                 self._publish(database, row, generation, index)
                 self._discard_inactive(row, generation)
                 return {"status": "indexed", "source_id": source_id, "chunks": count}
             except Exception as error:
                 self._discard_inactive(row, row["generation"])
-                self._record_error(database, kb_id, str(error))
+                self._record_error(database, kb_id, f"索引处理失败 ({type(error).__name__})")
                 raise
 
     def _publish(self, database: Path, row: dict[str, Any], generation: str, index: DataBase, config: dict[str, Any] | None = None, identity: str | None = None) -> None:
@@ -292,7 +447,7 @@ class RagService:
                 "UPDATE rag_knowledge_bases SET generation=?, config_json=?, embed_identity=?, revision=revision+1, status='ready', last_error='', "
                 "document_count=?, chunk_count=?, updated_at=? WHERE id=? AND revision=?",
                 (generation, json.dumps(config) if config is not None else row["config_json"], identity or row["embed_identity"],
-                 len(index.source_documents("chunks")), index.get_collection_stats("chunks")["document_count"], time.time(), row["id"], row["revision"]),
+                 index.source_count("chunks"), index.get_collection_stats("chunks")["document_count"], time.time(), row["id"], row["revision"]),
             ).rowcount
             if changed != 1:
                 raise ValueError("知识库配置已被其他操作修改, 请刷新后重试")
@@ -301,8 +456,19 @@ class RagService:
         with closing(self._connect(database)) as connection, connection:
             connection.execute("UPDATE rag_knowledge_bases SET status='error', last_error=?, updated_at=? WHERE id=?", (error, time.time(), kb_id))
 
-    def rebuild(self, kb_id: str, config: dict[str, Any], expected_revision: int) -> dict[str, Any]:
-        """新版本完成后原子切换指针, 失败保留原索引及原配置"""
+    def rebuild(self, kb_id: str, config: dict[str, Any], expected_revision: int, *, progress: RagProgress | None = None) -> dict[str, Any]:
+        """
+        新版本完成后原子切换指针, 失败保留原索引及原配置
+
+        参数:
+        - kb_id: 目标知识库
+        - config: 新的分块与向量配置
+        - expected_revision: 开始及发布时核验的修订
+        - progress: 可选阶段内进度回调
+
+        返回:
+        - 已成功发布的知识库元数据
+        """
         self._validate_revision(expected_revision)
         _, initial = self._get(kb_id)
         with self._library_lock(initial):
@@ -311,18 +477,20 @@ class RagService:
                 raise ValueError("知识库配置已变化, 请刷新后重试")
             config = self._validate_kb(config)
             model = named_model_config(self.models, "embed", config["embed"])
-            sources = self.documents(kb_id, include_text=True)
             generation = uuid.uuid4().hex
             index = DataBase(str(self._root(row) / generation))
             index.create_collection("chunks")
             try:
-                for source in sources:
-                    self._embed_source(index, config, source, model)
+                with closing(self._sources(row)) as sources:
+                    for source in sources:
+                        self._embed_source(index, config, source, model, progress)
+                if progress:
+                    progress("publishing", "documents", row["document_count"], row["document_count"])
                 self._publish(database, row, generation, index, config, embedding_identity(model))
                 self._discard_inactive(row, generation)
             except Exception as error:
                 self._discard_inactive(row, row["generation"])
-                self._record_error(database, kb_id, str(error))
+                self._record_error(database, kb_id, f"索引处理失败 ({type(error).__name__})")
                 raise
         return next(item for item in self.list() if item["id"] == kb_id)
 
@@ -333,8 +501,16 @@ class RagService:
             index = self._index(row)
             if index is None or not any(item["source_id"] == source_id for item in index.source_documents("chunks")):
                 return False
-            index.replace_source("chunks", source_id, [], [], [])
-            self._publish(database, row, row["generation"], index)
+            generation = uuid.uuid4().hex
+            index = self._stage(row, generation)
+            try:
+                index.replace_source("chunks", source_id, [], [], [])
+                self._publish(database, row, generation, index)
+                with closing(self._connect(database)) as connection, connection:
+                    connection.execute("DELETE FROM rag_documents WHERE kb_id=? AND source_id=?", (kb_id, source_id))
+            finally:
+                _, current = self._get(kb_id)
+                self._discard_inactive(current, current["generation"])
             return True
 
     def delete(self, kb_id: str) -> None:
@@ -348,11 +524,18 @@ class RagService:
             isolated = root.with_name(f".deleted-{root.name}-{uuid.uuid4().hex}")
             moved = False
             try:
-                with closing(self._connect(database)) as connection, connection:
+                with ExitStack() as readers, closing(self._connect(database)) as connection, connection:
+                    if root.exists():
+                        for generation in root.iterdir():
+                            if len(generation.name) == 32 and generation.is_dir():
+                                readers.enter_context(FileLock(self._lock_path(row, generation.name)))
+                    readers.enter_context(FileLock(self._lock_path(row, "empty")))
                     if root.exists():
                         root.rename(isolated)
                         moved = True
                     connection.execute("DELETE FROM rag_knowledge_bases WHERE id=?", (kb_id,))
+                    connection.execute("DELETE FROM rag_jobs WHERE kb_id=?", (kb_id,))
+                    connection.execute("DELETE FROM rag_documents WHERE kb_id=?", (kb_id,))
             except BaseException:
                 if moved:
                     isolated.rename(root)
@@ -449,6 +632,7 @@ class RagService:
         raise ValueError("有多个可写库, 请指定目标知识库")
 
     def search(self, query: str, values: dict[str, Any], requested_ids: list[str] | None = None) -> dict[str, Any]:
+        started = time.monotonic()
         if not isinstance(query, str) or not query.strip() or len(query) > 32000:
             raise ValueError("检索问题必须为 1 到 32000 个字符")
         config = validate_rag_config(values)
@@ -457,10 +641,9 @@ class RagService:
         if not selected or not isinstance(selected, list) or any(item not in allowed for item in selected):
             raise ValueError("检索目标不在配置允许的范围内")
         candidates: dict[str, dict[str, Any]] = {}
+        retrieved = 0
         for kb_id in dict.fromkeys(selected):
-            _, row = self._get(kb_id)
-            with self._library_lock(row):
-                _, row = self._get(kb_id)
+            with self.generation(kb_id) as row:
                 kb_config = json.loads(row["config_json"])
                 model = named_model_config(self.models, "embed", kb_config["embed"])
                 if embedding_identity(model) != row["embed_identity"]:
@@ -476,7 +659,10 @@ class RagService:
                 if not vector:
                     raise ValueError("问题向量化失败")
                 threshold = config["similarity_threshold"]
-                results = index.search("chunks", vector, config["candidate_k"], -1.0 if threshold is None else threshold)
+                results = index.search("chunks", vector, config["candidate_k"], -1.0)
+                retrieved += len(results)
+                if threshold is not None:
+                    results = [result for result in results if result["score"] >= threshold]
                 for rank, result in enumerate(results):
                     key = hashlib.sha256(result["document"].encode("utf-8")).hexdigest()
                     meta = result["metadata"]
@@ -487,6 +673,7 @@ class RagService:
                     candidates[key]["fusion_score"] += 1 / (60 + rank + 1)
         ordered = sorted(candidates.values(), key=lambda item: item["fusion_score"], reverse=True)
         warnings: list[str] = []
+        rerank_status = "not_requested" if not config["rerank"] else "not_needed"
         if config["rerank"] and ordered:
             client = None
             try:
@@ -506,10 +693,12 @@ class RagService:
                         raise ValueError("重排响应包含无效分数")
                     reranked.append({**ordered[position], "rerank_score": item["score"]})
                 ordered = sorted(reranked, key=lambda item: item["rerank_score"], reverse=True)
+                rerank_status = "applied"
             except Exception:
                 if config["rerank_failure_policy"] == "error":
                     raise ValueError("重排失败") from None
                 warnings.append("重排失败, 已使用检索排名融合")
+                rerank_status = "fallback"
             finally:
                 if client is not None:
                     self._close(client)
@@ -521,4 +710,7 @@ class RagService:
             text = item["text"][:remaining]
             output.append({**item, "text": text, "truncated": len(text) < len(item["text"])})
             remaining -= len(text)
-        return {"status": "found" if output else "empty", "results": output, "warnings": warnings, "truncated": any(item["truncated"] for item in output) or len(output) < min(len(ordered), config["top_k"])}
+        return {"status": "found" if output else "empty", "results": output, "warnings": warnings,
+                "elapsed_ms": (time.monotonic() - started) * 1000, "candidates": retrieved,
+                "returned_count": len(output), "rerank_status": rerank_status,
+                "truncated": any(item["truncated"] for item in output) or len(output) < min(len(ordered), config["top_k"])}
