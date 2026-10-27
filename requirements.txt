@@ -67,3 +67,4 @@ pytest-xdist>=3.8,<4
 setuptools>=68
 
 packaging>=23.0
+tzdata>=2025.2

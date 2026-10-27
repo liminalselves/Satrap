@@ -40,6 +40,7 @@ install_requires = [
     "aiofiles>=23.2.0",
     "pyyaml>=6.0.0",
     "packaging>=23.0",
+    "tzdata>=2025.2",
     "mcp>=2.0.0,<3",
     "RestrictedPython==8.5",
 ]
