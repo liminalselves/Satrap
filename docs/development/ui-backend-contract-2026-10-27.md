@@ -756,7 +756,8 @@ B 本机回归门槛以该语料固定为: 总览热 P95 <= 1500 ms, 模型/实�
 - F 及相关回归 171 passed; 后续 RAG/配置/对话存储合跑 183 passed; 严格类型检查的新增 11 个独立模块为 0 errors, 0 warnings
 - Windows Python 3.13.5 完整 tests/unit 首轮为 3978 passed, 9 failed, 8 skipped; 失败均定位为旧夹具缺失新增运行字段或降低版本号却保留新列, 修正后相关 300 passed, 1 skipped
 - 随后的完整后端执行为 3987 passed, 8 skipped, 用时约 315 秒; 8 项跳过分别为 4 项 Windows 符号链接权限、3 项 POSIX 进程组专属场景、1 项需显式开启的真实视觉集成验收
-- 旧宿主模块仍含 Unknown 类型警告, 不把独立新增模块的零警告误述为全仓零警告; 后续类型注释收敛和跨平台结果单独记录
+- 旧宿主变更模块检查为 0 errors, 489 warnings, 包含既有动态 SDK/注册表及尚未收敛的 Unknown 警告; 不把独立新增模块的零警告误述为全仓零警告
+- 最后一轮类型注释调整后的相关后端回归为 289 passed; 未因类型调整重复执行无关全量场景
 - 未运行前端测试、浏览器测试或构建, 因本轮没有 UI 修改; 现有后端 CI 会自动收集新增 tests/unit 场景
 
 ### 12.3 历史分页与聚合 HTTP 对照
@@ -789,3 +790,19 @@ context 每页解码从 10000 条降至 50 条, SQL 为 5/7 条; history 不调�
 认证失败标记 auth_required, 停止后只在当前可信数据根已有快照时标记 stale, 其余来源仍返回; 不把离线来源伪造为零
 
 群目录当前页含新增绑定/审批/活动资料时的集成断言为最多 7 条 SELECT; 100 个插件健康摘要仅两次服务请求, 不按插件逐个探测
+
+同一大语料下额外一次补齐 1000 个实例的 usage/context: 热 P50/P95 538.8/579.2 ms, 共 6 条 SQL, Python 分配峰值约 2.61 MB, 正文表查询为 0; SQL 含按 400 个身份分组的三次上下文查询, 随批次有界增长, 不逐实例查询
+
+### 12.4 跨平台状态
+
+Windows 本机验证如上; Linux 已使用 WSL 中独立 Python 3.13.18 与 requirements/声明的 extras 执行完整 tests/unit, 结果为 3991 passed, 4 skipped, 用时约 717 秒
+
+Linux 的 4 项跳过分别为: 1 项真实视觉集成需显式开启、1 项浏览器验收因未安装 Node/Playwright、2 项仅适用于 Windows 的作业对象/进程身份场景; Windows 跳过的 POSIX 进程组和符号链接场景在 Linux 已执行
+
+Linux 这轮源码及依赖位于挂载的 Windows 盘, 不以该执行耗时代表原生 Linux CI 性能; RAG 非有限时间/空排序键游标的最后补充断言在 Windows、Linux 均另行通过
+
+新增独立模块按 Python 3.11 的静态检查仍为 0 errors, 0 warnings; Windows/Linux 的其他 Python 版本运行矩阵未执行, 当前没有 macOS 环境, 明确保持未验收
+
+验证完成后仅保留命令日志、依赖版本记录和 benchmark 原始样本, 本次 Linux 临时解释器、虚拟环境与安装缓存由本任务回收
+
+未推送 Git 远端、未触发新的远端矩阵、未部署服务器; 本机两种系统通过不能替代 Windows/Linux/macOS 全部矩阵通过, 合并门禁仍按第 11 节执行

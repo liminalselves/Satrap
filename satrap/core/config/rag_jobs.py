@@ -13,6 +13,7 @@ from contextlib import closing, nullcontext
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -126,7 +127,8 @@ def _paging(query: Mapping[str, str], scope: tuple[str, ...]) -> tuple[int, list
         if not isinstance(value, dict):
             raise ValueError()
         value = cast(dict[str, object], value)
-        if value.get("scope") != fingerprint or not isinstance(value.get("after"), list):
+        after = value.get("after")
+        if value.get("scope") != fingerprint or not isinstance(after, list) or not 1 <= len(cast(list[object], after)) <= 2:
             raise ValueError()
         return limit, cast(list[object], value["after"]), fingerprint
     except (ValueError, TypeError, UnicodeError) as error:
@@ -190,7 +192,8 @@ def rag_jobs_read(service: RagService, resource: str, identity: str, query: Mapp
                 clauses.append("operation_id=?")
                 values.append(operation)
             if after:
-                if len(after) != 2 or not isinstance(after[0], (int, float)) or isinstance(after[0], bool) or not isinstance(after[1], str):
+                if (len(after) != 2 or not isinstance(after[0], (int, float)) or isinstance(after[0], bool)
+                        or not math.isfinite(after[0]) or after[0] < 0 or not isinstance(after[1], str)):
                     raise RagJobError(400, "invalid_cursor", "任务游标排序键无效")
                 clauses.append("(created_at,job_id)<(?,?)")
                 values.extend(after)

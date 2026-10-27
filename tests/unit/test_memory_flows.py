@@ -980,3 +980,95 @@ def test_list_page_and_cursor_come_from_one_read_snapshot(memories: tuple[Scoped
     assert raced["next_cursor"] == before["next_cursor"] and raced["has_more"] == before["has_more"]
     with pytest.raises(MemoryError, match="重新查询"):
         repository.list(limit=1, cursor=before["next_cursor"])
+
+
+@pytest.mark.asyncio
+async def test_unified_approval_real_http_keeps_memory_cas_and_offline_authority(tmp_path, monkeypatch):
+    """Control 与 Backend 真实 HTTP 完成记忆审批, 陈旧修订冲突, 离线只处理本地记忆且认证拒绝不降级"""
+    import aiohttp
+    from urllib.request import Request
+    from satrap.core.backend.BackendManager import BackendConfig, BackendManager
+    from satrap.core.backend.http_api import BackendHTTPServer
+    from satrap.core.server_auth import ServerAuth
+    from satrap.core.platform.action_catalog import ActionScope
+    from satrap.core.config.group_actions import GroupActionStore
+    from satrap.core.telemetry.api import SourceUnavailable
+
+    monkeypatch.setenv('SATRAP_CONFIG_ROOT', str(tmp_path / 'config'))
+    _use_config(monkeypatch, tmp_path)
+    document = json.loads(control_server.CONFIG_PATH.read_text(encoding='utf-8'))
+    document['platforms'] = [{'id': 'qq', 'type': 'onebot', 'settings': {}}]
+    control_server.CONFIG_PATH.write_text(json.dumps(document), encoding='utf-8')
+    layout = StorageLayout(tmp_path / 'data')
+    layout.ensure_platform('qq')
+    database = layout.platform_db('qq')
+    groups = GroupActionStore(database)
+    groups.adopt_legacy('100', {})
+    groups.submit('group-decision-1', '100', '456', 'set_group_name', {'name': '新群名'}, 'panel', 1, approval_required=True)
+    archive = PlatformMessageStore(database, 'qq')
+    scope = MessageScope('qq', '100', 'group', '456')
+    archive.record(scope, ArchiveMessage('source', 'member', time.time(), '周五开会'))
+    repository = ScopedMemories(archive, scope)
+    def propose(key):
+        return repository.mutate('create', {'kind': 'group_rule', 'key': key, 'title': key, 'content': '周五开会', 'source_message_ids': ['source']},
+                                 actor='member', current_message='source', operation_id=key)
+    proposal = propose('meeting')
+    backend = BackendManager(BackendConfig(data_root=str(layout.root), platforms=document['platforms']))
+    monkeypatch.setattr(backend, 'action_scopes', lambda: [ActionScope('qq', database, '100', True)])
+    handler = BackendHTTPServer(backend)
+    handler.auth = ServerAuth.create('127.0.0.1', 0, token='backend-approval-test-token-at-least-32-characters')
+    backend_listener = await asyncio.start_server(handler._handle_connection, '127.0.0.1', 0)
+    port = backend_listener.sockets[0].getsockname()[1]
+    monkeypatch.setattr(control_server, '_configured_backend_address', lambda: ('127.0.0.1', port))
+    monkeypatch.setattr(control_server, '_authenticated_request', lambda url, method='GET': Request(url, headers={'Authorization': 'Bearer ' + handler.auth.token}, method=method))
+    auth = ServerAuth.create('127.0.0.1', 0, token='control-approval-test-token-at-least-32-characters')
+    monkeypatch.setattr(control_server, '_CONTROL_AUTH', auth)
+    control_listener = await asyncio.start_server(control_server._handle_request, '127.0.0.1', 0)
+    control_port = control_listener.sockets[0].getsockname()[1]
+    async with aiohttp.ClientSession() as client:
+        async def request(path, body=None, authorized=True):
+            async with client.request('POST' if body is not None else 'GET', f'http://127.0.0.1:{control_port}' + path,
+                                      json=body, headers={'Authorization': 'Bearer ' + (auth.token if authorized else 'invalid')}) as response:
+                assert response.headers.get('Connection', '').lower() == 'close'
+                return response.status, await response.json()
+        def item(proposal_id, revision=1):
+            return {'key': {'platform_id': 'qq', 'self_id': '100', 'source': 'memory', 'action_id': proposal_id},
+                    'expected_revision': revision, 'approve': True, 'note': '已核对群内来源'}
+        try:
+            assert (await request('/api/platform-actions', authorized=False))[0] == 401
+            status, page = await request('/api/platform-actions?source=memory')
+            assert status == 200 and page['items'][0]['key']['action_id'] == proposal['proposal_id']
+            duplicate = {'items': [item(proposal['proposal_id'])] * 2}
+            assert (await request('/api/platform-actions/decisions', duplicate))[0] == 400
+            assert repository.proposals()['items'][0]['state'] == 'pending'
+            stale = await request('/api/platform-actions/decisions', {'items': [item(proposal['proposal_id'], 2)]})
+            assert stale[1]['items'][0]['result'] == 'conflict'
+            body = {'items': [item(proposal['proposal_id']), {'key': {'platform_id': 'qq', 'self_id': '100', 'source': 'group', 'action_id': 'group-decision-1'},
+                                                          'expected_revision': 1, 'approve': True}]}
+            status, applied = await request('/api/platform-actions/decisions', body)
+            assert status == 200 and applied['items'][0]['result'] == 'applied', applied
+            assert applied['items'][0]['action']['state'] == 'succeeded' and applied['items'][1]['result'] in {'unavailable', 'failed'}
+            assert len(repository.list()['items']) == 1
+            repeated = await request('/api/platform-actions/decisions', {'items': [item(proposal['proposal_id'])]})
+            assert repeated[1]['items'][0]['result'] == 'conflict' and len(repository.list()['items']) == 1
+            latest = (await request('/api/platform-actions?source=memory'))[1]['items'][0]
+            assert latest['revision'] == 2 and latest['decision'] == 'approved'
+            assert latest['decided_by'] == {'kind': 'panel', 'id': None} and latest['note'] == '已核对群内来源'
+            second = propose('meeting2')
+            async def offline(*args, **kwargs):
+                raise SourceUnavailable('offline', 'service_unreachable')
+            monkeypatch.setattr(control_server, '_action_backend_request', offline)
+            cold = await request('/api/platform-actions?source=memory')
+            assert cold[0] == 200 and cold[1]['complete'] is False
+            assert (await request('/api/platform-actions/decisions', {'items': [item(second['proposal_id'])]}))[1]['items'][0]['result'] == 'applied'
+            assert len(repository.list()['items']) == 2
+            async def denied(*args, **kwargs):
+                raise SourceUnavailable('auth_required', 'service_auth_required')
+            monkeypatch.setattr(control_server, '_action_backend_request', denied)
+            assert (await request('/api/platform-actions'))[0] == 503
+            assert (await request('/api/platform-actions/decisions', {'items': [item(second['proposal_id'])]}))[0] == 503
+        finally:
+            control_listener.close()
+            backend_listener.close()
+            await control_listener.wait_closed()
+            await backend_listener.wait_closed()

@@ -64,6 +64,9 @@ def test_real_platform_database_migration_preserves_context_and_configs(tmp_path
         for table in ("memory_refs", "memory_proposals", "memory_operations", "memory_audit", "memories", "reminder_operations",
                       "friend_actions", "friend_policies", "platform_message_policy", "platform_message_backups", "platform_messages", "platform_message_chats"):
             connection.execute(f"DROP TABLE {table}")
+        connection.execute("DROP TRIGGER group_actions_action_revision")
+        for column in ("action_revision", "decision", "decided_by_json", "decision_note", "risk", "risk_source"):
+            connection.execute(f"ALTER TABLE group_actions DROP COLUMN {column}")
         connection.execute("PRAGMA user_version=3")
     store = _platform_messages_store(tmp_path)
     assert store.query(SCOPE)["items"] == []
@@ -521,6 +524,9 @@ def test_v4_archive_policy_migrates_without_losing_messages(tmp_path: Path) -> N
             connection.execute(f"DROP TABLE {table}")
         for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'group_chat_%'").fetchall():
             connection.execute(f'DROP TABLE "{table}"')
+        connection.execute("DROP TRIGGER group_actions_action_revision")
+        for column in ("action_revision", "decision", "decided_by_json", "decision_note", "risk", "risk_source"):
+            connection.execute(f"ALTER TABLE group_actions DROP COLUMN {column}")
         connection.execute("PRAGMA user_version=4")
     store = PlatformMessageStore(database, "legacy", retention_days=7)
     assert _platform_message_maintenance_item(store, scope, "3")["text"] == "原文"
@@ -568,6 +574,7 @@ async def test_backend_stop_cancels_owned_maintenance_task() -> None:
     backend._reminder_scheduler = None
     backend._adapter_mgr = None
     backend._platform_runtimes = {}
+    backend._telemetry_writer = None
     entered, closed = asyncio.Event(), asyncio.Event()
 
     async def maintain() -> None:

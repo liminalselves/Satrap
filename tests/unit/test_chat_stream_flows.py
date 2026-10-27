@@ -32,10 +32,17 @@ async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
     service._event_sequences = {}
     service._stream_id = "server-test"
     service._ask_user_timeout_seconds = 5
+    from satrap.core.storage import StorageLayout
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    service._storage = StorageLayout(tmp_path / "data")
+    service._platform_id = "chat"
+    service._model_cfg = ModelConfigManager(str(tmp_path / "models.json"), auto_create=False)
     token = "audit-only-token-that-is-at-least-32-characters"
     server = ChatHTTPServer.__new__(ChatHTTPServer)
     MiniHTTPServer.__init__(server, host="127.0.0.1", port=0, auth=ServerAuth.create("127.0.0.1", 0, token=token))
     server.service = service
+    from satrap.core.telemetry.health import ServiceRuntime
+    server._service_runtime = ServiceRuntime("chat")
     question_task = None
     await server.start()
     assert server._server is not None

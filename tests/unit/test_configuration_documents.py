@@ -15,6 +15,75 @@ from satrap.core import config_paths
 from satrap.core.config import versions
 from satrap.core.config.versions import ConfigVersionService
 
+
+def test_raw_yaml_preflight_uses_production_validation_without_writes(tmp_path):
+    from satrap.core.config.document import validate_yaml_document
+
+    before = list(tmp_path.iterdir())
+    assert validate_yaml_document("session_classes:\n  # 空映射\nplatforms:\n  # 空列表\n") == {"valid": True, "errors": []}
+    assert validate_yaml_document("session_scan_paths: []\nplatforms: []\n")["valid"]
+    syntax = validate_yaml_document("platforms: [\n  {id: bad\n")
+    assert not syntax["valid"]
+    problem = syntax["errors"][0]
+    assert problem["code"] == "yaml_syntax_error" and problem["line"] == 3 and problem["column"] == 1
+    semantic = validate_yaml_document("platforms: invalid\n")
+    assert not semantic["valid"] and semantic["errors"][0]["code"] == "invalid_config"
+    assert semantic["errors"][0]["line"] is None and semantic["errors"][0]["column"] is None
+    with pytest.raises(ValueError):
+        validate_yaml_document("中" * (1024 * 1024))
+    assert list(tmp_path.iterdir()) == before
+
+
+async def test_maintenance_policy_cas_unique_owner_and_archive_lease(tmp_path, monkeypatch):
+    import asyncio
+    import time
+    from satrap.core.config.maintenance_settings import MaintenanceRunner, MaintenanceSettingsStore
+    from satrap.core.storage import StorageLayout, StorageMaintenanceService
+    from satrap.core.storage.file_lock import FileLock
+    from satrap.core.storage.layout import storage_key
+
+    settings = MaintenanceSettingsStore(tmp_path / "policy.json")
+    initial = settings.read()
+    assert initial == {"trash_retention_days": 30, "auto_purge_enabled": False, "revision": "missing"}
+    assert not settings.path.exists()
+    layout = StorageLayout(tmp_path / "data")
+    maintenance = StorageMaintenanceService(layout)
+    layout.ensure_platform("chat")
+    folder = layout.session_root("chat", "one")
+    folder.mkdir(parents=True)
+    (folder / "note.txt").write_text("恢复后仍在", encoding="utf-8")
+    archive = maintenance.archive_session("chat", "one")
+    archive_id = archive["archive_id"]
+    target = layout.trash_root("chat") / "sessions" / archive_id
+    os.utime(target, (time.time() - 40 * 86400,) * 2)
+    def no_scan(*args, **kwargs):
+        raise AssertionError("永久清理不能全库扫描")
+    monkeypatch.setattr(StorageMaintenanceService, "scan", no_scan)
+    runner = MaintenanceRunner(layout, store=settings, interval=3600)
+    runner.cycle()
+    assert target.exists()
+    policy = settings.save({"trash_retention_days": 30, "auto_purge_enabled": True, "expected_revision": "missing"})
+    with pytest.raises(ConfigRevisionConflict):
+        settings.save({"trash_retention_days": 30, "auto_purge_enabled": False, "expected_revision": "missing"})
+    assert settings.read() == policy
+    lock = layout.platform_root("chat") / "locks" / f"archive-{storage_key(archive_id, fallback='archive')}.lock"
+    with FileLock(lock, timeout=0):
+        await asyncio.to_thread(runner.cycle)
+        assert target.exists()
+    runner.cycle()
+    assert not target.exists()
+    settings.save({"trash_retention_days": 30, "auto_purge_enabled": False, "expected_revision": policy["revision"]})
+    first = MaintenanceRunner(layout, store=settings, interval=3600)
+    second = MaintenanceRunner(layout, store=settings, interval=3600)
+    try:
+        assert await first.start()
+        assert not await second.start()
+        await asyncio.sleep(0)
+    finally:
+        await first.close()
+        await second.close()
+        await runner.close()
+
 def test_stale_config_revision_preserves_latest_document(tmp_path: Path):
     """过期写入必须保留最新文档, 且错误不回显配置凭据"""
     path = tmp_path / "config.json"

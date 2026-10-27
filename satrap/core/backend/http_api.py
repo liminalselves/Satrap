@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import json
 import traceback
+import time
 
 import re
 
@@ -32,6 +33,7 @@ from satrap.core.config.model_service import ModelConfigService
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.utils.minihttp import MiniHTTPServer
+from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.log.stream import standard_log_stream
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageMaintenanceService
@@ -327,10 +329,17 @@ class BackendHTTPServer(MiniHTTPServer):
         operation_status = self.application_status(method, path)
         if operation_status is not None:
             return operation_status
+        if path.startswith("/api/stats/") or path.split("?", 1)[0] == "/api/activity/local":
+            from satrap.core.telemetry.api import telemetry_response
+
+            stats = await telemetry_response(method, path, "backend", self.backend._storage)
+            if stats is not None:
+                return stats
         for handler in (
             self._route_administrators,
             self._route_ui_health_reload,
             self._route_platform_connection,
+            self._route_unified_actions,
             self._route_platform_actions,
             self._route_friends,
             self._route_account_requests,
@@ -460,6 +469,66 @@ class BackendHTTPServer(MiniHTTPServer):
 
             logger.error("[提醒接口] 请求失败" + "\n" + traceback.format_exc())
             return 503, {"error": "提醒服务暂不可用", "reason": "unavailable"}
+
+    async def _route_unified_actions(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        为 Control 提供带项修订的目录与批量决策, 原目录接口保持不变
+
+        参数:
+        - method: 已认证的 HTTP 方法
+        - path: 内部统一审批路径与筛选
+        - body: 经过大小限制的 JSON 正文
+
+        返回:
+        - 统一目录或逐项决定结果, 无关路径返回 None
+        """
+        from satrap.core.platform.action_catalog import ACTION_READS, UnifiedActionQuery, unified_action_catalog
+        from satrap.core.platform.action_decisions import DecisionItem, DecisionTarget, parse_decisions, run_decisions
+        from satrap.core.memory.management import memory_management
+
+        parsed = urlsplit(path)
+        if parsed.path not in {'/api/platform-actions/unified', '/api/platform-actions/unified/summary', '/api/platform-actions/decisions'}:
+            return None
+        try:
+            scopes = self.backend.action_scopes()
+            if parsed.path.endswith('/decisions'):
+                if method != 'POST' or parsed.query:
+                    return 405, {'error': '批量决策只支持无查询参数的 POST', 'code': 'method_not_allowed'}
+                items = parse_decisions(_parse_json_object(body))
+                async def dispatch(item: DecisionItem, target: DecisionTarget) -> object:
+                    """
+                    复用原业务服务, 状态占用和权限复核仍在原路径执行
+
+                    参数:
+                    - item: 固定动作身份与决定
+                    - target: 当前真实业务定位
+
+                    返回:
+                    - 原服务结果, 外层重新读取账本确认终态
+                    """
+                    if item.source == 'memory':
+                        return await ACTION_READS.run(memory_management, self.backend._storage,
+                            {'platforms': self.backend.config.platforms}, item.platform_id,
+                            {'self_id': item.self_id, 'chat_id': target.group_id, 'conversation_kind': 'group'},
+                            'decide', item.action_id, {'approve': item.approve, 'expected_revision': target.base_revision})
+                    if item.source == 'friend':
+                        return await self.backend.friend_service(item.platform_id).decide(item.self_id, item.action_id, item.approve)
+                    return await self.backend.decide_group_action(item.platform_id, item.self_id, target.group_id, item.action_id, approve=item.approve)
+                return 200, await run_decisions(items, scopes, dispatch)
+            if method != 'GET':
+                return 405, {'error': '审批目录只支持 GET', 'code': 'method_not_allowed'}
+            values = parse_qs(parsed.query, keep_blank_values=True)
+            if any(len(parts) != 1 for parts in values.values()):
+                raise ValueError('审批查询不能包含重复参数')
+            summary = parsed.path.endswith('/summary')
+            query = UnifiedActionQuery.parse({key: parts[0] for key, parts in values.items()}, summary=summary)
+            return 200, await unified_action_catalog(scopes, query, summary=summary)
+        except (ValueError, TypeError) as error:
+            logger.warning(f'[统一审批] 参数无效: {type(error).__name__}')
+            return 400, {'error': str(error), 'code': 'invalid_action_query'}
+        except Exception:
+            logger.error('[统一审批] 请求失败\n' + traceback.format_exc())
+            return 503, {'error': '审批目录或处理队列暂不可用', 'code': 'actions_unavailable'}
 
     async def _route_platform_actions(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """
@@ -1314,7 +1383,7 @@ class BackendHTTPServer(MiniHTTPServer):
                 backend.edictum_type_registry,
                 models=backend.model_config_manager,
             )
-            return 200, service.list_configs()
+            return 200, service.list_with_metadata()
         # 接口: GET /api/config/edictum/sessions
 
         if (
@@ -1447,20 +1516,56 @@ class BackendHTTPServer(MiniHTTPServer):
         backend = self.backend
         route_path, _, _ = path.partition("?")
 
+        if method == "GET" and route_path == "/api/agents/runtime":
+            summaries: dict[tuple[str, str], dict[str, Any]] = {}
+            for session_manager, _ in _platform_runtimes(backend).values():
+                for item in session_manager.agent_instance_summary():
+                    key = (item["provider"], item["agent"])
+                    current = summaries.setdefault(key, {**item, "active_instances": 0, "running_instances": 0})
+                    current["active_instances"] += item["active_instances"]
+                    current["running_instances"] += item["running_instances"]
+            return 200, {"items": list(summaries.values()), "as_of": time.time(), "complete": True}
+
         if method == "GET" and route_path == "/api/sessions":
-            sessions: list[dict[str, Any]] = []
-            for platform_id, (session_manager, _) in _platform_runtimes(backend).items():
-                active_ids = {item.session_id for item in session_manager.list_sessions()}
-                for item in session_manager.list_session_configs():
-                    serialized = dataclasses.asdict(item)
-                    serialized["platform_id"] = platform_id
-                    serialized["active"] = item.session_id in active_ids
-                    serialized["runtime"] = session_manager.get_session_runtime_metadata(
-                        item.session_id or ""
-                    )
-                    sessions.append(serialized)
-            sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
-            return 200, {"sessions": sessions}
+            def collect() -> list[dict[str, Any]]:
+                """
+                在线程中读取持久目录和运行资料
+
+                返回:
+                - 保持旧字段的会话列表
+                """
+                sessions: list[dict[str, Any]] = []
+                for platform_id, (session_manager, _) in _platform_runtimes(backend).items():
+                    active_ids = {item.session_id for item in session_manager.list_sessions()}
+                    for item in session_manager.list_session_configs():
+                        serialized = dataclasses.asdict(item)
+                        serialized["platform_id"] = platform_id
+                        serialized["active"] = item.session_id in active_ids
+                        serialized["runtime"] = session_manager.get_session_runtime_metadata(item.session_id or "")
+                        sessions.append(serialized)
+                sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
+                return sessions
+
+            try:
+                sessions = await RAG_WORKERS.run(collect)
+                parameters = parse_qs(urlsplit(path).query)
+                values = parameters.get("include", [""])
+                if len(values) != 1:
+                    raise ValueError("include 不能重复")
+                include = set(values[0].split(",")) - {""}
+                if include:
+                    from satrap.core.telemetry.query import batch_session_metrics
+                    from satrap.core.telemetry.store import TelemetryStore
+
+                    metric_summaries = await RAG_WORKERS.run(batch_session_metrics, TelemetryStore(backend.storage_layout.root / "telemetry/backend.sqlite", "backend"),
+                                                     [(item["platform_id"], item["session_id"]) for item in sessions], include)
+                    for item in sessions:
+                        item["metrics"] = metric_summaries[(item["platform_id"], item["session_id"])]
+                return 200, {"sessions": sessions}
+            except WorkerBusyError as error:
+                return 503, {"error": str(error), "code": "worker_busy"}
+            except ValueError as error:
+                return 400, {"error": str(error), "code": "invalid_request"}
         # 接口: GET /api/sessions
 
         if method == "POST" and route_path == "/api/sessions/bulk-delete":

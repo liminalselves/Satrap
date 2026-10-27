@@ -39,6 +39,7 @@ from satrap.core.utils import documents
 from satrap.core.type import SessionConfig
 import time
 from satrap.core.utils.text_utils import TextSplitter
+from satrap.core.config.rag_jobs import RagJob, RagJobError, RagJobManager, rag_jobs_read
 
 @pytest.fixture
 def environment(tmp_path, monkeypatch):
@@ -567,6 +568,9 @@ async def test_real_http_upload_limits_scope_and_search(
         monkeypatch.setattr(control_server, "_configured_platform_ids", lambda: list[str]())
         monkeypatch.setattr(control_server, "_configured_storage_layout", lambda: layout)
         monkeypatch.setattr(control_server, "_model_config_service", lambda: Mock(manager=models))
+        jobs = RagJobManager(layout, "control", "http-control", lambda: models)
+        await jobs.start(["chat", "local"])
+        monkeypatch.setattr(control_server, "_RAG_JOBS", jobs)
         server = await asyncio.start_server(control_server._handle_request, "127.0.0.1", 0)
         route = "/config/rag"
     else:
@@ -575,15 +579,17 @@ async def test_real_http_upload_limits_scope_and_search(
         chat = ChatHTTPServer.__new__(ChatHTTPServer)
         MiniHTTPServer.__init__(chat, host="127.0.0.1", port=0, auth=auth)
         chat.service = svc
+        from satrap.core.telemetry.health import ServiceRuntime
+        chat._service_runtime = ServiceRuntime("chat")
         await chat.start()
         assert chat._server is not None
         server = chat._server
         route = "/api/chat/rag"
     port = server.sockets[0].getsockname()[1]
 
-    async def request(path: str, body: bytes, *, length: int | None = None, authorized: bool = True) -> tuple[int, dict[str, Any]]:
+    async def request(path: str, body: bytes, *, length: int | None = None, authorized: bool = True, method: str = "POST") -> tuple[int, dict[str, Any]]:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        header = ("POST " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/octet-stream\r\n"
+        header = (method + " " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/octet-stream\r\n"
                   + "Origin: " + origin + "\r\n"
                   + ("Authorization: Bearer " + token + "\r\n" if authorized else "")
                   + "Content-Length: " + str(len(body) if length is None else length) + "\r\nConnection: close\r\n\r\n")
@@ -634,6 +640,32 @@ async def test_real_http_upload_limits_scope_and_search(
         assert len(service.documents(kb_id)) == 1
         assert service.search("中文", {"db_scope": "global", "global_db_ids": [kb_id]})["status"] == "found"
         assert not list((layout.root / "rag" / "imports").iterdir())
+        job_query = {"platform_id": "chat", "kb_id": kb_id}
+        revision = service.list()[0]["revision"]
+        submit = route + "/jobs?" + urlencode(job_query)
+        job_request = {"operation_id": "http-import", "kb_id": kb_id, "expected_revision": revision,
+                       "action": "ingest", "source": "http.txt", "text": "HTTP 后台导入"}
+        status, accepted = await request(submit, json.dumps(job_request).encode())
+        assert status == 202 and accepted["job"]["operation_id"] == "http-import"
+        job_id = accepted["job"]["job_id"]
+        assert (await wait_rag_job(service, job_id, kb_id))["status"] == "succeeded"
+        status, detail = await request(route + "/jobs/" + job_id + "?" + urlencode(job_query), b"", method="GET")
+        assert status == 200 and detail["job"]["status"] == "succeeded"
+        assert (await request(submit, json.dumps(job_request).encode()))[1]["job"]["job_id"] == job_id
+        assert (await request(submit, json.dumps({**job_request, "text": "changed"}).encode()))[0] == 409
+        assert (await request(submit, b"{}", authorized=False))[0] == 401
+        status, page = await request(route + "/documents?" + urlencode({**job_query, "limit": "1"}), b"", method="GET")
+        assert status == 200 and page["has_more"] and len(page["items"]) == 1
+        chunks = route + "/documents/" + page["items"][0]["document_id"] + "/chunks?" + urlencode(job_query)
+        status, page = await request(chunks, b"", method="GET")
+        assert status == 200 and "text" not in str(page["items"])
+        status, page = await request(chunks + "&include_text=true", b"", method="GET")
+        assert status == 200 and page["items"][0]["text"]
+        upload_job = route + "/jobs/upload?" + urlencode({**job_query, "file_name": "job.md", "operation_id": "binary-job", "expected_revision": revision + 1})
+        status, accepted = await request(upload_job, "二进制中文".encode())
+        assert status == 202
+        assert (await wait_rag_job(service, accepted["job"]["job_id"], kb_id))["status"] == "succeeded"
+        assert (await request(upload_job, b"", length=DEFAULT_MAX_FILE_SIZE + 1))[0] == 413
         if chat is not None:
             async def fail_route(*args: object) -> tuple[int, dict[str, object]]:
                 raise RuntimeError("unexpected")
@@ -645,6 +677,279 @@ async def test_real_http_upload_limits_scope_and_search(
         else:
             server.close()
             await server.wait_closed()
+            await jobs.close()
+
+
+async def wait_rag_job(service: RagService, job_id: str, kb_id: str) -> RagJob:
+    """等待测试任务结束, 有限轮询不重放原始请求"""
+    for _ in range(500):
+        result = await asyncio.to_thread(rag_jobs_read, service, "jobs", job_id, {"kb_id": kb_id})
+        job = cast(RagJob, result["job"])
+        if job["status"] not in {"queued", "running"}:
+            return job
+        await asyncio.sleep(.01)
+    raise AssertionError("RAG 任务未在测试期限内完成")
+
+
+async def test_persistent_rag_jobs_idempotency_failures_and_document_pages(environment):
+    layout, models, flags = environment
+    service = RagService(layout, models, "chat", "jobs-owner")
+    kb_id = make_library(service, chunk_size=8, chunk_overlap=0, duplicate_policy="replace")
+    manager = RagJobManager(layout, "chat", "first-runtime", lambda: models)
+    await manager.start(["chat"])
+    try:
+        request = {"operation_id": "import-one", "kb_id": kb_id, "expected_revision": 1,
+                   "action": "ingest", "text": "苹果的详细资料" * 12, "source": "资料.md"}
+        job = await manager.submit(service, request)
+        repeated = await manager.submit(service, request)
+        assert repeated["job_id"] == job["job_id"]
+        with pytest.raises(RagJobError, match="不同请求") as conflict:
+            await manager.submit(service, {**request, "text": "不同内容"})
+        assert conflict.value.status == 409
+        done = await wait_rag_job(service, job["job_id"], kb_id)
+        assert done["status"] == "succeeded" and done["progress"]["percent"] == 100
+        assert "input_name" not in done and "text" not in done
+        assert not list(manager._imports.iterdir())
+        documents_page = rag_jobs_read(service, "documents", "", {"kb_id": kb_id})
+        document = documents_page["items"][0]
+        assert document["status"] == "ready" and document["last_indexed_at"] >= job["created_at"]
+        assert document["size_bytes"] == len(request["text"].encode())
+        first = rag_jobs_read(service, "chunks", document["document_id"], {"kb_id": kb_id, "limit": "2"})
+        assert first["has_more"] and len(first["items"]) == 2 and "text" not in str(first["items"])
+        second = rag_jobs_read(service, "chunks", document["document_id"], {"kb_id": kb_id, "limit": "2", "cursor": first["next_cursor"]})
+        assert {item["record_id"] for item in first["items"]}.isdisjoint(item["record_id"] for item in second["items"])
+        explicit = rag_jobs_read(service, "chunks", document["document_id"], {"kb_id": kb_id, "include_text": "true"})
+        assert explicit["items"][0]["text"]
+        with pytest.raises(RagJobError, match="筛选"):
+            rag_jobs_read(service, "chunks", document["document_id"], {"kb_id": kb_id, "include_text": "true", "cursor": first["next_cursor"]})
+        indexed_at = document["last_indexed_at"]
+        flags["fail_embed"] = True
+        failed = await manager.submit(service, {**request, "operation_id": "replace-failed", "expected_revision": 2})
+        assert (await wait_rag_job(service, failed["job_id"], kb_id))["status"] == "failed"
+        current = rag_jobs_read(service, "documents", "", {"kb_id": kb_id})["items"][0]
+        assert current["status"] == "failed" and current["last_indexed_at"] == indexed_at
+        assert service.documents(kb_id, include_text=True)[0]["source_text"] == request["text"]
+        flags["fail_embed"] = False
+        assert service.search("苹果", {})["status"] == "found"
+        bad = await manager.submit(service, {"operation_id": "bad-file", "kb_id": kb_id, "expected_revision": 2,
+                                            "action": "ingest", "file_name": "bad.txt"}, b"\xff")
+        assert (await wait_rag_job(service, bad["job_id"], kb_id))["error"]["phase"] == "parsing"
+        import base64
+        page = rag_jobs_read(service, "jobs", "", {"kb_id": kb_id, "limit": "1"})
+        cursor = page["next_cursor"]
+        saved_cursor = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+        for after in ([], [float("nan"), job["job_id"]], [float("inf"), job["job_id"]]):
+            malformed = base64.urlsafe_b64encode(json.dumps({**saved_cursor, "after": after}).encode()).decode()
+            with pytest.raises(RagJobError, match="游标"):
+                rag_jobs_read(service, "jobs", "", {"kb_id": kb_id, "limit": "1", "cursor": malformed})
+        with pytest.raises(RagJobError, match="session_id"):
+            rag_jobs_read(RagService(layout, models, "chat"), "jobs", "", {"kb_id": kb_id})
+        other = RagService(layout, models, "chat", "another-owner")
+        with pytest.raises(ValueError, match="其他会话"):
+            rag_jobs_read(other, "jobs", job["job_id"], {"kb_id": kb_id})
+        shared = make_library(service, "共享任务", scope="global")
+        shared_request = {**request, "operation_id": "shared-operation", "kb_id": shared}
+        shared_job = await manager.submit(service, shared_request)
+        await wait_rag_job(service, shared_job["job_id"], shared)
+        with pytest.raises(RagJobError, match="不同请求") as scope_conflict:
+            await manager.submit(RagService(layout, models, "foreign-platform"), shared_request)
+        assert scope_conflict.value.status == 409
+    finally:
+        await manager.close()
+
+
+async def test_rag_jobs_keep_old_generation_readable_and_queue_same_library(environment, monkeypatch):
+    layout, models, _ = environment
+    service = RagService(layout, models, "chat", "reader")
+    kb_id = make_library(service)
+    service.ingest(kb_id, "苹果旧资料", "old.md")
+    old_generation = service.list()[0]["generation"]
+    entered, release = threading.Event(), threading.Event()
+    original = __import__("satrap.core.rag", fromlist=["build_model_client"]).build_model_client
+
+    def client(kind, model):
+        result = original(kind, model)
+        embed = result.embed
+        def blocked(text):
+            if isinstance(text, list):
+                entered.set()
+                assert release.wait(10)
+            return embed(text)
+        result.embed = blocked
+        return result
+
+    monkeypatch.setattr("satrap.core.rag.build_model_client", client)
+    manager = RagJobManager(layout, "control", "build-runtime", lambda: models)
+    await manager.start(["chat"])
+    try:
+        rebuild = {"action": "rebuild", "kb_id": kb_id, "operation_id": "rebuild-one", "expected_revision": 2, "config": {"embed": "embed"}}
+        with service.generation(kb_id) as old_reader:
+            first = await manager.submit(service, rebuild)
+            assert await asyncio.to_thread(entered.wait, 5)
+            queued = await asyncio.wait_for(manager.submit(service, {**rebuild, "operation_id": "rebuild-two"}), 2)
+            assert queued["status"] == "queued"
+            result = await asyncio.wait_for(asyncio.to_thread(service.search, "苹果", {}), 2)
+            assert result["status"] == "found" and old_reader["generation"] == old_generation
+            release.set()
+            assert (await wait_rag_job(service, first["job_id"], kb_id))["status"] == "succeeded"
+            assert (service._root(old_reader) / old_generation).is_dir()
+        second = await wait_rag_job(service, queued["job_id"], kb_id)
+        assert second["status"] == "failed" and second["error"]["code"] == "revision_conflict"
+        assert service.list()[0]["generation"] != old_generation
+    finally:
+        release.set()
+        await manager.close()
+
+
+async def test_rag_job_restart_ownership_and_archive_interruption(environment, monkeypatch):
+    layout, models, _ = environment
+    service = RagService(layout, models, "chat", "archived-jobs")
+    kb_id = make_library(service)
+    manager = RagJobManager(layout, "chat", "old-runtime", lambda: models)
+    await manager.start(["chat"])
+    monkeypatch.setattr(manager, "_pump", lambda: None)
+    queued = await manager.submit(service, {"action": "ingest", "kb_id": kb_id, "expected_revision": 1,
+                                            "operation_id": "waiting", "text": "苹果资料", "source": "doc.md"})
+    other = RagJobManager(layout, "chat", "competing-runtime", lambda: models)
+    with pytest.raises(RagJobError, match="持有者"):
+        await other.start(["chat"])
+    await other.close()
+    database = layout.platform_db("chat")
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO rag_jobs SELECT 'other-service',operation_id||'-other',fingerprint,'control','still-live',platform_id,session_id,"
+                           "kb_id,action,status,phase,progress_json,created_at,started_at,finished_at,error_json,result_json,request_json,'' FROM rag_jobs WHERE job_id=?", (queued["job_id"],))
+    manager._pending.clear()
+    await manager.close()   # 模拟异常退出留下持久活动行, 不重放模型请求
+    replacement = RagJobManager(layout, "chat", "new-runtime", lambda: models)
+    await replacement.start(["chat"])
+    try:
+        job = rag_jobs_read(service, "jobs", queued["job_id"], {"kb_id": kb_id})["job"]
+        assert job["status"] == "interrupted" and job["error"]["code"] == "service_restarted"
+        assert not list(replacement._imports.iterdir())
+        with sqlite3.connect(database) as connection:
+            assert connection.execute("SELECT status FROM rag_jobs WHERE job_id='other-service'").fetchone()[0] == "queued"
+        maintenance = StorageMaintenanceService(layout)
+        archive = await asyncio.to_thread(maintenance.archive_session, "chat", "archived-jobs")
+        await asyncio.to_thread(maintenance.restore_archive, "chat", archive["archive_id"])
+        with sqlite3.connect(database) as connection:
+            assert connection.execute("SELECT status FROM rag_jobs WHERE job_id='other-service'").fetchone()[0] == "interrupted"
+            assert connection.execute("SELECT status FROM rag_documents WHERE job_id=?", (queued["job_id"],)).fetchone()[0] == "failed"
+    finally:
+        await replacement.close()
+
+
+async def test_rag_jobs_global_concurrency_queue_limit_and_cancelled_receipt(environment, monkeypatch):
+    layout, models, _ = environment
+    service = RagService(layout, models, "chat", "queue-owner")
+    first, second, third = [make_library(service, str(index)) for index in range(3)]
+    release, both_started = threading.Event(), threading.Event()
+    started: list[str] = []
+    mutex = threading.Lock()
+    original = RagService._embed_source
+
+    def blocked(self, index, config, source, model, progress=None):
+        with mutex:
+            started.append(source["source"])
+            if len(started) == 2:
+                both_started.set()
+        assert release.wait(30)
+        return original(self, index, config, source, model, progress)
+
+    monkeypatch.setattr(RagService, "_embed_source", blocked)
+    manager = RagJobManager(layout, "chat", "queue-runtime", lambda: models)
+    await manager.start(["chat"])
+    base = {"action": "ingest", "expected_revision": 1, "text": "苹果资料"}
+    try:
+        await manager.submit(service, {**base, "kb_id": first, "operation_id": "active-one", "source": "one.md"})
+        await manager.submit(service, {**base, "kb_id": first, "operation_id": "same-kb", "source": "same.md"})
+        await manager.submit(service, {**base, "kb_id": second, "operation_id": "active-two", "source": "two.md"})
+        assert await asyncio.to_thread(both_started.wait, 5)
+        assert set(started) == {"one.md", "two.md"}
+        await manager.submit(service, {**base, "kb_id": third, "operation_id": "third", "source": "three.md"})
+        entered, finish_admission = threading.Event(), threading.Event()
+        prepare = manager._prepare
+
+        def slow_prepare(*args):
+            entered.set()
+            assert finish_admission.wait(5)
+            return prepare(*args)
+
+        monkeypatch.setattr(manager, "_prepare", slow_prepare)
+        receipt = asyncio.create_task(manager.submit(service, {**base, "kb_id": first, "operation_id": "cancelled-receipt", "source": "cancelled.md"}))
+        assert await asyncio.to_thread(entered.wait, 5)
+        receipt.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await receipt
+        finish_admission.set()
+        while manager._admissions:
+            await asyncio.sleep(.01)
+        monkeypatch.setattr(manager, "_prepare", prepare)
+        found = rag_jobs_read(service, "jobs", "", {"kb_id": first, "operation_id": "cancelled-receipt"})
+        assert found["items"][0]["status"] == "queued"
+        for index in range(32 - len(manager._pending)):
+            await manager.submit(service, {**base, "kb_id": first, "operation_id": f"queued-{index}", "source": f"queued-{index}.md"})
+        assert len(manager._pending) == 32 and len(manager._active) == 2 and len(started) == 2
+        with pytest.raises(RagJobError, match="队列已满") as full:
+            await manager.submit(service, {**base, "kb_id": first, "operation_id": "overflow", "source": "overflow.md"})
+        assert full.value.status == 503
+        stopping = asyncio.create_task(manager.close())
+        while not manager._closing:
+            await asyncio.sleep(.01)
+        release.set()
+        await stopping
+        assert len(started) == 2
+        assert rag_jobs_read(service, "jobs", "", {"kb_id": third})["items"][0]["status"] == "interrupted"
+        assert not list(manager._imports.iterdir())
+    finally:
+        release.set()
+        if manager._started:
+            await manager.close()
+
+
+def test_shared_generation_lease_allows_process_readers_but_blocks_maintenance(tmp_path):
+    import subprocess
+    import sys
+    from satrap.core.storage.file_lock import FileLease, FileLock
+
+    lock = tmp_path / "generation.lock"
+    program = """
+import sys
+from pathlib import Path
+from satrap.core.storage.file_lock import FileLease, FileLock
+path = Path(sys.argv[1])
+with FileLease(path, shared=True):
+    print('shared', flush=True)
+    sys.stdin.readline()
+try:
+    with FileLock(path, timeout=0):
+        print('unexpected', flush=True)
+except TimeoutError:
+    print('blocked', flush=True)
+sys.stdin.readline()
+with FileLock(path, timeout=0):
+    print('exclusive', flush=True)
+"""
+    lease = FileLease(lock, shared=True)
+    child = subprocess.Popen([sys.executable, "-X", "utf8", "-c", program, str(lock)],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             encoding="utf-8")
+    try:
+        assert child.stdout.readline().strip() == "shared"
+        child.stdin.write("next\n")
+        child.stdin.flush()
+        assert child.stdout.readline().strip() == "blocked"
+        lease.close()
+        child.stdin.write("released\n")
+        child.stdin.flush()
+        out, err = child.communicate(timeout=20)
+        assert child.returncode == 0 and out.strip() == "exclusive", err
+        with FileLock(lock, timeout=0):
+            pass
+    finally:
+        lease.close()
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
 
 NO_SEPARATOR_400K = "中文资料" * 100_000
 

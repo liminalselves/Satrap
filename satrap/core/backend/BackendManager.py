@@ -76,10 +76,12 @@ from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storag
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 
 if TYPE_CHECKING:
+    from satrap.core.telemetry.capture import TelemetryWriter
     from satrap.core.framework.Base import AsyncSession, Session
     from satrap.core.friends.service import FriendService
 
 from satrap.core.log import logger
+from satrap.core.telemetry.health import ServiceRuntime
 from satrap.core.group_chat.reminder_host import ReminderHost
 from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
 
@@ -377,6 +379,8 @@ class BackendManager:
         self._shutdown_event: asyncio.Event | None = None
         self._running = False
         self._runtime_id = os.environ.get("SATRAP_BACKEND_RUNTIME_ID") or secrets.token_urlsafe(24)
+        self._service_runtime = ServiceRuntime("backend", runtime_id=self._runtime_id)
+        self._telemetry_writer: TelemetryWriter | None = None
 
     # ---------- 属性访问 ----------
 
@@ -754,7 +758,7 @@ class BackendManager:
         listing, sync = await asyncio.gather(
             asyncio.to_thread(store.list_groups, self_id, query=query, membership=membership,
                               response=response, page=page, page_size=page_size,
-                              response_gate=response_gate),
+                              response_gate=response_gate, platform_snapshot=self._group_platform_snapshot(adapter_id)),
             asyncio.to_thread(store.sync_status, self_id),
         )
 
@@ -1531,7 +1535,17 @@ class BackendManager:
         返回:
         - 平台动作列表及读取覆盖情况
         """
-        scopes = []
+        return await platform_action_catalog(self.action_scopes(), summary=summary, platform_id=platform_id, account=account,
+                                             source=source, state=state, target=target, action_id=action_id, limit=limit, cursor=cursor)
+
+    def action_scopes(self) -> list[ActionScope]:
+        """
+        从当前适配器冻结审批目录范围, 不打开业务数据库
+
+        返回:
+        - 只包含当前配置平台的路径, 账号和在线状态
+        """
+        scopes: list[ActionScope] = []
         for config in self.config.platforms:
             identity = config.get('id', '')
             if not isinstance(identity, str) or not identity:
@@ -1542,8 +1556,7 @@ class BackendManager:
             if isinstance(adapter, OneBotAdapter):
                 online = online and adapter.get_client() is not None
             scopes.append(ActionScope(identity, self._storage.platform_db(identity), current_account, online))
-        return await platform_action_catalog(scopes, summary=summary, platform_id=platform_id, account=account,
-                                             source=source, state=state, target=target, action_id=action_id, limit=limit, cursor=cursor)
+        return scopes
 
     async def group_actions(
         self, adapter_id: str, self_id: str, group_id: str, *,
@@ -1930,6 +1943,11 @@ class BackendManager:
         if secret_flag is not None:
             self._group_action_flags[action_id] = secret_flag
         if requires_approval:
+            from satrap.core.telemetry.capture import record_approval
+            from satrap.core.telemetry.contracts import MetricScope
+
+            record_approval("invitation" if action_type == "handle_group_request" and normalized.get("sub_type") == "invite" else "group",
+                            action_id, "pending", MetricScope(platform_id=adapter_id, self_id=self_id, conversation_kind="group", target_id=group_id))
             return record
         return await self._execute_group_action(adapter_id, self_id, group_id, action_id, record)
 
@@ -1953,6 +1971,12 @@ class BackendManager:
         decided = await asyncio.to_thread(
             store.decide, self_id, group_id, action_id, approve=approve, policy_revision=version,
         )
+        from satrap.core.telemetry.capture import record_approval
+        from satrap.core.telemetry.contracts import MetricScope
+
+        record_approval("invitation" if current["action_type"] == "handle_group_request" and current["params"].get("sub_type") == "invite" else "group",
+                        action_id, "approved" if approve else "rejected",
+                        MetricScope(platform_id=adapter_id, self_id=self_id, conversation_kind="group", target_id=group_id))
         if not approve:
             self._group_action_flags.pop(action_id, None)
             self._group_action_authorizers.pop(action_id, None)
@@ -2191,6 +2215,9 @@ class BackendManager:
     async def start(self):
         """完整启动流程"""
         try:
+            from satrap.core.telemetry.capture import start_service_capture
+
+            self._telemetry_writer = await start_service_capture("backend", self._service_runtime, self._storage)
             self._init_model_config()
             self._init_session_class_config()
             self._init_edictum_config()
@@ -2492,11 +2519,11 @@ class BackendManager:
             logger.warning(f"[BackendManager] 配置已重载, 但 {len(failed_platforms)} 个平台应用失败: {', '.join(failed_platforms)}")
         else:
             logger.info("[BackendManager] 配置已重载")
-        return {
-            "ok": all(item.get("ok", False) for item in edictum_results) and all(item["status"] == "applied" for item in platform_results),
-            "platforms": platform_results,
-            "edictum_sessions": edictum_results,
-        }
+        success = all(item.get("ok", False) for item in edictum_results) and all(item["status"] == "applied" for item in platform_results)
+        from satrap.core.telemetry.capture import record_activity
+
+        record_activity("config.applied" if success else "config.failed", "配置已应用" if success else "配置应用未全部完成", tone="info" if success else "error")
+        return {"ok": success, "platforms": platform_results, "edictum_sessions": edictum_results}
 
     @staticmethod
     def _normalized_platform_snapshot(config: dict[str, Any]) -> dict[str, Any]:
@@ -3089,6 +3116,9 @@ class BackendManager:
                     logger.warning(f"[BackendManager] 清理会话失败: platform={platform_id}, 错误={e}")
 
             logger.info("[BackendManager] 已关闭")
+        if self._telemetry_writer is not None:
+            await asyncio.to_thread(self._telemetry_writer.close)
+            self._telemetry_writer = None
 
     async def health(self) -> Dict[str, Any]:
         """
@@ -3131,8 +3161,7 @@ class BackendManager:
             if isinstance(adapter, PlatformAdapter) and adapter.config.enable and adapter.status is PlatformStatus.ERROR
         )
         return {
-            "running": self._running,
-            "healthy": self._running and dispatch_healthy and not adapters_errored,
+            **self._service_runtime.snapshot(running=self._running, healthy=self._running and dispatch_healthy and not adapters_errored),
             "adapters_errored": adapters_errored,
             "pid": os.getpid(),
             "runtime_id": self._runtime_id,

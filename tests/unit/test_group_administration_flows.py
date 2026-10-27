@@ -649,6 +649,9 @@ def test_v2_action_database_migrates_without_losing_records(tmp_path: Path) -> N
                  "panel", 1, approval_required=True)
     with sqlite3.connect(database) as connection:
         connection.execute("ALTER TABLE group_actions DROP COLUMN model_origin_json")
+        connection.execute("DROP TRIGGER group_actions_action_revision")
+        for column in ("action_revision", "decision", "decided_by_json", "decision_note", "risk", "risk_source"):
+            connection.execute(f"ALTER TABLE group_actions DROP COLUMN {column}")
         for table in ("memory_refs", "memory_proposals", "memory_operations", "memory_audit", "memories",
                       "group_chat_reminder_attempts", "group_chat_reminders", "reminder_operations"):
             connection.execute(f"DROP TABLE {table}")

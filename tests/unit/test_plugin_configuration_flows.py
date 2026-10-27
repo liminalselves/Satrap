@@ -324,10 +324,12 @@ config_schema:
 def test_global_parameters_defaults_cas_and_restore(configured_service):
     service = configured_service
     first = service.get_config("probe")
+    assert first["updated_at"] is None
     assert first["overrides"] == {}
     assert first["config"]["note"] == "default"
     saved = service.save_config("probe", {"note": "自定义", "count": 0}, first["revision"])
     assert saved["saved"]
+    assert saved["updated_at"] is not None
     assert saved["config"]["count"] == 0
     with pytest.raises(ConfigRevisionConflict):
         service.save_config("probe", {"note": "旧页面覆盖"}, first["revision"])
@@ -335,6 +337,64 @@ def test_global_parameters_defaults_cas_and_restore(configured_service):
     restored = service.save_config("probe", {}, saved["revision"])
     assert restored["overrides"] == {}
     assert restored["config"]["note"] == "default"
+    host = service.manager.host_state("probe")
+    switched = service.manager.save_execution("probe", False, host["revision"])
+    assert not service.list_plugins()[0]["execution_enabled"]
+    assert service.get_config("probe")["config"] == restored["config"]
+    assert service.manager.host_state("probe")["updated_at"] == restored["updated_at"]
+    service.manager.save_execution("probe", True, switched["revision"])
+    assert service.list_plugins()[0]["execution_enabled"]
+
+
+async def test_plugin_host_execution_http_cas_and_batched_health(configured_service, monkeypatch):
+    import asyncio
+    import aiohttp
+    from satrap.core.backend import control_server
+    from satrap.core.server_auth import ServerAuth
+
+    service = configured_service
+    token = "host-plugin-test-token-longer-than-32-characters"
+    auth = ServerAuth.create("127.0.0.1", 0, token=token)
+    monkeypatch.setattr(control_server, "_CONTROL_AUTH", auth)
+    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", service.manager._dir)
+    monkeypatch.setattr(control_server.PluginCatalog, "snapshot_async", lambda _: asyncio.sleep(0, result=service.catalog))
+    monkeypatch.setattr(control_server, "_plugin_runtime_targets", lambda *args: [("Chat", "http://chat/api/chat/plugins/reconcile"), ("Edictum", "http://backend/api/edictum/plugins/reconcile")])
+    calls = []
+
+    def snapshot(target, url, name):
+        calls.append((target, url, name))
+        return {"target": target, "status": "available", "instances": [{"session_id": "test", "plugin": {"name": "probe", "enabled": True, "status": "loaded", "error": ""}}]}
+
+    monkeypatch.setattr(control_server, "_plugin_snapshot_request", snapshot)
+    items = [{"name": "probe", "execution_enabled": True, "chat_enabled": True, "edictum_configs": ["worker"]} for _ in range(100)]
+    health = await control_server._plugin_health(items)
+    assert len(calls) == 2 and all(call[2] is None for call in calls)
+    assert all(item["health"]["state"] == "healthy" for item in health)
+    monkeypatch.setattr(control_server, "_plugin_runtime_request", lambda target, *args: {"target": target, "status": "next_activation", "sessions": []})
+    server = await asyncio.start_server(control_server._handle_request, "127.0.0.1", 0)
+    address = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/config/plugins/probe/execution"
+    try:
+        async with aiohttp.ClientSession(headers={"Authorization": f"Bearer {token}"}) as client:
+            async with client.get(address) as response:
+                assert response.status == 200
+                before = await response.json()
+            async with client.put(address, json={"execution_enabled": False, "expected_revision": before["revision"]}) as response:
+                assert response.status == 200
+                saved = await response.json()
+            assert saved["saved"] and not saved["execution_enabled"] and len(saved["runtime"]) == 2
+            assert all(item["status"] == "next_activation" for item in saved["runtime"])
+            async with client.put(address, json={"execution_enabled": True, "expected_revision": before["revision"]}) as response:
+                assert response.status == 409
+            async with client.put(address, json={"execution_enabled": "false", "expected_revision": saved["revision"]}) as response:
+                assert response.status == 400
+            async with client.get(address.replace("probe", "not-installed")) as response:
+                assert response.status == 404
+        async with aiohttp.ClientSession() as client:
+            async with client.get(address) as response:
+                assert response.status == 401
+    finally:
+        server.close()
+        await server.wait_closed()
 
 @pytest.mark.parametrize("values", [{"undeclared": "x"}, {"count": -1}, {"count": 11}, {"count": 0.5}, {"note": None}])
 def test_invalid_parameters_preserve_previous_file(configured_service, values):

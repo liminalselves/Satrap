@@ -922,7 +922,7 @@ async def test_platform_approval_catalog_preserves_sources_pagination_and_storag
         for index in range(60):
             group(f'group-{index:03}')
         for identity, account, state in (('same-id', '10000', 'pending'), ('historical', 'old', 'pending'), ('ready', '10000', 'ready'), ('unknown', '10000', 'unknown')):
-            connection.execute('INSERT INTO friend_actions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            connection.execute('INSERT INTO friend_actions (self_id,action_id,action_type,params_json,actor_kind,state,created_at,expires_at,decision_at,executed_at,result_json,target_json,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                                (account, identity, 'delete_friend', json.dumps({'user_id': '42'}), 'model', state, now, now + 600, None, None, None, json.dumps({'user_id': '42', 'nickname': '测试目标'}), 'author'))
     before = database.read_bytes()
     monkeypatch.setattr(GroupActionStore, '__init__', lambda *args, **kwargs: pytest.fail('汇总读取不能恢复群动作'))
@@ -1004,3 +1004,153 @@ async def test_platform_approval_catalog_preserves_sources_pagination_and_storag
         assert page['platforms'][0]['invalid_count'] == 1 and page['warnings']
         with closing(sqlite3.connect(database)) as connection, connection:
             connection.execute(f"UPDATE {table} SET {column}=? WHERE action_id='same-id'", (original,))
+
+
+def test_batch_decision_binding_checks_item_revision_inside_business_transaction(tmp_path):
+    """项修订独立于策略, 陈旧决定不写入处理人或取得执行权"""
+    from dataclasses import replace
+    import json
+    import sqlite3
+    from satrap.core.platform.action_decisions import DecisionActor, DecisionConflict, DecisionItem, bind_decision, parse_decisions
+    from satrap.core.config.group_actions import GroupActionStore
+    from satrap.core.friends.store import FriendStore
+
+    raw = {"items": [{"key": {"platform_id": "qq", "self_id": "100", "source": "group", "action_id": "new-decision-1"},
+                       "expected_revision": 1, "approve": True, "note": "已核对"}]}
+    item = parse_decisions(raw)[0]
+    with pytest.raises(ValueError):
+        parse_decisions({"items": raw["items"] * 2})
+    with pytest.raises(ValueError):
+        parse_decisions({"items": [{**raw["items"][0], "expected_revision": True}]})
+    database = tmp_path / "platform.db"
+    store = GroupActionStore(database)
+    store.submit(item.action_id, "100", "456", "set_group_name", {"name": "新群名"}, "panel", 77, approval_required=True)
+    with bind_decision(replace(item, expected_revision=2), DecisionActor()), pytest.raises(DecisionConflict):
+        store.decide("100", "456", item.action_id, approve=True, policy_revision=77)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT state,action_revision,decided_by_json FROM group_actions").fetchone() == ("pending", 1, None)
+    with bind_decision(item, DecisionActor()):
+        record = store.decide("100", "456", item.action_id, approve=True, policy_revision=77)
+    assert record["state"] == "executing"
+    with sqlite3.connect(database) as db:
+        revision, actor, note = db.execute("SELECT action_revision,decided_by_json,decision_note FROM group_actions").fetchone()
+        assert revision == 2 and json.loads(actor) == {"kind": "panel", "id": None} and note == "已核对"
+    store.settle("100", "456", item.action_id, "succeeded", "")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT action_revision FROM group_actions").fetchone()[0] == 3
+    friends = FriendStore(tmp_path / "friends.db")
+    friends.register("100", "friend-decision", "delete_friend", {"user_id": "42"}, "model", requires_approval=True)
+    request = DecisionItem("qq", "100", "friend", "friend-decision", 1, False, "目标不符")
+    with bind_decision(request, DecisionActor()):
+        assert friends.transition("100", request.action_id, "pending", "rejected")
+    with friends.connection() as db:
+        row = db.execute("SELECT action_revision,decision,decision_note FROM friend_actions").fetchone()
+        assert tuple(row) == (2, "rejected", "目标不符")
+
+
+@pytest.mark.asyncio
+async def test_unified_catalog_covers_memory_search_sort_and_readonly_legacy(tmp_path):
+    """统一目录查询四类账本, 过滤私密凭据, 支持同筛选汇总且不创建业务存储"""
+    import time
+    import json
+    from satrap.core.platform.action_catalog import ActionScope, UnifiedActionQuery, unified_action_catalog
+    from satrap.core.config.group_actions import GroupActionStore
+    from satrap.core.friends.store import FriendStore
+    from satrap.core.config.platform_messages import PlatformMessageStore, MessageScope, ArchiveMessage
+    from satrap.core.memory.scoped import ScopedMemories
+
+    database = tmp_path / 'platform.db'
+    groups = GroupActionStore(database)
+    groups.adopt_legacy('100', {})
+    groups.submit('group-new-1', '100', '456', 'ban_group_member', {'user_id': '42', 'duration': 60}, 'panel', 7, approval_required=True)
+    groups.submit('invite-new-1', '100', '456', 'handle_group_request', {'sub_type': 'invite', 'request_id': 'request', 'flag': 'secret-credential'}, 'panel', 7, approval_required=True)
+    groups.submit('no-expiry-1', '100', '456', 'set_group_name', {'name': '新群名'}, 'panel', 7, approval_required=False)
+    friends = FriendStore(database)
+    friends.register('100', 'friend-new-1', 'delete_friend', {'user_id': '42'}, 'model')
+    friends.register('200', 'historical-1', 'delete_friend', {'user_id': '43'}, 'model')
+    archive = PlatformMessageStore(database, 'qq')
+    scope = MessageScope('qq', '100', 'group', '456')
+    archive.record(scope, ArchiveMessage('source', 'member', time.time(), '周五开会'))
+    memory = ScopedMemories(archive, scope)
+    proposal = memory.mutate('create', {'kind': 'group_rule', 'key': 'meeting', 'title': '会议', 'content': 'secret-memory-body', 'source_message_ids': ['source']},
+                             actor='member', current_message='source', operation_id='propose')
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO group_directory(self_id,group_id,group_name) VALUES('100','456','测试群')")
+    before = database.read_bytes()
+    scopes = [ActionScope('qq', database, '100', True)]
+    first = await unified_action_catalog(scopes, UnifiedActionQuery.parse({'limit': '2'}))
+    assert first['complete'] is True and first['total'] == 5, first
+    all_items = list(first['items'])
+    cursor = first['next_cursor']
+    while cursor:
+        page = await unified_action_catalog(scopes, UnifiedActionQuery.parse({'limit': '2', 'cursor': cursor}))
+        all_items.extend(page['items'])
+        cursor = page['next_cursor']
+    assert len(all_items) == 5 and {item['source'] for item in all_items} == {'group','invitation','friend','memory'}
+    assert 'secret-credential' not in json.dumps(all_items) and 'secret-memory-body' not in json.dumps(all_items)
+    entry = next(item for item in all_items if item['source'] == 'memory')
+    assert entry['key']['action_id'] == proposal['proposal_id'] and entry['revision'] == 1
+    assert entry['decided_by'] is None and entry['risk'] == 'unknown' and entry['group_name'] == '测试群'
+    searched = await unified_action_catalog(scopes, UnifiedActionQuery.parse({'q': '测试群'}))
+    assert searched['total'] == 4
+    assert (await unified_action_catalog(scopes, UnifiedActionQuery.parse({'q': 'secret-credential'})))['total'] == 0
+    changed_account = [ActionScope('qq', database, '200', True)]
+    with pytest.raises(ValueError):
+        await unified_action_catalog(changed_account, UnifiedActionQuery.parse({'limit': '2', 'cursor': first['next_cursor']}))
+    for order in ('asc','desc'):
+        sorted_items = (await unified_action_catalog(scopes, UnifiedActionQuery.parse({'sort': 'expires', 'order': order})))['items']
+        assert sorted_items[-1]['expires_at'] is None
+    old = await unified_action_catalog(scopes, UnifiedActionQuery.parse({'account': '200'}))
+    assert old['items'][0]['can_decide'] is False
+    assert database.read_bytes() == before
+    with pytest.raises(ValueError):
+        UnifiedActionQuery.parse({'source': 'memory', 'cursor': first['next_cursor']})
+    summary = await unified_action_catalog(scopes, UnifiedActionQuery.parse({}, summary=True), summary=True)
+    assert summary['by_source']['memory'] == 1 and summary['by_state']['pending'] == 4
+    assert summary['today_decided'] == 0 and summary['decision_latency_ms'] is None
+
+
+@pytest.mark.asyncio
+async def test_batch_decisions_bound_concurrency_and_reject_duplicate_revision(tmp_path):
+    """两个并行批次合计最多二项执行, 同项并发只有一方提交决定"""
+    from satrap.core.platform.action_catalog import ActionScope
+    from satrap.core.platform.action_decisions import DecisionItem, run_decisions
+    from satrap.core.config.group_actions import GroupActionStore
+    database = tmp_path / 'platform.db'
+    store = GroupActionStore(database)
+    scopes = [ActionScope('qq', database, '100', True)]
+    requests = []
+    for index in range(6):
+        identity = f'batch-action-{index}'
+        store.submit(identity, '100', '456', 'set_group_name', {'name': '新群名'}, 'panel', 7, approval_required=True)
+        requests.append(DecisionItem('qq', '100', 'group', identity, 1, True))
+    active = peak = count = 0
+    async def dispatch(item, target):
+        nonlocal active, peak, count
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.to_thread(store.decide, '100', '456', item.action_id, approve=True, policy_revision=7)
+            count += 1
+            await asyncio.sleep(.02)
+            await asyncio.to_thread(store.settle, '100', '456', item.action_id, 'succeeded', '')
+        finally:
+            active -= 1
+    results = await asyncio.gather(run_decisions(requests[:3], scopes, dispatch), run_decisions(requests[3:], scopes, dispatch))
+    assert count == 6 and peak == 2 and all(entry['result'] == 'applied' for result in results for entry in result['items'])
+    item = DecisionItem('qq', '100', 'group', 'raced-action-1', 1, True)
+    store.submit(item.action_id, '100', '456', 'set_group_name', {'name': '新群名'}, 'panel', 7, approval_required=True)
+    ready = asyncio.Event()
+    entered = 0
+    writes = 0
+    async def racing(item, target):
+        nonlocal entered, writes
+        entered += 1
+        if entered == 2:
+            ready.set()
+        await asyncio.wait_for(ready.wait(), 3)
+        await asyncio.to_thread(store.decide, '100', '456', item.action_id, approve=True, policy_revision=7)
+        writes += 1
+        await asyncio.to_thread(store.settle, '100', '456', item.action_id, 'succeeded', '')
+    first, second = await asyncio.gather(run_decisions([item], scopes, racing), run_decisions([item], scopes, racing))
+    assert writes == 1 and {first['items'][0]['result'], second['items'][0]['result']} == {'applied','conflict'}

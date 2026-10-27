@@ -440,7 +440,9 @@ async def test_actual_control_bridge_auth_progress_scope_and_one_dispatch(operat
             await release.wait()
         return [{"ok": True, "session_id": "same-id"}]
 
-    chat = ChatHTTPServer(cast(Any, SimpleNamespace(reconcile_plugins=chat_apply)), port=0)
+    from satrap.core.storage import StorageLayout
+    chat = ChatHTTPServer(cast(Any, SimpleNamespace(reconcile_plugins=chat_apply, _storage=StorageLayout(tmp_path / "data"),
+        _model_cfg=ModelConfigManager(str(tmp_path / "models.json"), auto_create=False), _platform_id="chat")), port=0)
     backend = BackendHTTPServer(cast(Any, SimpleNamespace(reconcile_edictum_plugins_async=backend_apply)), port=0, static_dir=tmp_path)
     key = "control-bridge-operation-001"
     body = {"operation_id": key, "plugin_name": "插件", **({"kind": kind, "location_id": location} if kind else {})}

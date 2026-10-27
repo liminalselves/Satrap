@@ -478,6 +478,7 @@ def _make_llm(fake_completions: _FakeCompletions) -> LLM:
     # 测试替身非真实 OpenAI 客户端, 边界断言集中在工厂内
     llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=fake_completions)))
     llm.model = "mock"
+    llm.base_url = "https://fixture.invalid/v1"
     llm.temperature = 0.7
     llm.top_p = 0.95
     llm.max_tokens = 1000
@@ -495,6 +496,7 @@ def _make_async_llm(fake_completions: _FakeAsyncCompletions) -> AsyncLLM:
     llm = AsyncLLM.__new__(AsyncLLM)
     llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=fake_completions)))
     llm.model = "mock"
+    llm.base_url = "https://fixture.invalid/v1"
     llm.temperature = 0.7
     llm.top_p = 0.95
     llm.max_tokens = 1000

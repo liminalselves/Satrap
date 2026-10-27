@@ -499,7 +499,6 @@ async def test_generated_file_chat_download_retry_fork_and_cross_conversation_re
     """真实沙箱与插件产物贯通 Chat、鉴权 HTTP、回复版本、分支及租约"""
     import aiohttp
     from satrap.core.server_auth import ServerAuth
-    from satrap.core.utils.minihttp import MiniHTTPServer
     from satrap.core.storage.file_lock import FileLock
     from satrap.core.file_access.artifacts import artifact_lease
     from support.group_models import Script, AsyncModel
@@ -518,9 +517,8 @@ async def test_generated_file_chat_download_retry_fork_and_cross_conversation_re
     assert (await service.set_plugin_enabled("base_take", True))["ok"]
     cid = await service.create_conversation()
     token = "file-download-test-token-with-at-least-32-characters"
-    server = ChatHTTPServer.__new__(ChatHTTPServer)
-    MiniHTTPServer.__init__(server, host="127.0.0.1", port=0, auth=ServerAuth.create("127.0.0.1", 0, token=token))
-    server.service = service
+    server = ChatHTTPServer(service, host="127.0.0.1", port=0)
+    server.auth = ServerAuth.create("127.0.0.1", 0, token=token)
     await server.start()
     port = cast(Any, server._server).sockets[0].getsockname()[1]
     try:

@@ -39,20 +39,23 @@ WebSocket:
 """
 from __future__ import annotations
 
-from urllib.parse import unquote, urlsplit, quote
+from urllib.parse import unquote, urlsplit, quote, parse_qs
 import argparse
 import asyncio
 import math
 import base64
 import signal
+import sqlite3
 from typing import Any, cast
 import json
 import traceback
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import OverrideConflictError
-from satrap.core.config.conversation_data import ConversationDataConflict
+from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict, MessagePageTooLarge
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
+from satrap.core.config.rag_jobs import RagJobError, RagJobManager, rag_jobs_response
+from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS, BoundedAsyncWorker
 from satrap.edictum.plugin_settings import model_options
 from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
@@ -66,6 +69,7 @@ from satrap.core.storage import StorageMaintenanceService
 from satrap.core.rag import RagService
 
 from satrap.core.log import logger
+from satrap.core.telemetry.health import ServiceRuntime
 from satrap.core.file_access.artifacts import CHUNK_BYTES
 
 DEFAULT_HOST = "127.0.0.1"
@@ -97,11 +101,44 @@ class ChatHTTPServer(MiniHTTPServer):
             session_namespace="chat",
         )
         self.service = service
+        self._service_runtime = ServiceRuntime("chat")
+        from satrap.core.telemetry.capture import TelemetryWriter
+        self._telemetry_writer: TelemetryWriter | None = None
+        self._rag_jobs: RagJobManager | None = None
 
     async def start(self) -> None:
         """启动"""
-        await super().start()
+        from satrap.core.telemetry.capture import start_service_capture
+
+        self._telemetry_writer = await start_service_capture("chat", self._service_runtime, self.service._storage)
+        try:
+            await super().start()
+            self._rag_jobs = RagJobManager(self.service._storage, "chat", self._service_runtime.runtime_id, lambda: ModelConfigSnapshot.read(self.service._model_cfg))
+            try:
+                await self._rag_jobs.start([self.service._platform_id])
+            except (OSError, ValueError) as error:
+                self._rag_jobs = None
+                logger.warning(f"[RAG 任务] 启动未就绪: {type(error).__name__}")
+        except BaseException:
+            if self._telemetry_writer is not None:
+                await asyncio.to_thread(self._telemetry_writer.close)
+                self._telemetry_writer = None
+            raise
         logger.info(f"[聊天服务] HTTP API: http://{self.host}:{self.port}")
+
+    async def stop(self) -> None:
+        """停止 HTTP 后排空采集队列, 调用方先结束聊天任务"""
+        try:
+            await super().stop()
+        finally:
+            try:
+                if self._rag_jobs is not None:
+                    await self._rag_jobs.close()
+                    self._rag_jobs = None
+            finally:
+                if self._telemetry_writer is not None:
+                    await asyncio.to_thread(self._telemetry_writer.close)
+                    self._telemetry_writer = None
 
     # ---------- WebSocket 端点分发 ----------
 
@@ -183,7 +220,7 @@ class ChatHTTPServer(MiniHTTPServer):
         """
         if method == "POST" and urlsplit(path).path == "/api/chat/upload":
             return 32 * 1024 * 1024 * 4 // 3 + 65536
-        if method == "POST" and urlsplit(path).path == "/api/chat/rag/upload":
+        if method == "POST" and urlsplit(path).path in {"/api/chat/rag/upload", "/api/chat/rag/jobs/upload"}:
             return DEFAULT_MAX_FILE_SIZE
         return super()._request_body_limit(method, path)
 
@@ -319,12 +356,85 @@ class ChatHTTPServer(MiniHTTPServer):
             logger.warning(f"[Chat 创建] 创建会话失败: {error}")
             return 400, {"ok": False, "error": str(error)}
 
+    async def _route_rag_jobs(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, object]]:
+        """
+        在 Chat 自身鉴权后处理知识库后台任务
+
+        参数:
+        - method: HTTP 方法
+        - path: 包含知识库范围的请求路径
+        - body: JSON 或二进制上传正文
+
+        返回:
+        - 新任务, 只读目录或稳定错误
+        """
+        svc = self.service
+        clean = urlsplit(path).path
+        try:
+            query = {key: values[0] for key, values in parse_qs(urlsplit(path).query).items()}
+            if query.get("platform_id", svc._platform_id) != svc._platform_id:
+                raise ValueError("平台不属于当前 Chat 服务")
+            session_id = query.get("session_id", "")
+            if session_id and session_id not in svc._conversations:
+                await RAG_WORKERS.run(require_stored_session, svc._storage.platform_db(svc._platform_id), session_id)
+            service = RagService(svc._storage, svc._model_cfg, svc._platform_id, session_id)
+            uploading = clean == "/api/chat/rag/jobs/upload" and method == "POST"
+            payload: object = json.loads(body or b"{}") if method == "POST" and not uploading else {}
+            if not isinstance(payload, dict):
+                raise ValueError("请求体必须为对象")
+            return await rag_jobs_response(self._rag_jobs, service, method, clean.removeprefix("/api/chat/rag"), query, cast(dict[str, object], payload), body if uploading else None)
+        except RagJobError as error:
+            return error.status, {"error": str(error), "code": error.code}
+        except WorkerBusyError as error:
+            return 503, {"error": str(error), "code": "rag_queue_full"}
+        except (OSError, TypeError, ValueError, TimeoutError) as error:
+            return 400, {"error": str(error), "code": "invalid_request"}
+
+    async def _route_stored_messages(self, path: str) -> tuple[int, dict[str, object]]:
+        """
+        使用 Chat 自己的认证和数据库读取已保存消息
+
+        参数:
+        - path: 带会话身份的只读消息路径
+
+        返回:
+        - 存储分页, 不改变当前实例内存与编辑修订
+        """
+        try:
+            clean = urlsplit(path).path
+            identity = unquote(clean[len("/api/chat/conversations/"):-len("/messages")])
+            parsed = parse_qs(urlsplit(path).query, keep_blank_values=True)
+            if any(len(values) != 1 for values in parsed.values()) or set(parsed) - {"layer", "q", "role", "limit", "cursor", "order"}:
+                raise ValueError("消息查询包含重复或未知参数")
+            service = ConversationDataService(self.service._storage.platform_db(self.service._platform_id))
+            result = await CHAT_READ_WORKERS.run(service.messages, identity, {key: values[0] for key, values in parsed.items()})
+            return 200, dict(result)
+        except KeyError:
+            return 404, {"error": "已保存对话不存在", "code": "conversation_not_found"}
+        except MessagePageTooLarge as error:
+            return 413, {"error": str(error), "code": "message_too_large"}
+        except WorkerBusyError as error:
+            return 503, {"error": str(error), "code": "worker_busy"}
+        except (sqlite3.DatabaseError, OSError, json.JSONDecodeError) as error:
+            logger.error(f"[历史只读分页] 读取失败, type={type(error).__name__}")
+            return 500, {"error": "已保存对话数据不可读取", "code": "storage_unavailable"}
+        except (TypeError, ValueError) as error:
+            return 400, {"error": str(error), "code": "invalid_request"}
+
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
         operation_status = self.application_status(method, path)
         if operation_status is not None:
             return operation_status
         clean = path.split("?", 1)[0]
+        if method == "GET" and clean.startswith("/api/chat/conversations/") and clean.endswith("/messages"):
+            return await self._route_stored_messages(path)
+        if clean.startswith("/api/stats/") or clean == "/api/activity/local":
+            from satrap.core.telemetry.api import telemetry_response
+
+            stats = await telemetry_response(method, path, "chat", svc._storage)
+            if stats is not None:
+                return stats
         model_settings = await self._route_model_settings(method, path, body)
         if model_settings is not None:
             return model_settings
@@ -335,6 +445,7 @@ class ChatHTTPServer(MiniHTTPServer):
         if method == "GET" and clean == "/api/chat/health":
             persisted = sum(1 for conv in svc._conversations.values() if conv.persisted)
             return 200, {
+                **self._service_runtime.snapshot(),
                 "ok": True,
                 "conversations": persisted,
                 "preloaded": len(svc._conversations) - persisted,
@@ -436,6 +547,9 @@ class ChatHTTPServer(MiniHTTPServer):
         if clean == "/api/chat/plugin-model-options" and method == "GET":
             svc._model_cfg.reload()
             return 200, {"options": model_options(svc._model_cfg)}
+
+        if clean.startswith(("/api/chat/rag/jobs", "/api/chat/rag/documents")):
+            return await self._route_rag_jobs(method, path, body)
 
         if (clean == "/api/chat/rag" and method in {"GET", "POST"}) or (clean == "/api/chat/rag/upload" and method == "POST"):
             try:
