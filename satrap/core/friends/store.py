@@ -106,7 +106,8 @@ class FriendStore:
                 if any(json.loads(row[0]).get("user_id") == params["user_id"] for row in previous):
                     raise FriendError("unresolved_action", "此账号已有刚提交或结果未知的好友申请, 请先核查原动作")
             state = "pending" if actor == "model" and (action == "delete_friend" or requires_approval) else "ready"
-            conn.execute("INSERT INTO friend_actions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO friend_actions (self_id,action_id,action_type,params_json,actor_kind,state,created_at,expires_at,decision_at,executed_at,result_json,target_json,actor_id) "
+                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (account, action_id, action, encoded, actor, state, now, now + 600, None, None, None,
                           json.dumps(target, ensure_ascii=False) if target else None, actor_id))
             row = conn.execute("SELECT * FROM friend_actions WHERE self_id=? AND action_id=?", (account, action_id)).fetchone()
@@ -157,6 +158,12 @@ class FriendStore:
         """
         now = time.time()
         with self.connection() as conn:
+            if expected == "pending" and state in {"executing", "rejected"}:
+                row = conn.execute("SELECT * FROM friend_actions WHERE self_id=? AND action_id=?", (account, action_id)).fetchone()
+                if row is not None and row["state"] == expected and row["expires_at"] > now:
+                    from satrap.core.platform.action_decisions import decision_metadata
+
+                    decision_metadata(conn, "friend_actions", dict(row), state == "executing")
             changed = conn.execute(
                 "UPDATE friend_actions SET state=?, result_json=?, decision_at=CASE WHEN ?='pending' THEN ? ELSE decision_at END, "
                 "executed_at=CASE WHEN ?='executing' THEN ? ELSE executed_at END WHERE self_id=? AND action_id=? AND state=? "

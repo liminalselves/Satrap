@@ -318,13 +318,21 @@ class ScopedMemories:
                     raise MemoryError("quota_exceeded", "当前群待审批提案已达上限")
                 proposal = "mp_" + uuid.uuid4().hex
                 now = self.archive._clock()
-                connection.execute("INSERT INTO memory_proposals VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)",
+                connection.execute("INSERT INTO memory_proposals (proposal_id,scope_key,operation,memory_id,purpose_key,base_revision,payload_json,actor_id,state,created_at,expires_at,decision_at) "
+                                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)",
                                    (proposal, self.scope.key, operation, row["id"] if row else None, key, row["revision"] if row else 0, json.dumps(payload, ensure_ascii=False), actor, now, now + 86400))
                 result = {"ok": True, "status": "pending", "proposal_id": proposal, "operation": operation, "base_revision": row["revision"] if row else 0}
             else:
                 result = self._apply(connection, operation, row, payload, "operator" if operator else "model", actor=actor)
             minimal = {key: value for key, value in result.items() if key != "memory"}
             connection.execute("INSERT INTO memory_operations VALUES (?, ?, ?, ?)", (self.scope.key, operation_id, fingerprint, json.dumps(minimal, ensure_ascii=False)))
+            connection.commit()
+            if result.get("status") == "pending":
+                from satrap.core.telemetry.capture import record_approval
+                from satrap.core.telemetry.contracts import MetricScope
+
+                record_approval("memory", result["proposal_id"], "pending", MetricScope(platform_id=self.scope.adapter_id,
+                                self_id=self.scope.self_id, conversation_kind="group", target_id=self.scope.chat_id))
             return result
 
     def _apply(self, connection: sqlite3.Connection, operation: str, row: sqlite3.Row | None, payload: dict[str, Any], origin: str, *, actor: str) -> dict[str, Any]:
@@ -429,6 +437,9 @@ class ScopedMemories:
                 return {"ok": True, "status": proposal["state"], "proposal_id": proposal_id}
             if expected_revision != proposal["base_revision"]:
                 raise MemoryError("revision_conflict", "审批基准与提案不一致")
+            from satrap.core.platform.action_decisions import decision_metadata
+
+            decision_metadata(connection, "memory_proposals", dict(proposal), approve)
             result: dict[str, Any] = {}
             state = "rejected"
             if approve:
@@ -443,4 +454,10 @@ class ScopedMemories:
                     state = "approved"
             connection.execute("UPDATE memory_proposals SET state=?, decision_at=?, payload_json='{}' WHERE scope_key=? AND proposal_id=?",
                                (state, self.archive._clock(), self.scope.key, proposal_id))
+            connection.commit()
+            from satrap.core.telemetry.capture import record_approval
+            from satrap.core.telemetry.contracts import MetricScope
+
+            record_approval("memory", proposal_id, state, MetricScope(platform_id=self.scope.adapter_id,
+                            self_id=self.scope.self_id, conversation_kind="group", target_id=self.scope.chat_id))
             return {**result, "ok": True, "status": state, "proposal_id": proposal_id}

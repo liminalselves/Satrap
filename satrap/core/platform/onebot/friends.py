@@ -88,7 +88,7 @@ class OneBotFriends:
         self.check(account, generation)
         if not isinstance(result, list) or len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 4 * 1024 * 1024:
             raise FriendError("invalid_response", "好友列表格式无效或超出大小限制")
-        items: list[dict[str, str]] = []
+        items: list[dict[str, object]] = []
         seen: set[str] = set()
         complete = len(result) <= 10000
         for raw in result[:10000]:
@@ -99,7 +99,8 @@ class OneBotFriends:
                 if uid in seen or any(not isinstance(raw.get(key, ""), str) or len(raw.get(key, "")) > 256 for key in ("nickname", "remark")):
                     raise ValueError()
                 seen.add(uid)
-                items.append({"user_id": uid, "nickname": raw.get("nickname", ""), "remark": raw.get("remark", "")})
+                items.append({"user_id": uid, "nickname": raw.get("nickname", ""), "remark": raw.get("remark", ""),
+                              "avatar_url": raw.get("avatar_url", raw.get("avatar"))})
             except ValueError:
                 complete = False
         return {"items": items, "complete": complete}

@@ -3,14 +3,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 import secrets
 import time
 import traceback
+import math
+from urllib.parse import urlsplit
 
 from satrap.core.utils.validation import is_bounded_text
-from satrap.core.friends import FriendError
+from satrap.core.friends import FriendDirectoryEntry, FriendError
 from satrap.core.friends.store import FriendStore
 from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_group_action_preflight
 from satrap.core.log import logger
@@ -176,16 +178,32 @@ class FriendService:
         if (not isinstance(result, dict) or not isinstance(result.get("items"), list)
                 or type(result.get("complete")) is not bool or len(result["items"]) > 10000):
             raise FriendError("invalid_response", "适配器返回了无效的好友目录")
-        items = []
+        items: list[FriendDirectoryEntry] = []
         seen = set()
         for raw in result["items"]:
             if not isinstance(raw, dict):
                 raise FriendError("invalid_response", "好友资料格式无效")
+            raw = cast(dict[str, object], raw)
             uid = text_id(raw.get("user_id"), "好友 ID")
-            if uid in seen or any(not isinstance(raw.get(key, ""), str) or len(raw.get(key, "")) > 256 for key in ("nickname", "remark")):
+            labels = {key: raw.get(key, "") for key in ("nickname", "remark")}
+            if uid in seen or any(not isinstance(value, str) or len(value) > 256 for value in labels.values()):
                 raise FriendError("invalid_response", "好友资料格式无效或重复")
             seen.add(uid)
-            items.append({"user_id": uid, "nickname": raw.get("nickname", ""), "remark": raw.get("remark", "")})
+            avatar = raw.get("avatar_url")
+            if isinstance(avatar, str) and len(avatar) <= 2048:
+                try:
+                    address = urlsplit(avatar)
+                    if address.scheme not in {"http", "https"} or not address.hostname or address.username is not None or address.password is not None:
+                        avatar = None
+                except ValueError:
+                    avatar = None
+            else:
+                avatar = None
+            added = raw.get("added_at")
+            online = raw.get("online")
+            items.append(FriendDirectoryEntry(user_id=uid, nickname=cast(str, labels["nickname"]), remark=cast(str, labels["remark"]),
+                                             avatar_url=avatar, online=online if isinstance(online, bool) else None,
+                                             added_at=float(added) if isinstance(added, (float, int)) and not isinstance(added, bool) and math.isfinite(added) and added >= 0 else None))
         return {"items": items, "complete": result["complete"]}
 
     async def list_friends(self, account: str, *, actor: str, query: str = "", limit: int = 20, cursor: str | None = None) -> dict[str, Any]:
@@ -246,6 +264,7 @@ class FriendService:
             self._cursors[next_cursor] = (snapshot_id, offset + len(items))
         self.check_connection(account, adapter, generation)
         return {"items": items, "has_more": more, "next_cursor": next_cursor, "total_loaded": len(snapshot["items"]),
+                "total": len(snapshot["items"]) if snapshot["complete"] else None,
                 "snapshot_at": snapshot["time"], "coverage": {"complete": snapshot["complete"]},
                 "ambiguous": bool(query) and len(snapshot["items"]) > 1}
 
@@ -431,6 +450,7 @@ class FriendService:
             if source is None:
                 raise FriendError("permission_denied", "模型申请缺少可信授权来源")
             self._sources[(account, action_id)] = (source, fingerprint, adapter, generation, record["expires_at"])
+            self._approval_activity(account, action_id, "pending", str(params.get("user_id") or ""))
             return record
         return await self.execute(account, action_id, "ready", adapter, generation, source, fingerprint)
 
@@ -455,6 +475,22 @@ class FriendService:
                               "目标不是当前机器人的好友" if directory["complete"] else "目录不完整, 无法确认目标好友")
         return row
 
+    def _approval_activity(self, account: str, action_id: str, state: str, user_id: str) -> None:
+        """
+        在好友账本提交后登记审批摘要
+
+        参数:
+        - account: 已确认的当前机器人账号
+        - action_id: 原动作 ID
+        - state: 已提交的待审或决定状态
+        - user_id: 已知的实际好友对象, 缺少时不伪造对象
+        """
+        from satrap.core.telemetry.capture import record_approval
+        from satrap.core.telemetry.contracts import MetricScope
+
+        record_approval("friend", action_id, state, MetricScope(platform_id=self.adapter_id, self_id=account,
+                        conversation_kind="private" if user_id else "", target_id=user_id))
+
     async def decide(self, account: str, action_id: str, approve: bool) -> dict[str, Any]:
         """
         人工批准或拒绝模型删除申请
@@ -475,7 +511,9 @@ class FriendService:
         if record["state"] != "pending":
             return record
         if not approve:
-            await asyncio.to_thread(store.transition, account, action_id, "pending", "rejected")
+            changed = await asyncio.to_thread(store.transition, account, action_id, "pending", "rejected")
+            if changed:
+                self._approval_activity(account, action_id, "rejected", str(record["params"].get("user_id") or ""))
             self._sources.pop((account, action_id), None)
             return await asyncio.to_thread(store.get, account, action_id)
         origin = self._sources.get((account, action_id))
@@ -524,6 +562,8 @@ class FriendService:
                 await self.check_delete(account, target)
             preflight()
             occupied = await asyncio.to_thread(store.transition, account, action_id, expected, "executing")
+            if occupied and expected == "pending":
+                self._approval_activity(account, action_id, "approved", str(params.get("user_id") or ""))
             if not occupied:
                 return await asyncio.to_thread(store.get, account, action_id)
             with bind_group_action_preflight(preflight):

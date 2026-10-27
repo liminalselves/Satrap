@@ -305,6 +305,9 @@ class GroupActionStore(GroupConfigStore):
 
                 record_platform_action("group", self.database, self_id, action_id, "expired", metadata={"reason": "policy_changed"})
                 raise GroupConfigConflict("审批策略或账号状态已变化")
+            from satrap.core.platform.action_decisions import decision_metadata
+
+            decision_metadata(connection, "group_actions", dict(row), approve)
             connection.execute(
                 "UPDATE group_actions SET state=?, decision_at=? WHERE action_id=?",
                 ("executing" if approve else "rejected", now, action_id),
