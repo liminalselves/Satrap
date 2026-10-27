@@ -165,6 +165,8 @@ class PlatformMessageDataService:
             result = self.store.query(scope, **arguments)
             if result["revision"] != state["revision"]:
                 raise MessageArchiveError("revision_conflict", "档案管理状态发生变化, 请刷新")
+            for item in result["items"]:
+                item["conversation_id"] = None   # 档案未保存消息到模型上下文的关联, 不从群号或当前路由反推
             return {**result, **state}
         if action == "message":
             message_id = arguments.get("message_id")
@@ -173,6 +175,7 @@ class PlatformMessageDataService:
             item = self.store.get(scope, message_id)
             if item is None:
                 raise MessageArchiveError("not_found", "消息未被本地档案采集")
+            item["conversation_id"] = None   # 一条平台消息不能被推定仅属于当前模型上下文
             return {"ok": True, "item": item, **state}
         if "expected_revision" not in arguments:
             raise ValueError("删除和恢复需要已读取的档案修订")

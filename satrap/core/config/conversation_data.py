@@ -9,8 +9,10 @@ from __future__ import annotations
 from satrap.core.storage.context_catalog import BACKUP_INDEX
 
 from contextlib import closing
+from collections.abc import Mapping
+import base64
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict, cast
 import sqlite3
 import hashlib
 import copy
@@ -19,13 +21,31 @@ import time
 import uuid
 
 from satrap.core.utils.context.utils import _load_message_content, _message_content_json
-from satrap.core.config.conversation_catalog import conversation_records, filter_records
+from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, conversation_records, filter_records
 from satrap.core.storage.file_lock import database_session_lock
 from satrap.core.utils.vision import content_text_projection
 
 
 class ConversationDataConflict(ValueError):
     """数据版本变化或活动实例正在处理消息, 本次编辑不写入"""
+
+
+StoredValue = None | bool | int | float | str | list["StoredValue"] | dict[str, "StoredValue"]
+
+
+class StoredMessagePage(TypedDict):
+    """只读数据库分页, 游标不充当编辑版本"""
+
+    items: list[dict[str, StoredValue]]
+    has_more: bool
+    next_cursor: str | None
+    as_of: float
+    consistency: Literal["live"]
+    source: Literal["storage"]
+
+
+class MessagePageTooLarge(ValueError):
+    """单条正文超过只读预览预算, 不能以截断正文冒充完整记录"""
 
 
 def data_revision(value: object) -> str:
@@ -151,7 +171,7 @@ class ConversationDataService:
         if live_messages is not None:
             return
         tables = ConversationDataService._tables(connection)
-        for table, column in (("chat_history", "conversation_id"), ("context_catalog", "context_id"), ("conversation_meta", "conversation_id"), ("session_configs", "session_id"), ("display_turns", "conversation_id"), ("conversation_data_backups", "conversation_id")):
+        for table, column in (("chat_history", "conversation_id"), ("context_catalog", "context_id"), ("conversation_meta", "conversation_id"), ("session_configs", "session_id"), ("display_turns", "conversation_id"), ("conversation_data_backups", "conversation_id"), ("context_sessions", "session_id"), ("context_session_history", "session_id")):
             if table in tables and connection.execute(f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (conversation,)).fetchone():
                 return
         raise KeyError("对话或上下文不存在")
@@ -199,6 +219,124 @@ class ConversationDataService:
             backups = [dict(row) for row in connection.execute("SELECT id, layer, reason, created_at FROM conversation_data_backups WHERE conversation_id=? AND layer=? ORDER BY created_at DESC LIMIT 50", (conversation, layer))] if "conversation_data_backups" in self._tables(connection) else []
             offset = max(0, offset)
             return {"ok": True, "conversation_id": conversation, "layer": layer, "revision": data_revision(value), "total": len(items), "items": [{**item, "index": index} for index, item in enumerate(items) if offset <= index < offset + min(100, max(1, limit))], "backups": backups, "source": "memory" if live_messages is not None and layer == "context" else "storage"}
+
+    def messages(self, conversation: str, query: Mapping[str, str]) -> StoredMessagePage:
+        """
+        在数据库中筛选和翻页, 只解码当前页的上下文或展示轮次
+
+        参数:
+        - conversation: 已保存的上下文 ID 或展示对话 ID
+        - query: layer, q, role, limit, cursor 和 order
+
+        返回:
+        - 当前页与绑定筛选的继续游标, 单项超过 8 MiB 时明确拒绝预览
+        """
+        layer, search, role = query.get("layer", "context"), query.get("q", ""), query.get("role", "")
+        order = query.get("order", "asc")
+        if not isinstance(conversation, str) or not conversation or len(conversation) > MAX_CONVERSATION_ID_LENGTH:
+            raise ValueError("conversation_id 无效或过长")
+        if layer not in {"context", "history"} or order not in {"asc", "desc"} or len(search) > 512:
+            raise ValueError("数据层, 排序或搜索文本无效")
+        if role and (layer != "context" or role not in {"system", "developer", "user", "assistant", "tool", "function"}):
+            raise ValueError("role 仅用于 context 层的标准模型角色")
+        try:
+            limit = int(query.get("limit", "50"))
+        except ValueError as error:
+            raise ValueError("limit 必须为整数") from error
+        if not 1 <= limit <= 100:
+            raise ValueError("limit 必须为 1 到 100")
+        scope = data_revision([str(self.database.resolve()), conversation, layer, search, role, order])
+        after: list[int] = []
+        cursor = query.get("cursor", "")
+        if cursor:
+            try:
+                if len(cursor) > 4096:
+                    raise ValueError()
+                saved: object = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+                if not isinstance(saved, dict):
+                    raise ValueError()
+                saved = cast(dict[str, object], saved)
+                if saved.get("scope") != scope or not isinstance(saved.get("after"), list):
+                    raise ValueError()
+                key = cast(list[object], saved["after"])
+                if len(key) != (1 if layer == "context" else 2) or any(type(item) is not int or item < 0 for item in key):
+                    raise ValueError()
+                after = cast(list[int], key)
+            except (ValueError, TypeError, UnicodeError) as error:
+                raise ValueError("游标格式无效或筛选已变化") from error
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
+            self._require_conversation(connection, conversation, None)
+            tables = self._tables(connection)
+            table = "chat_history" if layer == "context" else "display_turns"
+            if table not in tables:
+                return StoredMessagePage(items=[], has_more=False, next_cursor=None, as_of=time.time(), consistency="live", source="storage")
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            clauses = ["conversation_id=?"]
+            args: list[object] = [conversation]
+            if role:
+                clauses.append("role=?")
+                args.append(role)
+            if search:
+                fields = ["content"] if layer == "context" else [key for key in ("user_input", "answer", "thinking") if key in columns]
+                clauses.append("(" + " OR ".join(f"instr(lower(COALESCE({key},'')),lower(?))>0" for key in fields) + ")")
+                args.extend(search for _ in fields)
+            keys = ["id"] if layer == "context" else ["turn_index", "id"]
+            arguments: list[object] = list(args)
+            if after:
+                clauses.append("(" + ",".join(keys) + ")" + (">" if order == "asc" else "<") + "(" + ",".join("?" for _ in keys) + ")")
+                arguments.extend(after)
+            sizes = "+".join(f"COALESCE(length(CAST({key} AS BLOB)),0)" for key in sorted(columns))
+            metadata = connection.execute("SELECT " + ",".join(keys) + f",({sizes}) AS payload_size FROM {table} WHERE " +
+                                          " AND ".join(clauses) + " ORDER BY " + ",".join(key + " " + order for key in keys) + " LIMIT ?", (*arguments, limit + 1)).fetchall()
+            selected, more = metadata[:limit], len(metadata) > limit
+            identifiers = [int(row["id"]) for row in selected]
+            children: dict[str, list[str]] = {}
+            child_sizes: dict[int, int] = {}
+            if layer == "history" and identifiers:
+                placeholders = ",".join("?" for _ in identifiers)
+                for child in ("display_turn_variants", "display_tool_calls"):
+                    if child not in tables:
+                        continue
+                    fields = [row[1] for row in connection.execute(f"PRAGMA table_info({child})") if row[1] != "context_messages"]
+                    children[child] = fields
+                    size = "+".join(f"COALESCE(length(CAST({key} AS BLOB)),0)" for key in fields)
+                    for row in connection.execute(f"SELECT turn_id,SUM({size}) FROM {child} WHERE turn_id IN ({placeholders}) GROUP BY turn_id", identifiers):
+                        child_sizes[row[0]] = child_sizes.get(row[0], 0) + row[1]
+            used = 0
+            kept: list[sqlite3.Row] = []
+            for row in selected:
+                size = row["payload_size"] + child_sizes.get(row["id"], 0)
+                if used + size > 8 * 1024 * 1024:
+                    if not kept:
+                        raise MessagePageTooLarge("单条记录及其变体超过 8 MiB, 请使用原数据管理或导出入口读取")
+                    more = True
+                    break
+                kept.append(row)
+                used += size
+            records: dict[int, dict[str, StoredValue]] = {}
+            ids = [row["id"] for row in kept]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                for row in connection.execute(f"SELECT * FROM {table} WHERE id IN ({placeholders})", ids):
+                    if layer == "context":
+                        item: dict[str, StoredValue] = {"record_id": f"context:{row['id']}", "id": row["id"], "role": row["role"],
+                                                        "content": cast(StoredValue, _load_message_content(row["content"], row["content_json"] if "content_json" in columns else None))}
+                        for name in ("tool_calls", "tool_call_id", "reasoning_content"):
+                            if name in columns and row[name] is not None:
+                                item[name] = json.loads(row[name]) if name == "tool_calls" else row[name]
+                    else:
+                        item = {**dict(row), "record_id": f"history:{row['id']}", "variants": [], "tool_call_records": []}
+                    records[row["id"]] = item
+                for child, fields in children.items():
+                    target = "variants" if child == "display_turn_variants" else "tool_call_records"
+                    for row in connection.execute("SELECT " + ",".join(fields) + f" FROM {child} WHERE turn_id IN ({placeholders}) ORDER BY id", ids):
+                        cast(list[StoredValue], records[row["turn_id"]][target]).append(dict(row))
+            continuation = None
+            if more and kept:
+                continuation = base64.urlsafe_b64encode(json.dumps({"scope": scope, "after": [kept[-1][key] for key in keys]}).encode()).decode().rstrip("=")
+            return StoredMessagePage(items=[records[row["id"]] for row in kept], has_more=more, next_cursor=continuation,
+                                     as_of=time.time(), consistency="live", source="storage")
 
     @staticmethod
     def _edit_context(messages: list[dict[str, Any]], payload: dict[str, Any]) -> list[dict[str, Any]]:

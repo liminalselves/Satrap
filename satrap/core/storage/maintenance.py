@@ -10,12 +10,13 @@ import shutil
 from typing import Any, Iterable, cast
 import json
 import time
+import math
 
 import traceback
 
-from satrap.core.storage.file_lock import session_storage_lock
+from satrap.core.storage.file_lock import FileLock, session_storage_lock
 from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain, preserved_session_scope, preserved_session_ids
-from satrap.core.storage.layout import StorageLayout
+from satrap.core.storage.layout import StorageLayout, storage_key
 from satrap.core.log import logger
 
 
@@ -768,6 +769,23 @@ class StorageMaintenanceService:
         返回:
         - dict[str, Any]: 恢复结果
         """
+        self._resolve_archive_path(platform_id, archive_id)
+        lock = self.layout.platform_root(platform_id) / "locks" / f"archive-{storage_key(archive_id, fallback='archive')}.lock"
+        with FileLock(lock):
+            return self._restore_archive_locked(platform_id, archive_id, database_path=database_path)
+
+    def _restore_archive_locked(self, platform_id: str, archive_id: str, *, database_path: str | Path | None = None) -> dict[str, Any]:
+        """
+        持有回收包互斥后执行原恢复事务和文件发布
+
+        参数:
+        - platform_id: 已确认平台
+        - archive_id: 已校验回收包 ID
+        - database_path: 可选宿主数据库路径
+
+        返回:
+        - 原恢复结果, 不与永久清理同时处理同一回收包
+        """
         archive = self._resolve_archive_path(platform_id, archive_id)
         database = Path(database_path) if database_path is not None else self.layout.platform_db(platform_id)
         receipt = self._restore_receipt(database, archive_id)
@@ -831,10 +849,44 @@ class StorageMaintenanceService:
         - bool: 是否删除
         """
         target = self._resolve_archive_path(platform_id, archive_id)
-        if not target.exists() and not target.is_symlink():
-            return False
-        shutil.rmtree(target)
-        return True
+        lock = self.layout.platform_root(platform_id) / "locks" / f"archive-{storage_key(archive_id, fallback='archive')}.lock"
+        with FileLock(lock, timeout=0):
+            target = self._resolve_archive_path(platform_id, archive_id)
+            if not target.exists() and not target.is_symlink():
+                return False
+            shutil.rmtree(target)
+            return True
+
+    def _trash_candidates(self) -> Iterable[tuple[str, str, float]]:
+        """
+        仅读取回收包目录与身份清单, 不执行全库孤儿审计
+
+        返回:
+        - 已核验平台, 回收包和原有保留期依据的修改时间
+        """
+        if not self.layout.platforms_root.is_dir():
+            return
+        for platform_root in self.layout.platforms_root.iterdir():
+            if platform_root.is_symlink() or not platform_root.is_dir():
+                continue
+            manifest = self._read_json(platform_root / "platform.json")
+            platform_id = (manifest or {}).get("platform_id")
+            if not isinstance(platform_id, str) or not platform_id or self.layout.platform_root(platform_id).resolve() != platform_root.resolve():
+                continue
+            root = self.layout.trash_root(platform_id) / "sessions"
+            if root.is_symlink() or not root.is_dir():
+                continue
+            for candidate in root.iterdir():
+                if candidate.is_symlink() or not candidate.is_dir():
+                    continue
+                try:
+                    archive = self._resolve_archive_path(platform_id, candidate.name)
+                    metadata = self._read_json(self._resolve_archive_member(archive, "manifest.json"))
+                    if not metadata or metadata.get("platform_id") != platform_id or metadata.get("archive_id") != candidate.name:
+                        continue
+                    yield platform_id, candidate.name, archive.stat().st_mtime
+                except (OSError, ValueError):
+                    logger.warning(f"[回收区] 跳过无法确认身份的回收项: {platform_id}/{candidate.name}")
 
     def purge_archives(
         self,
@@ -865,29 +917,24 @@ class StorageMaintenanceService:
         }
         if not requested and older_than_days is None:
             raise ValueError("必须选择回收项或提供保留天数")
-        if older_than_days is not None and older_than_days < 0:
+        if older_than_days is not None and (isinstance(older_than_days, bool) or not math.isfinite(older_than_days) or older_than_days < 0):
             raise ValueError("保留天数不能小于 0")
         cutoff = (
             time.time() - float(older_than_days) * 86400
             if older_than_days is not None
             else None
         )
-        available: dict[tuple[str, str], StorageAuditItem] = {}
-        for item in self.scan():
-            if item.category != "trash_entry":
-                continue
-            archive_id = str(item.details.get("archive_id", "")).strip()
-            if not archive_id:
-                continue
-            key = (item.platform_id, archive_id)
+        available: set[tuple[str, str]] = set()
+        for item_platform, archive_id, modified_at in self._trash_candidates():
+            key = (item_platform, archive_id)
             if requested and key in requested:
-                available[key] = item
+                available.add(key)
             if (
                 cutoff is not None
-                and item.modified_at <= cutoff
-                and (not platform_id or item.platform_id == platform_id)
+                and modified_at <= cutoff
+                and (not platform_id or item_platform == platform_id)
             ):
-                available[key] = item
+                available.add(key)
         results: list[dict[str, Any]] = []
         missing = requested - set(available)
         results.extend(
@@ -896,6 +943,7 @@ class StorageMaintenanceService:
                 "archive_id": archive_id,
                 "ok": False,
                 "error": "回收项不存在或已变化, 请重新扫描",
+                "code": "not_found",
             }
             for item_platform, archive_id in sorted(missing)
         )
@@ -906,6 +954,7 @@ class StorageMaintenanceService:
                     "platform_id": item_platform,
                     "archive_id": archive_id,
                     "ok": deleted,
+                    "code": "purged" if deleted else "not_found",
                 })
             except Exception as error:
                 results.append({
@@ -913,6 +962,7 @@ class StorageMaintenanceService:
                     "archive_id": archive_id,
                     "ok": False,
                     "error": str(error),
+                    "code": "resource_busy" if isinstance(error, TimeoutError) else "invalid_archive" if isinstance(error, ValueError) else "io_error",
                 })
         return results
 
@@ -933,10 +983,10 @@ class StorageMaintenanceService:
         for item_id in selected:
             item = current.get(item_id)
             if item is None:
-                results.append({"item_id": item_id, "ok": False, "error": "项目已变化, 请重新扫描"})
+                results.append({"item_id": item_id, "ok": False, "error": "项目已变化, 请重新扫描", "code": "not_found"})
                 continue
             if not item.auto_safe:
-                results.append({"item_id": item_id, "ok": False, "error": "该项目必须人工处理"})
+                results.append({"item_id": item_id, "ok": False, "error": "该项目必须人工处理", "code": "manual_review"})
                 continue
             try:
                 if item.category == "orphan_session_directory":
@@ -957,8 +1007,9 @@ class StorageMaintenanceService:
                     ok = True
                 else:
                     ok = False
-                results.append({"item_id": item_id, "ok": ok})
+                results.append({"item_id": item_id, "ok": ok, "code": "cleaned" if ok else "not_applicable"})
             except Exception as error:
                 logger.warning(f"[数据清理] 孤儿项目处理失败: {item.platform_id}/{item.session_id}, {error}")
-                results.append({"item_id": item_id, "ok": False, "error": str(error)})
+                results.append({"item_id": item_id, "ok": False, "error": str(error),
+                                "code": "resource_busy" if isinstance(error, TimeoutError) else "invalid_state" if isinstance(error, ValueError) else "io_error"})
         return results
