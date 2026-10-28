@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
 import dataclasses
 import secrets
 import string
@@ -16,6 +17,7 @@ from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.edictum.registry import EDICTUM_PROVIDER
 from satrap.core.storage import StorageMaintenanceService, StorageScope
 from satrap.core.type import SessionConfig
+from satrap.core.config.session_routes import read_session_routes
 
 if TYPE_CHECKING:
     from satrap.core.framework.SessionClassManager import SessionClassConfigManager
@@ -53,6 +55,8 @@ class SessionInstanceConfigService:
         edictum_manager: EdictumConfigManager,
         platform_id: str,
         storage_layout: StorageLayout,
+        *,
+        platform: Mapping[str, object] | None = None,
     ) -> None:
         """
         初始化会话实例冷管理服务
@@ -64,6 +68,7 @@ class SessionInstanceConfigService:
         - edictum_manager: Edictum 命名配置管理器
         - platform_id: 平台实例 ID
         - storage_layout: v2 数据布局
+        - platform: 平台类型与实例描述, 用于补充适配器标签
         """
         self.store = store
         self.user_store = user_store
@@ -71,6 +76,7 @@ class SessionInstanceConfigService:
         self.edictum_manager = edictum_manager
         self.platform_id = platform_id
         self.storage_layout = storage_layout
+        self.platform = platform
 
     def list_instances(self, limit: int = 200) -> list[dict[str, Any]]:
         """
@@ -83,11 +89,14 @@ class SessionInstanceConfigService:
         - list[dict[str, Any]]: 统一前端会话实例结构
         """
         instances: list[dict[str, Any]] = []
-        for config in self.store.list(limit=limit):
+        configs = self.store.list(limit=limit)
+        routes = read_session_routes(self.user_store.db_path, self.platform, [config.session_id for config in configs if config.session_id])
+        for config in configs:
             serialized = dataclasses.asdict(config)
             serialized["platform_id"] = self.platform_id
             serialized["active"] = False
             serialized["runtime"] = {}
+            serialized["route"] = routes.get(config.session_id or "")
             instances.append(serialized)
         return instances
 

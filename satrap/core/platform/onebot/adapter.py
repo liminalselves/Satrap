@@ -212,6 +212,35 @@ class OneBotAdapter(PlatformAdapter):
         row = connection.execute("SELECT group_name FROM group_directory WHERE self_id=? AND group_id=?", (route.get("self_id", ""), route["group_id"])).fetchone()
         return {"target": str(row[0]) or route["group_id"]} if row else {}
 
+    @classmethod
+    def conversation_catalog_metadata_batch(cls, connection: sqlite3.Connection, routes: list[dict[str, str]]) -> list[dict[str, str]]:
+        """
+        按账号与群号批量读取群名, 不随实例数量逐项查询
+
+        参数:
+        - connection: 平台数据库只读连接
+        - routes: 已解码的实例路由, 可包含同群的多个历史实例
+
+        返回:
+        - 与路由顺序对应的标签, 无实际群名时返回空映射
+        """
+        groups = sorted({(route.get("self_id", ""), route["group_id"]) for route in routes if route.get("group_id")})
+        labels: dict[tuple[str, str], str] = {}
+        if groups and connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='group_directory'").fetchone():
+            for offset in range(0, len(groups), 250):
+                batch = groups[offset:offset + 250]
+                values = ",".join("(?,?)" for _ in batch)
+                for account, group, name in connection.execute(
+                    f"WITH requested(self_id, group_id) AS (VALUES {values}) "
+                    "SELECT g.self_id, g.group_id, g.group_name FROM requested r "
+                    "JOIN group_directory g ON g.self_id=r.self_id AND g.group_id=r.group_id",
+                    [value for pair in batch for value in pair],
+                ):
+                    if isinstance(name, str) and name.strip():
+                        labels[(account, group)] = name
+        return [{"target": labels[key]} if (key := (route.get("self_id", ""), route.get("group_id", ""))) in labels else {}
+                for route in routes]
+
     def __init__(
         self,
         config: PlatformConfig,

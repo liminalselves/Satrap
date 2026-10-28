@@ -154,6 +154,27 @@ class PlatformAdapter(ABC):
         """
         return {}
 
+    @classmethod
+    def conversation_catalog_metadata_batch(cls, connection: sqlite3.Connection, routes: list[dict[str, str]]) -> list[dict[str, str]]:
+        """
+        批量补充路由标签, 默认兼容既有单条扩展, 适配器可覆写为集合查询
+
+        参数:
+        - connection: 平台数据库只读连接
+        - routes: 已选定的完整路由, 顺序与结果对应
+
+        返回:
+        - 逐条标签映射, 单条扩展失败不会影响其它实例
+        """
+        result: list[dict[str, str]] = []
+        for route in routes:
+            try:
+                result.append(cls.conversation_catalog_metadata(connection, route))
+            except Exception as error:
+                logger.error(f"[会话实例] 适配器标签读取失败: {route.get('session_id')}, {error}")
+                result.append({})
+        return result
+
     def __init__(self, config: PlatformConfig, event_handler: EventHandler | None = None, event_queue: asyncio.Queue[Any] | None = None):
         """
         初始化 PlatformAdapter

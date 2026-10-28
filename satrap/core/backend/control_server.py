@@ -837,12 +837,13 @@ def _configured_storage_path(config_data: dict[str, Any], key: str) -> Path | No
     return storage_path
 
 
-def _session_instance_config_service(platform_id: str) -> SessionInstanceConfigService:
+def _session_instance_config_service(platform_id: str, *, readonly: bool = False) -> SessionInstanceConfigService:
     """
     根据当前后端配置创建指定平台的会话实例冷管理服务
 
     参数:
     - platform_id: 平台实例 ID
+    - readonly: 列表查询不初始化或迁移领域数据库
 
     返回:
     - SessionInstanceConfigService: 共享运行时数据库的冷管理服务
@@ -864,12 +865,13 @@ def _session_instance_config_service(platform_id: str) -> SessionInstanceConfigS
         storage_path=_configured_storage_path(config_data, "edictum_config_path"),
     )
     return SessionInstanceConfigService(
-        SessionConfigStore(database),
-        UserInfoStore(database),
+        SessionConfigStore(database, readonly=readonly),
+        UserInfoStore(database, readonly=readonly),
         session_class_manager,
         edictum_manager,
         platform_id,
         storage_layout,
+        platform=next((item for item in (config_data.get("platforms") or []) if isinstance(item, dict) and item.get("id") == platform_id), None),
     )
 
 
@@ -3863,11 +3865,18 @@ async def _route_session_instances(ctx: _RouteContext) -> ControlResponse | None
     """
     if ctx.method == "GET" and ctx.path == "/config/session-instances":
         try:
-            sessions: list[dict[str, Any]] = []
-            for platform_id in _configured_platform_ids():
-                sessions.extend(_session_instance_config_service(platform_id).list_instances())
-            sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
+            def collect() -> list[dict[str, Any]]:
+                """在线程中读取冷实例与路由, 不初始化领域表"""
+                sessions: list[dict[str, Any]] = []
+                for platform_id in _configured_platform_ids():
+                    sessions.extend(_session_instance_config_service(platform_id, readonly=True).list_instances())
+                sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
+                return sessions
+
+            sessions = await RAG_WORKERS.run(collect)
             return 200, {"sessions": sessions}
+        except WorkerBusyError as error:
+            return 503, {"error": str(error), "code": "worker_busy"}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 

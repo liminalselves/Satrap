@@ -117,7 +117,7 @@ def _rows(connection: sqlite3.Connection, tables: set[str], table: str, where: s
     return [dict(row) for row in connection.execute(f"SELECT * FROM {table}" + (" WHERE " + where if where else ""), params)] if table in tables else []
 
 
-def _route_metadata(row: dict[str, Any]) -> dict[str, str]:
+def route_metadata(row: dict[str, Any]) -> dict[str, str]:
     """
     解码完整路由键, 旧版用户范围不推断成私聊或某个群
 
@@ -148,6 +148,9 @@ def _route_metadata(row: dict[str, Any]) -> dict[str, str]:
         logger.warning(f"[对话目录] 未知路由格式: {row.get('session_id')}")
         result["scope"] = "unknown"
     return result
+
+
+_route_metadata = route_metadata   # 保留旧目录解码入口
 
 
 def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any] | None = None, requested: str = '') -> list[dict[str, Any]]:

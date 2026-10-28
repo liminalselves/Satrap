@@ -191,17 +191,20 @@ class SessionConfigStore:
     表设计非常轻量, 仅保存会话配置与基础统计字段, 便于后续按 session_id 恢复实例
     """
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, *, readonly: bool = False):
         """
         初始化会话配置存储
 
         参数:
         - db_path: 数据库文件路径, 默认 local 平台的 platform.db
+        - readonly: 只查询已有存储, 不创建目录或迁移表
         """
         self._lock = threading.RLock()
         self.db_path = Path(db_path) if db_path else Path(get_db_path())
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_table()
+        self.readonly = readonly
+        if not readonly:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._init_table()
 
     def _connect(self) -> sqlite3.Connection:
         """
@@ -210,7 +213,7 @@ class SessionConfigStore:
         返回:
         - 数据库连接对象 (sqlite3.Connection)
         """
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) if self.readonly else sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -282,12 +285,12 @@ class SessionConfigStore:
         return SessionConfig(
             session_id=row["session_id"],
             session_type_name=row["session_type_name"],
-            provider_name=str(row["provider_name"] or SESSION_CLASS_PROVIDER),
+            provider_name=str(row["provider_name"] or SESSION_CLASS_PROVIDER) if "provider_name" in row.keys() else SESSION_CLASS_PROVIDER,
             created_at=float(row["created_at"]),
             last_used_at=float(row["last_used_at"]),
             message_count=int(row["message_count"]),
             session_config=payload,
-            history_started_at=row["history_started_at"],
+            history_started_at=row["history_started_at"] if "history_started_at" in row.keys() else None,
         )
 
     def upsert(self, config: SessionConfig):
@@ -387,8 +390,12 @@ class SessionConfigStore:
         返回:
         - List[SessionConfig]: 列出持久化的会话配置 (按最后使用时间倒序)
         """
+        if self.readonly and not self.db_path.is_file():
+            return []
         with self._lock:
             with self._connection() as conn:
+                if self.readonly and not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_configs'").fetchone():
+                    return []
                 rows = conn.execute(
                     """
                     SELECT * FROM session_configs

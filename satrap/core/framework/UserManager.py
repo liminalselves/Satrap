@@ -44,17 +44,20 @@ class ContextSession:
 class UserInfoStore:
     """UserInfo 的 SQLite 持久化存储"""
 
-    def __init__(self, db_path: str | Path | None = None):
+    def __init__(self, db_path: str | Path | None = None, *, readonly: bool = False):
         """
         初始化用户信息存储
 
         参数:
         - db_path: 数据库文件路径, 默认 local 平台的 platform.db
+        - readonly: 跳过初始化, 查询不创建数据库或迁移表
         """
         self._lock = threading.RLock()
         self.db_path = Path(db_path) if db_path else Path(get_db_path())
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_table()
+        self.readonly = readonly
+        if not readonly:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._init_table()
 
     def _connect(self) -> sqlite3.Connection:
         """
@@ -63,7 +66,7 @@ class UserInfoStore:
         返回:
         - 数据库连接对象 sqlite3.Connection
         """
-        conn = sqlite3.connect(str(self.db_path))
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) if self.readonly else sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         return conn
 

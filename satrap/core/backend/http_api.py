@@ -23,6 +23,7 @@ import re
 from satrap.core.pipeline.request_diagnostics import DIAGNOSTIC_STAGES, parse_stages
 from satrap.core.config.conversation_runtime import manage_platform_data
 from satrap.core.config.conversation_data import ConversationDataConflict
+from satrap.core.config.session_routes import read_session_routes
 from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
@@ -1535,13 +1536,18 @@ class BackendHTTPServer(MiniHTTPServer):
                 - 保持旧字段的会话列表
                 """
                 sessions: list[dict[str, Any]] = []
-                for platform_id, (session_manager, _) in _platform_runtimes(backend).items():
+                platforms = {str(item.get("id")): item for item in backend.config.platforms}
+                for platform_id, (session_manager, user_manager) in _platform_runtimes(backend).items():
                     active_ids = {item.session_id for item in session_manager.list_sessions()}
-                    for item in session_manager.list_session_configs():
+                    configs = session_manager.list_session_configs()
+                    database = user_manager.store.db_path if user_manager is not None else session_manager.store.db_path
+                    routes = read_session_routes(database, platforms.get(platform_id), [item.session_id for item in configs if item.session_id])
+                    for item in configs:
                         serialized = dataclasses.asdict(item)
                         serialized["platform_id"] = platform_id
                         serialized["active"] = item.session_id in active_ids
                         serialized["runtime"] = session_manager.get_session_runtime_metadata(item.session_id or "")
+                        serialized["route"] = routes.get(item.session_id or "")
                         sessions.append(serialized)
                 sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
                 return sessions
