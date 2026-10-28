@@ -29,7 +29,7 @@ import secrets
 import atexit
 import ctypes
 import signal
-from typing import Any, cast
+from typing import Any, Literal, cast
 import base64
 import json
 import hashlib
@@ -3345,17 +3345,27 @@ async def _plugin_health(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result_items: list[dict[str, Any]] = []
     for item in items:
         expected = (["Chat"] if item.get("chat_enabled") else []) + (["Edictum"] if item.get("edictum_configs") else [])
-        samples = by_name.get(item["name"], [])
+        # 只用期望来源的样本判定: Chat 未启用时其停用样本不代表平台侧状态
+        samples = [sample for sample in by_name.get(item["name"], []) if sample["service"] in expected]
         complete = all(sources[target]["state"] == "available" for target in expected)
-        if not item.get("execution_enabled", True) or samples and all(not sample["plugin"].get("enabled", True) for sample in samples):
-            state = "disabled"
+        state: Literal["healthy", "attention", "disabled", "unknown"]
+        reason: Literal["ok", "instance_error", "execution_off", "all_disabled", "not_used", "source_unavailable", "not_loaded"]
+        # 停用只在书面配置或完整观测下成立; 部分来源离线时其余服务的停用样本不代表整体
+        if not item.get("execution_enabled", True):
+            state, reason = "disabled", "execution_off"
         elif any(sample["plugin"].get("error") or sample["plugin"].get("status") in {"error", "blocked", "restart_required"} for sample in samples):
-            state = "attention"
-        elif complete and samples:
-            state = "healthy"
+            state, reason = "attention", "instance_error"
+        elif not expected:
+            state, reason = "disabled", "not_used"
+        elif not complete:
+            state, reason = "unknown", "source_unavailable"
+        elif not samples:
+            state, reason = "unknown", "not_loaded"
+        elif all(not sample["plugin"].get("enabled", True) for sample in samples):
+            state, reason = "disabled", "all_disabled"
         else:
-            state = "unknown"
-        health = PluginHealth(state=state, as_of=observed if complete and samples else None,
+            state, reason = "healthy", "ok"
+        health = PluginHealth(state=state, reason=reason, as_of=observed if complete and samples else None,
                               coverage=PluginHealthCoverage(complete=complete, expected_services=expected, sources=[sources[target] for target in expected]),
                               instances=cast(list[dict[str, object]], samples))
         result_items.append({**item, "health": health})

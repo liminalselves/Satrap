@@ -232,8 +232,11 @@ export interface PlatformToggleResult {
   ok?: boolean; runtime?: { status: 'applied' | 'pending' | 'unconfirmed' | 'failed'; reason_code: string | null };
   [field: string]: unknown;
 }
+export type PluginHealthReason = 'ok' | 'instance_error' | 'execution_off' | 'all_disabled' | 'not_used' | 'source_unavailable' | 'not_loaded';
 export interface PluginHealth {
   state: 'healthy' | 'attention' | 'disabled' | 'unknown'; as_of: number | null;
+  /** 判定依据; 旧后端不返回 */
+  reason?: PluginHealthReason;
   coverage: { complete: boolean; expected_services: string[]; sources: { service: string; state: SourceState; as_of: number | null }[] };
   instances: Record<string, unknown>[];
 }

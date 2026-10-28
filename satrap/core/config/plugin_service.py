@@ -42,6 +42,8 @@ class PluginHealth(TypedDict):
     """批量目录中的独立健康资料"""
 
     state: Literal["healthy", "attention", "disabled", "unknown"]
+    reason: Literal["ok", "instance_error", "execution_off", "all_disabled", "not_used", "source_unavailable", "not_loaded"]
+    """判定依据, 前端据此说明未知或停用的原因"""
     as_of: float | None
     coverage: PluginHealthCoverage
     instances: list[dict[str, object]]
@@ -166,7 +168,8 @@ class PluginManagementService:
             host = host_states.get(entry.name)
             payload.update(
                 source="builtin" if entry.path.resolve().is_relative_to(self.catalog.preset_dir.resolve()) else "user",
-                usage_count=len(references) + int(chat_configured),
+                # Chat 默认启用的插件未写入配置也算使用位置, 与健康判定口径一致
+                usage_count=len(references) + int(chat_configured or chat_enabled),
                 edictum_configs=references,
                 chat_enabled=chat_enabled,
                 execution_enabled=host["execution_enabled"] if host else True,

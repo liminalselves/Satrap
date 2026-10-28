@@ -21,7 +21,7 @@ import {
   CapabilityDeclarations, ExecutionChip, HealthChip, PluginIcon, SourceChip, TintTabs,
 } from './PluginBits';
 import {
-  CAPABILITY_KINDS, capabilityCount, displayName, executionEnabled, externalUrl, healthLabel,
+  CAPABILITY_KINDS, capabilityCount, displayName, executionEnabled, externalUrl, healthLabel, healthReasonText,
   pluginCapabilities, pluginHealth, sessionText, platformText, timestampText,
 } from './pluginModel';
 
@@ -130,12 +130,7 @@ function Overview({ plugin, onOpenTab }: { plugin: CatalogPlugin; onOpenTab: (ta
               {healthLabel(plugin)}
             </div>
             <p className="mt-1 text-[12px] leading-5 text-fg-2">
-              {healthNote
-                ?? (health === 'healthy'
-                  ? '运行服务提供的观测显示插件实例正常。'
-                  : health === 'disabled'
-                    ? '执行总闸已关闭，所有使用位置的能力开关都会保留。'
-                    : '运行服务未提供可确认的健康观测，未知项不会显示为 0。')}
+              {healthNote ?? healthReasonText(plugin)}
             </p>
             <div className="mt-2.5 flex flex-wrap gap-3 text-[11px] text-fg-3">
               <span className="num">观测实例 {instances.length}</span>

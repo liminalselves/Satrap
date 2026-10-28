@@ -8,7 +8,7 @@ import { cn } from '@/utils/cn';
 import { Badge, Button, StatusDot } from '@/components/kit';
 import type { CatalogPlugin } from '@/api/pluginsContracts';
 import {
-  CAPABILITY_LABELS, CAPABILITY_TINT, HEALTH_LABELS, HEALTH_TINTS, pluginAccent, pluginHealth, pluginIcon,
+  CAPABILITY_LABELS, CAPABILITY_TINT, HEALTH_TINTS, healthLabel, healthReasonText, pluginAccent, pluginHealth, pluginIcon,
   type Capabilities, type PluginIconKey,
 } from './pluginModel';
 
@@ -64,9 +64,11 @@ export function PluginIcon({ plugin, size = 'md', showHealth = false, className 
 export function HealthChip({ plugin, className }: { plugin: Pick<CatalogPlugin, 'health'>; className?: string }) {
   const state = pluginHealth(plugin);
   return (
-    <Badge tone={HEALTH_TINTS[state]} dot live={state === 'healthy'} className={className}>
-      {HEALTH_LABELS[state]}
-    </Badge>
+    <span title={healthReasonText(plugin)}>
+      <Badge tone={HEALTH_TINTS[state]} dot live={state === 'healthy'} className={className}>
+        {healthLabel(plugin)}
+      </Badge>
+    </span>
   );
 }
 

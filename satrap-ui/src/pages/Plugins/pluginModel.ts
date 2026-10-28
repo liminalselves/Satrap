@@ -1,6 +1,7 @@
 // 插件管理页的视图模型: 把目录/健康契约映射为稳定的展示字段
 import type { Tint } from '@/components/kit';
 import type { CatalogPlugin } from '@/api/pluginsContracts';
+import type { PluginHealthReason } from '@/api/contracts';
 import type { PluginCapabilityKind } from '@/api/types';
 
 type CapabilityKind = PluginCapabilityKind;
@@ -60,8 +61,40 @@ export function pluginHealth(plugin: Pick<CatalogPlugin, 'health'>): HealthState
   return state === 'healthy' || state === 'attention' || state === 'disabled' ? state : 'unknown';
 }
 
+/** 按判定依据细化的短标签, 旧后端无 reason 时回退到状态标签 */
+const REASON_LABELS: Record<PluginHealthReason, string> = {
+  ok: '运行正常',
+  instance_error: '部分异常',
+  execution_off: '执行已关闭',
+  all_disabled: '已停用',
+  not_used: '未被使用',
+  source_unavailable: '服务离线',
+  not_loaded: '未加载',
+};
+
 export function healthLabel(plugin: Pick<CatalogPlugin, 'health'>): string {
-  return HEALTH_LABELS[pluginHealth(plugin)];
+  const reason = plugin.health?.reason;
+  return reason && reason in REASON_LABELS ? REASON_LABELS[reason] : HEALTH_LABELS[pluginHealth(plugin)];
+}
+
+const SERVICE_NAMES: Record<string, string> = { Chat: 'Chat 服务', Edictum: '平台后端' };
+
+/** 健康判定的完整说明, 用于提示与详情页 */
+export function healthReasonText(plugin: Pick<CatalogPlugin, 'health'>): string {
+  const health = plugin.health;
+  if (!health) return '运行服务未提供健康观测。';
+  const missing = health.coverage.sources.filter((source) => source.state !== 'available')
+    .map((source) => SERVICE_NAMES[source.service] ?? source.service);
+  switch (health.reason) {
+    case 'ok': return '期望的运行服务均可用, 观测到的实例正常。';
+    case 'instance_error': return '至少一个运行实例报告错误或需要重启。';
+    case 'execution_off': return '执行总闸已关闭, 所有使用位置的能力开关都会保留。';
+    case 'all_disabled': return '所有运行实例中该插件均为停用。';
+    case 'not_used': return 'Chat 未启用, 也没有 Edictum 命名配置引用此插件。';
+    case 'source_unavailable': return `${missing.join('、') || '部分运行服务'}暂不可用, 无法确认插件状态。`;
+    case 'not_loaded': return '运行服务可用, 但目前没有已加载的会话使用此插件; 会话加载后才能观测。';
+    default: return '运行服务未提供可确认的健康观测, 未知项不会显示为 0。';
+  }
 }
 
 export function hasIssue(plugin: Pick<CatalogPlugin, 'health'>): boolean {
