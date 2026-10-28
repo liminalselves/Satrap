@@ -7,6 +7,7 @@ import { formatTime } from '@/utils/format';
 import { VersionedConfigRead } from '@/api/configVersions';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import { Banner, InlineSwitchRow, SectionCard } from './shared';
+import { ACTIVATION_REFRESH_MS } from './useActivationLoad';
 
 interface Props {
   i: number;
@@ -69,11 +70,14 @@ export function LogRetentionPanel({ i, active, onDirty, register }: Props) {
     }
   }, [active, apply, statusRead]);
 
+  // 滚动经过分节会反复激活; 刚读取过就不立即重读, 由轮询按间隔刷新
+  const loadedAt = useRef(0);
   useEffect(() => {
     if (!active) { setLoading(false); return; }
     const poll = startVisiblePoll(async (signal) => {
       if (!await load(signal)) throw new Error('日志状态读取失败');
-    }, { interval: 10000 });
+      loadedAt.current = Date.now();
+    }, { interval: 10000, immediate: Date.now() - loadedAt.current > ACTIVATION_REFRESH_MS });
     return () => { requestId.current++; poll.stop(); };
   }, [active, load]);
 

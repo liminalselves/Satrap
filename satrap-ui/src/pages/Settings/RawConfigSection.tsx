@@ -174,8 +174,10 @@ export function RawConfigSection({
   }, [dirty, revision]);
 
   /* 服务端实时校验: 只有 YAML 契约返回完整结构时才展示结果, 避免旧后端被误判为语法错误 */
+  // 滚动经过分节会反复激活; 同一份草稿已有校验结果时不再重复请求
+  const validatedDraft = useRef<string | null>(null);
   useEffect(() => {
-    if (!active) return;
+    if (!active || validatedDraft.current === draft) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setValidating(true);
@@ -191,6 +193,7 @@ export function RawConfigSection({
           setValidated(true);
           setIssues(result.errors);
           setValidationError('');
+          validatedDraft.current = draft;
         })
         .catch((cause) => {
           if (controller.signal.aborted) return;

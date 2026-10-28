@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Eye, KeyRound, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { getPasswordStatus, setDashboardPassword } from '@/api/auth';
 import { getControlApiUrl } from '@/utils/constants';
 import { Badge, Button, Field, Skeleton, toast } from '@/components/kit';
 import { Banner, ConfirmDialog, PasswordInput, SectionCard } from './shared';
+import { useActivationLoad } from './useActivationLoad';
 
 function strengthOf(value: string): { score: number; label: string; text: string; tint: string } {
   let score = 0;
@@ -37,16 +38,16 @@ export function AccessPasswordPanel({ i, active }: { i: number; active: boolean 
     try {
       setRequired(await getPasswordStatus(baseUrl));
       setLoadError('');
+      return true;
     } catch (cause) {
       setLoadError(cause instanceof Error ? cause.message : '读取失败');
+      return false;
     } finally {
       setLoading(false);
     }
   }, [baseUrl]);
 
-  useEffect(() => {
-    if (active) void load();
-  }, [active, load]);
+  useActivationLoad(active, load, [baseUrl]);
 
   const submit = async (mode: 'set' | 'clear') => {
     if (busy) return;

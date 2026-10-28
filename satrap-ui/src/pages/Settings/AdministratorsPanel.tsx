@@ -14,6 +14,7 @@ import {
 import { getControlApiUrl } from '@/utils/constants';
 import { Badge, Button, Drawer, Field, Input, Skeleton, toast } from '@/components/kit';
 import { Banner, SectionCard } from './shared';
+import { ACTIVATION_REFRESH_MS } from './useActivationLoad';
 
 const selectClass = 'field w-full appearance-none';
 
@@ -211,9 +212,14 @@ export function AdministratorsPanel({ i, active, backendRunning, onSaved, onDirt
     }
   }, []);
 
+  // 滚动经过分节会反复激活; 刚读取过的数据直接沿用, 不重复请求
+  const loadedAt = useRef(0);
   useEffect(() => {
-    if (active) void load();
-    else { setCheckingRuntime(false); setLoading(false); }
+    if (snapshot) loadedAt.current = Date.now();
+  }, [snapshot]);
+  useEffect(() => {
+    if (active && Date.now() - loadedAt.current > ACTIVATION_REFRESH_MS) void load();
+    else if (!active) { setCheckingRuntime(false); setLoading(false); }
     return () => { requests.current++; readController.current?.abort(); };
   }, [active, load]);
   useEffect(() => () => { requests.current++; }, []);
@@ -366,7 +372,7 @@ export function AdministratorsPanel({ i, active, backendRunning, onSaved, onDirt
           {checkingRuntime && <span className="ml-auto animate-pulse">正在确认管理员运行状态…</span>}
         </div>
 
-        {loading && (
+        {loading && !snapshot && (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: 6 }).map((_, index) => (
               <div key={index} className="rounded-xl border border-line bg-glass p-4">

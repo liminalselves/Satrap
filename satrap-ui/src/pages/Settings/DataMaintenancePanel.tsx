@@ -10,6 +10,7 @@ import { settingsApi, statsApi, type StorageMaintenance, type TelemetrySettings 
 import { errorText } from '@/utils/errorText';
 import { formatBytes, formatTime } from '@/utils/format';
 import { Banner, ConfirmDialog, InlineSwitchRow, SectionCard } from './shared';
+import { useActivationLoad } from './useActivationLoad';
 
 const categoryTone: Record<string, Tone> = {
   orphan_session_directory: 'orange',
@@ -180,12 +181,8 @@ export function DataMaintenancePanel({ i, active, backendRunning, controlAvailab
     }
   }, []);
 
-  useEffect(() => {
-    if (!active) return;
-    void loadPolicy();
-    void loadTelemetry();
-    return () => { policyLoadId.current++; telemetryLoadId.current++; };
-  }, [active, loadPolicy, loadTelemetry]);
+  useActivationLoad(active, async () => { await Promise.all([loadPolicy(), loadTelemetry()]); });
+  useEffect(() => () => { policyLoadId.current++; telemetryLoadId.current++; }, []);
 
   const savePolicy = async () => {
     if (!policy || !validPolicyDays || policySaving || !maintenanceDirty) return;

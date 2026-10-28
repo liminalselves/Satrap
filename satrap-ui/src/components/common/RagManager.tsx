@@ -19,7 +19,11 @@ import {
   type Doc, type ImportSummary, type Kb, type KBConfig, type KBDraft,
 } from '@/components/rag/types';
 
-export function RagManager({ context }: { context: RagContext }) {
+export function RagManager({ context: rawContext }: { context: RagContext }) {
+  // 调用方常传入内联对象; 按字段固定引用, 父组件重渲染不触发重新读取与清空列表
+  const { platformId: contextPlatform, sessionId: contextSession, via: contextVia } = rawContext;
+  const context = useMemo<RagContext>(() => ({ platformId: contextPlatform, sessionId: contextSession, via: contextVia }),
+    [contextPlatform, contextSession, contextVia]);
   const confirm = useConfirm(`${context.platformId}:${context.sessionId || ''}:${context.via || ''}`);
   const [data, setData] = useState<RagResult | null>(null);
   const [selectedId, setSelectedId] = useState('');

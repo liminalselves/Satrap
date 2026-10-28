@@ -28,6 +28,9 @@ type SectionId = 'appearance' | 'common' | 'backend' | 'password' | 'admins' | '
 type DirtyId = 'common' | 'admins' | 'logs' | 'raw';
 type SectionActions = { save: () => Promise<boolean>; undo: () => void };
 
+/** 判定线附近的迟滞距离: 小于该距离的回滚不切换当前分节 */
+const ACTIVE_HYSTERESIS_PX = 24;
+
 const sections: { id: SectionId; label: string; icon: LucideIcon; tint: Tint; description: string }[] = [
   { id: 'appearance', label: '外观', icon: Palette, tint: 'purple', description: '主题 · 动效 · 侧栏' },
   { id: 'common', label: '常用配置', icon: SlidersHorizontal, tint: 'accent', description: '监听 · 会话 · 限流' },
@@ -328,7 +331,12 @@ export function Settings() {
         const element = document.getElementById(`sec-${section.id}`);
         if (element && element.getBoundingClientRect().top <= band) current = section.id;
       }
-      setActive(current);
+      // 迟滞: 当前分节仍覆盖判定线附近时保持不变, 边界上的小幅滚动不来回切换 (各分节会随激活读取数据)
+      setActive((previous) => {
+        if (previous === current) return previous;
+        const box = document.getElementById(`sec-${previous}`)?.getBoundingClientRect();
+        return box && box.top <= band + ACTIVE_HYSTERESIS_PX && box.bottom > band - ACTIVE_HYSTERESIS_PX ? previous : current;
+      });
     };
     const onScroll = () => {
       if (navTargetRef.current) {
