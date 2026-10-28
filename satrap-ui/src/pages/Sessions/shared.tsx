@@ -199,6 +199,29 @@ export interface SessionView {
   config: NormalizedConfigState;
   startedAt?: number;
   lastError?: string;
+  /** 路由目标, 如 "群 123456" / "私聊 10086"; 无路由引用时为 null */
+  target: string | null;
+  /** 完整 ID 的末段随机短码, 无冒号分段时为完整 ID */
+  shortId: string;
+}
+
+type SessionRoute = NonNullable<RuntimeSession['route']>;
+
+function routeTarget(route: SessionRoute | null | undefined): string | null {
+  if (!route) return null;
+  const group = route.target_label && route.target_label !== route.group_id
+    ? `${route.target_label} (${route.group_id})` : route.group_id;
+  switch (route.scope) {
+    case 'group': return group ? `群 ${group}` : null;
+    case 'group_member': return group ? `群 ${group} · 成员 ${route.user_id || '?'}` : null;
+    case 'private': return `私聊 ${route.user_id || route.conversation_id || '?'}`;
+    case 'conversation': {
+      const id = route.conversation_id || route.group_id;
+      return id ? `${route.kind_label || route.conversation_kind || '对话'} ${id}` : null;
+    }
+    case 'legacy_user': return route.user_id ? `用户 ${route.user_id}` : null;
+    default: return null;
+  }
 }
 
 export const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>): string => (
@@ -253,6 +276,8 @@ export function normalizeSession(session: RuntimeSession): SessionView {
     config,
     startedAt: runtime?.started_at,
     lastError: (runtime as { last_error?: string } | undefined)?.last_error,
+    target: routeTarget(session.route),
+    shortId: session.session_id.split(':').pop() || session.session_id,
   };
 }
 

@@ -406,7 +406,9 @@ async function platform_policy(runtime) {
     await sourceTable.getByText('input_text_limit', { exact: true }).waitFor();
     await dryRunPanel.getByLabel('探测消息').fill('在吗');
     await dryRunPanel.getByRole('button', { name: '运行试算' }).click();
-    await dryRunPanel.getByText('不触发', { exact: true }).waitFor();
+    // 首次结果的到期复查已显示一个"不触发", 须等第二次结果的显式唤醒行出现, 否则断言会和渲染竞争
+    await dryRunPanel.getByText('no_match: 未命中唤醒词或 @', { exact: true }).waitFor();
+    assert.equal(await dryRunPanel.getByText('不触发', { exact: true }).count(), 2);
     assert.equal(dryRunCalls.length, 2);
     assert.equal(dryRunCalls[0].group_id, '20');
     assert.deepEqual(dryRunCalls[0].steps, [{ text: 'hello' }, { text: 'world' }]);

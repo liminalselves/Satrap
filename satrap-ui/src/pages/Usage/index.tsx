@@ -10,6 +10,7 @@ import {
   type Service, type SessionMetrics, type SourceCoverage, type StatsWindowQuery, type UsageTotals,
 } from '@/api/contracts';
 import { startVisiblePoll } from '@/utils/visiblePoll';
+import { useCachedState } from '@/hooks/useCachedState';
 import { cn } from '@/utils/cn';
 
 type Range = 'today' | '7d' | '30d';
@@ -221,18 +222,17 @@ export function Usage() {
   const [range, setRange] = useState<Range>('today');
   const [purpose, setPurpose] = useState<PurposeFilter>('all');
   const [view, setView] = useState<'models' | 'sessions'>('models');
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [models, setModels] = useState<ModelMetrics[] | null>(null);
-  const [sessions, setSessions] = useState<SessionMetrics[] | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cacheKey = `usage:${range}:${purpose}`;
+  const [overview, setOverview] = useCachedState<Overview | null>(`${cacheKey}:overview`, null);
+  const [models, setModels] = useCachedState<ModelMetrics[] | null>(`${cacheKey}:models`, null);
+  const [sessions, setSessions] = useCachedState<SessionMetrics[] | null>(`${cacheKey}:sessions`, null);
+  const [loaded, setLoaded] = useCachedState(`${cacheKey}:loaded`, false);
   const [refreshing, setRefreshing] = useState(false);
   const pollRef = useRef<ReturnType<typeof startVisiblePoll> | null>(null);
+  // 该范围有缓存就直接显示, 后台轮询再更新; 从未加载过才显示骨架
+  const loading = !loaded;
 
   useEffect(() => {
-    setOverview(null);
-    setModels(null);
-    setSessions(null);
-    setLoading(true);
     const poll = startVisiblePoll(async (signal) => {
       const query = statsWindowQuery(range, purpose);
       const [nextOverview, nextModels, nextSessions] = await Promise.all([
@@ -244,7 +244,7 @@ export function Usage() {
       if (nextOverview) setOverview(nextOverview);
       if (nextModels) setModels(Array.isArray(nextModels.models) ? nextModels.models : []);
       if (nextSessions) setSessions(Array.isArray(nextSessions.sessions) ? nextSessions.sessions : []);
-      setLoading(false);
+      setLoaded(true);
       setRefreshing(false);
     }, { interval: 30000 });
     pollRef.current = poll;
@@ -252,7 +252,7 @@ export function Usage() {
       poll.stop();
       pollRef.current = null;
     };
-  }, [range, purpose]);
+  }, [range, purpose, setOverview, setModels, setSessions, setLoaded]);
 
   const refresh = () => {
     setRefreshing(true);

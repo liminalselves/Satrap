@@ -11,6 +11,8 @@ export interface ModalProps {
   children: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl';
   showClose?: boolean;
+  /** 固定在滚动区外的底栏, 按钮阴影不被滚动容器裁切 */
+  footer?: React.ReactNode;
 }
 
 // 全局 Modal 栈: 嵌套弹窗时只有栈顶(最上层)响应 Escape / 遮罩点击
@@ -27,6 +29,7 @@ export function Modal({
   children,
   size = 'md',
   showClose = true,
+  footer,
 }: ModalProps) {
   const idRef = useRef<symbol>(Symbol('modal'));
   const id = idRef.current;
@@ -116,9 +119,15 @@ export function Modal({
             )}
           </div>
         )}
-        <div className="scroll -mx-6 min-h-0 flex-1 px-6">
+        {/* 上下负边距留出卡片悬停阴影的空间, 不改变内容位置 */}
+        <div className="scroll -mx-6 -my-3 min-h-0 flex-1 px-6 py-3">
           {children}
         </div>
+        {footer && (
+          <div className="-mx-6 mt-3 flex shrink-0 items-center justify-end gap-2 border-t border-line px-6 pt-4">
+            {footer}
+          </div>
+        )}
       </div>
     </div>,
     document.body

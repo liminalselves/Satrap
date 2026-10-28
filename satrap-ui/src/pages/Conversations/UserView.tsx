@@ -22,6 +22,11 @@ export function UserView({ platform, platformType, platforms, onType, onPlatform
   onOpen: (platform: string, conversation: string) => void;
 }) {
   const [search, setSearch] = useSearchParams();
+  const typeLabel = (user: Pick<ConversationUser, 'platform_id' | 'platform_type'>) => (
+    platforms.find((item) => item.id === user.platform_id)?.type_label
+      || platforms.find((item) => item.type === user.platform_type)?.type_label
+      || user.platform_type
+  );
   const selected = search.get('user') || '';
   const userPlatform = search.get('user_platform') || platform;
   const confirm = useConfirm(`${userPlatform}:${selected}`);
@@ -184,13 +189,15 @@ export function UserView({ platform, platformType, platforms, onType, onPlatform
                     <span className="truncate text-[13px] font-medium text-fg">{user.user_nickname || user.user_id}</span>
                     {!user.has_profile && <Badge tone="orange">未保存资料</Badge>}
                   </span>
-                  <span className="mt-0.5 block truncate font-mono text-[10.5px] text-fg-4">{user.platform_label} · {user.user_id}</span>
-                  <span className="mt-0.5 flex items-center gap-2 text-[10.5px] text-fg-3">
+                  <span className="mt-0.5 block truncate text-[11px] text-fg-3">
+                    {typeLabel(user)} <span className="font-mono">{user.user_id}</span>
+                  </span>
+                  <span className="mt-0.5 flex items-center gap-2 whitespace-nowrap text-[10.5px] text-fg-4">
+                    <span>{user.platform_label}</span>
                     <span>{user.conversation_count} 个关联对话</span>
                     {user.warning && <span className="text-orange">有提示</span>}
                   </span>
                 </span>
-                <span className="num flex-none text-[10px] text-fg-4">{user.revision}</span>
               </button>
             );
           })}
@@ -222,7 +229,7 @@ export function UserView({ platform, platformType, platforms, onType, onPlatform
                         <h2 className="break-all text-[18px] font-semibold text-fg">{detail.user_nickname || detail.user_id}</h2>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
                           <Badge tone={detail.has_profile ? 'green' : 'orange'}>{detail.has_profile ? '已保存资料' : '仅路由记录'}</Badge>
-                          <span className="break-all font-mono text-[11px] text-fg-3">{detail.platform_id} · {detail.user_id}</span>
+                          <span className="break-all text-[11px] text-fg-3">{typeLabel(detail)} <span className="font-mono">{detail.user_id}</span> · {detail.platform_label}</span>
                         </div>
                         <p className="mt-1 text-[11.5px] leading-5 text-fg-4">{detail.has_profile
                           ? `昵称保存在本地，不修改平台账号资料。保存的平台来源：${detail.user_platform || '未知'}`
@@ -238,7 +245,7 @@ export function UserView({ platform, platformType, platforms, onType, onPlatform
                       <StatTile label="关联对话" value={<span className="num">{detail.conversations.length}</span>} tint="green" />
                       <StatTile label="路由关联" value={<span className="num">{detail.conversations.filter((item) => item.routed).length}</span>} />
                       <StatTile label="列表关联" value={<span className="num">{detail.conversations.filter((item) => item.manual).length}</span>} />
-                      <StatTile label="资料修订" value={<span className="truncate font-mono text-[11.5px]">{detail.revision}</span>} />
+                      <StatTile label="平台账号" value={<span className="truncate text-[12px]">{typeLabel(detail)} <span className="font-mono">{detail.user_id}</span></span>} />
                     </div>
 
                     <section className="mt-4">
@@ -317,6 +324,7 @@ export function UserView({ platform, platformType, platforms, onType, onPlatform
                       <KeyValue label="平台实例" mono>{detail.platform_id}</KeyValue>
                       <KeyValue label="用户 ID" mono>{detail.user_id}</KeyValue>
                       <KeyValue label="最近活动">{detail.conversations[0]?.last_activity_at ? formatTime(detail.conversations[0].last_activity_at) : '未知'}</KeyValue>
+                      <KeyValue label="资料修订" mono><span className="break-all text-[11px]">{detail.revision}</span></KeyValue>
                     </div>
                   </>}
             </div>

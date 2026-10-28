@@ -2604,7 +2604,8 @@ function ChatSettingsModal({
   }, [open]);
 
   return (
-    <Modal open={open} onClose={onClose} title="对话设置" size="3xl">
+    <Modal open={open} onClose={onClose} title="对话设置" size="3xl"
+      footer={<Button variant="primary" onClick={onClose}>完成</Button>}>
       <div className="flex h-[62vh] min-h-[420px] flex-col gap-3 sm:flex-row sm:gap-4">
         {/* 左侧分类导航 */}
         <nav className="grid flex-none grid-cols-2 gap-1 border-b border-line pb-2 sm:flex sm:w-44 sm:flex-col sm:border-b-0 sm:border-r sm:pb-0 sm:pr-3">
@@ -2626,8 +2627,8 @@ function ChatSettingsModal({
           ))}
         </nav>
 
-        {/* 右侧分类内容 */}
-        <div className="scroll min-h-0 min-w-0 flex-1 pr-1 sm:pl-1">
+        {/* 右侧分类内容: 负边距与等量内边距留出卡片悬停阴影, 布局位置不变 */}
+        <div className="scroll -my-3 -mr-5 min-h-0 min-w-0 flex-1 py-3 pr-5 sm:-ml-3 sm:pl-4">
           <div className="space-y-5">
             {category === 'chat' && (
               <>
@@ -2896,10 +2897,6 @@ function ChatSettingsModal({
           </div>
         </div>
       </div>
-
-      <div className="flex justify-end border-t border-line pt-3">
-        <Button variant="primary" onClick={onClose}>完成</Button>
-      </div>
     </Modal>
   );
 }
@@ -2919,7 +2916,8 @@ function PluginCapabilitiesModal({
   const values = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.requested_enabled ?? item.enabled]))]));
 
   return (
-    <Modal open={plugin !== null} onClose={onClose} title={`${plugin.name} 能力`} size="md">
+    <Modal open={plugin !== null} onClose={onClose} title={`${plugin.name} 能力`} size="md"
+      footer={<Button variant="primary" onClick={onClose}>完成</Button>}>
       <div className="space-y-5">
         {/* 插件概要 */}
         <div className="flex items-center gap-2 text-xs text-fg-3">
@@ -2933,10 +2931,6 @@ function PluginCapabilitiesModal({
         <Link className="text-sm text-accent hover:underline" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(plugin.name)}`}>打开插件详情</Link>
         <PluginCapabilities capabilities={descriptions} values={values} active={plugin.enabled} effective={plugin.capabilities}
           onChange={(kind, name, enabled) => onToggleCapability(plugin.name, kind as CapabilityKind, name, enabled)} />
-
-        <div className="flex justify-end border-t border-line pt-3">
-          <Button variant="primary" onClick={onClose}>完成</Button>
-        </div>
       </div>
     </Modal>
   );
@@ -3117,7 +3111,8 @@ function MemoryPanel({
   }, [memories]);
 
   return (
-    <Modal open={open} onClose={onClose} title="长期记忆管理" size="lg">
+    <Modal open={open} onClose={onClose} title="长期记忆管理" size="lg"
+      footer={<Button variant="primary" onClick={onClose}>完成</Button>}>
       <div className="space-y-4">
         {error && <p role="alert" className="rounded-lg border border-[rgb(var(--rgb-red)/0.3)] bg-[rgb(var(--rgb-red)/0.1)] px-3 py-2 text-sm text-red">{error}</p>}
 
@@ -3213,10 +3208,6 @@ function MemoryPanel({
             ))}
           </div>
         )}
-
-        <div className="flex justify-end border-t border-line pt-3">
-          <Button variant="primary" onClick={onClose}>完成</Button>
-        </div>
       </div>
     </Modal>
   );

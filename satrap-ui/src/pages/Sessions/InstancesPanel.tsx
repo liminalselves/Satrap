@@ -50,6 +50,16 @@ function TokenCell({ usage, session }: { usage: SessionUsageView; session: Sessi
   );
 }
 
+/** 主行: 路由目标 + 短码; 完整 ID 由外层 title 与检查器提供 */
+function SessionTitle({ session }: { session: SessionView }) {
+  return (
+    <div className="flex min-w-0 items-baseline gap-1.5 text-[12.5px] font-medium text-fg">
+      <span className="truncate">{session.target ?? '未绑定对话'}</span>
+      <span className="flex-none font-mono text-[11px] text-fg-3">{session.shortId}</span>
+    </div>
+  );
+}
+
 export function InstancesPanel() {
   const confirm = useConfirm('instances');
   const [params] = useSearchParams();
@@ -143,7 +153,7 @@ export function InstancesPanel() {
       if (filter === 'persisted' && session.active) return false;
       if (filter === 'issues' && !(session.active && (sessionTone(session) === 'orange' || sessionTone(session) === 'red'))) return false;
       if (!text) return true;
-      return `${session.platformId} ${session.sessionId} ${session.sessionType} ${session.provider}`.toLowerCase().includes(text);
+      return `${session.platformId} ${session.sessionId} ${session.target ?? ''} ${session.sessionType} ${session.provider}`.toLowerCase().includes(text);
     });
   }, [groupSessions, filter, query]);
 
@@ -337,7 +347,7 @@ export function InstancesPanel() {
             ]}
           />
           <div className="w-44 max-w-[44vw] sm:w-56">
-            <Input leading={<Search className="h-4 w-4" />} placeholder="搜索平台或 Session ID…" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索会话实例" />
+            <Input leading={<Search className="h-4 w-4" />} placeholder="搜索平台、群号或 Session ID…" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索会话实例" />
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
             <Button size="sm" variant="ghost" disabled={deleting || groupFilter} onClick={() => void requestBulk('empty')} className="text-red hover:text-red">删除无消息</Button>
@@ -384,7 +394,7 @@ export function InstancesPanel() {
             <div className="scroll hidden max-h-[calc(100vh-350px)] overflow-auto lg:block">
               <table className="w-full min-w-[980px] text-sm">
                 <thead className="sticky top-0 z-[2] bg-[var(--glass-bg-strong)] backdrop-blur-xl">
-                  <tr className="border-b border-line text-left text-[10.5px] uppercase tracking-wider text-fg-4">
+                  <tr className="whitespace-nowrap border-b border-line text-left text-[10.5px] uppercase tracking-wider text-fg-4">
                     <th className="w-10 px-3 py-2.5">
                       <input type="checkbox" aria-label="选择全部会话实例" checked={allSelected} onChange={(event) => toggleAll(event.target.checked)} className="h-3.5 w-3.5 accent-[rgb(var(--rgb-green))]" />
                     </th>
@@ -411,7 +421,7 @@ export function InstancesPanel() {
                         tabIndex={0}
                         onClick={() => setInspectorKey(session.key)}
                         onKeyDown={(event) => { if (event.key === 'Enter') setInspectorKey(session.key); }}
-                        className="cursor-pointer border-b border-line transition-colors last:border-0 hover:bg-glass-hover focus-visible:bg-glass-hover"
+                        className="cursor-pointer whitespace-nowrap border-b border-line transition-colors last:border-0 hover:bg-glass-hover focus-visible:bg-glass-hover"
                       >
                         <td className="px-3 py-2.5" onClick={(event) => event.stopPropagation()}>
                           <input
@@ -427,9 +437,9 @@ export function InstancesPanel() {
                             <span className={cn('grid h-7 w-7 flex-none place-items-center rounded-lg', session.active ? 'bg-[rgb(var(--rgb-green)/0.14)] text-green' : 'bg-glass-hover text-fg-3')}>
                               <Boxes className="h-3.5 w-3.5" />
                             </span>
-                            <div className="min-w-0">
-                              <div className="truncate font-mono text-[12.5px] font-medium text-fg">{session.sessionId}</div>
-                              <div className="font-mono text-[10.5px] text-fg-4">{session.platformId}</div>
+                            <div className="min-w-0 max-w-[360px]" title={session.sessionId}>
+                              <SessionTitle session={session} />
+                              <div className="truncate font-mono text-[10.5px] text-fg-4">{session.platformId}</div>
                             </div>
                           </div>
                         </td>
@@ -503,8 +513,8 @@ export function InstancesPanel() {
                         onChange={(event) => toggleSelected(session.key, event.target.checked)}
                         className="mt-1 h-3.5 w-3.5 flex-none accent-[rgb(var(--rgb-green))]"
                       />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-mono text-[12.5px] font-medium text-fg">{session.sessionId}</div>
+                      <div className="min-w-0 flex-1" title={session.sessionId}>
+                        <SessionTitle session={session} />
                         <div className="mt-0.5 text-[10.5px] text-fg-4">{session.platformId} · {session.sessionType} · {session.provider === 'edictum' ? 'Edictum' : '会话类'}</div>
                       </div>
                       <Badge tone={session.active ? 'green' : 'neutral'} dot live={session.active}>{session.active ? '活跃' : '持久化'}</Badge>

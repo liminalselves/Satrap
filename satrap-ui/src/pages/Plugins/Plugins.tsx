@@ -6,6 +6,7 @@ import {
 import { cn } from '@/utils/cn';
 import { Badge, Button, Card, CountUp, EmptyState, IconButton, Input, PageHeader, Skeleton } from '@/components/kit';
 import { startVisiblePoll } from '@/utils/visiblePoll';
+import { useCachedState } from '@/hooks/useCachedState';
 import { errorText } from '@/utils/errorText';
 import { sourceStateLabels } from '@/api/contracts';
 import { pluginCatalogHealthRead, pluginHealthCoverage, type CatalogPlugin } from '@/api/pluginsContracts';
@@ -20,25 +21,27 @@ type Filter = 'all' | 'enabled' | 'disabled' | 'issue';
 type View = 'grid' | 'list';
 
 function usePluginCatalog() {
-  const [plugins, setPlugins] = useState<CatalogPlugin[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [plugins, setPlugins] = useCachedState<CatalogPlugin[]>('plugins:catalog', []);
+  const [loaded, setLoaded] = useCachedState('plugins:loaded', false);
+  const [fetching, setFetching] = useState(true);
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
   useEffect(() => {
-    setLoading(true);
+    setFetching(true);
     setError('');
     let force = revision > 0;
     const poll = startVisiblePoll(async (signal) => {
       const forced = force; force = false;
       try {
         const data = await pluginCatalogHealthRead.read({ force: forced, signal });
-        if (!signal.aborted) { setPlugins(data); setError(''); }
-      } finally { if (!signal.aborted) setLoading(false); }
+        if (!signal.aborted) { setPlugins(data); setLoaded(true); setError(''); }
+      } finally { if (!signal.aborted) setFetching(false); }
     }, { interval: 30000, onError: (reason: unknown) => setError(errorText(reason, '读取插件失败')) });
     return () => poll.stop();
-  }, [revision]);
-  return { plugins, loading, error, refresh };
+  }, [revision, setPlugins, setLoaded]);
+  // loading 只在从未取到过目录时为真, 返回页面时先显示上次的目录
+  return { plugins, loading: !loaded && fetching, fetching, error, refresh };
 }
 
 function PluginCard({ plugin, index }: { plugin: CatalogPlugin; index: number }) {
@@ -128,7 +131,7 @@ function PluginRow({ plugin, index }: { plugin: CatalogPlugin; index: number }) 
 
 export function Plugins() {
   const navigate = useNavigate();
-  const { plugins, loading, error, refresh } = usePluginCatalog();
+  const { plugins, loading, fetching, error, refresh } = usePluginCatalog();
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('');
@@ -185,7 +188,7 @@ export function Plugins() {
         title="插件管理"
         description="查看内置与用户插件，管理全局配置、使用位置、技能与表情库。"
         actions={<>
-          <Button icon={<RefreshCw className={cn('h-4 w-4', loading && 'animate-spin-slow')} />} disabled={loading} onClick={refresh}>刷新</Button>
+          <Button icon={<RefreshCw className={cn('h-4 w-4', fetching && 'animate-spin-slow')} />} disabled={fetching} onClick={refresh}>刷新</Button>
           <TealPrimary icon={<Plus className="h-4 w-4" />} onClick={() => setInstallOpen(true)}>安装插件</TealPrimary>
         </>}
       />

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCachedState } from '@/hooks/useCachedState';
 import { useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -400,13 +401,13 @@ function ActivityCard({ items, pending, className }: { items: ActivityEvent[]; p
 export function Dashboard() {
   const { health, isRunning, controlStatus, statusConnected } = useBackendStore(useShallow((state) => ({
     health: state.health, isRunning: state.isRunning, controlStatus: state.controlStatus, statusConnected: state.statusConnected })));
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [minuteOverview, setMinuteOverview] = useState<Overview | null>(null);
-  const [models, setModels] = useState<ModelMetrics[] | null>(null);
-  const [activities, setActivities] = useState<ActivityEvent[] | null>(null);
-  const [activityMeta, setActivityMeta] = useState<AggregateMeta | null>(null);
-  const [pendingApprovals, setPendingApprovals] = useState<number | null>(null);
-  const [counts, setCounts] = useState<{ model: number | null; session: number | null }>({ model: null, session: null });
+  const [overview, setOverview] = useCachedState<Overview | null>('dashboard:overview', null);
+  const [minuteOverview, setMinuteOverview] = useCachedState<Overview | null>('dashboard:minute', null);
+  const [models, setModels] = useCachedState<ModelMetrics[] | null>('dashboard:models', null);
+  const [activities, setActivities] = useCachedState<ActivityEvent[] | null>('dashboard:activities', null);
+  const [activityMeta, setActivityMeta] = useCachedState<AggregateMeta | null>('dashboard:activity-meta', null);
+  const [pendingApprovals, setPendingApprovals] = useCachedState<number | null>('dashboard:pending', null);
+  const [counts, setCounts] = useCachedState<{ model: number | null; session: number | null }>('dashboard:counts', { model: null, session: null });
   const [configError, setConfigError] = useState(false);
 
   useEffect(() => {
@@ -438,7 +439,7 @@ export function Dashboard() {
       if (nextCounts) { setCounts(nextCounts); setConfigError(false); }
     }, { interval: 30000 });
     return () => poll.stop();
-  }, []);
+  }, [setOverview, setMinuteOverview, setActivities, setActivityMeta, setPendingApprovals, setModels, setCounts]);
 
   const adapters = useMemo<[string, AdapterInfo][]>(
     () => (isRunning && health?.adapters ? Object.entries(health.adapters) : []),

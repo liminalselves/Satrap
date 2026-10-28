@@ -275,6 +275,17 @@ export interface EdictumSessionConfig {
   export interface RuntimeSession {
     platform_id: string;
     session_id: string;
+    route?: {
+      scope: string;
+      self_id: string;
+      group_id: string;
+      user_id: string;
+      conversation_kind: string;
+      conversation_id: string;
+      target_label: string | null;
+      kind_label: string | null;
+      current: boolean;
+    } | null;
     active?: boolean;
     provider_name?: string;
     session_type?: string;

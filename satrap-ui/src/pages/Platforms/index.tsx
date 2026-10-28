@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
+import { useCachedState } from '@/hooks/useCachedState';
 import { Link } from 'react-router-dom';
 import { isAxiosError } from 'axios';
 import {
@@ -103,11 +104,12 @@ export function Platforms() {
     sessionClasses: state.sessionClasses, fetchSessionClasses: state.fetchSessionClasses, asrConfigs: state.asrConfigs,
     edictumConfigs: state.edictumConfigs, fetchEdictumConfigs: state.fetchEdictumConfigs })));
   const [revision, setRevision] = useState('');
-  const [approvalSummary, setApprovalSummary] = useState<ActionCatalog>();
+  const [approvalSummary, setApprovalSummary] = useCachedState<ActionCatalog | undefined>('platforms:approval-summary', undefined);
   const [approvalError, setApprovalError] = useState('');
   useEffect(() => {
-    setApprovalSummary(undefined); setApprovalError('');
-    if (!isRunning) return;
+    setApprovalError('');
+    // 后端停止时旧计数不再可信; 运行中先沿用上次结果, 由轮询更新
+    if (!isRunning) { setApprovalSummary(undefined); return; }
     const poll = startVisiblePoll(async (signal) => {
       try {
         const result = await platformActionsApi.summary(signal);
@@ -115,11 +117,12 @@ export function Platforms() {
       } catch (error) { if (!signal.aborted) setApprovalError(errorText(error)); }
     }, { interval: 10000 });
     return () => poll.stop();
-  }, [isRunning]);
+  }, [isRunning, setApprovalSummary]);
   const [draftRevision, setDraftRevision] = useState('');
-  const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
-  const [adapterTypes, setAdapterTypes] = useState<AdapterDeclaration[]>([]);
-  const [defaultSessionType, setDefaultSessionType] = useState('');
+  // 展示数据跨路由保留; revision 不缓存, 写操作仍需等本次读取返回
+  const [platforms, setPlatforms] = useCachedState<PlatformConfig[]>('platforms:list', []);
+  const [adapterTypes, setAdapterTypes] = useCachedState<AdapterDeclaration[]>('platforms:adapter-types', []);
+  const [defaultSessionType, setDefaultSessionType] = useCachedState('platforms:default-session-type', '');
   const [testingPlatformId, setTestingPlatformId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -134,7 +137,7 @@ export function Platforms() {
   const [groupDraftRows, setGroupDraftRows] = useState<GroupOverrideRow[]>([]);
   const [timeDraftRows, setTimeDraftRows] = useState<TimeRuleRow[]>([]);
   const [openSnapshot, setOpenSnapshot] = useState('');
-  const [stats, setStats] = useState<Overview | null>(null);
+  const [stats, setStats] = useCachedState<Overview | null>('platforms:stats', null);
   const [statsError, setStatsError] = useState('');
   const [view, setView] = useState<View>('adapters');
   const [filter, setFilter] = useState<Filter>('all');
@@ -185,7 +188,7 @@ export function Platforms() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setPlatforms, setAdapterTypes, setDefaultSessionType]);
 
   // 14 分钟分钟桶: 每个适配器的消息曲线与近期总量; 失败时显示未知而不是 0
   const statsPoll = useRef<ReturnType<typeof startVisiblePoll> | null>(null);
@@ -202,7 +205,7 @@ export function Platforms() {
     }, { interval: 30000 });
     statsPoll.current = poll;
     return () => { poll.stop(); statsPoll.current = null; };
-  }, []);
+  }, [setStats]);
 
   useEffect(() => {
     loadPlatforms();
@@ -306,7 +309,7 @@ export function Platforms() {
     } catch (e) {
       toast('error', '删除失败: ' + (isAxiosError(e) && e.response?.status === 409 ? '配置已被其他操作修改, 请刷新后重试' : e instanceof Error ? e.message : '未知错误'));
     }
-  }, [health?.running, applySavedPlatform, revision]);
+  }, [health?.running, applySavedPlatform, revision, setPlatforms]);
 
   // 启停走新契约: saved 与 runtime.status 分开呈现, 不把保存成功说成运行中已生效
   const handleToggle = useCallback(async (platform: PlatformConfig) => {
@@ -340,7 +343,7 @@ export function Platforms() {
     } finally {
       setTogglingId(null);
     }
-  }, [refreshHealth, revision, togglingId]);
+  }, [refreshHealth, revision, togglingId, setPlatforms]);
 
   const handleSubmit = useCallback(async () => {
     setConflict(false);
@@ -426,7 +429,7 @@ export function Platforms() {
     } finally {
       setSaving(false);
     }
-  }, [editingPlatform, formData, health?.running, rawSettings, applySavedPlatform, draftError, draftRevision, settingsDraft, routeDeclaration, routeKinds, routeOptions]);
+  }, [editingPlatform, formData, health?.running, rawSettings, applySavedPlatform, draftError, draftRevision, settingsDraft, routeDeclaration, routeKinds, routeOptions, setPlatforms]);
 
   const handleFieldChange = useCallback((key: string, value: unknown) => {
     // 草稿行由表单持有, 不落回 settings, 避免未完成行被规范化吞掉

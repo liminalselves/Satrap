@@ -69,7 +69,9 @@ export function InstanceInspector({
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="truncate font-mono text-[16px] font-semibold text-fg">{session.sessionId}</h2>
+                <h2 className="truncate text-[16px] font-semibold text-fg">
+                  {session.target ?? '未绑定对话'} <span className="font-mono text-[13px] font-normal text-fg-3">{session.shortId}</span>
+                </h2>
                 <Badge tone={session.active ? 'green' : 'neutral'} dot live={session.active}>{session.active ? '活跃' : '已持久化'}</Badge>
                 {config && <span title={config.title}><Badge tone={config.tone}>{config.label}</Badge></span>}
                 {plugins.tone !== 'neutral' && <span title={plugins.title}><Badge tone={plugins.tone}>{plugins.label}</Badge></span>}
@@ -155,6 +157,8 @@ export function InstanceInspector({
                 <KeyValueRow label="Provider"><span className="font-mono">{session.provider}</span></KeyValueRow>
                 <KeyValueRow label="Agent / 会话类"><span className="font-mono">{session.sessionType}</span></KeyValueRow>
                 <KeyValueRow label="平台实例"><span className="font-mono">{session.platformId}</span></KeyValueRow>
+                <KeyValueRow label="会话 ID"><span className="break-all font-mono text-[11px]">{session.sessionId}</span></KeyValueRow>
+                {session.raw.route && !session.raw.route.current && <KeyValueRow label="路由">历史绑定 (已被新实例替换)</KeyValueRow>}
                 <KeyValueRow label="配置修订">{session.config.revision ?? '—'}</KeyValueRow>
                 <KeyValueRow label="已应用修订"><span className="font-mono">{session.config.appliedRevision ?? '—'}</span></KeyValueRow>
                 <KeyValueRow label="插件修订">{session.pluginRevision ?? '—'}</KeyValueRow>

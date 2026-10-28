@@ -6,6 +6,7 @@ import { approvalsApi, sourceStateLabels, type ApprovalCatalog, type ApprovalQue
 import { ApiError } from '@/api/client';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { startVisiblePoll } from '@/utils/visiblePoll';
+import { useCachedState } from '@/hooks/useCachedState';
 import { errorText } from '@/utils/errorText';
 import { Badge, Button, Card, Drawer, IconButton, PageHeader, toast } from '@/components/kit';
 import { FilterRail } from './FilterRail';
@@ -84,9 +85,12 @@ export function Approvals() {
   const scopeSignature = `${platform}|${account}|${source}|${state}|${target}|${action}|${q}|${sortParamFinal}|${order}|${cursor}`;
   const filterSignature = `${platform}|${account}|${source}|${state}|${target}|${action}|${q}`;
 
-  const [catalog, setCatalog] = useState<ApprovalCatalog | null>(null);
-  const [summary, setSummary] = useState<ApprovalCatalog | null>(null);
-  const [loading, setLoading] = useState(false);
+  // 按筛选与分页缓存列表: 返回页面先显示上次结果; 决定仍带 revision 提交, 过期由后端判为冲突
+  const [catalog, setCatalog] = useCachedState<ApprovalCatalog | null>(`approvals:list:${scopeSignature}`, null);
+  const [summary, setSummary] = useCachedState<ApprovalCatalog | null>(`approvals:summary:${platform}|${account}|${source}`, null);
+  const [fetching, setFetching] = useState(false);
+  // 有缓存时后台刷新不切到骨架
+  const loading = fetching && !catalog;
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -122,7 +126,7 @@ export function Approvals() {
   const reload = useCallback(async (signal?: AbortSignal, mode: 'load' | 'refresh' | 'quiet' = 'load') => {
     if (!isRunning) return;
     const current = ++request.current;
-    if (mode === 'load') setLoading(true);
+    if (mode === 'load') setFetching(true);
     if (mode === 'refresh') setSyncing(true);
     const query: ApprovalQuery = {
       platform_id: platform || undefined,
@@ -154,24 +158,22 @@ export function Approvals() {
       if (current === request.current && !signal?.aborted && mountedRef.current) setError(errorText(caught));
     } finally {
       if (current === request.current && !signal?.aborted && mountedRef.current) {
-        if (mode === 'load') setLoading(false);
+        if (mode === 'load') setFetching(false);
         if (mode === 'refresh') setSyncing(false);
       }
     }
-  }, [isRunning, platform, account, source, state, target, action, q, sortParamFinal, order, cursor]);
+  }, [isRunning, platform, account, source, state, target, action, q, sortParamFinal, order, cursor, setCatalog, setSummary]);
   reloadRef.current = reload;
 
-  /* 筛选、分页或后端状态变化: 重新读取整页, 并清理选择与瞬时提示 */
+  /* 筛选、分页或后端状态变化: 重新读取整页, 并清理选择与瞬时提示; 列表随缓存 key 切换 */
   useEffect(() => {
-    setCatalog(null);
-    setSummary(null);
     setError('');
     setNotice('');
     setDecisions({});
     setSelected(new Set());
     setActiveKey(null);
     setConfirm(null);
-    if (!isRunning) { setLoading(false); return; }
+    if (!isRunning) { setFetching(false); return; }
     const controller = new AbortController();
     void reload(controller.signal, 'load');
     return () => { request.current += 1; controller.abort(); };
@@ -492,7 +494,7 @@ export function Approvals() {
       const load = reloadRef.current;
       if (load) await load(undefined, 'quiet');
     }
-  }, []);
+  }, [setCatalog]);
 
   const scheduleDecision = (batch: UnifiedAction[], approve: boolean, note: string) => {
     if (busyRef.current) {
