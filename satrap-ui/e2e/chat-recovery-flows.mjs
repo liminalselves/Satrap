@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBenchmarkFixture } from "../benchmarks/fixtures.mjs";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, openConversation } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function chat_reconnect(runtime) {
@@ -153,7 +153,7 @@ async function chat_reconnect(runtime) {
     await mockConfigVersions(page, origin, () => JSON.stringify({}));
   await page.goto(`${origin}/chat`);
     try {
-      await page.getByText('继续最近对话', { exact: true }).click({ timeout: 10_000 });
+      await openConversation(page, fixture.conversations[0].title, { timeout: 10_000 });
     } catch (error) {
       console.error('页面诊断', await page.locator('body').innerText(), errors);
       throw error;

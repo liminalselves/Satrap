@@ -276,8 +276,6 @@ export function Chat() {
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   // 正在改绑项目的会话 id (null = 关闭对话框)
   const [movingConvId, setMovingConvId] = useState<string | null>(null);
-  // 入口选择: 有历史会话时展示 "继续最近/开始新对话"
-  const [showEntryChoice, setShowEntryChoice] = useState(false);
   // 待发送附件
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   useConfigWatch(['llm']);
@@ -348,7 +346,7 @@ export function Chat() {
     if ((optionsOpen || settingsOpen) && !generating) void refreshApproval();
   }, [optionsOpen, settingsOpen, generating, active?.messages.length, plugins, pluginConfigRevision, refreshApproval]);
   // 打开面板, 完成命令或更新插件后重新读实际模式, 两个入口共用同一状态
-  const messageScroll = useChatScroll(`${backendOk}:${activeId}:${showEntryChoice}`, active?.messages, Boolean(active?.loaded));
+  const messageScroll = useChatScroll(`${backendOk}:${activeId}`, active?.messages, Boolean(active?.loaded));
   const activePendingUserInput = pendingUserInputs[activeId]?.[0];
   const activePendingUserAnswer = activePendingUserInput
     ? pendingUserAnswers[activePendingUserInput.requestId] ?? ''
@@ -439,7 +437,6 @@ export function Chat() {
         directoryBoundary.current = page.conversations[page.conversations.length - 1] ?? null;
         setNextConversations(page.next_cursor);
         setPagingError('');
-        if (!activeIdRef.current && !search.trim() && !sidebarProject && page.conversations.length) setShowEntryChoice(true);
       }).catch((error: unknown) => {
         if (isCurrent()) setPagingError(error instanceof Error ? error.message : '对话加载失败');
       }).finally(() => {
@@ -929,7 +926,7 @@ export function Chat() {
         if (id) applyModelBinding(id, model);
         else {
           setConversations((previous) => [{ id: '__draft__', title: '新对话', model, messages: [], updatedAt: Math.round(Date.now() / 1000), loaded: true }, ...previous]);
-          setActiveId('__draft__'); setShowEntryChoice(false);
+          setActiveId('__draft__');
           setSettings((previous) => ({ ...previous, model }));
         }
         return;
@@ -1189,7 +1186,6 @@ export function Chat() {
     ));
     if (existing) {
       setActiveId(existing.id);
-      setShowEntryChoice(false);
       setInput('');
       textareaRef.current?.focus();
       return;
@@ -1209,7 +1205,6 @@ export function Chat() {
     setDraftApprovalMode('user');
     const draft = createDraft(projectId);
     setActiveId(draft.id);
-    setShowEntryChoice(false);
     setInput('');
     textareaRef.current?.focus();
   }, [conversations, createDraft, defaults]);
@@ -1323,7 +1318,6 @@ export function Chat() {
     if (!targetConv) {
       targetConv = createDraft();
       setActiveId(targetConv.id);
-      setShowEntryChoice(false);
     }
 
     const atts = pendingAttachments.length > 0 ? [...pendingAttachments] : undefined;
@@ -1454,7 +1448,6 @@ export function Chat() {
     if (!targetConv) {
       targetConv = createDraft();
       setActiveId(targetConv.id);
-      setShowEntryChoice(false);
     }
     const preloadKey = preloadKeyFor(targetConv.projectId, targetConv.model);
     const needsPreload = targetConv.id === '__draft__' || (
@@ -1855,7 +1848,6 @@ export function Chat() {
   };
   const selectConversation = (id: string) => {
     setActiveId(id);
-    setShowEntryChoice(false);
     setMobileList(false);
   };
   const startNewConversation = (projectId?: string) => {
@@ -1945,39 +1937,7 @@ export function Chat() {
             className="scroll relative z-10 min-h-0 flex-1 overflow-y-auto custom-scrollbar"
           >
             <div ref={messageScroll.contentRef} className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-3 py-5 md:px-6 md:py-7">
-              {showEntryChoice ? (
-                <div className="flex flex-1 items-center justify-center py-8">
-                  <div className="w-full max-w-sm space-y-3">
-                    <button
-                      onClick={() => {
-                        setShowEntryChoice(false);
-                        if (conversations.length > 0) setActiveId(conversations[0].id);
-                      }}
-                      className="tile tint-accent w-full rounded-xl px-4 py-3.5 text-left"
-                    >
-                      <div className="flex items-center gap-2">
-                        <MessageSquare className="h-4 w-4 shrink-0 text-accent" />
-                        <span className="text-sm font-medium text-fg">继续最近对话</span>
-                      </div>
-                      <p className="mt-1 truncate text-xs text-fg-3">
-                        {conversations[0]?.title ?? ''}
-                      </p>
-                    </button>
-                    <button
-                      onClick={() => {
-                        setShowEntryChoice(false);
-                        startNewConversation();
-                      }}
-                      className="tile w-full rounded-xl px-4 py-3.5 text-left"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Plus className="h-4 w-4 shrink-0 text-accent" />
-                        <span className="text-sm font-medium text-fg">开始新对话</span>
-                      </div>
-                    </button>
-                  </div>
-                </div>
-              ) : showWelcome ? (
+              {showWelcome ? (
                 <EmptyWelcome onPromptClick={(text) => setInput(text)} />
               ) : (
                 <div className="flex flex-col gap-6 md:gap-7">
@@ -2211,7 +2171,6 @@ export function Chat() {
           }
           updateConversation(conversationId, (item) => ({ ...item, locallyOpened: true }));
           setActiveId(conversationId);
-          setShowEntryChoice(false);
           setHistoryOpen(false);
           setSettingsOpen(false);
         }}

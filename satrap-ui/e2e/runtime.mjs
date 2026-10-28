@@ -14,6 +14,13 @@ export async function assertNoConfigErrors(page) {
   assert.deepEqual(errors.filter((message) => /配置快照|配置来源|配置版本/.test(message)), [], '配置夹具必须符合生产快照契约');
 }
 
+/** 在侧栏打开会话; 进入 Chat 默认停在新对话欢迎页, 不再有"继续最近对话"入口 */
+export async function openConversation(page, title, options = {}) {
+  const row = page.locator('div.text-sm.truncate').filter({ hasText: new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }).first();
+  await row.waitFor(options);
+  await row.click(options);
+}
+
 export async function waitForRequestEntry(promise) {
   let timer;
   try {

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBenchmarkFixture, installHttpMocks, jsonResponse } from "../benchmarks/fixtures.mjs";
-import { runSuite, mockConfigVersions, assertNoConfigErrors, waitForRequestEntry } from './runtime.mjs';
+import { runSuite, mockConfigVersions, assertNoConfigErrors, waitForRequestEntry, openConversation } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function chat_history_media(runtime) {
@@ -73,7 +73,7 @@ async function chat_history_media(runtime) {
       const started = performance.now();
       await mockConfigVersions(page, origin, () => JSON.stringify({}));
   await page.goto(origin + '/chat');
-      await page.getByText('继续最近对话', { exact: true }).click();
+      await openConversation(page, fixture.conversations[0].title);
       await page.waitForFunction((expected) => document.querySelectorAll('.chat-message-item').length === expected, count);
       const openMs = performance.now() - started;
       const items = page.locator('.chat-message-item');
@@ -169,7 +169,7 @@ async function chat_history_media(runtime) {
         assert.equal(historyWrites, 1); assert.deepEqual(fixture.turns[249], untouched);
         assert.deepEqual(modelContext, [{ role: 'user', content: '独立模型上下文' }]);
         await page.goto(origin + '/chat');
-        await page.getByText('继续最近对话', { exact: true }).click();
+        await openConversation(page, fixture.conversations[0].title);
         await page.waitForFunction((expected) => document.querySelectorAll('.chat-message-item').length === expected, count + 2);
         await items.nth(501).scrollIntoViewIfNeeded();
         await items.nth(501).getByText('长历史第251轮编辑结果', { exact: true }).waitFor();
@@ -429,7 +429,7 @@ async function chat_fork_projects(runtime) {
     await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
     await mockConfigVersions(page, origin, () => JSON.stringify({}));
   await page.goto(`${origin}/chat`);
-    await page.getByText('继续最近对话', { exact: true }).click();
+    await openConversation(page, '项目甲原会话');
     const group = name => page.getByText(name, { exact: true }).locator('..').locator('..');
     await group('项目甲').getByText('项目甲原会话', { exact: true }).waitFor();
     await group('项目乙').getByText('项目乙原会话', { exact: true }).waitFor();
@@ -596,7 +596,7 @@ async function chat_sidebar_state(runtime) {
   };
   try {
     await page.goto(origin + '/chat');
-    await page.getByText('继续最近对话', { exact: true }).click();
+    await openConversation(page, '甲会话');
     const moveRefreshEntered = new Promise((resolve) => { enterMoveRefresh = resolve; });
     await row('乙会话').getByTitle('移入/移出项目', { exact: true }).click();
     await page.getByRole('dialog', { name: '移动会话到项目', exact: true }).getByRole('button', { name: /项目甲/ }).click();
@@ -729,7 +729,7 @@ async function chat_history_races(runtime) {
   };
   try {
     await page.goto(origin + '/chat');
-    await page.getByText('继续最近对话', { exact: true }).click();
+    await openConversation(page, fixture.conversations[0].title);
     await waitForRequestEntry(gates[0].entered); await waitForRequestEntry(connected);
     await sendSnapshot(1);
     const firstFailed = page.waitForResponse((response) => response.url().includes('/api/chat/turns/page') && !new URL(response.url()).searchParams.has('before') && response.status() === 503);
@@ -797,7 +797,7 @@ export const scenarios = [
     await mockConfigVersions(page, origin, () => '{}');
     try {
       await page.goto(`${origin}/chat`);
-      await page.getByText('继续最近对话', { exact: true }).click();
+      await openConversation(page, fixture.conversations[0].title);
       const button = page.getByRole('button', { name: `下载 ${file.name}`, exact: true });
       await button.waitFor();
       const download = page.waitForEvent('download');
@@ -808,9 +808,8 @@ export const scenarios = [
       for await (const chunk of await received.createReadStream()) chunks.push(chunk);
       assert.deepEqual(Buffer.concat(chunks), Buffer.from([0, 255, 65]));
       await page.reload();
-      await page.waitForFunction(() => document.querySelector('[aria-label="下载 报告.zip"]') || document.body.innerText.includes('继续最近对话'));
-      const recent = page.getByText('继续最近对话', { exact: true });
-      if (await recent.isVisible()) await recent.click();
+      await page.waitForFunction(() => document.querySelector('[aria-label="下载 报告.zip"]') || document.querySelector('div.text-sm.truncate'));
+      if (!(await button.isVisible())) await openConversation(page, fixture.conversations[0].title);
       await button.waitFor();
       fail = true;
       await button.click();

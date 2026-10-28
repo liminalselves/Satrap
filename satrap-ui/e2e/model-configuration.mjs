@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, openConversation } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 import { createBenchmarkFixture } from '../benchmarks/fixtures.mjs';
 
@@ -288,7 +288,7 @@ async function shared_llm_editor(runtime) {
     assert.equal(writes[1].config.context_threshold, 0.8);
 
     await page.goto(`${origin}/chat`);
-    await page.getByText('继续最近对话', { exact: true }).click();
+    await openConversation(page, fixture.conversations[0].title);
     await page.getByTitle('对话设置', { exact: true }).click();
     const settings = page.getByRole('dialog', { name: '对话设置', exact: true });
     await settings.getByRole('button', { name: '模型管理', exact: true }).click();
