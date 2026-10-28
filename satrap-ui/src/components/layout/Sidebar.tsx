@@ -5,6 +5,7 @@ import { usePrefsStore } from '@/stores/usePrefsStore';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useServiceHealthStore } from '@/stores/useServiceHealthStore';
 import { StatusDot, Tooltip } from '@/components/kit';
+import { Logo } from '@/components/common/Logo';
 import { navGroups, findNav, type NavItem as NavEntry } from './nav';
 
 const APPROVALS_PATH = '/platforms/approvals';
@@ -71,8 +72,8 @@ export function Sidebar({ className, onNavigate, forceExpanded }: { className?: 
       style={{ width: collapsed ? 'var(--sidebar-w-collapsed)' : 'var(--sidebar-w)' }}
     >
       <div className={cn('flex h-16 flex-none items-center', collapsed ? 'justify-center' : 'gap-3 px-4')}>
-        <div className="relative grid h-9 w-9 flex-none place-items-center rounded-[11px] bg-[linear-gradient(135deg,#2b88d8,#0078d4_45%,#8b62b3)] shadow-[0_8px_24px_-6px_rgb(var(--rgb-accent)/0.8),inset_0_1px_0_rgba(255,255,255,0.35)]">
-          <span className="display text-[15px] font-bold text-white">S</span>
+        <div className="relative h-9 w-9 flex-none">
+          <Logo className="h-9 w-9" />
           <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[var(--bg-base)] p-[2px]">
             <StatusDot tone={runState === 'running' ? 'green' : runState === 'stopped' ? 'neutral' : 'orange'} className="!h-2 !w-2" />
           </span>
@@ -100,7 +101,7 @@ export function Sidebar({ className, onNavigate, forceExpanded }: { className?: 
             )}
             <div className="space-y-0.5">
               {group.items.map((item) => (
-                <NavItem key={item.path} item={item} collapsed={collapsed} active={current === item.path}
+                <NavItem key={item.path} item={item} collapsed={collapsed} active={current === item.path || (current === '/docs' && item.path === '/settings')}
                   badge={item.path === APPROVALS_PATH ? pending : undefined} onNavigate={onNavigate} />
               ))}
             </div>

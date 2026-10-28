@@ -10,12 +10,12 @@ import {
   GitFork,
   Loader2,
   RotateCcw,
-  Sparkles,
   Wrench,
   XCircle,
 } from 'lucide-react';
 import type { ToolCall } from '@/api/chat';
 import { CopyButton } from '@/components/ui/CopyButton';
+import { Logo } from '@/components/common/Logo';
 import { cn } from '@/utils/cn';
 import { MediaAttachment } from './MediaAttachment';
 import { OutputFiles } from './OutputFiles';
@@ -285,9 +285,9 @@ export const MessageBubble = memo(function MessageBubble({
 
   return (
     <div data-message-id={message.id} className="chat-message-item group flex gap-3.5 animate-rise">
-      <div className="relative mt-0.5 grid h-8 w-8 flex-none place-items-center rounded-[10px] bg-[linear-gradient(135deg,#2b88d8,#0078d4_45%,#8b62b3)] text-white shadow-[0_6px_18px_-6px_rgb(var(--rgb-accent)/0.8)]">
-        <Sparkles className="h-4 w-4" />
-        {message.streaming && <span className="absolute -inset-1 animate-ping rounded-[13px] border border-[rgb(var(--rgb-accent)/0.5)]" />}
+      <div className="relative mt-0.5 h-8 w-8 flex-none">
+        <Logo className="h-8 w-8" />
+        {message.streaming && <span className="absolute -inset-1 animate-ping rounded-full border border-[rgb(var(--rgb-accent)/0.5)]" />}
       </div>
       <div className="min-w-0 flex-1 space-y-2 pt-0.5">
         {attachments && (
@@ -368,9 +368,7 @@ export function EmptyWelcome({ onPromptClick }: { onPromptClick: (text: string) 
     <div className="mx-auto flex h-full max-w-2xl flex-col items-center justify-center px-4 pb-8 text-center md:px-6">
       <div className="relative mb-6 animate-rise">
         <div aria-hidden className="absolute -inset-10 rounded-full bg-[radial-gradient(circle,rgb(var(--rgb-accent)/0.35),rgb(var(--rgb-purple)/0.15)_45%,transparent_70%)] blur-xl" />
-        <div className="relative grid h-16 w-16 place-items-center rounded-[20px] bg-[linear-gradient(135deg,#2b88d8,#0078d4_45%,#8b62b3)] shadow-[0_16px_40px_-10px_rgb(var(--rgb-accent)/0.9),inset_0_1px_0_rgba(255,255,255,0.35)]">
-          <Sparkles className="h-8 w-8 text-white" />
-        </div>
+        <Logo className="relative h-20 w-20" />
       </div>
       <h1 className="display animate-rise text-[26px] font-semibold text-fg sm:text-[28px]" style={{ animationDelay: '60ms' }}>下午好, 今天想聊点什么?</h1>
       <p className="mt-2 animate-rise text-sm text-fg-3" style={{ animationDelay: '120ms' }}>输入你的问题, 或从下方建议开始</p>

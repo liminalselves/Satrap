@@ -1,17 +1,18 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
-  ArrowUpRight, Check, Copy, Cpu, HardDrive, Info, RefreshCw, ScrollText, Server, Sparkles, Terminal,
+  ArrowUpRight, BookOpen, Check, Copy, Cpu, HardDrive, Info, RefreshCw, ScrollText, Server, Sparkles, Terminal,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { Badge, Button, StatusDot, toast, type Tone } from '@/components/kit';
+import { Logo } from '@/components/common/Logo';
 import type { Service } from '@/api/contracts';
 import { useServiceHealthStore } from '@/stores/useServiceHealthStore';
 import { formatTime } from '@/utils/format';
 import { formatUptime } from './types';
 import { KeyValue, SectionCard } from './shared';
 
-const FRONTEND_VERSION = '1.0.0';
+const FRONTEND_VERSION = __APP_VERSION__;
 const stack = ['React 18', 'TypeScript', 'Vite', 'Tailwind CSS', 'Zustand', 'React Router'];
 const serviceLabels: Record<Service, string> = { control: 'Control 服务', backend: '平台 Backend', chat: 'Chat 服务' };
 const serviceOrder: Service[] = ['control', 'backend', 'chat'];
@@ -24,6 +25,7 @@ export function AboutSection({ i, active, configPath, revision, backendRunning, 
   backendRunning: boolean;
   controlOnline: boolean;
 }) {
+  const navigate = useNavigate();
   const services = useServiceHealthStore((state) => state.services);
   const backendProbeMs = useServiceHealthStore((state) => state.backendProbeMs);
   const refresh = useServiceHealthStore((state) => state.refresh);
@@ -32,6 +34,8 @@ export function AboutSection({ i, active, configPath, revision, backendRunning, 
 
   const controlHealth = services.control.health;
   const backendHealth = services.backend.health;
+  // 前端随源码构建; 后端报告的版本不同说明两者来自不同发行, 界面与接口可能不匹配
+  const versionMismatch = Boolean(backendHealth?.version && backendHealth.version !== FRONTEND_VERSION);
   const environment = backendHealth ?? controlHealth ?? services.chat.health;
 
   const diagnostics = useMemo(() => ({
@@ -84,14 +88,13 @@ export function AboutSection({ i, active, configPath, revision, backendRunning, 
 
       <div className="flex flex-col gap-4 rounded-2xl border border-[rgb(var(--tint)/0.22)] bg-[linear-gradient(135deg,rgb(var(--tint)/0.12),transparent_70%)] p-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
-          <div className="grid h-14 w-14 flex-none place-items-center rounded-2xl bg-[linear-gradient(135deg,#2b88d8,#0078d4_45%,#8b62b3)] shadow-[0_10px_30px_-10px_rgb(var(--rgb-accent)/0.8),inset_0_1px_0_rgba(255,255,255,0.35)]">
-            <span className="display text-xl font-bold text-white">S</span>
-          </div>
+          <Logo className="h-14 w-14 flex-none" />
           <div>
             <h3 className="display text-xl font-semibold text-fg">Satrap 管理面板</h3>
             <p className="mt-0.5 text-[12.5px] text-fg-3">
               前端 <span className="num font-mono text-fg-2">{FRONTEND_VERSION}</span>
               {' · '}后端 <span className="num font-mono text-fg-2">{backendHealth?.version || '—'}</span>
+              {versionMismatch && <Badge tone="orange" className="ml-2">前后端版本不一致</Badge>}
             </p>
             <p className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-fg-4">
               <Sparkles className="h-3 w-3" />单机部署 · 控制服务与平台后端分工运行
@@ -99,6 +102,7 @@ export function AboutSection({ i, active, configPath, revision, backendRunning, 
           </div>
         </div>
         <div className="flex flex-none flex-wrap gap-2">
+          <Button size="sm" variant="primary" icon={<BookOpen className="h-3.5 w-3.5" />} onClick={() => navigate('/docs')}>使用文档</Button>
           <Button size="sm" icon={<RefreshCw className="h-3.5 w-3.5" />} loading={refreshing} onClick={reload}>检查服务状态</Button>
           <Button size="sm" variant="ghost" icon={copied ? <Check className="h-3.5 w-3.5 text-green" /> : <Copy className="h-3.5 w-3.5" />} onClick={copyDiagnostics}>
             {copied ? '已复制' : '复制诊断信息'}
@@ -180,6 +184,7 @@ export function AboutSection({ i, active, configPath, revision, backendRunning, 
           <h3 className="mt-5 text-[13px] font-medium text-fg">相关入口</h3>
           <div className="mt-2 space-y-1.5">
             {[
+              { to: '/docs', label: '使用文档', hint: '界面与功能说明', icon: <BookOpen className="h-3.5 w-3.5" /> },
               { to: '/logs', label: '运行日志', hint: '实时服务日志', icon: <ScrollText className="h-3.5 w-3.5" /> },
               { to: '/logs/debug', label: '调试日志', hint: '按会话查看请求链路', icon: <Terminal className="h-3.5 w-3.5" /> },
               { to: '/platforms', label: '平台配置', hint: '适配器与连接状态', icon: <Cpu className="h-3.5 w-3.5" /> },

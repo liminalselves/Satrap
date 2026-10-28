@@ -1,4 +1,5 @@
 """Satrap 公共 API 导出入口"""
+from ._version import __version__
 from .core.utils.context import AsyncContextManager, ContextManager, ContextOverflowError, PreparedModelContext
 from .core.framework import ModelWorkflowFramework, AsyncModelWorkflowFramework, Session, AsyncSession
 from .core.utils.TCBuilder import ToolsManager, AsyncToolsManager, Tool, AsyncTool

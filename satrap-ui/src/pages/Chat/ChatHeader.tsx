@@ -1,5 +1,6 @@
-import { ArrowLeft, Moon, PanelLeft, Settings2, Sparkles, Sun } from 'lucide-react';
+import { ArrowLeft, Moon, PanelLeft, Settings2, Sun } from 'lucide-react';
 import { Badge } from '@/components/kit/Badge';
+import { Logo } from '@/components/common/Logo';
 import { cn } from '@/utils/cn';
 
 export type ChatTheme = 'dark' | 'light';
@@ -48,9 +49,7 @@ export function ChatHeader({
       </button>
 
       <div className="ml-0.5 flex min-w-0 items-center gap-2.5">
-        <div className="grid h-7 w-7 flex-none place-items-center rounded-[9px] bg-[linear-gradient(135deg,#2b88d8,#0078d4_45%,#8b62b3)] shadow-[0_4px_14px_-4px_rgb(var(--rgb-accent)/0.8)]">
-          <Sparkles className="h-3.5 w-3.5 text-white" />
-        </div>
+        <Logo className="h-7 w-7 flex-none" />
         <div className="min-w-0">
           <div className="truncate text-[14px] font-semibold text-fg">{title}</div>
           {subtitle && <div className="truncate text-[11px] text-fg-3">{subtitle}</div>}

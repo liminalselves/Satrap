@@ -4,6 +4,7 @@ import { cn } from '@/utils/cn';
 import { useTheme } from '@/hooks/useTheme';
 import { usePrefsStore } from '@/stores/usePrefsStore';
 import { Badge, Switch, toast } from '@/components/kit';
+import { Logo } from '@/components/common/Logo';
 import { InlineSwitchRow, SectionCard } from './shared';
 
 /** 外观偏好: 只保存在浏览器, 不写入后端配置 */
@@ -34,7 +35,7 @@ export function AppearanceSection({ i }: { i: number }) {
                 <div className="absolute -left-6 -top-8 h-24 w-24 rounded-full bg-[#64b4ff] opacity-50 blur-2xl" />
                 <div className="absolute -bottom-10 right-0 h-24 w-24 rounded-full bg-[#b48ce6] opacity-50 blur-2xl" />
                 <div className={cn('absolute bottom-2 left-2 top-2 w-11 rounded-md border', value === 'dark' ? 'border-white/10 bg-white/5' : 'border-black/5 bg-white/70')}>
-                  <div className="mx-auto mt-2 h-5 w-5 rounded bg-[linear-gradient(135deg,#2b88d8,#8b62b3)]" />
+                  <Logo className="mx-auto mt-2 h-5 w-5" label="" />
                   <div className="mt-2 space-y-1 px-1.5">
                     {[0, 1, 2].map((n) => <div key={n} className={cn('h-1 rounded-full', value === 'dark' ? 'bg-white/20' : 'bg-black/10')} style={{ width: `${90 - n * 18}%` }} />)}
                   </div>

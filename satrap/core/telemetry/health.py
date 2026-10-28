@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version
 from dataclasses import dataclass, field
 from functools import lru_cache
 import platform
@@ -26,10 +25,9 @@ def _build_identity() -> tuple[str | None, str | None]:
     返回:
     - 安装版本与提交, 源码环境无法确认时保留 None
     """
-    try:
-        release = version("satrap")
-    except PackageNotFoundError:
-        release = None
+    from satrap._version import __version__
+
+    release: str | None = __version__
     revision = os.environ.get("SATRAP_BUILD_REVISION", "")
     if re.fullmatch(r"[0-9a-fA-F]{7,64}", revision):
         return release, revision.lower()

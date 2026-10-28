@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, Cpu, Database, Bot, Puzzle, Globe, ShieldCheck, History, Boxes, ScrollText, Bug, Settings, BarChart3,
+  LayoutDashboard, Cpu, Database, Bot, Puzzle, Globe, ShieldCheck, History, Boxes, ScrollText, Bug, Settings, BookOpen, BarChart3,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -49,10 +49,17 @@ export const navGroups: NavGroup[] = [
   ] },
 ];
 
+/** 不在侧栏显示的页面: 仍有面包屑, 也可从命令面板打开 */
+export const hiddenNav: NavGroup[] = [
+  { id: 'ops', label: '运维', tint: 'orange', items: [
+    { path: '/docs', label: '使用文档', icon: BookOpen, keywords: 'docs help 文档 帮助 sywd' },
+  ] },
+];
+
 /** 当前路径命中的最长导航项 (子路由归属到父项) */
 export function findNav(pathname: string): { group?: NavGroup; item?: NavItem } {
   let best: { group?: NavGroup; item?: NavItem; length: number } = { length: -1 };
-  for (const group of navGroups) {
+  for (const group of [...navGroups, ...hiddenNav]) {
     for (const item of group.items) {
       const match = item.path === '/' ? pathname === '/' : pathname === item.path || pathname.startsWith(`${item.path}/`);
       if (match && item.path.length > best.length) best = { group, item, length: item.path.length };

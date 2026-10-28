@@ -21,6 +21,22 @@ def read_readme() -> str:
     return readme.read_text(encoding="utf-8")
 
 
+def read_version() -> str:
+    """
+    读取 satrap/_version.py 中的版本号, 不导入包本身
+
+    返回:
+    - str: 版本号, 文件格式不符时抛出 RuntimeError
+    """
+    import re
+
+    text = (ROOT / "satrap" / "_version.py").read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.M)
+    if not match:
+        raise RuntimeError("satrap/_version.py 中没有 __version__")
+    return match.group(1)
+
+
 install_requires = [
     "openai>=2.0.0",
     "colorlog>=6.7.0",
@@ -78,7 +94,7 @@ extras_require["all"] = sorted({dep for deps in extras_require.values() for dep 
 
 setup(
     name="satrap",
-    version="0.1.0",
+    version=read_version(),
     description="Python LLM tool library with context, tools, and workflow helpers",
     long_description=read_readme(),
     long_description_content_type="text/markdown",

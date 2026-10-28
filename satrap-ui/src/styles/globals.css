@@ -1343,6 +1343,7 @@
   .markdown-code-copy { opacity: 0.8; }
   .chat-message-actions { opacity: 1; }
 }
+
 .markdown-body pre code {
   background: transparent;
   border: none;
@@ -1408,3 +1409,19 @@ input[type='password']::-ms-reveal,
 input[type='password']::-ms-clear {
   display: none;
 }
+
+/* 用户文档: 长文阅读的层级与节奏, 聊天消息不受影响 */
+.doc-body { font-size: 14.5px; line-height: 1.8; }
+.doc-body p { margin: 0.75em 0; }
+.doc-body h1 { font-size: 1.75em; margin: 0 0 0.6em; }
+.doc-body h2 {
+  font-size: 1.35em;
+  margin: 2em 0 0.7em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--glass-border);
+}
+.doc-body h3 { font-size: 1.12em; margin: 1.6em 0 0.5em; }
+.doc-body > h2:first-child { margin-top: 0; }
+.doc-body ul, .doc-body ol { margin: 0.75em 0; }
+.doc-body li { margin: 0.35em 0; }
+.doc-body table { margin: 1em 0; }

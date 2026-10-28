@@ -8,7 +8,7 @@ import { usePrefsStore } from '@/stores/usePrefsStore';
 import { switchTheme } from '@/hooks/useTheme';
 import { toast } from '@/components/ui/Toast';
 import { cn } from '@/utils/cn';
-import { navGroups, type NavTint } from './nav';
+import { hiddenNav, navGroups, type NavTint } from './nav';
 
 export const useCommandPalette = create<{ open: boolean; setOpen: (open: boolean) => void }>((set) => ({
   open: false,
@@ -81,7 +81,7 @@ export function CommandPalette() {
   }, [open]);
 
   const commands = useMemo<Command[]>(() => {
-    const pages: Command[] = navGroups.flatMap((group) => group.items.map((item) => ({
+    const pages: Command[] = [...navGroups, ...hiddenNav].flatMap((group) => group.items.map((item) => ({
       id: item.path, section: '页面' as const, label: item.label, hint: group.label, keywords: item.keywords,
       icon: <item.icon className="h-4 w-4" />, tint: group.tint, run: () => navigate(item.path),
     })));
