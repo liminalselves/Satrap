@@ -22,6 +22,7 @@ import {
   emptyCapabilities, newOperationId, toDoc, toKb, toLegacyDoc,
   type Doc, type ImportSummary, type Kb, type KBConfig, type KBDraft,
 } from '@/components/rag/types';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type Filter = 'all' | 'global' | 'session' | 'issue';
 
@@ -395,9 +396,9 @@ export function Rag() {
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
           <span className="flex items-center gap-2 pl-1 text-xs font-medium text-fg-2"><FolderTree className="h-4 w-4 text-purple" />管理范围</span>
           <div className="w-full sm:w-[280px]">
-            <select aria-label="管理范围" className="field" value={scopeId} onChange={(event) => changeScope(event.target.value)}>
+            <KitSelect aria-label="管理范围" className="field" value={scopeId} onChange={(value) => changeScope(value)}>
               {scopeOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-            </select>
+            </KitSelect>
           </div>
 
           {platformId === 'chat' && !selectedSession && (
@@ -413,11 +414,11 @@ export function Rag() {
                 />
               </div>
               <div className="w-full sm:w-56">
-                <select aria-label="Chat 会话" className="field" value={chatSession} onChange={(event) => { setChatSession(event.target.value); setChatPage(1); }}>
+                <KitSelect aria-label="Chat 会话" className="field" value={chatSession} onChange={(value) => { setChatSession(value); setChatPage(1); }}>
                   <option value="">全部 Chat 会话知识库</option>
                   {chatSession && !chatSessions.some((session) => session.conversation_id === chatSession) && <option value={chatSession}>{chatSession}</option>}
                   {chatSessions.map((session) => <option key={session.conversation_id} value={session.conversation_id}>{session.title || session.conversation_id}</option>)}
-                </select>
+                </KitSelect>
               </div>
               <div className="flex items-center gap-0.5 text-[11.5px] text-fg-3">
                 <IconButton label="上一页会话" size="sm" disabled={chatPage <= 1} onClick={() => setChatPage((page) => Math.max(1, page - 1))}><ChevronLeft className="h-3.5 w-3.5" /></IconButton>

@@ -12,6 +12,7 @@ import { Modal } from '@/components/kit/Modal';
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
 import { Avatar, Pager, SectionHead, hueFor } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const states: Record<string, string> = { pending: '待人工批准', executing: '执行中', succeeded: '平台已执行',
   failed: '执行失败', unknown: '结果未知, 不要重复执行', rejected: '审批已拒绝', expired: '审批已过期' };
@@ -97,10 +98,10 @@ export function AccountInvitations({ adapterId, account, open, onClose }: {
       <div className="flex flex-wrap items-center gap-2">
         <label className="text-[12px] text-fg-3">
           <span className="sr-only">邀请记录范围</span>
-          <select aria-label="邀请记录范围" className="field !h-8 !w-[142px] !text-[12.5px]" value={view} disabled={busy}
-            onChange={(event) => { setView(event.target.value); setCursor(undefined); setPage(1); }}>
+          <KitSelect aria-label="邀请记录范围" className="field !h-8 !w-[142px] !text-[12.5px]" value={view} disabled={busy}
+            onChange={(value) => { setView(value); setCursor(undefined); setPage(1); }}>
             <option value="active">待处理邀请</option><option value="archived">归档邀请</option><option value="all">全部邀请</option>
-          </select>
+          </KitSelect>
         </label>
         <Button variant="ghost" size="sm" icon={<RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin-slow' : ''}`} />}
           disabled={busy || loading} onClick={() => void load()}>刷新</Button>

@@ -12,6 +12,7 @@ import { ApiError } from '@/api/client';
 import { controlApi } from '@/api/control';
 import { createUuid } from '@/utils/uuid';
 import type { PlatformConfig } from '@/api/types';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const SETTLED_STATUSES = new Set(['sent', 'partial', 'failed']);
 const STATUS_LABELS: Record<string, string> = {
@@ -207,10 +208,10 @@ export function ManualWakeModal({ open, onClose, backendRunning }: ManualWakeMod
         )}
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="平台实例" required hint="仅列出已启用的 OneBot / aiocqhttp 平台">
-            <select className="field w-full" aria-label="平台实例" value={form.adapter_id} onChange={(event) => set('adapter_id', event.target.value)} disabled={saving}>
+            <KitSelect className="field w-full" aria-label="平台实例" value={form.adapter_id} onChange={(value) => set('adapter_id', value)} disabled={saving}>
               <option value="">请选择 OneBot 平台</option>
               {platforms.map((item) => <option key={item.id} value={item.id}>{`${item.id} · ${item.type}`}</option>)}
-            </select>
+            </KitSelect>
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="目标群号" required>

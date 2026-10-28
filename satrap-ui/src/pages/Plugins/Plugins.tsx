@@ -16,6 +16,7 @@ import {
   capabilityCount, displayName, executionEnabled, hasIssue, isEffectivelyEnabled, pluginCapabilities, pluginHealth,
   SOURCE_LABELS,
 } from './pluginModel';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type Filter = 'all' | 'enabled' | 'disabled' | 'issue';
 type View = 'grid' | 'list';
@@ -243,15 +244,15 @@ export function Plugins() {
           <div className="w-56 max-w-full min-w-[180px]">
             <Input leading={<Search className="h-4 w-4" />} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称、作者或简介…" aria-label="搜索插件" />
           </div>
-          <select aria-label="插件来源" className="field h-9 w-32" value={source} onChange={(event) => setSource(event.target.value)}>
+          <KitSelect aria-label="插件来源" className="field h-9 w-32" value={source} onChange={(value) => setSource(value)}>
             <option value="">全部来源</option>
             <option value="builtin">{SOURCE_LABELS.builtin}</option>
             <option value="user">{SOURCE_LABELS.user}</option>
-          </select>
-          <select aria-label="适用平台" className="field h-9 w-32" value={platform} onChange={(event) => setPlatform(event.target.value)}>
+          </KitSelect>
+          <KitSelect aria-label="适用平台" className="field h-9 w-32" value={platform} onChange={(value) => setPlatform(value)}>
             <option value="">全部平台</option>
             {platforms.map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
+          </KitSelect>
           <div className="flex rounded-[10px] border border-line bg-glass p-0.5">
             <IconButton label="卡片视图" size="sm" active={view === 'grid'} onClick={() => setView('grid')}><LayoutGrid className="h-4 w-4" /></IconButton>
             <IconButton label="列表视图" size="sm" active={view === 'list'} onClick={() => setView('list')}><List className="h-4 w-4" /></IconButton>

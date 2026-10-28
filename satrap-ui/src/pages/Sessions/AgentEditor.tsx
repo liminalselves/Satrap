@@ -14,6 +14,7 @@ import { getThinkingOptions } from '@/utils/constants';
 import { readEdictumParams, writeEdictumParams } from '@/utils/edictumParams';
 import type { EdictumSessionConfig, EdictumTypeDefinition, LLMConfig } from '@/api/types';
 import { providerLabel, providerTone, type AgentEntry, type Provider } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const MANAGED_KEYS = [
   'system_prompt', 'thinking', 'command_history_enabled', 'default_agent_prompt_enabled',
@@ -283,11 +284,11 @@ export function AgentEditor({
             </Field>
             {isEdictum ? (
               <Field label="Edictum 类型" required hint={typeDef?.description || '类型由后端注册表提供'}>
-                <select className="field w-full" value={draft.edictum_type} onChange={(event) => changeType(event.target.value)} disabled={saving}>
+                <KitSelect className="field w-full" value={draft.edictum_type} onChange={(value) => changeType(value)} disabled={saving}>
                   {types.map((item) => (
                     <option key={item.name} value={item.name}>{`${item.name} (${item.is_async ? '异步' : '同步'})`}</option>
                   ))}
-                </select>
+                </KitSelect>
               </Field>
             ) : (
               <Field label="Class Path" required hint="Python 类路径, 扫描结果会自动填充">
@@ -333,14 +334,14 @@ export function AgentEditor({
 
         <Section icon={<Sparkles className="h-3.5 w-3.5" />} title="模型" description="绑定 LLM 与默认采样参数; 留空则继承模型配置">
           <Field label="绑定 LLM" hint={draft.model_name ? `当前绑定 ${draft.model_name}` : '未绑定时使用平台默认模型'}>
-            <select className="field w-full" value={draft.model_name} onChange={(event) => set('model_name', event.target.value)} disabled={saving}>
+            <KitSelect className="field w-full" value={draft.model_name} onChange={(value) => set('model_name', value)} disabled={saving}>
               <option value="">暂不绑定</option>
               {llmNames.map((name) => <option key={name} value={name}>{name}</option>)}
-            </select>
+            </KitSelect>
           </Field>
           {isEdictum && (
             <Field label="默认思考强度" hint={draft.model_name ? '可选值取决于绑定模型的思考能力' : '绑定模型后可选择思考强度'}>
-              <select className="field w-full" value={draft.thinking} onChange={(event) => set('thinking', event.target.value)} disabled={saving}>
+              <KitSelect className="field w-full" value={draft.thinking} onChange={(value) => set('thinking', value)} disabled={saving}>
                 <option value="">默认 (关闭)</option>
                 {thinkingOptions.filter((option) => option.value !== 'off').map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
@@ -348,7 +349,7 @@ export function AgentEditor({
                 {managePrompt && thinkingUnsupported && (
                   <option value={draft.thinking}>{draft.thinking} (当前模型不支持, 请重新选择)</option>
                 )}
-              </select>
+              </KitSelect>
             </Field>
           )}
           {isEdictum && managePrompt && (

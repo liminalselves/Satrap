@@ -12,6 +12,7 @@ import { GROUP_OVERRIDE_FIELDS, type OverrideFieldDef } from '@/utils/wakeOverri
 import { policyField, validatePolicyValue } from '@/utils/wakePolicyContract';
 import { useGroupContext } from './GroupLayout';
 import { FieldBlock, Note, SectionHead } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 interface FieldDraft { mode: 'inherit' | 'value'; text: string }
 type PolicyDraft = Record<string, FieldDraft>;
@@ -158,11 +159,11 @@ export function GroupPolicy() {
         <SectionHead tint="pink" title="本群是否响应" icon={<ShieldCheck className="h-4 w-4" />}
           description={`有效状态: ${config.effective.policy.enabled ? '开启' : '关闭'} · ${config.sources.policy.enabled?.source_label || '来源未知'}`} />
         <FieldBlock label="本群设置" hint="继承账号接入模式时, 由平台总开关与群默认决定" className="max-w-sm">
-          <select className="field w-full" value={draft.enabled.mode === 'inherit' ? 'inherit' : draft.enabled.text}
-            onChange={(event) => change('enabled', event.target.value === 'inherit' ? { mode: 'inherit', text: '' } : { mode: 'value', text: event.target.value })}
+          <KitSelect className="field w-full" value={draft.enabled.mode === 'inherit' ? 'inherit' : draft.enabled.text}
+            onChange={(next) => change('enabled', next === 'inherit' ? { mode: 'inherit', text: '' } : { mode: 'value', text: next })}
             disabled={historical || saving}>
             <option value="inherit">继承账号接入模式</option><option value="true">开启</option><option value="false">关闭</option>
-          </select>
+          </KitSelect>
         </FieldBlock>
         {!config.effective.policy.enabled && config.sources.policy.enabled?.source === 'platform' && (
           <Note tone="orange" className="mt-3">平台总开关已关闭。本群设置不能越过平台总开关。</Note>
@@ -184,26 +185,26 @@ export function GroupPolicy() {
               </div>
               <p className="text-[11px] text-fg-3">当前有效值: {display(config.effective.policy[field.key]) || '空'}</p>
               <div className="grid gap-2 sm:grid-cols-[108px_1fr]">
-                <select className="field !h-8 !text-[12px]" aria-label={`${field.label}状态`} value={current.mode}
-                  onChange={(event) => change(field.key, { mode: event.target.value as FieldDraft['mode'], text: event.target.value === 'value' ? current.text || display(config.effective.policy[field.key]) : '' })}
+                <KitSelect className="field !h-8 !text-[12px]" aria-label={`${field.label}状态`} value={current.mode}
+                  onChange={(next) => change(field.key, { mode: next as FieldDraft['mode'], text: next === 'value' ? current.text || display(config.effective.policy[field.key]) : '' })}
                   disabled={historical || saving}>
                   <option value="inherit">继承</option><option value="value">显式设置</option>
-                </select>
+                </KitSelect>
                 {current.mode === 'value' && (field.kind === 'lines' ? (
                   <Textarea rows={2} className="!text-[12px] font-mono" aria-label={field.label} value={current.text}
                     placeholder={field.placeholder} onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving} />
                 ) : field.kind === 'bool' ? (
-                  <select className="field !h-8 !text-[12px]" aria-label={field.label} value={current.text}
-                    onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving}>
+                  <KitSelect className="field !h-8 !text-[12px]" aria-label={field.label} value={current.text}
+                    onChange={(value) => change(field.key, { text: value })} disabled={historical || saving}>
                     <option value="true">开启</option><option value="false">关闭</option>
-                  </select>
+                  </KitSelect>
                 ) : field.kind === 'select' ? (
-                  <select className="field !h-8 !text-[12px]" aria-label={field.label} value={current.text}
-                    onChange={(event) => change(field.key, { text: event.target.value })} disabled={historical || saving}>
+                  <KitSelect className="field !h-8 !text-[12px]" aria-label={field.label} value={current.text}
+                    onChange={(value) => change(field.key, { text: value })} disabled={historical || saving}>
                     <option value="">选择值</option>
                     {field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     {field.offValue !== undefined && <option value={String(field.offValue)}>{field.offLabel || '显式关闭'}</option>}
-                  </select>
+                  </KitSelect>
                 ) : (
                   <input className="field !h-8 !text-[12px]" aria-label={field.label} type="number" min={field.min} max={field.max}
                     step={field.integer ? 1 : 'any'} value={current.text} placeholder={field.placeholder}

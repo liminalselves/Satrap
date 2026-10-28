@@ -6,6 +6,7 @@ import type { ConfigOption } from '@/components/common/PluginConfigFields';
 import { ragApi } from '@/api/rag';
 import { Button, Drawer, IconButton } from '@/components/kit';
 import { errorText } from '@/utils/errorText';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 interface Props {
   context: PluginSettingsContext | null;
@@ -79,10 +80,10 @@ export function SessionSettingsDrawer({ context, plugins, onClose }: Props) {
       <div className="scroll min-h-0 flex-1 space-y-4 px-5 py-4">
         <label className="block text-[13px] font-medium text-fg-2">
           插件
-          <select className="field mt-1 h-9 w-full" value={selected} disabled={saving} onChange={(event) => setPlugin(event.target.value)}>
+          <KitSelect className="field mt-1 h-9 w-full" value={selected} disabled={saving} onChange={(value) => setPlugin(value)}>
             {plugins.length === 0 && <option value="">没有可配置的插件</option>}
             {plugins.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
+          </KitSelect>
         </label>
         {error && <p role="alert" className="text-[12.5px] text-red">{error}</p>}
         {notice && <p role="status" className="text-[12.5px] text-fg-2">{notice}</p>}

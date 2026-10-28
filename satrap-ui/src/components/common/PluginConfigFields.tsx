@@ -3,6 +3,7 @@ import { useId } from 'react';
 import { AlertCircle, Link2Off, Lock, RotateCcw } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { Input, Textarea } from '@/components/kit';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 export interface ConfigOption { value: string; label: string; scope?: string }
 export type ModelOptions = Record<string, ConfigOption[]>;
@@ -151,18 +152,18 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
               </div>
             ) : modelField || knowledgeField || field.type === 'select' ? (
               <>
-                <select
+                <KitSelect
                   id={fieldId}
                   aria-label={fieldLabel}
                   className={cn('field h-9 w-full', optionLocked && 'pointer-events-none opacity-55')}
                   disabled={optionLocked || nullSelected}
                   value={String(value ?? '')}
-                  onChange={(event) => onChange(key, event.target.value)}
+                  onChange={(value) => onChange(key, value)}
                 >
                   <option value="">{optionState === 'loading' ? '正在读取选项…' : optionState === 'error' ? '选项读取失败' : field.required ? '请选择' : '不使用 / 未选择'}</option>
                   {missing.map((item) => <option key={item} value={item}>{item} ({stateLabel})</option>)}
                   {options.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
+                </KitSelect>
                 {optionState === 'loading' && <p className="text-[11.5px] text-fg-3">{stateLabel}</p>}
                 {optionState === 'error' && <p role="alert" className="flex items-center gap-1 text-[11.5px] text-red"><AlertCircle className="h-3 w-3" />{stateLabel}</p>}
                 {missing.length > 0 && optionState === 'ready' && <p className="flex items-center gap-1 text-[11.5px] text-orange"><Link2Off className="h-3 w-3" />{missing.join('、')} 引用已失效，请重新选择</p>}

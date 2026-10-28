@@ -15,6 +15,7 @@ import { controlApi } from '@/api/control';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 interface ChatHistoryManagerProps {
   open: boolean;
@@ -254,20 +255,20 @@ export function ChatHistoryManager({
           <>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-5">
               <input className="field md:col-span-2" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题或会话 ID" aria-label="搜索标题或会话 ID" />
-              <select className="field" aria-label="筛选历史项目" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+              <KitSelect className="field" aria-label="筛选历史项目" value={projectId} onChange={(value) => setProjectId(value)}>
                 <option value="">全部项目</option>
                 <option value="__none__">无项目</option>
                 {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}
-              </select>
-              <select className="field" aria-label="筛选历史模型" value={model} onChange={(event) => setModel(event.target.value)}>
+              </KitSelect>
+              <KitSelect className="field" aria-label="筛选历史模型" value={model} onChange={(value) => setModel(value)}>
                 <option value="">全部模型</option>
                 {models.map((name) => <option key={name} value={name}>{name}</option>)}
-              </select>
-              <select className="field" aria-label="筛选历史轮数" value={turnCount} onChange={(event) => setTurnCount(event.target.value as typeof turnCount)}>
+              </KitSelect>
+              <KitSelect className="field" aria-label="筛选历史轮数" value={turnCount} onChange={(value) => setTurnCount(value as typeof turnCount)}>
                 <option value="all">全部轮数</option>
                 <option value="empty">0 轮</option>
                 <option value="single">仅 1 轮</option>
-              </select>
+              </KitSelect>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <label className="flex items-center gap-2 text-sm text-fg-2">

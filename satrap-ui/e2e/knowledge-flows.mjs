@@ -98,7 +98,6 @@ async function rag_settings(runtime) {
   await page.goto(`${origin}/rag`);
     await page.getByRole('button', { name: '共享产品资料', exact: true }).waitFor();
     await page.getByLabel('管理范围').selectOption('platform:chat');
-    await page.getByRole('option', { name: '测试会话', exact: true }).waitFor({ state: 'attached' });
     await page.getByLabel('Chat 会话', { exact: true }).selectOption('chat-one');
     await page.getByRole('button', { name: '新建知识库', exact: true }).click();
     await page.getByLabel('知识库名称').fill('当前会话资料');

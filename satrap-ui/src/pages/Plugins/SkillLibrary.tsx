@@ -10,6 +10,7 @@ import { confirmDiscard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { cn } from '@/utils/cn';
 import { TealPrimary, TintTabs } from './PluginBits';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type Draft = SkillDraft & { original?: ManagedSkill; mode: 'text' | 'url' };
 const sessionTypes = [['chat', 'Chat'], ['platform', '平台会话'], ['embedded', '嵌入会话']] as const;
@@ -203,10 +204,10 @@ export function SkillLibrary({ onDirty }: { onDirty: (dirty: boolean) => void })
             <div className="w-56 max-w-full">
               <Input leading={<Search className="h-4 w-4" />} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索名称或简介…" aria-label="搜索技能" />
             </div>
-            <select aria-label="适用会话筛选" className="field h-8 w-36 text-[12.5px]" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)}>
+            <KitSelect aria-label="适用会话筛选" className="field h-8 w-36 text-[12.5px]" value={scope} onChange={(value) => setScope(value as typeof scope)}>
               <option value="all">全部会话</option>
               {sessionTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
+            </KitSelect>
           </div>
         </div>
       </Card>
@@ -324,10 +325,10 @@ export function SkillLibrary({ onDirty }: { onDirty: (dirty: boolean) => void })
             {!draft.original && (
               <label className="block text-[13px] font-medium text-fg-2">
                 导入方式
-                <select aria-label="导入方式" className="field mt-1 h-9 w-full" disabled={busy} value={draft.mode} onChange={(event) => setDraft({ ...draft, mode: event.target.value as Draft['mode'] })}>
+                <KitSelect aria-label="导入方式" className="field mt-1 h-9 w-full" disabled={busy} value={draft.mode} onChange={(value) => setDraft({ ...draft, mode: value as Draft['mode'] })}>
                   <option value="text">上传文件或粘贴 Markdown</option>
                   <option value="url">HTTPS Markdown 地址</option>
-                </select>
+                </KitSelect>
               </label>
             )}
             {draft.mode === 'url' ? (

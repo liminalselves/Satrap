@@ -86,11 +86,11 @@
       box-shadow var(--dur-3) var(--ease-out),
       background-color var(--dur-2) var(--ease-standard),
       border-color var(--dur-2) var(--ease-standard);
-    will-change: transform;
   }
   .tile[data-near='1'] { --reflect-o: 0.5; }
   .tile:hover,
   .tile:focus-visible {
+    will-change: transform;
     --reflect-o: 1;
     transform: translateY(-3px);
     box-shadow: var(--shadow-2), 0 0 0 1px rgb(var(--tint) / 0.14), 0 10px 40px -8px rgb(var(--tint) / 0.35);
@@ -319,3 +319,79 @@ h1, h2, h3, .display {
   font-family: 'Segoe UI Variable Display', 'Segoe UI Variable', 'Segoe UI', -apple-system, 'PingFang SC', 'Microsoft YaHei UI', sans-serif;
   letter-spacing: -0.01em;
 }
+
+/* ===== 下拉选择 =====
+   触发器沿用 .field 外观; 右侧箭头离边缘 12px, 悬停下沉、展开翻转并染色 */
+.select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-right: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.select-trigger:disabled { cursor: not-allowed; opacity: 0.55; }
+.select-trigger[data-open] {
+  border-color: rgb(var(--rgb-accent) / 0.7);
+  background: var(--glass-bg-hover);
+  box-shadow: 0 0 0 4px rgb(var(--rgb-accent) / 0.16);
+}
+.select-value { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-chevron {
+  display: grid;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-right: 2px;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--text-3);
+  transition:
+    transform var(--dur-3) var(--ease-out),
+    color var(--dur-2) var(--ease-standard),
+    background-color var(--dur-2) var(--ease-standard);
+}
+.select-chevron > svg { width: 15px; height: 15px; transition: transform var(--dur-3) var(--ease-out); }
+.select-trigger:not(:disabled):hover .select-chevron { color: var(--text-1); background: var(--glass-bg-hover); transform: translateY(1px); }
+.select-trigger[data-open] .select-chevron { color: rgb(var(--rgb-accent)); background: rgb(var(--rgb-accent) / 0.12); transform: none; }
+.select-trigger[data-open] .select-chevron > svg { transform: rotate(180deg); }
+
+.select-list {
+  position: fixed;
+  z-index: 170;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 12px;
+  background: var(--glass-bg-strong);
+  box-shadow: var(--shadow-3);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  animation: select-in var(--dur-2) var(--ease-out) both;
+  transform-origin: top center;
+}
+.select-list[data-placement='top'] { transform-origin: bottom center; }
+@keyframes select-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.select-list[data-placement='top'] { animation-name: select-in-up; }
+@keyframes select-in-up {
+  from { opacity: 0; transform: translateY(4px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.select-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-standard), color var(--dur-1) var(--ease-standard);
+}
+.select-option[data-active] { background: var(--glass-bg-hover); color: var(--text-1); }
+.select-option[aria-selected='true'] { color: var(--text-1); font-weight: 500; }
+.select-option[aria-disabled='true'] { cursor: not-allowed; opacity: 0.45; }

@@ -11,6 +11,7 @@ import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { useGroupContext } from './GroupLayout';
 import { FieldBlock, Note, SectionHead } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type Provider = 'session_class' | 'edictum';
 const sourceLabels: Record<string, string> = { platform: '平台默认', conversation_kind: '群聊类型设置', group: '本群覆盖', named_config: 'Agent 命名配置' };
@@ -180,24 +181,24 @@ export function GroupSession() {
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <FieldBlock label="绑定来源">
-          <select className="field w-full" value={draft.bindingMode}
-            onChange={(event) => setDraft((old) => ({ ...old, bindingMode: event.target.value as Draft['bindingMode'] }))}
+          <KitSelect className="field w-full" value={draft.bindingMode}
+            onChange={(value) => setDraft((old) => ({ ...old, bindingMode: value as Draft['bindingMode'] }))}
             disabled={historical || saving}>
             <option value="inherit">继承群聊 Agent（未指定时使用平台默认）</option><option value="value">本群指定</option>
-          </select>
+          </KitSelect>
         </FieldBlock>
         {draft.bindingMode === 'value' && <>
           <FieldBlock label="流程">
-            <select className="field w-full" value={draft.provider}
-              onChange={(event) => setDraft((old) => ({ ...old, provider: event.target.value as Provider, configName: '' }))}
+            <KitSelect className="field w-full" value={draft.provider}
+              onChange={(value) => setDraft((old) => ({ ...old, provider: value as Provider, configName: '' }))}
               disabled={historical || saving}>
               <option value="session_class">SessionClass</option><option value="edictum">Edictum</option>
-            </select>
+            </KitSelect>
           </FieldBlock>
           <FieldBlock label="命名配置" className="sm:col-span-2"
             hint={selected ? selected.description : draft.configName ? '所选配置已删除, 请重新选择' : '请选择一个可用的命名配置'}>
-            <select className="field w-full" value={draft.configName}
-              onChange={(event) => setDraft((old) => ({ ...old, configName: event.target.value }))}
+            <KitSelect className="field w-full" value={draft.configName}
+              onChange={(value) => setDraft((old) => ({ ...old, configName: value }))}
               disabled={historical || saving || loadingOptions}>
               <option value="">{loadingOptions ? '加载中' : '请选择命名配置'}</option>
               {options.filter((item) => item.provider === draft.provider).map((item) => (
@@ -206,7 +207,7 @@ export function GroupSession() {
                 </option>
               ))}
               {draft.configName && !selected && <option value={draft.configName} disabled>{draft.configName} · 已删除</option>}
-            </select>
+            </KitSelect>
           </FieldBlock>
         </>}
       </div>
@@ -234,21 +235,21 @@ export function GroupSession() {
       <SectionHead tint="pink" title="模型与提示词" icon={<Bot className="h-4 w-4" />}
         description={`命名配置 → 本群覆盖 → 会话实例覆盖。当前模型 ${String(config.effective.session.model || '未配置')} (${config.sources.session.model || '未知'})`} />
       <label className="block text-[13px] font-medium text-fg-2">模型来源
-        <select className="field mt-1.5 block w-full max-w-md" value={draft.modelMode} disabled={historical || saving}
-          onChange={(event) => setDraft((old) => ({ ...old, modelMode: event.target.value as Draft['modelMode'] }))}>
+        <KitSelect className="field mt-1.5 block w-full max-w-md" value={draft.modelMode} disabled={historical || saving}
+          onChange={(value) => setDraft((old) => ({ ...old, modelMode: value as Draft['modelMode'] }))}>
           <option value="inherit">继承命名配置</option><option value="value">本群指定</option>
-        </select>
-        {draft.modelMode === 'value' && sessionFields.includes('model') && <select className="field mt-2 block w-full max-w-md" aria-label="模型配置" value={draft.model} disabled={historical || saving}
-          onChange={(event) => setDraft((old) => ({ ...old, model: event.target.value }))}>
+        </KitSelect>
+        {draft.modelMode === 'value' && sessionFields.includes('model') && <KitSelect className="field mt-2 block w-full max-w-md" aria-label="模型配置" value={draft.model} disabled={historical || saving}
+          onChange={(value) => setDraft((old) => ({ ...old, model: value }))}>
           <option value="">选择模型配置</option>{models.map((name) => <option key={name} value={name}>{name}</option>)}
-        </select>}
+        </KitSelect>}
         {draft.modelMode === 'value' && !sessionFields.includes('model') && <span className="mt-1 block text-[11.5px] font-normal text-orange">当前流程不支持群级模型覆盖</span>}
       </label>
       <label className="mt-4 block text-[13px] font-medium text-fg-2">系统提示词 · 当前来源: {config.sources.session.prompt || '命名配置'}
-        <select className="field mt-1.5 block w-full max-w-md" value={draft.promptMode} disabled={historical || saving}
-          onChange={(event) => setDraft((old) => ({ ...old, promptMode: event.target.value as Draft['promptMode'] }))}>
+        <KitSelect className="field mt-1.5 block w-full max-w-md" value={draft.promptMode} disabled={historical || saving}
+          onChange={(value) => setDraft((old) => ({ ...old, promptMode: value as Draft['promptMode'] }))}>
           <option value="inherit">继承命名配置</option><option value="value">本群替换</option>
-        </select>
+        </KitSelect>
         {draft.promptMode === 'value' && sessionFields.includes('prompt') && <>
           <Textarea rows={4} className="mt-2 block w-full max-w-3xl !text-[12.5px]" value={draft.prompt} maxLength={20000}
             onChange={(event) => setDraft((old) => ({ ...old, prompt: event.target.value }))} disabled={historical || saving} />
@@ -283,11 +284,11 @@ export function GroupSession() {
                 {entry && <Badge tone={entry.mode === 'enabled' ? 'green' : 'neutral'}>{entry.mode === 'enabled' ? '本群启用' : '本群停用'}</Badge>}
                 <label className="ml-auto text-[12px] text-fg-3">
                   <span className="sr-only">{plugin.name} 覆盖</span>
-                  <select className="field !h-8 !w-[110px] !text-[12px]" value={entry?.mode || 'inherit'} disabled={historical || saving || !sessionFields.includes('plugins')}
+                  <KitSelect className="field !h-8 !w-[110px] !text-[12px]" value={entry?.mode || 'inherit'} disabled={historical || saving || !sessionFields.includes('plugins')}
                     aria-label={`${plugin.name} 覆盖`}
-                    onChange={(event) => changePlugin(plugin.name, event.target.value as 'inherit' | 'enabled' | 'disabled')}>
+                    onChange={(value) => changePlugin(plugin.name, value as 'inherit' | 'enabled' | 'disabled')}>
                     <option value="inherit">继承</option><option value="enabled">启用</option><option value="disabled">停用</option>
-                  </select>
+                  </KitSelect>
                 </label>
               </div>
               {entry?.mode === 'enabled' && Object.entries(plugin.config_schema).filter(([, field]) => field.session_overridable).map(([key, field]) => {
@@ -300,12 +301,12 @@ export function GroupSession() {
                   <span className="text-[12px] text-fg-2">{key} <span className="text-[10.5px] text-fg-4">{field.description}</span></span>
                   <div className="flex items-center gap-1.5">
                     {field.type === 'bool' || field.type === 'select' ? (
-                      <select className="field !h-8 !text-[12px]" aria-label={key} value={value === undefined ? '' : String(value)} disabled={historical || saving}
-                        onChange={(event) => update(event.target.value)}>
+                      <KitSelect className="field !h-8 !text-[12px]" aria-label={key} value={value === undefined ? '' : String(value)} disabled={historical || saving}
+                        onChange={(value) => update(value)}>
                         <option value="">继承插件参数</option>
                         {(field.type === 'bool' ? ['true', 'false'] : (field.options || []).map(String)).map((option) =>
                           <option key={option} value={option}>{option}</option>)}
-                      </select>
+                      </KitSelect>
                     ) : (
                       <input className="field !h-8 !text-[12px]" aria-label={key} type={field.type === 'number' ? 'number' : 'text'}
                         min={field.minimum} max={field.maximum} step={field.integer ? 1 : 'any'}
@@ -328,19 +329,19 @@ export function GroupSession() {
         description={`当前: ${scopeLabel(effectiveScope)} · 来源: ${sourceLabels[config.sources.session.scope] || config.sources.session.scope || '平台默认'} · 切换后后续请求创建新会话`} />
       <div className="grid gap-3 sm:grid-cols-2">
         <FieldBlock label="范围来源">
-          <select className="field w-full" value={draft.scopeMode}
-            onChange={(event) => setDraft((old) => ({ ...old, scopeMode: event.target.value as Draft['scopeMode'] }))}
+          <KitSelect className="field w-full" value={draft.scopeMode}
+            onChange={(value) => setDraft((old) => ({ ...old, scopeMode: value as Draft['scopeMode'] }))}
             disabled={historical || saving}>
             <option value="inherit">继承平台</option><option value="value">本群指定</option>
-          </select>
+          </KitSelect>
         </FieldBlock>
         {draft.scopeMode === 'value' && (
           <FieldBlock label="本群范围">
-            <select className="field w-full" value={draft.scope}
-              onChange={(event) => setDraft((old) => ({ ...old, scope: event.target.value as Draft['scope'] }))}
+            <KitSelect className="field w-full" value={draft.scope}
+              onChange={(value) => setDraft((old) => ({ ...old, scope: value as Draft['scope'] }))}
               disabled={historical || saving}>
               <option value="group_member">按成员隔离</option><option value="group_shared">全群共享</option>
-            </select>
+            </KitSelect>
           </FieldBlock>
         )}
       </div>

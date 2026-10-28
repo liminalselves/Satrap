@@ -1,6 +1,6 @@
 import { finishConfirmation } from './confirmation.mjs';
 import { conversationPageResponse, turnPageResponse } from './config-fixtures.mjs';
-import { emptyConfigResponse } from './runtime.mjs';
+import { emptyConfigResponse, comboOptions } from './runtime.mjs';
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -148,7 +148,7 @@ async function chat_history_media(runtime) {
       await previewAborted;
       assert.equal(typeof releaseMedia, 'function'); releaseMedia();
       assert.equal(await items.count(), 2);
-      assert.equal(await page.locator('.chat-message-item img').count(), 0);
+      assert.equal(await page.locator('.chat-message-item img:not([alt="Satrap"])').count(), 0);
       await page.getByText(`Benchmark ${count} 条消息`, { exact: true }).click();
       await page.waitForFunction((expected) => document.querySelectorAll('.chat-message-item').length === expected, count + 2);
       assert.equal(await items.last().textContent().then((value) => (value.match(/后续增量/g) || []).length), 100);
@@ -633,9 +633,9 @@ async function chat_sidebar_state(runtime) {
     await page.getByRole('alert').filter({ hasText: '当前刷新失败' }).waitFor({ state: 'hidden' });
     await page.getByTitle('b-workspace', { exact: true }).locator('..').getByTitle('删除项目 (仅解绑会话, 磁盘文件不动)', { exact: true }).click();
     await finishConfirmation(page);
-    await page.waitForFunction(() => document.querySelector('[aria-label="筛选对话项目"]').value === '');
+    await page.waitForFunction(() => document.querySelector('[aria-label="筛选对话项目"]')?.getAttribute('data-value') === '');
     await page.locator('div.text-sm.truncate').filter({ hasText: /^乙会话$/ }).waitFor();
-    assert.equal(await selector.locator('option[value="b"]').count(), 0);
+    assert.equal((await comboOptions(selector)).some((option) => option.value === 'b'), false);
     await page.getByRole('button', { name: '加载更多对话', exact: true }).click();
     await row('第二页会话').waitFor();
     const movePaged = async (title) => {
@@ -673,7 +673,7 @@ async function chat_sidebar_state(runtime) {
     assert.equal(await row('第二页会话').count(), 1);
     assert.equal(await row('第三页会话').count(), 1);
     assert.equal(await row('原分页末项').count(), 1);
-    assert.equal(await selector.locator('option[value="a"]').count(), 0);
+    assert.equal((await comboOptions(selector)).some((option) => option.value === 'a'), false);
     assert.deepEqual(errors, []);
     await assertNoConfigErrors(page);
     console.log('PASS: 移动和删除项目保留已展开分页及原末项, 后续页刷新失败不提交部分目录, 删除和筛选正常生效');

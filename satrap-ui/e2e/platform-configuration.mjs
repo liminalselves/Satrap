@@ -260,7 +260,7 @@ async function platform_policy(runtime) {
     await groupEditor.getByLabel(/^冷却秒数.*状态$/).selectOption('value');
     await groupEditor.getByLabel(/^冷却秒数.*值$/).fill('30');
     await groupEditor.getByLabel('唤醒词状态').selectOption('off');
-    await groupEditor.locator('span').filter({ hasText: '清空继承词表' }).waitFor();
+    await groupEditor.locator('span:not(.select-value)').filter({ hasText: '清空继承词表' }).waitFor();
     // 行内字段按契约严格校验: 排他上界 120 被拒并保留草稿, 改回继承后恢复可保存
     const groupMaxWaitState = groupEditor.getByLabel(/^最长等待秒数.*状态$/);
     const groupMaxWaitValue = groupEditor.getByLabel(/^最长等待秒数.*值$/);
@@ -1017,7 +1017,7 @@ async function group_polling(runtime) {
     }, hidden);
     await page.goto(origin + '/platforms/ob/groups/456/events?account=100');
     await page.getByRole('heading', { name: '接收事件设置', exact: true }).waitFor();
-    const eventSetting = page.locator('label').filter({ hasText: '群禁言' }).locator('select');
+    const eventSetting = page.locator('label').filter({ hasText: '群禁言' }).locator('[role=combobox]');
     await eventSetting.selectOption('false');
     const configPending = new Promise((resolve) => { heldConfig = resolve; });
     holdConfig = true;
@@ -1062,7 +1062,7 @@ async function group_polling(runtime) {
     const afterLeave = counts.events;
     await page.clock.runFor(15000);
     assert.equal(counts.events, afterLeave);
-    await page.locator('select').filter({ has: page.locator('option[value="executing"]') }).selectOption('executing');
+    await page.getByLabel('动作状态', { exact: true }).selectOption('executing');
     await page.clock.runFor(61000);
     await visibility(true);
     const deadlineReads = counts.actions;

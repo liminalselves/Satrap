@@ -13,6 +13,7 @@ import { Field, Input } from '@/components/kit';
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
 import { InlineEmpty, KeyValue, Notice, Pager, SearchField, StatTile } from './common';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const PAGE = 40;
 
@@ -128,23 +129,23 @@ export function UserView({ platform, platformType, platforms, onType, onPlatform
           <SearchField value={query} onChange={setQuery} placeholder="搜索用户 ID、昵称或平台实例" ariaLabel="搜索用户" />
           <div className="grid grid-cols-2 gap-1.5">
             <label className="min-w-0 text-[10.5px] text-fg-4">平台类型
-              <select aria-label="平台类型" className="field mt-1 !h-8 w-full text-[11px]" value={platformType}
-                onChange={(event) => onType(event.target.value)}>
+              <KitSelect aria-label="平台类型" className="field mt-1 !h-8 w-full text-[11px]" value={platformType}
+                onChange={(value) => onType(value)}>
                 <option value="">全部类型</option>
                 {[...new Map(platforms.map((item) => [item.type, item.type_label])).entries()].map(([value, label]) => (
                   <option key={value} value={value}>{label}</option>
                 ))}
-              </select>
+              </KitSelect>
             </label>
             <label className="min-w-0 text-[10.5px] text-fg-4">平台实例
-              <select aria-label="记录平台" className="field mt-1 !h-8 w-full text-[11px]" value={platform}
-                onChange={(event) => onPlatform(event.target.value)}>
+              <KitSelect aria-label="记录平台" className="field mt-1 !h-8 w-full text-[11px]" value={platform}
+                onChange={(value) => onPlatform(value)}>
                 <option value="">全部实例</option>
                 {platform && !platforms.some((item) => item.id === platform) && <option value={platform}>{platform}</option>}
                 {platforms.filter((item) => !platformType || item.type === platformType).map((item) => (
                   <option key={item.id} value={item.id}>{item.label} · {item.type_label}</option>
                 ))}
-              </select>
+              </KitSelect>
             </label>
           </div>
           <div className="flex items-center justify-between gap-2">
@@ -347,11 +348,11 @@ export function UserView({ platform, platformType, platforms, onType, onPlatform
           <p className="text-[12px] leading-5 text-fg-3">昵称保存在本地，不修改平台账号资料。平台实例和用户 ID 确定资料归属。</p>
           {(formError || (error && editor !== null)) && <p role="alert" className="text-[12px] text-red">{formError || error}</p>}
           <Field label="平台实例" required>
-            <select aria-label="资料平台实例" className="field !h-9 w-full" value={form.platform} disabled={busy || editor === 'update'}
-              onChange={(event) => setForm({ ...form, platform: event.target.value })}>
+            <KitSelect aria-label="资料平台实例" className="field !h-9 w-full" value={form.platform} disabled={busy || editor === 'update'}
+              onChange={(value) => setForm({ ...form, platform: value })}>
               <option value="">请选择平台实例</option>
               {platforms.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.type_label}</option>)}
-            </select>
+            </KitSelect>
           </Field>
           <Field label="用户 ID" required hint="与平台上的用户 ID 完全一致">
             <Input aria-label="资料用户 ID" value={form.user} disabled={busy || editor === 'update'} placeholder="例如 1042"

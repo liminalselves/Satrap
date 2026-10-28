@@ -16,6 +16,7 @@ import { useGroupContext } from './GroupLayout';
 import { errorText } from '@/utils/errorText';
 import { groupActionLabels } from './groupActionLabels';
 import { Avatar, FieldBlock, Note, Pager, RoleBadge, hueFor } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const memberActions = [
   ['set_group_card', '修改群昵称'], ['ban_group_member', '禁言或解除'],
@@ -189,9 +190,9 @@ export function GroupMembers() {
           )}
           {selected.action === 'set_group_admin' && (
             <FieldBlock label="操作">
-              <select className="field w-full" value={enable} disabled={!!submitted} onChange={(event) => setEnable(event.target.value)}>
+              <KitSelect className="field w-full" value={enable} disabled={!!submitted} onChange={(value) => setEnable(value)}>
                 <option value="true">设置管理员</option><option value="false">取消管理员</option>
-              </select>
+              </KitSelect>
             </FieldBlock>
           )}
           {selected.action === 'set_group_card' && (

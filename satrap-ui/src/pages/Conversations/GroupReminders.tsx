@@ -10,6 +10,7 @@ import { Modal } from '@/components/ui/Modal';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const reminderStateLabels: Record<ReminderState, string> = {
   scheduled: '待执行', waiting_delivery: '等待平台恢复', paused: '已暂停', sending: '正在发送', sent: '已发送',
@@ -116,8 +117,8 @@ export function GroupReminders({ record, refresh, onDirty }: { record: PlatformA
       <div className="flex gap-2"><Button disabled={busy} onClick={() => { setDraftError(''); setDraft({ text: '', mode: 'relative', delay: '30', unit: '60', due: '', mentions: '', key: createUuid() }); }}>创建提醒</Button>
         <Button disabled={busy || loading} onClick={() => { setCursors([]); setVersion((value) => value + 1); }}>刷新提醒</Button></div></div>
     <p className="text-sm text-text-secondary">到期发送固定文字，可提及已确认的群成员。创建和恢复需要平台在线并开启提醒；停用后不会自动恢复暂停任务。</p>
-    <label className="block text-sm">任务状态<select className="glass-input mt-1 w-full" aria-label="提醒状态" value={state} onChange={(event) => { setState(event.target.value as ReminderState | ''); setCursors([]); }}>
-      <option value="">全部状态</option>{Object.entries(reminderStateLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+    <label className="block text-sm">任务状态<KitSelect className="field mt-1 w-full" aria-label="提醒状态" value={state} onChange={(value) => { setState(value as ReminderState | ''); setCursors([]); }}>
+      <option value="">全部状态</option>{Object.entries(reminderStateLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</KitSelect></label>
     {error && <p role="alert" className="text-error">{error}</p>}{notice && <p role="status">{notice}</p>}
     {loading ? <p>正在读取提醒…</p> : page && <div className="space-y-2">{page.items.length === 0 && <p className="text-text-secondary">当前范围没有提醒</p>}
       {page.items.map((reminder) => <div key={reminder.reminder_id} className="rounded-xl border border-glass-border p-3">
@@ -134,9 +135,9 @@ export function GroupReminders({ record, refresh, onDirty }: { record: PlatformA
     <Modal open={!!draft} onClose={() => { if (!busy && confirmDiscard()) setDraft(undefined); }} title="创建一次性提醒">
       {draft && <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void create(); }}>
         <label className="block text-sm">提醒正文<textarea aria-label="提醒正文" className="glass-input mt-1 min-h-28 w-full" maxLength={2000} value={draft.text} onChange={(event) => changeDraft('text', event.target.value)} /></label>
-        <label className="block text-sm">执行时间<select aria-label="提醒时间方式" className="glass-input mt-1 w-full" value={draft.mode} onChange={(event) => changeDraft('mode', event.target.value)}><option value="relative">多久后</option><option value="absolute">指定日期时间</option></select></label>
+        <label className="block text-sm">执行时间<KitSelect aria-label="提醒时间方式" className="field mt-1 w-full" value={draft.mode} onChange={(value) => changeDraft('mode', value)}><option value="relative">多久后</option><option value="absolute">指定日期时间</option></KitSelect></label>
         {draft.mode === 'relative' ? <div className="flex gap-2"><input aria-label="提醒等待数量" type="number" min="1" className="glass-input min-w-0 flex-1" value={draft.delay} onChange={(event) => changeDraft('delay', event.target.value)} />
-          <select aria-label="提醒等待单位" className="glass-input" value={draft.unit} onChange={(event) => changeDraft('unit', event.target.value)}><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></div>
+          <KitSelect aria-label="提醒等待单位" className="field" value={draft.unit} onChange={(value) => changeDraft('unit', value)}><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></KitSelect></div>
           : <label className="block text-sm">日期和时间<input aria-label="提醒日期时间" type="datetime-local" className="glass-input mt-1 w-full" value={draft.due} onChange={(event) => changeDraft('due', event.target.value)} /><span className="text-xs text-text-tertiary">使用当前设备时区：{Intl.DateTimeFormat().resolvedOptions().timeZone}</span></label>}
         <label className="block text-sm">要提及的成员 ID（可选）<input aria-label="提醒提及成员" className="glass-input mt-1 w-full" value={draft.mentions} onChange={(event) => changeDraft('mentions', event.target.value)} /><span className="text-xs text-text-tertiary">多个 ID 用空格或逗号分隔，保存前会核验成员属于当前群。</span></label>
         {draftError && <p role="alert" className="text-error">{draftError}</p>}<Button type="submit" disabled={busy}>{busy ? '正在安排…' : '安排提醒'}</Button>

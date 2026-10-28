@@ -1,8 +1,8 @@
 import { useId } from 'react';
-import { Palette, PanelLeftClose, Sparkles } from 'lucide-react';
+import { Droplets, Palette, PanelLeftClose, Sparkles, Waves } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { useTheme } from '@/hooks/useTheme';
-import { usePrefsStore } from '@/stores/usePrefsStore';
+import { usePrefsStore, useVisualEffects } from '@/stores/usePrefsStore';
 import { Badge, Switch, toast } from '@/components/kit';
 import { Logo } from '@/components/common/Logo';
 import { InlineSwitchRow, SectionCard } from './shared';
@@ -14,6 +14,14 @@ export function AppearanceSection({ i }: { i: number }) {
   const setMotion = usePrefsStore((state) => state.setMotion);
   const sidebarCollapsed = usePrefsStore((state) => state.sidebarCollapsed);
   const toggleSidebar = usePrefsStore((state) => state.toggleSidebar);
+  const glassPref = usePrefsStore((state) => state.glass);
+  const ambientPref = usePrefsStore((state) => state.ambient);
+  const setGlass = usePrefsStore((state) => state.setGlass);
+  const setAmbient = usePrefsStore((state) => state.setAmbient);
+  const effects = useVisualEffects();
+  const autoHint = (pref: boolean | null) => (pref === null
+    ? `当前按设备自动${effects.lowPower ? '关闭 (检测为低性能设备)' : '开启'}。`
+    : '已手动设置。');
   const groupId = useId();
 
   return (
@@ -68,6 +76,20 @@ export function AppearanceSection({ i }: { i: number }) {
             toast.success(value ? '已开启完整动效' : '已减少动效');
           }} />
         </InlineSwitchRow>
+        <InlineSwitchRow label={<span className="flex items-center gap-2">亚克力效果 <Droplets className="h-3.5 w-3.5 text-accent" /></span>}
+          hint={<>面板背后的毛玻璃模糊, 低性能设备上最耗资源。{autoHint(glassPref)}{glassPref !== null && <AutoReset onClick={() => setGlass(null)} />}</>}>
+          <Switch label="亚克力效果" checked={effects.glass} onChange={(value) => {
+            setGlass(value);
+            toast.success(value ? '已开启亚克力效果' : '已关闭亚克力效果');
+          }} />
+        </InlineSwitchRow>
+        <InlineSwitchRow label={<span className="flex items-center gap-2">动态背景 <Waves className="h-3.5 w-3.5 text-teal" /></span>}
+          hint={<>背景中缓慢流动的彩色光斑; 关闭后换成静态渐变。{autoHint(ambientPref)}{ambientPref !== null && <AutoReset onClick={() => setAmbient(null)} />}</>}>
+          <Switch label="动态背景" checked={effects.ambient} onChange={(value) => {
+            setAmbient(value);
+            toast.success(value ? '已开启动态背景' : '已关闭动态背景');
+          }} />
+        </InlineSwitchRow>
         <InlineSwitchRow label={<span className="flex items-center gap-2">收起侧栏 <PanelLeftClose className="h-3.5 w-3.5 text-fg-3" /></span>}
           hint="为内容区腾出更多空间, 也可以随时按 Ctrl+B 切换。">
           <Switch label="收起侧栏" checked={sidebarCollapsed} onChange={() => {
@@ -79,4 +101,8 @@ export function AppearanceSection({ i }: { i: number }) {
       <p className="mt-3 text-[12px] text-fg-4">主题切换会从点击位置圆形扩散。以上偏好保存在当前浏览器的 localStorage。</p>
     </SectionCard>
   );
+}
+
+function AutoReset({ onClick }: { onClick: () => void }) {
+  return <button type="button" onClick={onClick} className="ml-1 text-accent hover:underline">恢复自动</button>;
 }

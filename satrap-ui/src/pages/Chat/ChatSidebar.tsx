@@ -2,6 +2,7 @@ import { ChevronDown, Folder, FolderInput, FolderPlus, MessageSquarePlus, Plus, 
 import type { ProjectItem } from '@/api/chat';
 import { cn } from '@/utils/cn';
 import type { Conversation } from './types';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 export type GlassColor = 'accent' | 'purple' | 'teal' | 'pink' | 'orange' | 'green';
 
@@ -244,20 +245,20 @@ export function ChatSidebar({
             <FolderPlus className="h-4 w-4" />
           </button>
         </div>
-        <select
+        <KitSelect
           aria-label="筛选对话项目"
           className="field !h-8 text-[13px]"
           value={projectFilter}
-          onChange={(event) => onProjectFilter(event.target.value)}
+          onChange={(value) => onProjectFilter(value)}
         >
           <option value="">全部项目</option>
           {projects.map((project) => (
             <option key={project.project_id} value={project.project_id}>{project.name}</option>
           ))}
-        </select>
+        </KitSelect>
       </div>
 
-      <div className="scroll fade-edges min-h-0 flex-1 px-2 pb-3">
+      <div className="scroll fade-edges min-h-0 flex-1 px-2 pb-3 pt-3.5">
         {directoryLoading && <p className="px-2 py-1 text-xs text-fg-3">正在查询对话…</p>}
         {!directoryLoading && grouped.total === 0 && grouped.groups.length === 0 ? (
           <div className="py-10 text-center text-sm text-fg-3">

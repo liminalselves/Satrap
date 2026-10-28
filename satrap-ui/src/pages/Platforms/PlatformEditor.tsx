@@ -4,6 +4,7 @@ import { cn } from '@/utils/cn';
 import { Badge, Button, Drawer, Field, IconButton, Input, Switch, Textarea } from '@/components/kit';
 import type { FormField } from '@/components/common';
 import { Note, PlatformIcon, SectionHead } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 interface PlatformEditorProps {
   open: boolean;
@@ -88,14 +89,14 @@ function FieldControl({ field, value, onChange }: {
   if (field.type === 'select') {
     return (
       <Field label={field.label} required={field.required}>
-        <select
+        <KitSelect
           className="field w-full"
           value={String(value ?? '')}
           disabled={field.disabled}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(value) => onChange(value)}
         >
           {field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-        </select>
+        </KitSelect>
       </Field>
     );
   }

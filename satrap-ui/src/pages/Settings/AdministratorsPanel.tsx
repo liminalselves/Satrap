@@ -15,6 +15,7 @@ import { getControlApiUrl } from '@/utils/constants';
 import { Badge, Button, Drawer, Field, Input, Skeleton, toast } from '@/components/kit';
 import { Banner, SectionCard } from './shared';
 import { ACTIVATION_REFRESH_MS } from './useActivationLoad';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const selectClass = 'field w-full appearance-none';
 
@@ -82,11 +83,11 @@ function PluginListSection({ title, hint, names, snapshot, addLabel, taken, plat
     })}
     {addLabel && onAdd && (
       options.length > 0
-        ? <select aria-label={addLabel} className={selectClass} value=""
-          onChange={(event) => { if (event.target.value) onAdd(event.target.value); }}>
+        ? <KitSelect aria-label={addLabel} className={selectClass} value=""
+          onChange={(value) => { if (value) onAdd(value); }}>
           <option value="">{addLabel}…</option>
           {options.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-        </select>
+        </KitSelect>
         : <p className="text-[11.5px] text-fg-4">没有可添加的插件 (需已接入、已启用且适用于当前平台)</p>
     )}
   </div>;
@@ -96,11 +97,11 @@ function PlatformSelect({ value, platforms, onChange, label }: {
   value: string; platforms: AdministratorSnapshot['platforms']; onChange: (value: string) => void; label: string;
 }) {
   const platform = platforms.find((item) => item.id === value);
-  return <select aria-label={label} className={selectClass} value={value} onChange={(event) => onChange(event.target.value)}>
+  return <KitSelect aria-label={label} className={selectClass} value={value} onChange={(value) => onChange(value)}>
     <option value="">选择已配置的平台</option>
     {!platform && value && <option value={value}>{value} · 平台已移除</option>}
     {platforms.map((item) => <option key={item.id} value={item.id}>{item.name || item.id} · {item.type}{item.enabled ? '' : ' · 已停用'}</option>)}
-  </select>;
+  </KitSelect>;
 }
 
 function PreviewRow({ plugin }: { plugin: AdministratorPreview['members'][number]['plugins'][number] }) {
@@ -797,14 +798,14 @@ function GroupEditor({ group, snapshot, rebind, rebindChats, busy, dirty, onClos
 
       <div className="space-y-3">
         <label className="block text-[13px] font-medium text-fg-2">适用插件
-          <select aria-label="适用插件" className={selectClass} value={group.plugin_scope.mode}
-            onChange={(event) => onChange((current) => ({
+          <KitSelect aria-label="适用插件" className={selectClass} value={group.plugin_scope.mode}
+            onChange={(value) => onChange((current) => ({
               ...current,
-              plugin_scope: { ...current.plugin_scope, mode: event.target.value as 'selected' | 'all', included: [] },
+              plugin_scope: { ...current.plugin_scope, mode: value as 'selected' | 'all', included: [] },
             }))}>
             <option value="selected">指定插件</option>
             <option value="all">所有已接入插件, 包含未来接入的插件</option>
-          </select>
+          </KitSelect>
         </label>
         <p className="text-sm text-fg-3">管理组只授予插件范围, 名单仅影响系统管理员授权; 插件原名单仍可独立授权。需要否决某人时使用成员例外。</p>
         {group.plugin_scope.mode === 'selected' ? <>

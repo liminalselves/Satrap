@@ -36,6 +36,7 @@ import {
   edictumEntry, errorMessage, providerLabel, providerTone, relativeTime, sessionClassEntry, sumKnown,
   type AgentEntry, type Provider,
 } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type Tab = 'session' | 'edictum';
 type View = 'grid' | 'list';
@@ -666,9 +667,9 @@ function AgentsPage() {
             <div className="min-w-[220px] flex-1">
               <Field label="Session 扫描目录" hint="扫描 Python 会话类文件, 注册后即可创建平台实例">
                 {scanPaths.length > 0 ? (
-                  <select className="field w-full" value={selectedScanPath} onChange={(event) => setSelectedScanPath(event.target.value)}>
+                  <KitSelect className="field w-full" value={selectedScanPath} onChange={(value) => setSelectedScanPath(value)}>
                     {scanPaths.map((path) => <option key={path} value={path}>{path}</option>)}
-                  </select>
+                  </KitSelect>
                 ) : (
                   <Input value="" readOnly placeholder="点击扫描读取配置目录" />
                 )}
@@ -1064,17 +1065,17 @@ function CreateSessionModal({
         </Field>
         {!isEdictum && (
           <Field label="适配器初始化参数" hint="留空表示按消息来源自动选择">
-            <select className="field w-full" value={form.adapter_id} onChange={(event) => setForm((current) => ({ ...current, adapter_id: event.target.value }))}>
+            <KitSelect className="field w-full" value={form.adapter_id} onChange={(value) => setForm((current) => ({ ...current, adapter_id: value }))}>
               <option value="">自动 (按消息来源)</option>
               {adapterIds.map((id) => <option key={id} value={id}>{id}</option>)}
-            </select>
+            </KitSelect>
           </Field>
         )}
         <Field label="LLM 模型" hint="留空使用配置绑定的模型">
-          <select className="field w-full" value={form.llm_name} onChange={(event) => setForm((current) => ({ ...current, llm_name: event.target.value }))}>
+          <KitSelect className="field w-full" value={form.llm_name} onChange={(value) => setForm((current) => ({ ...current, llm_name: value }))}>
             <option value="">使用配置绑定</option>
             {llmNames.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
+          </KitSelect>
         </Field>
         <Field label="附加参数 (JSON)" error={paramsError} hint="会与此配置的 params 合并">
           <Textarea rows={5} value={form.params} onChange={(event) => { setForm((current) => ({ ...current, params: event.target.value })); setParamsError(''); }} spellCheck={false} className="font-mono text-[12px]" />
@@ -1121,9 +1122,9 @@ function PlatformChooseModal({
       </>}
     >
       <Field label="目标平台" required hint="仅列出绑定了当前配置的平台">
-        <select className="field w-full" value={platformId} onChange={(event) => setPlatformId(event.target.value)}>
+        <KitSelect className="field w-full" value={platformId} onChange={(value) => setPlatformId(value)}>
           {options.map((platform) => <option key={platform.id} value={platform.id}>{`${platform.id} (${platform.type})`}</option>)}
-        </select>
+        </KitSelect>
       </Field>
     </Modal>
   );

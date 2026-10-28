@@ -9,6 +9,7 @@ import {
   newTimeRow,
 } from '@/utils/wakeOverrides';
 import type { GroupOverrideRow, OverrideFieldDef, OverrideState, RowIssue, TimeRuleRow } from '@/utils/wakeOverrides';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 // 受控编辑器: 行草稿由平台编辑表单持有, 组件不再保存本地副本, 也不用父 value 的每次变化覆盖行。
 // 行以稳定 rowId 标识; 校验失败保留行并提示, 只在保存/试算处阻止提交。
@@ -47,18 +48,18 @@ function FieldRow({
   return (
     <div className="flex items-center gap-2 py-1">
       <span className="w-32 shrink-0 text-xs text-text-secondary" title={def.key}>{def.label}</span>
-      <select
+      <KitSelect
         aria-label={`${def.label}状态`}
-        className="glass-input w-28 shrink-0 text-xs"
+        className="field w-28 shrink-0 text-xs"
         value={state}
-        onChange={(event) => onApply(applyField(override, def, event.target.value as OverrideState))}
+        onChange={(value) => onApply(applyField(override, def, value as OverrideState))}
       >
         {states.map((item) => (
           <option key={item.value} value={item.value}>
             {item.value === 'off' && def.offLabel ? def.offLabel : item.label}
           </option>
         ))}
-      </select>
+      </KitSelect>
       {state === 'value' && def.kind === 'number' && (
         <input
           aria-label={`${def.label}值`}
@@ -73,16 +74,16 @@ function FieldRow({
         />
       )}
       {state === 'value' && def.kind === 'select' && (
-        <select
+        <KitSelect
           aria-label={`${def.label}值`}
-          className="glass-input w-40 text-xs"
+          className="field w-40 text-xs"
           value={String(value)}
-          onChange={(event) => onApply(applyField(override, def, 'value', event.target.value))}
+          onChange={(next) => onApply(applyField(override, def, 'value', next))}
         >
           {def.options?.map((option) => (
             <option key={option.value} value={option.value}>{option.label}</option>
           ))}
-        </select>
+        </KitSelect>
       )}
       {state === 'value' && def.kind === 'lines' && (
         <textarea

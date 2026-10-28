@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdir } from "node:fs/promises";
 import { finishConfirmation } from "./confirmation.mjs";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, comboOptions } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function conversations(runtime) {
@@ -439,7 +439,7 @@ async function platform_archives(runtime) {
   await page.goto(deepUrl);
     await page.getByText('最新讨论', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '编辑第 1 项' }).count(), 0);
-    assert.ok(await page.getByLabel('档案对话类型').getByRole('option', { name: '圈子讨论', exact: true }).count());
+    assert.ok((await comboOptions(page.getByLabel('档案对话类型'))).some((option) => option.label === '圈子讨论'));
     await page.getByLabel('档案对话类型').selectOption('circle');
     await page.getByText('主要账号对话', { exact: true }).click();
     await page.getByText('最新讨论', { exact: true }).waitFor();

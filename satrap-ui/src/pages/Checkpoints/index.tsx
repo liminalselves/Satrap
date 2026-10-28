@@ -17,6 +17,7 @@ import { useBackendStore } from '@/stores/useBackendStore';
 import { formatTime, formatRelativeTime } from '@/utils/format';
 import type { Checkpoint } from '@/api/types';
 import { KeyValue, StatTile } from '../Conversations/common';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const kindMeta: Record<string, { label: string; tone: Tone }> = {
   manual: { label: '手动', tone: 'accent' },
@@ -170,10 +171,10 @@ export function Checkpoints() {
       <div className="surface tint-green animate-rise !rounded-[16px] p-3">
         <form className="flex flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); void fetchData(); }}>
           <label className="min-w-[140px] flex-1 text-[10.5px] text-fg-4 sm:max-w-[180px]">平台实例
-            <select aria-label="平台实例" className="field mt-1 !h-9 w-full text-[12px]" value={platformId}
-              onChange={(event) => setPlatformId(event.target.value)}>
+            <KitSelect aria-label="平台实例" className="field mt-1 !h-9 w-full text-[12px]" value={platformId}
+              onChange={(value) => setPlatformId(value)}>
               {platformIds.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
+            </KitSelect>
           </label>
           <div className="min-w-[180px] flex-[2] text-[10.5px] text-fg-4">对话 ID
             <Input aria-label="对话 ID" placeholder="输入对话 ID (如 conv-xxx)" value={conversationId}
@@ -318,11 +319,11 @@ export function Checkpoints() {
             <Input value={newBranchName} disabled={busy} placeholder="如: retry_v2" onChange={(event) => { setNewBranchName(event.target.value); setForkError(''); }} />
           </Field>
           <Field label="从检查点" hint="默认使用最新检查点">
-            <select className="field !h-9 w-full text-[12.5px]" aria-label="从检查点" value={selectedCheckpoint}
-              disabled={busy} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
+            <KitSelect className="field !h-9 w-full text-[12.5px]" aria-label="从检查点" value={selectedCheckpoint}
+              disabled={busy} onChange={(value) => setSelectedCheckpoint(value)}>
               <option value="">最新检查点</option>
               {checkpointOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
+            </KitSelect>
           </Field>
         </div>
       </Modal>
@@ -335,11 +336,11 @@ export function Checkpoints() {
         </>}>
         <div className="space-y-3">
           <Field label="选择检查点" required>
-            <select className="field !h-9 w-full text-[12.5px]" aria-label="选择检查点" value={selectedCheckpoint}
-              disabled={busy} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
+            <KitSelect className="field !h-9 w-full text-[12.5px]" aria-label="选择检查点" value={selectedCheckpoint}
+              disabled={busy} onChange={(value) => setSelectedCheckpoint(value)}>
               <option value="">请选择...</option>
               {checkpointOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
+            </KitSelect>
           </Field>
           <p className="text-[11.5px] leading-5 text-fg-3">恢复会通过管理接口保存，并带上当前上下文修订号；若修订号已变化，操作会失败并保留原数据。</p>
         </div>

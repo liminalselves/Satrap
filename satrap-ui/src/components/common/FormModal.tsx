@@ -2,6 +2,7 @@ import { memo, useId } from 'react';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 export interface FormField {
   key: string;
@@ -76,19 +77,19 @@ export const FormModal = memo(function FormModal({
         );
       case 'select':
         return (
-          <select
+          <KitSelect
             id={`${formId}-${field.key}`}
             value={(value as string) || ''}
-            onChange={(e) => onChange(field.key, e.target.value)}
+            onChange={(value) => onChange(field.key, value)}
             disabled={field.disabled}
-            className="glass-input w-full"
+            className="field w-full"
           >
             {field.options?.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
-          </select>
+          </KitSelect>
         );
       case 'number':
         return (

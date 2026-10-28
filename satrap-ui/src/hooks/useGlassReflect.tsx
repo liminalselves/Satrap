@@ -161,6 +161,7 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
   // 全局鼠标移动监听
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') return;
       mousePosRef.current = { x: e.clientX, y: e.clientY };
       scheduleUpdate();
     };

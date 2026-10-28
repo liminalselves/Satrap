@@ -14,6 +14,7 @@ import { useGroupContext } from './GroupLayout';
 import { groupActionLabels } from './groupActionLabels';
 import { errorText } from '@/utils/errorText';
 import { FieldBlock, Note, SectionHead, capabilityLabels, approvalLabels } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const fields: Record<string, string> = {
   message_id: '消息 ID', user_id: '成员 QQ', reject_add_request: '拒绝再次加群',
@@ -159,11 +160,11 @@ export function GroupManage() {
             <span className="text-[12.5px] font-medium text-fg">{groupActionLabels[action] || action}</span>
             <Badge tone={metadata?.risk === 'high' ? 'red' : 'neutral'} className="ml-1.5">{metadata ? metadata.risk === 'high' ? '高影响' : '普通' : '风险待确认'}</Badge>
             <span className="ml-1.5 text-[10.5px] text-fg-4">当前{approvalLabels[effective] || (effective === 'approval_required' ? '需审批' : '自动执行')} · 来源 {config.sources.approval[action] || '默认'}</span>
-            <select className="field mt-2 !h-8 !text-[12px]" value={approvalDraft[action] || 'inherit'}
+            <KitSelect className="field mt-2 !h-8 !text-[12px]" value={approvalDraft[action] || 'inherit'}
               disabled={historical || approvalBusy}
-              onChange={(event) => setApprovalDraft((old) => ({ ...old, [action]: event.target.value as ApprovalMode }))}>
+              onChange={(value) => setApprovalDraft((old) => ({ ...old, [action]: value as ApprovalMode }))}>
               <option value="inherit">继承平台默认</option><option value="approval_required">需审批</option><option value="auto_execute">自动执行</option>
-            </select>
+            </KitSelect>
           </label>;
         })}
       </div>
@@ -175,10 +176,10 @@ export function GroupManage() {
         description={`目标固定为机器人 ${account} 的群 ${groupId}; 能力由平台执行时确认`} />
       {!ready && <Note tone="orange" className="mb-3">当前账号、连接或成员关系不满足管理条件。</Note>}
       <FieldBlock label="动作" className="max-w-md">
-        <select className="field w-full" value={type} disabled={!ready || busy || !!operationId}
-          onChange={(event) => { setType(event.target.value); setValues({}); setResult(null); }}>
+        <KitSelect className="field w-full" value={type} disabled={!ready || busy || !!operationId}
+          onChange={(value) => { setType(value); setValues({}); setResult(null); }}>
           {types.map((item) => <option key={item.action_type} value={item.action_type}>{groupActionLabels[item.action_type] || item.action_type}</option>)}
-        </select>
+        </KitSelect>
       </FieldBlock>
       {selected && <>
         <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11.5px]">
@@ -191,10 +192,10 @@ export function GroupManage() {
           {Object.entries(selected.schema).map(([key, kind]) => <FieldBlock key={key} label={fields[key] || key}
             hint={kind === 'duration' ? '单位: 秒; 0 表示解除' : undefined}>
             {kind === 'bool' ? (
-              <select className="field w-full" value={values[key] || ''} disabled={!ready || busy || !!operationId}
-                onChange={(event) => setValues((previous) => ({ ...previous, [key]: event.target.value }))}>
+              <KitSelect className="field w-full" value={values[key] || ''} disabled={!ready || busy || !!operationId}
+                onChange={(value) => setValues((previous) => ({ ...previous, [key]: value }))}>
                 <option value="">未指定</option><option value="true">是</option><option value="false">否</option>
-              </select>
+              </KitSelect>
             ) : (
               <input className="field w-full" value={values[key] || ''} disabled={!ready || busy || !!operationId}
                 type={kind === 'duration' ? 'number' : 'text'} min={kind === 'duration' ? 0 : undefined}

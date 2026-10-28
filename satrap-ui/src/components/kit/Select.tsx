@@ -1,4 +1,7 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import {
+  Children, Fragment, isValidElement, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
+  type KeyboardEvent, type ReactElement, type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown } from 'lucide-react';
 import { cn } from '@/utils/cn';
@@ -8,112 +11,226 @@ export interface SelectOption {
   label: string;
   description?: string;
   icon?: ReactNode;
+  disabled?: boolean;
 }
 
-/** 玻璃下拉: 替代原生 select, 支持键盘导航与说明文本 */
-export function Select({ value, onChange, options, placeholder = '请选择', className, id, ...aria }: {
-  value: string; onChange: (v: string) => void; options: SelectOption[]; placeholder?: string; className?: string;
-  id?: string; 'aria-invalid'?: boolean; 'aria-describedby'?: string; 'aria-label'?: string;
+type OptionProps = { value?: string | number; disabled?: boolean; children?: ReactNode };
+
+function textOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return '';
+}
+
+/** 把 <option> 子元素 (可嵌在数组、Fragment、条件表达式里) 转成选项 */
+function optionsFromChildren(children: ReactNode): SelectOption[] {
+  const result: SelectOption[] = [];
+  Children.forEach(children, (child) => {
+    if (!isValidElement(child)) return;
+    if (child.type === Fragment) {
+      result.push(...optionsFromChildren((child as ReactElement<{ children?: ReactNode }>).props.children));
+      return;
+    }
+    if (child.type !== 'option') return;
+    const props = (child as ReactElement<OptionProps>).props;
+    const label = textOf(props.children);
+    result.push({ value: props.value === undefined ? label : String(props.value), label, disabled: props.disabled });
+  });
+  return result;
+}
+
+const LIST_GAP = 6;
+const LIST_MAX = 288;
+const EDGE = 8;
+
+/**
+ * 玻璃下拉: 替代原生 select, 原生弹层由系统绘制无法统一外观.
+ * 选项可用 options 传入, 也可沿用 <option> 子元素; 列表渲染到 body, 避免被玻璃卡片裁剪.
+ */
+export function Select({
+  value, onChange, options: optionList, children, placeholder = '请选择', className, id, disabled, title, ...aria
+}: {
+  value: string; onChange: (value: string) => void; options?: SelectOption[]; children?: ReactNode;
+  placeholder?: string; className?: string; id?: string; disabled?: boolean; title?: string;
+  'aria-invalid'?: boolean; 'aria-describedby'?: string; 'aria-label'?: string; 'aria-labelledby'?: string;
 }) {
   const listId = useId();
+  const triggerId = useId();
   const btnRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const typeahead = useRef({ text: '', at: 0 });
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const options = useMemo(() => optionList ?? optionsFromChildren(children), [optionList, children]);
   const current = options.find((o) => o.value === value);
 
   useLayoutEffect(() => {
     if (open && btnRef.current) setRect(btnRef.current.getBoundingClientRect());
   }, [open]);
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    // 只滚动列表自身; scrollIntoView 会连带滚动页面, 触发下面的关闭逻辑
+    const list = listRef.current;
+    const item = list?.querySelector<HTMLElement>(`[data-index="${active}"]`);
+    if (!list || !item) return;
+    if (item.offsetTop < list.scrollTop) list.scrollTop = item.offsetTop;
+    else if (item.offsetTop + item.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = item.offsetTop + item.offsetHeight - list.clientHeight;
+  }, [open, active]);
+
   useEffect(() => {
     if (!open) return;
-    const close = (e: PointerEvent) => {
-      if (!(e.target as HTMLElement).closest(`[data-select="${listId}"]`)) setOpen(false);
+    const inside = (target: EventTarget | null) => target instanceof Node
+      && (btnRef.current?.contains(target) || listRef.current?.contains(target));
+    const onPointer = (event: PointerEvent) => { if (!inside(event.target)) setOpen(false); };
+    // 外层滚动时列表跟随触发器; 触发器滚出可视区才关闭
+    const onScroll = (event: Event) => {
+      if (inside(event.target) || !btnRef.current) return;
+      const next = btnRef.current.getBoundingClientRect();
+      if (next.bottom < 0 || next.top > window.innerHeight) setOpen(false);
+      else setRect(next);
     };
-    const onScroll = () => setOpen(false);
-    window.addEventListener('pointerdown', close);
-    window.addEventListener('resize', onScroll);
-    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('resize', onScroll); };
-  }, [open, listId]);
+    // 先于弹窗/抽屉在 document 捕获阶段的 Escape 处理, 只关闭列表
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      btnRef.current?.focus();
+    };
+    const close = () => setOpen(false);
+    window.addEventListener('pointerdown', onPointer, true);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointer, true);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [open]);
 
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+
+  const enabledIndex = (from: number, step: 1 | -1) => {
+    for (let n = 1; n <= options.length; n += 1) {
+      const index = (from + step * n + options.length * n) % options.length;
+      if (!options[index].disabled) return index;
+    }
+    return from;
+  };
   const openList = () => {
-    setActive(Math.max(0, options.findIndex((o) => o.value === value)));
+    if (disabled || !options.length) return;
+    const selected = options.findIndex((o) => o.value === value);
+    setActive(selected >= 0 ? selected : enabledIndex(-1, 1));
     setOpen(true);
   };
-  const commit = (i: number) => { onChange(options[i].value); setOpen(false); btnRef.current?.focus(); };
-
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (!open) {
-      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(e.key)) { e.preventDefault(); openList(); }
-      return;
-    }
-    if (e.key === 'Escape') { e.preventDefault(); setOpen(false); }
-    else if (e.key === 'ArrowDown') { e.preventDefault(); setActive((a) => (a + 1) % options.length); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((a) => (a - 1 + options.length) % options.length); }
-    else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); commit(active); }
-    else if (e.key === 'Tab') setOpen(false);
+  const commit = (index: number) => {
+    const option = options[index];
+    if (!option || option.disabled) return;
+    setOpen(false);
+    btnRef.current?.focus();
+    if (option.value !== value) onChange(option.value);
+  };
+  const jumpTo = (key: string) => {
+    const now = performance.now();
+    typeahead.current = { text: (now - typeahead.current.at < 700 ? typeahead.current.text : '') + key.toLowerCase(), at: now };
+    const match = options.findIndex((o) => !o.disabled && o.label.toLowerCase().startsWith(typeahead.current.text));
+    if (match < 0) return;
+    if (open) setActive(match);
+    else commit(match);
   };
 
-  const below = rect ? window.innerHeight - rect.bottom > 280 : true;
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key.length === 1 && event.key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      jumpTo(event.key);
+      return;
+    }
+    if (!open) {
+      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) { event.preventDefault(); openList(); }
+      return;
+    }
+    if (event.key === 'ArrowDown') { event.preventDefault(); setActive((index) => enabledIndex(index, 1)); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); setActive((index) => enabledIndex(index, -1)); }
+    else if (event.key === 'Home') { event.preventDefault(); setActive(enabledIndex(-1, 1)); }
+    else if (event.key === 'End') { event.preventDefault(); setActive(enabledIndex(options.length, -1)); }
+    else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); commit(active); }
+    else if (event.key === 'Tab') setOpen(false);
+  };
+
+  const below = rect ? window.innerHeight - rect.bottom >= Math.min(LIST_MAX, rect.top) : true;
+  const width = rect ? Math.min(Math.max(rect.width, 180), window.innerWidth - EDGE * 2) : 0;
+  const left = rect ? Math.min(Math.max(EDGE, rect.left), window.innerWidth - width - EDGE) : 0;
+  const room = rect ? (below ? window.innerHeight - rect.bottom : rect.top) - LIST_GAP - EDGE : LIST_MAX;
 
   return (
     <>
       <button
         ref={btnRef}
-        id={id}
+        id={id ?? triggerId}
         type="button"
         role="combobox"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open ? `${listId}-${active}` : undefined}
-        data-select={listId}
-        onClick={() => (open ? setOpen(false) : openList())}
+        data-value={value}
+        data-open={open ? '' : undefined}
+        disabled={disabled}
+        title={title ?? current?.label}
+        onClick={(event) => { event.stopPropagation(); if (open) setOpen(false); else openList(); }}
         onKeyDown={onKeyDown}
-        className={cn('field flex items-center justify-between gap-2 text-left', open && 'border-[rgb(var(--rgb-accent)/0.7)] shadow-[0_0_0_4px_rgb(var(--rgb-accent)/0.16)]', className)}
+        className={cn('select-trigger field', className)}
         {...aria}
       >
-        <span className={cn('flex min-w-0 items-center gap-2 truncate', !current && 'text-fg-4')}>
-          {current?.icon}
-          {current?.label ?? placeholder}
-        </span>
-        <ChevronDown className={cn('h-4 w-4 flex-none text-fg-3 transition-transform duration-300', open && 'rotate-180')} />
+        {current?.icon && <span aria-hidden className="flex-none">{current.icon}</span>}
+        <span className={cn('select-value', !current && 'text-fg-4')}>{current?.label ?? placeholder}</span>
+        <span aria-hidden className="select-chevron"><ChevronDown /></span>
       </button>
       {open && rect && createPortal(
         <div
+          ref={listRef}
           id={listId}
           role="listbox"
-          data-select={listId}
-          className="scroll fixed z-[150] max-h-64 rounded-xl border border-[var(--glass-border-strong)] p-1 shadow-[var(--shadow-3)] surface-strong backdrop-blur-2xl animate-pop"
+          aria-labelledby={id ?? triggerId}
+          className="select-list scroll"
+          data-placement={below ? 'bottom' : 'top'}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
           style={{
-            left: rect.left,
-            width: Math.max(rect.width, 200),
-            ...(below ? { top: rect.bottom + 6 } : { bottom: window.innerHeight - rect.top + 6 }),
-            transformOrigin: below ? 'top' : 'bottom',
+            left,
+            width,
+            maxHeight: Math.max(120, Math.min(LIST_MAX, room)),
+            ...(below ? { top: rect.bottom + LIST_GAP } : { bottom: window.innerHeight - rect.top + LIST_GAP }),
           }}
         >
-          {options.map((o, i) => {
-            const selected = o.value === value;
+          {options.map((option, index) => {
+            const selected = option.value === value;
             return (
               <div
-                key={o.value}
-                id={`${listId}-${i}`}
+                key={`${option.value}:${index}`}
+                id={`${listId}-${index}`}
                 role="option"
                 aria-selected={selected}
-                onPointerEnter={() => setActive(i)}
-                onClick={() => commit(i)}
-                className={cn(
-                  'flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors duration-100',
-                  i === active ? 'bg-glass-hover text-fg' : 'text-fg-2',
-                )}
+                aria-disabled={option.disabled || undefined}
+                data-value={option.value}
+                data-index={index}
+                data-active={index === active ? '' : undefined}
+                onPointerEnter={() => { if (!option.disabled) setActive(index); }}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() => commit(index)}
+                className="select-option"
               >
-                {o.icon && <span className="flex-none text-fg-3">{o.icon}</span>}
+                {option.icon && <span className="flex-none text-fg-3">{option.icon}</span>}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate">{o.label}</span>
-                  {o.description && <span className="block truncate text-xs text-fg-3">{o.description}</span>}
+                  <span className="block truncate">{option.label}</span>
+                  {option.description && <span className="block truncate text-xs text-fg-3">{option.description}</span>}
                 </span>
-                {selected && <Check className="h-4 w-4 flex-none text-accent" />}
+                <Check aria-hidden className={cn('h-4 w-4 flex-none text-accent transition-opacity', selected ? 'opacity-100' : 'opacity-0')} />
               </div>
             );
           })}

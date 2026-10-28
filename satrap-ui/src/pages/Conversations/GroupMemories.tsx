@@ -9,6 +9,7 @@ import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const proposalStates: Record<string, string> = { pending: '待审批', approved: '已批准', rejected: '已拒绝', expired: '已过期', conflicted: '内容已变化，审批冲突' };
 type Draft = { memory?: ScopedMemory; kind: MemoryKind; owner: string; key: string; title: string; content: string; operationKey: string };
@@ -123,7 +124,7 @@ export function GroupMemories({ record, refresh, onDirty }: { record: PlatformAr
     <Modal open={!!draft} title={draft?.memory ? '编辑长期记忆' : '新增长期记忆'} onClose={closeDraft}>
       {draft && <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
         <p className="text-sm text-text-secondary">人工保存直接生效，标记为人工维护；不伪造群消息来源。</p>
-        {!draft.memory && <><label className="block text-sm">类型<select className="glass-input mt-1 w-full" value={draft.kind} onChange={(event) => updateDraft('kind', event.target.value)}><option value="group_rule">本群记忆</option><option value="member_preference">成员在本群的偏好</option></select></label>{draft.kind === 'member_preference' && <label className="block text-sm">成员 ID<input required maxLength={256} className="glass-input mt-1 w-full" value={draft.owner} onChange={(event) => updateDraft('owner', event.target.value)} /></label>}<label className="block text-sm">用途键<input required maxLength={64} placeholder="例如 preferred_name" className="glass-input mt-1 w-full" value={draft.key} onChange={(event) => updateDraft('key', event.target.value)} /></label></>}
+        {!draft.memory && <><label className="block text-sm">类型<KitSelect className="field mt-1 w-full" value={draft.kind} onChange={(value) => updateDraft('kind', value)}><option value="group_rule">本群记忆</option><option value="member_preference">成员在本群的偏好</option></KitSelect></label>{draft.kind === 'member_preference' && <label className="block text-sm">成员 ID<input required maxLength={256} className="glass-input mt-1 w-full" value={draft.owner} onChange={(event) => updateDraft('owner', event.target.value)} /></label>}<label className="block text-sm">用途键<input required maxLength={64} placeholder="例如 preferred_name" className="glass-input mt-1 w-full" value={draft.key} onChange={(event) => updateDraft('key', event.target.value)} /></label></>}
         <label className="block text-sm">标题<input required maxLength={120} className="glass-input mt-1 w-full" value={draft.title} onChange={(event) => updateDraft('title', event.target.value)} /></label>
         <label className="block text-sm">内容<textarea required maxLength={2000} rows={5} className="glass-input mt-1 w-full" value={draft.content} onChange={(event) => updateDraft('content', event.target.value)} /></label>
         {draftError && <p role="alert" className="text-error">{draftError}</p>}<div className="flex justify-end gap-2"><Button type="button" disabled={busy} onClick={closeDraft}>取消</Button><Button type="submit" variant="primary" disabled={busy || !draft.title.trim() || !draft.content.trim()}>{busy ? '正在保存…' : '保存记忆'}</Button></div>

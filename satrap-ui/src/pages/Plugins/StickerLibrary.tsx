@@ -9,6 +9,7 @@ import { Modal } from '@/components/ui/Modal';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
 import { Image as ImageIcon, Loader2, Plus, RefreshCw, Search, Smile } from 'lucide-react';
 import { TealPrimary } from './PluginBits';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type Draft = { original?: GroupChatSticker; mode: 'image' | 'native'; name: string; tags: string; collection: string; enabled: boolean; platform: string; nativeKey: string; file?: File };
 const emptyDraft = (): Draft => ({ mode: 'image', name: '', tags: '', collection: '常用', enabled: true, platform: '', nativeKey: '' });
@@ -197,16 +198,16 @@ export function StickerLibrary({ onDirty }: { onDirty: (dirty: boolean) => void 
           )}
           {!draft.original && draft.mode === 'native' && <>
             <label className="block text-[13px] text-fg-2">平台
-              <select className="field mt-1 h-9 w-full" aria-label="表情来源平台" value={draft.platform} disabled={busy} onChange={(event) => change({ platform: event.target.value, nativeKey: '' })}>
+              <KitSelect className="field mt-1 h-9 w-full" aria-label="表情来源平台" value={draft.platform} disabled={busy} onChange={(value) => change({ platform: value, nativeKey: '' })}>
                 <option value="">请选择平台</option>
                 {platforms.map((platform) => <option key={platform.id} value={platform.id}>{platform.id} · {platform.type}</option>)}
-              </select>
+              </KitSelect>
             </label>
             <label className="block text-[13px] text-fg-2">平台表情
-              <select className="field mt-1 h-9 w-full" aria-label="平台表情目录" value={draft.nativeKey} disabled={busy || nativeLoading} onChange={(event) => change({ nativeKey: event.target.value })}>
+              <KitSelect className="field mt-1 h-9 w-full" aria-label="平台表情目录" value={draft.nativeKey} disabled={busy || nativeLoading} onChange={(value) => change({ nativeKey: value })}>
                 <option value="">请选择已确认的表情</option>
                 {native.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
-              </select>
+              </KitSelect>
             </label>
             {nativeLoading && <p role="status" className="text-[12px] text-fg-3">正在读取平台目录…</p>}
             {draft.platform && !nativeLoading && !native.length && <p className="text-[11.5px] text-fg-3">该平台暂无已确认的原生表情。可以先在群内发送平台表情后重新打开目录，或使用图片表情。</p>}

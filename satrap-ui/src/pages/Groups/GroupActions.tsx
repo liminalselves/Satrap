@@ -16,6 +16,7 @@ import { VersionedConfigRead } from '@/api/configVersions';
 import { getApiBaseUrl } from '@/utils/constants';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import { Note, Pager } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 // 后端动作状态英文码到中文的映射, all 为前端筛选项, 未覆盖的值回退原样展示
 const actionStateLabels: Record<string, string> = { all: '全部', ...groupActionStateLabels };
@@ -69,10 +70,10 @@ export function GroupActions() {
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {!!pending && <Badge tone="orange" dot>待处理 {pending}</Badge>}
-          <select className="field !h-8 !w-[128px] !text-[12px]" aria-label="动作状态" value={state}
-            onChange={(event) => { setState(event.target.value); setPage(1); }}>
+          <KitSelect className="field !h-8 !w-[128px] !text-[12px]" aria-label="动作状态" value={state}
+            onChange={(value) => { setState(value); setPage(1); }}>
             {stateOptions.map((value) => <option key={value} value={value}>{actionStateLabels[value] || value}</option>)}
-          </select>
+          </KitSelect>
           <Button size="sm" variant="ghost" icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => { void refresh(); toast.success('动作记录已刷新'); }} disabled={!isRunning}>刷新</Button>
           <span className="text-[11.5px] text-fg-4">共 {total} 条</span>
         </div>

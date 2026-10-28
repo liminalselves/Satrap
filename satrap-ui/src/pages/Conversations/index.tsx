@@ -18,6 +18,7 @@ import { ConversationReader } from './Reader';
 import { UserView } from './UserView';
 import { ArchiveView } from './ArchiveView';
 import { InlineEmpty, Notice, Pager, SearchField } from './common';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type View = 'threads' | 'users' | 'archive';
 const PAGE = 40;
@@ -298,36 +299,36 @@ export function Conversations() {
             <SearchField value={query} onChange={setQuery} placeholder="搜索 ID、群名、用户或元数据" ariaLabel="搜索对话" />
             <div className="grid grid-cols-2 gap-1.5">
               <label className="min-w-0 text-[10.5px] text-fg-4">平台类型
-                <select aria-label="平台类型" className="field mt-1 !h-8 w-full text-[11px]" value={platformType}
-                  onChange={(event) => chooseFilter('type', event.target.value)}>
+                <KitSelect aria-label="平台类型" className="field mt-1 !h-8 w-full text-[11px]" value={platformType}
+                  onChange={(value) => chooseFilter('type', value)}>
                   <option value="">全部类型</option>
                   {types.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                </select>
+                </KitSelect>
               </label>
               <label className="min-w-0 text-[10.5px] text-fg-4">平台实例
-                <select aria-label="记录平台" className="field mt-1 !h-8 w-full text-[11px]" value={platform}
-                  onChange={(event) => chooseFilter('platform', event.target.value)}>
+                <KitSelect aria-label="记录平台" className="field mt-1 !h-8 w-full text-[11px]" value={platform}
+                  onChange={(value) => chooseFilter('platform', value)}>
                   <option value="">全部实例</option>
                   {platform && !platforms.some((item) => item.id === platform) && <option value={platform}>{platform}</option>}
                   {platforms.filter((item) => !platformType || item.type === platformType).map((item) => (
                     <option key={item.id} value={item.id}>{item.label} · {item.type_label}</option>
                   ))}
-                </select>
+                </KitSelect>
               </label>
             </div>
             {Object.keys(result.facets || {}).length > 0 && (
               <div className="grid grid-cols-2 gap-1.5">
                 {Object.entries(result.facets || {}).map(([key, values]) => (
                   <label key={key} className="min-w-0 text-[10.5px] text-fg-4">{names[key] || key}
-                    <select aria-label={`筛选${names[key] || key}`} className="field mt-1 !h-8 w-full text-[11px]"
-                      value={filters[key] || ''} onChange={(event) => chooseFilter(`f.${key}`, event.target.value)}>
+                    <KitSelect aria-label={`筛选${names[key] || key}`} className="field mt-1 !h-8 w-full text-[11px]"
+                      value={filters[key] || ''} onChange={(value) => chooseFilter(`f.${key}`, value)}>
                       <option value="">{key === 'kind' ? '默认（隐藏旧子代理）' : '全部'}</option>
                       {key === 'kind' && <option value="all">全部类别（含旧子代理）</option>}
                       {filters[key] && filters[key] !== 'all' && !values.some((item) => item.value === filters[key]) && (
                         <option value={filters[key]}>{filters[key]}</option>
                       )}
                       {values.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                    </select>
+                    </KitSelect>
                   </label>
                 ))}
               </div>

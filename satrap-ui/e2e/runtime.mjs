@@ -66,12 +66,60 @@ export async function mockConfigVersions(page, origin, version) {
   });
 }
 
+/** 自绘下拉 (role=combobox) 的选项; 打开列表读取后关闭. 控件不存在时返回空数组 */
+export async function comboOptions(combo) {
+  // 控件不存在 (例如没有可选项时不渲染) 视为没有选项
+  if (!(await combo.count())) return [];
+  await combo.click();
+  const page = combo.page();
+  const id = await combo.getAttribute('aria-controls');
+  const list = page.locator(`[id="${id}"]`);
+  await list.waitFor();
+  const options = await list.locator('[role="option"]').evaluateAll((items) => items.map((item) => ({
+    value: item.getAttribute('data-value'), label: item.textContent.trim(), disabled: item.getAttribute('aria-disabled') === 'true',
+  })));
+  await page.keyboard.press('Escape');
+  await list.waitFor({ state: 'detached' });
+  return options;
+}
+
+let comboPatched = false;
+/** 让 selectOption / inputValue 同样适用于自绘下拉, 场景无需区分原生与自绘控件 */
+async function patchComboLocator(browser) {
+  if (comboPatched) return;
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const proto = Object.getPrototypeOf(page.locator('body'));
+  await context.close();
+  const { selectOption, inputValue } = proto;
+  const isCombo = (locator) => locator.evaluate((el) => el.getAttribute('role') === 'combobox' && el.tagName !== 'SELECT');
+  proto.selectOption = async function patchedSelectOption(values, options) {
+    if (!(await isCombo(this))) return selectOption.call(this, values, options);
+    const wanted = Array.isArray(values) ? values[0] : values;
+    const target = typeof wanted === 'object' && wanted !== null ? wanted : { value: wanted };
+    await this.click(options);
+    const id = await this.getAttribute('aria-controls');
+    const items = this.page().locator(`[id="${id}"] [role="option"]`);
+    const item = target.value !== undefined
+      ? items.and(this.page().locator(`[data-value="${String(target.value).replace(/"/g, '\\"')}"]`))
+      : items.filter({ hasText: target.label });
+    await item.click(options);
+    return [target.value ?? ''];
+  };
+  proto.inputValue = async function patchedInputValue(options) {
+    if (!(await isCombo(this))) return inputValue.call(this, options);
+    return (await this.getAttribute('data-value', options)) ?? '';
+  };
+  comboPatched = true;
+}
+
 // 业务场景共用服务与浏览器, 每个场景仍有独立的页面, 上下文和请求夹具
 export async function runSuite(scenarios) {
   const selected = process.argv.includes('--case') ? process.argv[process.argv.indexOf('--case') + 1] : null;
   const cases = selected ? scenarios.filter(([name]) => name === selected) : scenarios;
   assert.ok(cases.length, `没有匹配的浏览器场景: ${selected}`);
   const browser = await chromium.launch({ headless: true });
+  await patchComboLocator(browser);
   const servers = new Map();
   const isolated = new Set();
   const metrics = [];

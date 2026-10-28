@@ -17,6 +17,7 @@ import { toast } from '@/components/kit/Toast';
 import type { ModelOptions } from '@/components/common/PluginConfigFields';
 import { isRagPage } from './jobs';
 import { docTint, jobPhaseLabel, rerankOptions, scopeLabel, type Doc, type DocStatus, type Kb } from './types';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const docStatusMeta: Record<DocStatus, { label: string; tone: 'green' | 'purple' | 'neutral' | 'red'; live?: boolean }> = {
   indexed: { label: '已索引', tone: 'green' },
@@ -92,11 +93,11 @@ function DocumentsPane({ kb, docs, onDeleteDocument, onImport, context }: {
         <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
           <div className="w-44 min-w-[130px]"><Input leading={<Search className="h-3.5 w-3.5" />} aria-label="筛选文档" placeholder="筛选文档…" value={q} onChange={(event) => setQ(event.target.value)} className="!h-8 !text-[12.5px]" /></div>
           <div className="w-28">
-            <select aria-label="文档排序" className="field !h-8 !text-[12.5px]" value={sort} onChange={(event) => setSort(event.target.value)}>
+            <KitSelect aria-label="文档排序" className="field !h-8 !text-[12.5px]" value={sort} onChange={(value) => setSort(value)}>
               <option value="recent">最近更新</option>
               <option value="name">名称</option>
               <option value="chunks">片段数</option>
-            </select>
+            </KitSelect>
           </div>
         </div>
       </div>
@@ -277,10 +278,10 @@ function RetrievalPane({ kb, docs, context, modelOptions, onSearch }: {
         <div className="flex flex-wrap items-end gap-2.5">
           <div className="min-w-[160px] flex-1">
             <Field label="重排配置">
-              <select className="field" value={rerank} onChange={(event) => setRerank(event.target.value)}>
+              <KitSelect className="field" value={rerank} onChange={(value) => setRerank(value)}>
                 <option value="">不使用重排</option>
                 {rerankOptions(modelOptions).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
+              </KitSelect>
             </Field>
           </div>
           <Button variant="primary" tint="purple" loading={loading} disabled={!query.trim() || Boolean(kb.status === 'error')} icon={<ScanSearch className="h-4 w-4" />} onClick={() => void run()}>

@@ -21,6 +21,7 @@ import { pluginError } from './InstallPluginModal';
 import { SessionSettingsDrawer } from './SessionSettingsDrawer';
 import { TealPrimary } from './PluginBits';
 import { CAPABILITY_KINDS, CAPABILITY_LABELS, CAPABILITY_TINT, pluginCapabilities, type Capabilities } from './pluginModel';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 function locationState(location: PluginLocation): PluginLocationState {
   return { present: location.present, enabled: location.enabled, capabilities: location.capabilities };
@@ -228,19 +229,19 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
               <span className="num rounded-full bg-[rgb(var(--rgb-teal)/0.12)] px-1.5 text-[11px] text-teal">{data.locations.filter((item) => item.present).length} 已添加</span>
             </div>
             <p className="text-[11.5px] leading-4 text-fg-3">插件在每个位置单独启用。关闭整个插件会保留各项能力的独立开关。</p>
-            <select
+            <KitSelect
               aria-label="使用位置"
               className="field h-9 w-full text-[12.5px]"
               value={selected}
               disabled={locked}
-              onChange={(event) => selectLocation(event.target.value)}
+              onChange={(value) => selectLocation(value)}
             >
               {data.locations.map((item) => (
                 <option key={locationKey(item)} value={locationKey(item)}>
                   {item.kind === 'chat' ? 'Chat' : `Edictum · ${item.label}`} · {item.present ? item.enabled ? '已启用' : '已添加，未启用' : '未添加'}
                 </option>
               ))}
-            </select>
+            </KitSelect>
           </div>
           <div className="scroll fade-edges min-h-0 flex-1 space-y-3 px-2 pb-3">
             {([['Chat', data.locations.filter((item) => item.kind === 'chat')], ['命名配置', data.locations.filter((item) => item.kind === 'edictum')]] as const).map(([groupLabel, locations]) => (

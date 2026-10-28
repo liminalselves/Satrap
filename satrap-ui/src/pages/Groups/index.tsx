@@ -24,6 +24,7 @@ import {
   Avatar, FieldBlock, Note, Pager, ProgressBar, bindingSourceLabels, hueFor,
   membershipLabels, responseSourceLabels,
 } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const MEMBERSHIPS = [
   ['joined', '已加入'], ['all', '全部成员关系'], ['left', '已离开'],
@@ -346,11 +347,11 @@ export function Groups() {
         <Card padding="md" className="animate-rise">
           <div className="flex flex-wrap items-end gap-3">
             <FieldBlock label="查看账号" className="min-w-[190px] flex-1">
-              <select className="field w-full" value={account} onChange={(event) => updateParams({ account: event.target.value, page: null })}>
+              <KitSelect className="field w-full" value={account} onChange={(value) => updateParams({ account: value, page: null })}>
                 {accountOptions.map((item) => (
                   <option key={item.self_id} value={item.self_id}>{item.self_id}{item.self_id === accounts.current_account ? ' · 当前' : ' · 历史'}</option>
                 ))}
-              </select>
+              </KitSelect>
             </FieldBlock>
             <div className="flex flex-wrap items-center gap-2 pb-0.5">
               <Button variant="ghost" icon={<Settings2 className="h-4 w-4" />} onClick={openMode} disabled={historical}>修改接入模式</Button>
@@ -411,17 +412,17 @@ export function Groups() {
             </div>
             <label className="text-[12px] text-fg-3">
               <span className="sr-only">成员关系</span>
-              <select className="field !h-9 !w-[142px] !text-[12.5px]" value={membership} aria-label="成员关系"
-                onChange={(event) => updateParams({ membership: event.target.value, page: null })}>
+              <KitSelect className="field !h-9 !w-[142px] !text-[12.5px]" value={membership} aria-label="成员关系"
+                onChange={(value) => updateParams({ membership: value, page: null })}>
                 {MEMBERSHIPS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
+              </KitSelect>
             </label>
             <label className="text-[12px] text-fg-3">
               <span className="sr-only">响应状态</span>
-              <select className="field !h-9 !w-[150px] !text-[12.5px]" value={response} aria-label="响应状态"
-                onChange={(event) => updateParams({ response: event.target.value, page: null })}>
+              <KitSelect className="field !h-9 !w-[150px] !text-[12.5px]" value={response} aria-label="响应状态"
+                onChange={(value) => updateParams({ response: value, page: null })}>
                 {RESPONSES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
+              </KitSelect>
             </label>
             <span className="ml-auto text-[11.5px] text-fg-4">共 <span className="num text-fg-2">{visibleListing?.total ?? '—'}</span> 项{refreshing ? ' · 刷新中' : ''}</span>
           </div>
@@ -524,10 +525,10 @@ export function Groups() {
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-4 py-2.5">
                 <div className="flex items-center gap-2 text-[11.5px] text-fg-3">
                   <span>每页</span>
-                  <select className="field !h-7 !w-[66px] !rounded-lg !px-2 !text-[12px]" value={String(pageSize)} aria-label="每页条数"
-                    onChange={(event) => updateParams({ pageSize: event.target.value, page: null })}>
+                  <KitSelect className="field !h-7 !w-[66px] !rounded-lg !px-2 !text-[12px]" value={String(pageSize)} aria-label="每页条数"
+                    onChange={(value) => updateParams({ pageSize: value, page: null })}>
                     {[25, 50, 100].map((value) => <option key={value} value={value}>{value}</option>)}
-                  </select>
+                  </KitSelect>
                   <span>共 {visibleListing.total} 项</span>
                 </div>
                 <Pager page={page} totalPages={totalPages} onChange={(next) => updateParams({ page: String(next) })} />
@@ -599,11 +600,11 @@ export function Groups() {
                 <span className="text-[13px] font-medium text-fg">{groupActionLabels[item.action_type] || item.action_type}</span>
                 <Badge tone={item.risk === 'high' ? 'red' : 'neutral'} className="ml-1.5">{item.risk === 'high' ? '高影响' : '普通'}</Badge>
                 <span className="ml-1.5 text-[11px] text-fg-4">当前继承群 {settings?.approval_inheriting_counts?.[item.action_type] ?? 0} · 当前{approvalDraft[item.action_type] === 'approval_required' ? '需审批' : approvalDraft[item.action_type] === 'auto_execute' ? '自动执行' : '系统默认'}</span>
-                <select className="field mt-2 !h-8 !text-[12px]" value={approvalDraft[item.action_type] || 'inherit'}
+                <KitSelect className="field mt-2 !h-8 !text-[12px]" value={approvalDraft[item.action_type] || 'inherit'}
                   disabled={approvalSaving || approvalConflict}
-                  onChange={(event) => setApprovalDraft((old) => ({ ...old, [item.action_type]: event.target.value as ApprovalDraft[string] }))}>
+                  onChange={(value) => setApprovalDraft((old) => ({ ...old, [item.action_type]: value as ApprovalDraft[string] }))}>
                   <option value="inherit">系统默认</option><option value="approval_required">需审批</option><option value="auto_execute">自动执行</option>
-                </select>
+                </KitSelect>
               </label>
             ))}
           </div>

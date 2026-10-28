@@ -17,6 +17,7 @@ import { confirmDiscard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
 import { ExportDialog, InlineEmpty, LayerNote, Notice, Pager, SearchField, StatTile } from './common';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type Layer = 'context' | 'history';
 type Mode = 'manage' | 'browse';
@@ -277,14 +278,14 @@ export function ConversationReader({ platform, record, requestedContext, onDirty
             {!supportsHistory && <Badge tone="neutral">平台未提供展示历史</Badge>}
             {layer === 'context' && (
               <label className="min-w-[190px] max-w-full text-[11.5px] text-fg-3">上下文范围
-                <select aria-label="上下文范围" className="field mt-1 !h-9 w-full text-[12.5px]" value={context}
-                  onChange={(event) => switchContext(event.target.value)}>
+                <KitSelect aria-label="上下文范围" className="field mt-1 !h-9 w-full text-[12.5px]" value={context}
+                  onChange={(value) => switchContext(value)}>
                   {[...new Set([context, ...record.context_ids])].map((id) => {
                     const meta = record.contexts?.find((item) => item.id === id);
                     const label = meta?.kind === 'main' ? `主上下文 · ${id}` : meta?.kind === 'shared' ? `会话共享上下文 · ${id}` : meta?.name ? `${meta.name} · ${id}` : id;
                     return <option key={id} value={id}>{label}</option>;
                   })}
-                </select>
+                </KitSelect>
               </label>
             )}
             <span className="ml-auto flex flex-wrap items-center gap-2">
@@ -300,16 +301,16 @@ export function ConversationReader({ platform, record, requestedContext, onDirty
                 placeholder={layer === 'context' ? '在当前上下文内搜索内容、思考或工具名' : '在展示历史内搜索输入、回复或思考'} ariaLabel="会话内搜索" />
             </div>
             {layer === 'context' && (
-              <select aria-label="筛选消息角色" className="field !h-9 w-28 text-[12px]" value={roleFilter} onChange={(event) => { setRoleFilter(event.target.value); setOffset(0); }}>
+              <KitSelect aria-label="筛选消息角色" className="field !h-9 w-28 text-[12px]" value={roleFilter} onChange={(value) => { setRoleFilter(value); setOffset(0); }}>
                 <option value="all">全部角色</option>
                 {ROLES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
+              </KitSelect>
             )}
             {mode === 'browse' && (
-              <select aria-label="浏览排序" className="field !h-9 w-28 text-[12px]" value={order} onChange={(event) => setOrder(event.target.value as 'asc' | 'desc')}>
+              <KitSelect aria-label="浏览排序" className="field !h-9 w-28 text-[12px]" value={order} onChange={(value) => setOrder(value as 'asc' | 'desc')}>
                 <option value="asc">正序</option>
                 <option value="desc">倒序</option>
-              </select>
+              </KitSelect>
             )}
             <div className="flex items-center gap-1 rounded-[12px] border border-line bg-glass p-1" aria-label="浏览方式">
               <Button size="sm" variant={mode === 'manage' ? 'tinted' : 'ghost'} tint={mode === 'manage' ? 'green' : undefined} onClick={() => setMode('manage')} aria-pressed={mode === 'manage'}>可编辑</Button>
@@ -433,12 +434,12 @@ export function ConversationReader({ platform, record, requestedContext, onDirty
           {layer === 'context' ? (
             <>
               <Field label="内容格式">
-                <select aria-label="内容格式" className="field !h-9 w-full" value={form.format} disabled={busy}
-                  onChange={(event) => setForm({ ...form, format: event.target.value })}>
+                <KitSelect aria-label="内容格式" className="field !h-9 w-full" value={form.format} disabled={busy}
+                  onChange={(value) => setForm({ ...form, format: value })}>
                   <option value="text">文本</option>
                   <option value="json">多模态 JSON</option>
                   <option value="null">空值 null</option>
-                </select>
+                </KitSelect>
               </Field>
               {form.format !== 'null' && (
                 <Field label="消息内容" hint={form.format === 'json' ? '必须是合法 JSON，例如 {"type":"image","url":"…"}' : '支持换行'}>

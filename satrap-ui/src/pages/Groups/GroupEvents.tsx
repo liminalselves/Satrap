@@ -19,6 +19,7 @@ import { VersionedConfigRead } from '@/api/configVersions';
 import { getApiBaseUrl } from '@/utils/constants';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import { CopyValue, EmptyCard, Note, SectionHead, groupEventLabels } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 // ISO 时间串只保留到秒, 与诊断面板的展示口径一致
 const recordedAtText = (value: string) => value.replace('T', ' ').slice(0, 19);
@@ -121,11 +122,11 @@ export function GroupEvents() {
             <span className="w-24 flex-none text-[12.5px] text-fg-2">{groupEventLabels[kind] || kind}</span>
             <Badge tone={config.effective.events[kind] ? 'green' : 'neutral'}>{config.effective.events[kind] ? '显示' : '隐藏'}</Badge>
             <span className="text-[10.5px] text-fg-4">{config.sources.events[kind]}</span>
-            <select className="field ml-auto !h-7 !w-[118px] !text-[11.5px]" value={draft[kind] || 'inherit'} disabled={historical || busy}
+            <KitSelect className="field ml-auto !h-7 !w-[118px] !text-[11.5px]" value={draft[kind] || 'inherit'} disabled={historical || busy}
               aria-label={groupEventLabels[kind] || kind}
-              onChange={(event) => setDraft((previous) => ({ ...previous, [kind]: event.target.value }))}>
+              onChange={(value) => setDraft((previous) => ({ ...previous, [kind]: value }))}>
               <option value="inherit">继承默认显示</option><option value="true">显示</option><option value="false">隐藏</option>
-            </select>
+            </KitSelect>
           </label>
         ))}
       </div>
@@ -139,10 +140,10 @@ export function GroupEvents() {
           <p className="text-[11.5px] text-fg-3">仅保留进程内有界事件, 重启后可能消失; 请求 flag 与原始事件不会展示</p>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <select className="field !h-8 !w-[122px] !text-[12px]" value={eventLimit} aria-label="事件条数"
-            onChange={(event) => changeParam('eventLimit', event.target.value)}>
+          <KitSelect className="field !h-8 !w-[122px] !text-[12px]" value={String(eventLimit)} aria-label="事件条数"
+            onChange={(value) => changeParam('eventLimit', value)}>
             <option value="50">最近 50 条</option><option value="100">最近 100 条</option>
-          </select>
+          </KitSelect>
           <Button size="sm" variant="ghost" icon={<RefreshCw className={`h-3.5 w-3.5 ${refreshKey > 0 ? 'transition-transform' : ''}`} />}
             disabled={!isRunning} onClick={() => { setRefreshKey((value) => value + 1); toast.success('事件已刷新'); }}>刷新</Button>
         </div>

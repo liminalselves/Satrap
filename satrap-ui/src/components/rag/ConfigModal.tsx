@@ -8,6 +8,7 @@ import { Modal } from '@/components/kit/Modal';
 import { Switch } from '@/components/kit/Switch';
 import type { ModelOptions } from '@/components/common/PluginConfigFields';
 import { defaultConfig, embedOptions, type ConfigContext, type Kb, type KBConfig, type KBScope, type KBDraft } from './types';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 interface Form {
   name: string;
@@ -150,25 +151,25 @@ export function ConfigModal({ target, context, modelOptions, onClose, onSave, on
               hint={context.sessionId ? '会话库只对当前会话可见；全局库对全部会话可见' : '当前管理范围没有具体会话，只能创建全局库'}
               className="sm:col-span-2"
             >
-              <select className="field" value={form.scope} onChange={(event) => set('scope', event.target.value as KBScope)}>
+              <KitSelect className="field" value={form.scope} onChange={(value) => set('scope', value as KBScope)}>
                 <option value="global">全局库 · 所有会话可检索</option>
                 {context.sessionId && <option value="session">当前会话库 · 仅 {context.sessionId} 可见</option>}
-              </select>
+              </KitSelect>
             </Field>
           )}
 
           <Field label="Embedding 模型" required error={embedError} hint="决定向量空间；更换后必须重建索引">
-            <select className="field" value={form.embed} onChange={(event) => set('embed', event.target.value)}>
+            <KitSelect className="field" value={form.embed} onChange={(value) => set('embed', value)}>
               <option value="">选择向量模型</option>
               {embed.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
+            </KitSelect>
           </Field>
 
           <Field label="重复来源策略" hint={form.duplicate_policy === 'skip' ? '同名来源跳过导入，保留原文档' : '同名来源整体替换，旧片段被移除'}>
-            <select className="field" value={form.duplicate_policy} onChange={(event) => set('duplicate_policy', event.target.value as 'skip' | 'replace')}>
+            <KitSelect className="field" value={form.duplicate_policy} onChange={(value) => set('duplicate_policy', value as 'skip' | 'replace')}>
               <option value="skip">跳过重复来源</option>
               <option value="replace">替换已有文档</option>
-            </select>
+            </KitSelect>
           </Field>
 
           <Field label="分块大小" error={chunkError} hint="每块字符数，越大上下文越完整">

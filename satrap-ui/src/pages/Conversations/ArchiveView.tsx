@@ -19,6 +19,7 @@ import { GroupReminders } from './GroupReminders';
 import { StickerSettings } from './StickerSettings';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
 import { InlineEmpty, KeyValue, Notice, Pager, SearchField, StatTile } from './common';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const recordKey = (record: PlatformArchiveRecord) => JSON.stringify([record.platform_id, record.self_id, record.conversation_kind, record.chat_id]);
 const emptyCatalog: PlatformArchiveCatalog = { items: [], total: 0, warnings: [], conversation_kinds: [], self_ids: [] };
@@ -93,30 +94,30 @@ export function ArchiveView({ platforms }: { platforms: ConversationPlatform[] }
           <SearchField value={query} onChange={(value) => { setQuery(value); setOffset(0); }} onEnter={() => { setSubmitted(query); setOffset(0); }} placeholder="搜索群名、对话 ID 或账号" ariaLabel="搜索档案对话" />
           <form className="grid grid-cols-2 gap-1.5" onSubmit={(event) => { event.preventDefault(); setSubmitted(query); setOffset(0); }}>
             <label className="min-w-0 text-[10.5px] text-fg-4">平台类型
-              <select aria-label="档案平台类型" className="field mt-1 !h-8 w-full text-[11px]" value={type} onChange={(event) => chooseFilter('type', event.target.value)}>
+              <KitSelect aria-label="档案平台类型" className="field mt-1 !h-8 w-full text-[11px]" value={type} onChange={(value) => chooseFilter('type', value)}>
                 <option value="">全部类型</option>{types.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
+              </KitSelect>
             </label>
             <label className="min-w-0 text-[10.5px] text-fg-4">平台实例
-              <select aria-label="档案平台实例" className="field mt-1 !h-8 w-full text-[11px]" value={platform} onChange={(event) => chooseFilter('platform', event.target.value)}>
+              <KitSelect aria-label="档案平台实例" className="field mt-1 !h-8 w-full text-[11px]" value={platform} onChange={(value) => chooseFilter('platform', value)}>
                 <option value="">全部实例</option>
                 {platform && !platforms.some((item) => item.id === platform) && <option value={platform}>{platform}</option>}
                 {platforms.filter((item) => !type || item.type === type).map((item) => <option key={item.id} value={item.id}>{item.label} · {item.type_label}</option>)}
-              </select>
+              </KitSelect>
             </label>
             <label className="min-w-0 text-[10.5px] text-fg-4">对话类型
-              <select aria-label="档案对话类型" className="field mt-1 !h-8 w-full text-[11px]" value={kind} onChange={(event) => chooseFilter('archive_filter_kind', event.target.value)}>
+              <KitSelect aria-label="档案对话类型" className="field mt-1 !h-8 w-full text-[11px]" value={kind} onChange={(value) => chooseFilter('archive_filter_kind', value)}>
                 <option value="">全部对话类型</option>
                 {kind && !catalog.conversation_kinds.some((item) => item.value === kind) && <option value={kind}>{kind}</option>}
                 {catalog.conversation_kinds.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
+              </KitSelect>
             </label>
             <label className="min-w-0 text-[10.5px] text-fg-4">机器人账号
-              <select aria-label="档案机器人账号" className="field mt-1 !h-8 w-full text-[11px]" value={selfId} onChange={(event) => chooseFilter('archive_filter_self', event.target.value)}>
+              <KitSelect aria-label="档案机器人账号" className="field mt-1 !h-8 w-full text-[11px]" value={selfId} onChange={(value) => chooseFilter('archive_filter_self', value)}>
                 <option value="">全部账号</option>
                 {selfId && !catalog.self_ids.includes(selfId) && <option value={selfId}>{selfId}</option>}
                 {catalog.self_ids.map((id) => <option key={id}>{id}</option>)}
-              </select>
+              </KitSelect>
             </label>
             <div className="col-span-2 flex items-center justify-between gap-2">
               <span className="truncate text-[10px] text-fg-4">未被采集的消息不在此列表中。</span>
