@@ -219,7 +219,9 @@ interface YamlValidation { valid: boolean; errors: YamlIssue[] }
 
 活动响应使用 `AggregateMeta & Page<ActivityEvent>`, 无时间桶的活动窗口返回 bucket=null; 统计接口的 bucket 必须是已声明的实际粒度
 
-overview 的 comparison.messages 对应 inbound, comparison.tokens 对应已报告的 total_tokens; 任一比较范围不完整时差值与涨幅为 null, 不能比较不同覆盖范围
+overview 的 comparison.messages 对应 outbound, comparison.tokens 对应已报告的 total_tokens; 任一比较范围不完整时差值与涨幅为 null, 不能比较不同覆盖范围
+
+仪表盘与平台状态页的消息主数字、曲线和同比统一采用已确认的 outbound; inbound 保留为独立接收流量, 不与发言量相加
 
 ## 3. 第一批: 服务与适配器健康
 

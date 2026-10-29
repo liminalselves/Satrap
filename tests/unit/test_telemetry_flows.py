@@ -347,6 +347,10 @@ async def test_aggregate_statistics_are_exact_at_edges_paginated_and_isolate_fai
         stores[name].append(name, [call, replace(call, call_id="outside", started_at=base + 5),
                                   MessageMetric("message", scope, base + 15, "inbound" if name == "backend" else "outbound")])
     stores["backend"].append("backend", [replace(call, call_id="second", scope=replace(scope, platform_id="qq", model_config="second"), started_at=base + 25)])
+    incoming_scope = replace(scope, platform_id="qq")
+    stores["backend"].append("backend", [MessageMetric(f"incoming-{i}", incoming_scope, base + 20, "inbound") for i in range(50)])
+    stores["backend"].append("backend", [MessageMetric(f"previous-incoming-{i}", incoming_scope, base + 20 - 86400, "inbound") for i in range(100)])
+    stores["chat"].append("chat", [MessageMetric(f"previous-output-{i}", scope, base + 20 - 86400, "outbound") for i in range(2)])
     mode, reads = "available", []
     def fetch(service, path):
         reads.append(service)
@@ -362,11 +366,11 @@ async def test_aggregate_statistics_are_exact_at_edges_paginated_and_isolate_fai
     path = "/api/stats/overview?" + urlencode(query)
     status, payload = await telemetry_response("GET", path, "control", layout, fetch=fetch)
     assert status == 200
-    assert payload["messages"]["inbound"] == 1 and payload["messages"]["outbound"] == 1
+    assert payload["messages"]["inbound"] == 51 and payload["messages"]["outbound"] == 1
     assert payload["usage"]["calls"] == 3 and payload["usage"]["total_tokens"] == 75
     assert payload["usage"]["cached_tokens"] == 9
     assert payload["usage"]["token_reported_calls"]["cached_tokens"] == 3
-    assert payload["comparison"]["messages"]["percent_delta"] is None
+    assert payload["comparison"]["messages"] == {"current": 1, "previous": 2, "absolute_delta": -1, "percent_delta": -50}
     assert "counters" not in payload and all("counters" not in bucket for bucket in payload["series"])
     assert len(reads) == 2
     assert (await telemetry_response("GET", path, "control", layout, fetch=fetch))[1] == payload

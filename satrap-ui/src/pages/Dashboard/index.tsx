@@ -38,24 +38,23 @@ function addNullable(total: number | null, value: number | null): number | null 
   return (total ?? 0) + value;
 }
 
-/** 汇总每个平台的今日消息与桶序列, 同名平台的不同账号合并 */
+/** 汇总每个平台已确认发出的消息与桶序列, 同名平台的不同账号合并 */
 function buildAdapterUsage(source: Overview | null): Map<string, AdapterUsage> {
-  const merged = new Map<string, { inbound: number | null; outbound: number | null; buckets: Map<number, number> }>();
+  const merged = new Map<string, { outbound: number | null; buckets: Map<number, number> }>();
   for (const adapter of source?.by_adapter ?? []) {
     if (!adapter || typeof adapter !== 'object' || !adapter.platform_id) continue;
-    const entry = merged.get(adapter.platform_id) ?? { inbound: null, outbound: null, buckets: new Map<number, number>() };
-    entry.inbound = addNullable(entry.inbound, finite(adapter.messages?.inbound));
+    const entry = merged.get(adapter.platform_id) ?? { outbound: null, buckets: new Map<number, number>() };
     entry.outbound = addNullable(entry.outbound, finite(adapter.messages?.outbound));
     for (const bucket of adapter.series ?? []) {
       const from = finite(bucket?.from);
       if (from === null) continue;
-      const count = (finite(bucket.messages?.inbound) ?? 0) + (finite(bucket.messages?.outbound) ?? 0);
+      const count = finite(bucket.messages?.outbound) ?? 0;
       entry.buckets.set(from, (entry.buckets.get(from) ?? 0) + count);
     }
     merged.set(adapter.platform_id, entry);
   }
   return new Map([...merged.entries()].map(([key, entry]) => [key, {
-    messages: entry.inbound === null && entry.outbound === null ? null : (entry.inbound ?? 0) + (entry.outbound ?? 0),
+    messages: entry.outbound,
     series: [...entry.buckets.entries()].sort((a, b) => a[0] - b[0]).map(([, value]) => value),
   }]));
 }
@@ -450,11 +449,9 @@ export function Dashboard() {
   const modelTrend = useMemo(() => aggregateModelTrend(models ?? []), [models]);
 
   const series = Array.isArray(overview?.series) ? overview.series : [];
-  const messageTrend = series.map((bucket) => (finite(bucket?.messages?.inbound) ?? 0) + (finite(bucket?.messages?.outbound) ?? 0));
+  const messageTrend = series.map((bucket) => finite(bucket?.messages?.outbound) ?? 0);
   const tokenTrend = series.map((bucket) => finite(bucket?.usage?.total_tokens) ?? 0);
-  const inbound = finite(overview?.messages?.inbound);
-  const outbound = finite(overview?.messages?.outbound);
-  const totalMessages = inbound === null && outbound === null ? null : (inbound ?? 0) + (outbound ?? 0);
+  const totalMessages = finite(overview?.messages?.outbound);
   const totalTokens = finite(overview?.usage?.total_tokens);
   const messageDelta = finite(overview?.comparison?.messages?.percent_delta);
   const tokenDelta = finite(overview?.comparison?.tokens?.percent_delta);

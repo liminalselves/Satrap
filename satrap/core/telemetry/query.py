@@ -783,7 +783,7 @@ def merge_metrics(query: MetricQuery, responses: list[dict[str, JsonValue]]) -> 
                     "percent_delta": delta * 100 / old if delta is not None and old else None}
         current_usage, previous_usage = usage_totals(totals), usage_totals(previous)
         result["comparison"] = {"mode": "yesterday_same_elapsed", "baseline_window": baseline_window,
-                                 "messages": comparison(totals.get("inbound", 0), previous.get("inbound", 0), complete and baseline_complete),
+                                 "messages": comparison(totals.get("outbound", 0), previous.get("outbound", 0), complete and baseline_complete),
                                  "tokens": comparison(current_usage["total_tokens"], previous_usage["total_tokens"], complete and baseline_complete
                                                       and totals.get("total_tokens_reported", 0) == current_usage["calls"]
                                                       and previous.get("total_tokens_reported", 0) == previous_usage["calls"])}

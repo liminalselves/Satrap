@@ -190,7 +190,7 @@ export function Platforms() {
     }
   }, [setPlatforms, setAdapterTypes, setDefaultSessionType]);
 
-  // 14 分钟分钟桶: 每个适配器的消息曲线与近期总量; 失败时显示未知而不是 0
+  // 14 分钟分钟桶: 每个适配器已确认发出的消息; 失败时显示未知而不是 0
   const statsPoll = useRef<ReturnType<typeof startVisiblePoll> | null>(null);
   useEffect(() => {
     const poll = startVisiblePoll(async (signal) => {
@@ -683,9 +683,7 @@ export function Platforms() {
     + adapterList.filter(([, info]) => info.status === 'error').length;
   const latencies = adapterList.map(([, info]) => info.latency_ms).filter((value): value is number => typeof value === 'number');
   const averageLatency = latencies.length ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : null;
-  const recentMessages = stats?.messages && stats.messages.inbound !== null && stats.messages.outbound !== null
-    ? stats.messages.inbound + stats.messages.outbound
-    : null;
+  const recentMessages = stats?.messages?.outbound ?? null;
   const unknown = <span className="text-fg-3">—</span>;
 
   const refreshAll = () => {
@@ -791,12 +789,12 @@ export function Platforms() {
             const enabled = platform.enable ?? true;
             const adapterStats = statOf(platform.id);
             const series = adapterStats?.series || [];
-            const knownSeries = series.some((bucket) => bucket.messages.inbound !== null || bucket.messages.outbound !== null);
-            const spark = series.length ? series.map((bucket) => (bucket.messages.inbound ?? 0) + (bucket.messages.outbound ?? 0)) : sequence(14);
+            const knownSeries = series.some((bucket) => bucket.messages.outbound !== null);
+            const spark = series.length ? series.map((bucket) => bucket.messages.outbound ?? 0) : sequence(14);
             // 只有确实有计数覆盖的分钟桶才求和; 全部未知时保持 null, 不显示成 0
-            const knownBuckets = series.filter((bucket) => bucket.messages.inbound !== null || bucket.messages.outbound !== null);
+            const knownBuckets = series.filter((bucket) => bucket.messages.outbound !== null);
             const recent = knownBuckets.length
-              ? knownBuckets.reduce((sum, bucket) => sum + (bucket.messages.inbound ?? 0) + (bucket.messages.outbound ?? 0), 0)
+              ? knownBuckets.reduce((sum, bucket) => sum + (bucket.messages.outbound ?? 0), 0)
               : null;
             const bot = runtime?.bot;
             const selfId = bot?.self_id || runtime?.client_self_id || '';
