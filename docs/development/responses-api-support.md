@@ -43,6 +43,7 @@ llm.client.close()
 - `max_tokens` 在发送时映射为 `max_output_tokens`, 包含推理和可见输出预算
 - Responses 不默认发送 temperature 或 top_p; 调用方显式设置时按原值发送
 - 显式思考强度映射为 `reasoning.effort`, 展示思考仅使用公开摘要, 不解密加密推理资料
+- Responses 不使用 `thinking_fields` 或 `omit_none_thinking_fields`; `thinking="off"` 明确发送 `reasoning.effort="none"`, 不支持该强度的模型返回原有错误, 不静默改用服务端默认
 - 自定义函数平铺定义字段; 未声明 strict 的旧工具明确使用 strict=false
 - 工具结果通过 call_id 对应 function_call_output, 与输出 Item 的 id 分离
 - 普通文本, 图片, 工具返回图片和 JSON 对象输出共用现有调用入口
@@ -89,6 +90,8 @@ Debug Logger 采集新增正文和工具参数, 终态不重复记录整份流�
 - 变更生产模块 Pyright: 0 errors, 80 warnings; 新增生产模块无诊断
 - `git diff --check` 通过, 前端目录无修改
 - Linux / macOS 本轮未在本地运行, 真实 Responses 服务商接口尚未验收
+
+关闭思考修正的增量验收: Responses, 兼容协议, 视觉输入与模型配置整合测试 `197 passed, 1 skipped`; 变更生产模块 Pyright 无诊断, 本次未重跑完整测试集
 
 官方参考:
 

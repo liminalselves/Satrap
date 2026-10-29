@@ -239,8 +239,9 @@ class _LLMBase(Generic[_ClientT]):
         返回:
         - 对应 SDK 端点的参数
         """
-        return self.protocol.build_request(parameters, messages, thinking_body=_build_thinking_extra_body(
-            thinking, self.thinking_fields, self.omit_none_thinking_fields), thinking=thinking,
+        thinking_body = _build_thinking_extra_body(thinking, self.thinking_fields, self.omit_none_thinking_fields) if self.api_type == "chat_completions" else None
+        # 旧供应商思考字段只参与 Chat Completions, Responses 使用原生推理参数
+        return self.protocol.build_request(parameters, messages, thinking_body=thinking_body, thinking=thinking,
             tools=tools, tool_choice=tool_choice, stream=stream, include_usage=include_usage, structured=structured)
 
     def _prepare_messages(self, messages: list[dict[str, Any]], img_urls: list[str] | None,

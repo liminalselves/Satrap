@@ -227,6 +227,20 @@ async def test_public_entry_points_and_media_preserve_input(clients, async_mode,
             assert requests[-1]["input"][-1]["output"][-1]["type"] == "input_image"
         else:
             assert result == ["结果是 3"] if method.startswith("stream") else result == "结果是 3"
+        for fields, omit_none in ((None, False), (["reasoning_effort"], False), (["reasoning_effort"], True), (["thinking.type", "enable_thinking"], True)):
+            llm.thinking_fields = fields
+            llm.omit_none_thinking_fields = omit_none
+            off_kwargs = {key: value for key, value in kwargs.items() if key != "thinking"}
+            pending = getattr(llm, method)(messages, **off_kwargs)
+            result = [item async for item in pending] if async_mode and method.startswith("stream") else list(pending) if method.startswith("stream") else await pending if async_mode else pending
+            assert requests[-1]["reasoning"] == {"effort": "none"}
+            assert "extra_body" not in requests[-1] and "reasoning_effort" not in requests[-1]
+            assert "thinking" not in requests[-1] and "enable_thinking" not in requests[-1]
+            if method in {"call", "stream_call"}:
+                parsed = result[-1].response if method.startswith("stream") else result
+                assert parsed.type == "message" and parsed.content == "结果是 3"
+            else:
+                assert result == ["结果是 3"] if method.startswith("stream") else result == "结果是 3"
     finally:
         await llm.client.close() if async_mode else llm.client.close()
 

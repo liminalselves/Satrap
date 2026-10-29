@@ -156,7 +156,7 @@ class ResponsesProtocol:
         参数:
         - parameters: 通用模型与生成参数
         - messages: 已准备媒体的项目消息
-        - thinking_body: 兼容接口字段, 不直接透传
+        - thinking_body: 兼容接口字段, Responses 不使用
         - thinking: 显式思考强度
         - tools: 自定义函数定义
         - tool_choice: 工具选择策略
@@ -174,8 +174,8 @@ class ResponsesProtocol:
             request["max_output_tokens"] = parameters["max_tokens"]
         if thinking != "off":
             request["reasoning"] = {"effort": thinking, "summary": "auto"}
-        elif thinking_body and "reasoning_effort" in thinking_body:
-            request["reasoning"] = {"effort": thinking_body["reasoning_effort"]}
+        else:
+            request["reasoning"] = {"effort": "none"}   # 显式关闭, 不沿用模型默认推理强度
         if tools is not None:
             converted: list[dict[str, object]] = []
             for tool in tools:
