@@ -780,8 +780,12 @@ async function group_chat_plugin(runtime) {
     await page.getByText('group_chat.environment', { exact: true }).waitFor();
     await page.getByRole('button', { name: '全局参数', exact: true }).click();
     for (const [name, field] of Object.entries(schema)) {
-      const input = page.getByLabel(name, { exact: true });
+      const input = page.getByLabel(field.label || name, { exact: true });
       await input.waitFor();
+      if (field.type === 'select') {
+        assert.equal(await input.getAttribute('data-value'), String(field.default));
+        continue;
+      }
       if (field.type === 'bool') {
         assert.equal(await input.isChecked(), field.default);
         continue;

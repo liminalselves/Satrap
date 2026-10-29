@@ -158,6 +158,17 @@ jobs:
       - run: npx playwright install --with-deps chromium
         if: needs.plan.outputs.browser == 'true'
         working-directory: satrap-ui
+      - uses: actions/setup-python@v5
+        if: needs.plan.outputs.browser == 'true'
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Install backend for browser flows
+        if: needs.plan.outputs.browser == 'true'
+        run: python -m pip install '.[vector]' -r requirements.txt
       - name: Exercise affected browser flows
         if: needs.plan.outputs.browser == 'true'
         working-directory: satrap-ui

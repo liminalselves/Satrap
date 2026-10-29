@@ -620,11 +620,17 @@ async function chat_sidebar_state(runtime) {
     await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).waitFor();
     delayRefresh = true;
     await moveToB(); await waitForRequestEntry(refreshEntered);
-    assert.equal(await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).count(), 0);
+    // 刷新请求仍被挂起, 移出当前筛选项目的会话应立即从本地列表消失
+    await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).waitFor({ state: 'detached' });
+    // 切换筛选会中止旧刷新; 无论请求被中止还是迟到失败, 都不能把错误显示到新筛选下
+    const isOldRefresh = (request) => request.url().includes('/conversations/page') && new URL(request.url()).searchParams.get('project_id') === 'a';
+    const oldRefreshSettled = Promise.race([
+      page.waitForEvent('requestfailed', isOldRefresh),
+      page.waitForResponse((response) => response.status() === 503 && isOldRefresh(response.request())),
+    ]);
     await selector.selectOption('b');
     await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).waitFor();
-    const oldRefreshFailed = page.waitForResponse((response) => response.status() === 503 && !new URL(response.url()).searchParams.has('cursor'));
-    releaseRefresh(); await oldRefreshFailed; await afterRender();
+    releaseRefresh(); await oldRefreshSettled; await afterRender();
     assert.equal(await page.getByRole('alert').filter({ hasText: '旧刷新迟到失败' }).count(), 0);
     failRefresh = true;
     await moveToB();

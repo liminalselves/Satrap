@@ -99,13 +99,7 @@ async function friends(runtime) {
           actions.unshift(record);
           return route.fulfill({ headers: cors, json: record });
         }
-        if (tail === '/actions/model-pending/decision') {
-          const record = actions.find((row) => row.action_id === 'model-pending');
-          record.state = body.approve ? 'succeeded' : 'rejected';
-          if (body.approve) friends = friends.filter((row) => row.user_id !== 'bob');
-          record.result = { message: body.approve ? '平台返回成功' : '已拒绝', verification: 'confirmed' };
-          return route.fulfill({ headers: cors, json: record });
-        }
+        assert.ok(!tail.endsWith('/decision'), '好友页不再直接批准待审批动作');
         return route.fulfill({ headers: cors, status: 404, json: { error: 'unexpected friend route' } });
       }
       return route.fulfill({ headers: cors, json: { ok: true, running: false, adapters: {}, configs: {}, plugins: [] } });
@@ -156,7 +150,7 @@ async function friends(runtime) {
     await page.getByRole('button', { name: '关闭', exact: true }).click();
     await page.getByRole('button', { name: '普通申请', exact: true }).click();
     await page.getByRole('button', { name: '已归档', exact: true }).click();
-    const archivedRow = page.getByText('申请人: 昵称未提供 · ID: archived-user', { exact: true }).locator('..');
+    const archivedRow = page.locator('.stagger > *').filter({ has: page.getByText('申请人: 昵称未提供 · ID: archived-user', { exact: true }) });
     await archivedRow.getByRole('button', { name: '重新核验', exact: true }).click();
     await page.getByText('仅完成本地核验, 当前平台无法查询申请是否仍有效', { exact: true }).waitFor();
     await archivedRow.getByRole('button', { name: '同意', exact: true }).click();
@@ -176,11 +170,13 @@ async function friends(runtime) {
     await finishConfirmation(page, true, /不删除防重复执行记录/);
     await page.waitForFunction(() => !document.body.textContent.includes('ID: archived-user'));
     await page.getByRole('button', { name: '操作记录与审批', exact: true }).click();
-    await page.getByRole('button', { name: '批准删除', exact: true }).waitFor();
-    await page.getByRole('button', { name: '批准删除', exact: true }).click();
-    await finishConfirmation(page, true, /bob[\s\S]*乙|乙[\s\S]*bob/);
-    await page.waitForFunction(() => !Array.from(document.querySelectorAll('button')).some((button) => button.textContent === '批准删除'));
-    assert.equal(actions.find((row) => row.action_id === 'model-pending').state, 'succeeded');
+    // 模型申请的删除动作统一在审批中心批准, 好友页只给出带动作定位的入口
+    const approvalEntry = page.getByRole('link', { name: '前往审批中心', exact: true });
+    await approvalEntry.waitFor();
+    const approvalHref = new URL(await approvalEntry.getAttribute('href'), origin);
+    assert.equal(approvalHref.pathname, '/platforms/approvals');
+    assert.deepEqual(Object.fromEntries(approvalHref.searchParams), { platform: 'generic', account: 'bot@example.test', source: 'friend', action: 'model-pending', state: 'all' });
+    assert.equal(actions.find((row) => row.action_id === 'model-pending').state, 'pending');
     await page.getByRole('button', { name: '删除保护', exact: true }).click();
     await page.getByLabel('额外保护好友 ID').fill('protected-user');
     await page.getByRole('button', { name: '保存保护名单', exact: true }).click();
@@ -190,7 +186,7 @@ async function friends(runtime) {
     await page.getByLabel('搜索好友').fill('');
     await page.getByRole('button', { name: '搜索', exact: true }).click();
     await page.getByRole('cell', { name: 'manager', exact: true }).waitFor();
-    await page.getByRole('button', { name: '查看详情', exact: true }).click();
+    await page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'manager', exact: true }) }).getByRole('button', { name: '查看详情', exact: true }).click();
     assert.ok(await page.getByRole('button', { name: '确认删除', exact: true }).isDisabled());
     await page.getByRole('button', { name: '取消', exact: true }).click();
     await page.getByRole('button', { name: '发送好友申请', exact: true }).click();
@@ -205,15 +201,17 @@ async function friends(runtime) {
     await page.getByRole('button', { name: '关闭', exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
-    supported = false;
-    await page.getByRole('button', { name: '刷新', exact: true }).click();
-    await page.getByText('当前适配器不支持好友操作', { exact: true }).waitFor();
-    assert.ok(await page.getByRole('button', { name: '发送好友申请', exact: true }).isDisabled());
     account = 'new-account';
     await page.getByRole('button', { name: '刷新', exact: true }).click();
     await page.getByText('平台: generic · 机器人账号: new-account', { exact: true }).waitFor();
+    // 平台明确不支持时整页改为说明, 不展示空好友列表冒充"没有好友"
+    supported = false;
+    await page.getByRole('button', { name: '刷新', exact: true }).click();
+    await page.getByText('此平台不提供好友管理', { exact: true }).waitFor();
+    await page.getByText('当前适配器不支持好友操作', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '发送好友申请', exact: true }).count(), 0);
     assert.deepEqual(errors, []);
-    console.log('PASS: 好友列表与同名搜索, 人工删除确认与防重复, 申请备注处理, 模型审批, 保护名单, 账号切换, 不支持能力与窄屏布局');
+    console.log('PASS: 好友列表与同名搜索, 人工删除确认与防重复, 申请备注处理, 模型申请跳转审批中心, 保护名单, 账号切换, 不支持能力与窄屏布局');
   } finally {
     if (browser) await runtime.closeContexts();
     await runtime.releaseServer(server);
@@ -280,11 +278,7 @@ async function account_requests(runtime) {
         const body = request.postDataJSON();
         assert.equal(body.expected_self_id, '100');
         writes.push(body);
-        if (url.pathname.endsWith('/decision')) {
-          assert.deepEqual(Object.keys(body).sort(), ['approve', 'expected_self_id']);
-          actions[0].state = body.approve ? 'succeeded' : 'rejected';
-          return reply(actions[0]);
-        }
+        assert.ok(!url.pathname.endsWith('/decision'), '邀请面板不再直接批准待审批动作');
         const row = invitations.find((item) => item.request_id === body.request_id);
         assert.equal(body.expected_revision, row.revision);
         assert.ok(body.action_id);
@@ -334,10 +328,12 @@ async function account_requests(runtime) {
     await finishConfirmation(page);
     await dialog.getByText('接受群 777 的邀请 · 平台已执行', { exact: true }).waitFor();
     assert.equal(writes[2].expected_revision, 2);
-    await dialog.getByRole('button', { name: '批准执行', exact: true }).click();
-    await finishConfirmation(page);
-    await dialog.getByText('接受群 666 的邀请 · 平台已执行', { exact: true }).waitFor();
-    assert.equal(writes[3].approve, true);
+    // 待人工批准的动作统一在审批中心处理, 邀请面板只给出带动作定位的入口
+    const approvalEntry = dialog.getByText('接受群 666 的邀请', { exact: true }).locator('..').getByRole('link', { name: '前往审批中心', exact: true });
+    const approvalHref = new URL(await approvalEntry.getAttribute('href'), origin);
+    assert.equal(approvalHref.pathname, '/platforms/approvals');
+    assert.deepEqual(Object.fromEntries(approvalHref.searchParams), { platform: 'bot', account: '100', source: 'invitation', action: 'model-invite', state: 'all' });
+    assert.equal(writes.length, 3);
     const pending = new Promise((resolve) => { heldRead = resolve; });
     delayNextRead = true;
     await dialog.getByRole('button', { name: '刷新', exact: true }).click();
@@ -362,7 +358,7 @@ async function account_requests(runtime) {
     assert.equal(writes.length, unchangedWrites);
     assert.deepEqual(errors, []);
     assert.ok(reads.length > 4);
-    console.log('PASS: 未入群账号邀请查询/分页, 提交失败复用幂等 ID, 归档确认, 终态禁用, 独立审批及关闭取消查询, 异步确认取消/重复点击/来源关闭/站内导航取消');
+    console.log('PASS: 未入群账号邀请查询/分页, 提交失败复用幂等 ID, 归档确认, 终态禁用, 待审批动作跳转审批中心, 关闭取消查询, 异步确认取消/重复点击/来源关闭/站内导航取消');
   } finally {
     if (browser) await runtime.closeContexts();
     await runtime.releaseServer(server);
