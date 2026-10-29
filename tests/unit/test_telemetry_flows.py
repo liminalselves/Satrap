@@ -564,3 +564,20 @@ def test_telemetry_v1_upgrade_preserves_activity_without_initializing_readonly(t
     with fresh.connect() as db:
         assert db.execute('PRAGMA user_version').fetchone()[0] == 2
         assert db.execute('SELECT count(*),sum(event_count) FROM activity_events').fetchone()[:] == (1,1)
+
+
+def test_offline_source_logs_once_per_state_change(monkeypatch):
+    """来源离线是预期状态: 每次状态变化只记一次, 离线不按警告记录, 真正异常仍警告"""
+    from satrap.core.telemetry import api
+    records: list[tuple[str, str]] = []
+    monkeypatch.setattr(api, "_SOURCE_PROBLEMS", {})
+    monkeypatch.setattr(api.logger, "info", lambda message: records.append(("info", message)))
+    monkeypatch.setattr(api.logger, "warning", lambda message: records.append(("warning", message)))
+    for _ in range(3):
+        api._note_source("backend", "service_unreachable")
+    api._note_source("backend", None)
+    api._note_source("backend", None)
+    api._note_source("chat", "source_invalid_response")
+    api._note_source("chat", "source_invalid_response")
+    assert [level for level, _ in records] == ["info", "info", "warning"]
+    assert "未运行" in records[0][1] and "已恢复" in records[1][1] and "source_invalid_response" in records[2][1]

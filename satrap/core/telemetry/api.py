@@ -31,6 +31,32 @@ SourceFetcher = Callable[[Service, str], dict[str, JsonValue]]
 _CACHE: OrderedDict[tuple[Path, str], tuple[float, int, dict[str, JsonValue]]] = OrderedDict()
 _CACHE_BYTES = 0
 _CACHE_LOCK = threading.RLock()
+_SOURCE_PROBLEMS: dict[str, str] = {}   # 每个来源最近一次已报告的问题, 状态不变时不重复告警
+_SOURCE_LOCK = threading.Lock()
+
+
+def _note_source(service: str, reason: str | None) -> None:
+    """
+    仅在来源状态变化时写日志, 离线是预期状态不按警告记录
+
+    参数:
+    - service: 统计来源服务
+    - reason: 不可用原因, None 表示本次读取成功
+    """
+    with _SOURCE_LOCK:
+        previous = _SOURCE_PROBLEMS.get(service)
+        if reason == previous:
+            return
+        if reason is None:
+            _SOURCE_PROBLEMS.pop(service, None)
+        else:
+            _SOURCE_PROBLEMS[service] = reason
+    if reason is None:
+        logger.info(f"[统计] 来源 {service} 已恢复")
+    elif reason == "service_unreachable":
+        logger.info(f"[统计] 来源 {service} 未运行, 使用已保存的统计快照")
+    else:
+        logger.warning(f"[统计] 来源 {service} 不可用: {reason}")
 
 
 @dataclass
@@ -135,12 +161,13 @@ async def _source(service: Service, layout: StorageLayout, query: MetricQuery | 
             await QUERY_WORKERS.run(merge_activity, query, [payload])
         else:
             await QUERY_WORKERS.run(merge_metrics, query, [payload])
+        _note_source(service, None)
         return payload
     except SourceUnavailable as error:
         state, reason = error.state, error.reason_code
     except (ValueError, OSError, sqlite3.Error, WorkerBusyError) as error:
         reason = "local_snapshot_unavailable" if service == "control" else "source_invalid_response"
-    logger.warning(f"[统计] 来源 {service} 不可用: {reason}")
+    _note_source(service, reason)
     if state == "offline" and store.path.is_file():
         try:
             payload = await QUERY_WORKERS.run(_local, store, query)
