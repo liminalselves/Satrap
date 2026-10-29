@@ -342,8 +342,8 @@ export function AgentEditor({
           {isEdictum && (
             <Field label="默认思考强度" hint={draft.model_name ? '可选值取决于绑定模型的思考能力' : '绑定模型后可选择思考强度'}>
               <KitSelect className="field w-full" value={draft.thinking} onChange={(value) => set('thinking', value)} disabled={saving}>
-                <option value="">默认 (关闭)</option>
-                {thinkingOptions.filter((option) => option.value !== 'off').map((option) => (
+                <option value="">默认 (不发送思考参数)</option>
+                {thinkingOptions.filter((option) => option.value !== 'default').map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
                 {managePrompt && thinkingUnsupported && (

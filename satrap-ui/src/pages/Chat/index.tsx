@@ -92,8 +92,9 @@ import {
 // 聊天设置
 interface ChatSettings {
   model: string;   // 模型配置名
-  think: string;   // 思考强度 (off/low/medium/high)
-  temperature: number;   // 采样温度
+  think: string;   // 思考强度, default 不发送思考参数
+  temperature: number | null;   // 会话温度覆盖, null 跟随模型配置
+  requestTemperature?: number | null;   // 后端解析的下一轮拟发送温度, null 表示不发送
   commandHistoryEnabled: boolean;   // 是否将已执行命令及回复写入模型上下文
   defaultAgentPromptEnabled: boolean;   // 是否在本会话补充内置 Agent 提示
   maxIterations?: number;   // 最大工具迭代次数, undefined 沿用会话定义默认
@@ -102,8 +103,9 @@ interface ChatSettings {
 
 const DEFAULT_SETTINGS: ChatSettings = {
   model: 'default',
-  think: 'off',
-  temperature: 0.7,
+  think: 'default',
+  temperature: null,
+  requestTemperature: undefined,
   commandHistoryEnabled: false,
   defaultAgentPromptEnabled: false,
   maxIterations: undefined,
@@ -892,7 +894,7 @@ export function Chat() {
   useEffect(() => {
     if (!Object.prototype.hasOwnProperty.call(modelsDetail, settings.model)) return;
     if (thinkingOptions.some((option) => option.value === settings.think)) return;
-    setSettings((current) => ({ ...current, think: 'off' }));
+    setSettings((current) => ({ ...current, think: 'default' }));
   }, [modelsDetail, settings.model, settings.think, thinkingOptions]);
 
   useEffect(() => {
@@ -964,6 +966,21 @@ export function Chat() {
       }).catch((error: unknown) => toast('error', String(error)));
       return;
     }
+    if (key === 'temperature' && activeId && activeId !== '__draft__') {
+      const id = activeId;
+      let previous: Pick<ChatSettings, 'temperature' | 'requestTemperature'> | null = null;
+      setSettings((prev) => {
+        previous = { temperature: prev.temperature, requestTemperature: prev.requestTemperature };
+        return { ...prev, temperature: value as number | null };
+      });
+      void chatApi.setGenerationSettings(id, { temperature: value as number | null }).then((result) => {
+        if (activeIdRef.current === id) setSettings((prev) => ({ ...prev, temperature: result.temperature, requestTemperature: result.request_temperature }));
+      }).catch((error: unknown) => {
+        if (activeIdRef.current === id && previous) setSettings((prev) => ({ ...prev, ...previous }));
+        toast('error', `温度保存失败: ${String(error)}`);
+      });
+      return;
+    }
     if (key === 'maxIterations' && activeId && activeId !== '__draft__') {
       void chatApi.setMaxIterations(activeId, typeof value === 'number' ? value : null).then((result) => {
         if (!result.ok) throw new Error(result.error || '保存失败');
@@ -1018,6 +1035,7 @@ export function Chat() {
   }, [settingsOpen]);
 
   useEffect(() => {
+    if (activeId === '__draft__') setSettings((prev) => ({ ...prev, temperature: null, requestTemperature: undefined }));
     if (!activeId || activeId === '__draft__') return;
     let cancelled = false;
     void chatApi.getDefaultAgentPrompt(activeId).then((result) => {
@@ -1028,6 +1046,9 @@ export function Chat() {
     }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     void chatApi.getMaxIterations(activeId).then((result) => {
       if (!cancelled) setSettings((prev) => ({ ...prev, maxIterations: result.max_iterations }));
+    }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
+    void chatApi.getGenerationSettings(activeId).then((result) => {
+      if (!cancelled) setSettings((prev) => ({ ...prev, temperature: result.temperature, requestTemperature: result.request_temperature }));
     }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     return () => { cancelled = true; };
   }, [activeId]);
@@ -1400,6 +1421,7 @@ export function Chat() {
         atts,
         {
           ...preloadSettingsFor(targetConv.projectId, targetConv.model),
+          ...(isDraft || targetConv.preloaded ? {} : { temperature: undefined }),
           ...((isDraft || targetConv.preloaded)
             && (draftApprovalMode !== 'user' || plugins.some((plugin) => plugin.name === 'permissions' && plugin.enabled))
             ? { approvalMode: draftApprovalMode } : {}),
@@ -2466,7 +2488,7 @@ function OptionsPanel({
     <div className="surface surface-strong tint-accent flex w-fit max-w-full flex-wrap items-center gap-3 !rounded-2xl px-3 py-2 animate-pop">
       {/* think 选择 */}
       <div className="flex items-center gap-2">
-        <Brain className={cn('h-4 w-4', think !== 'off' ? 'text-accent' : 'text-fg-4')} />
+        <Brain className={cn('h-4 w-4', think !== 'off' && think !== 'default' ? 'text-accent' : 'text-fg-4')} />
         <span className="text-sm text-fg-2">思考</span>
         <div className="w-28">
           <Select
@@ -2681,16 +2703,27 @@ function ChatSettingsModal({
 
                 {/* 温度 */}
                 <div>
-                  <div className="mb-2 flex items-center justify-between">
-                    <label className="text-sm font-medium text-fg">温度</label>
-                    <span className="num text-sm font-medium text-accent">{settings.temperature.toFixed(2)}</span>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <label htmlFor="chat-temperature" className="text-sm font-medium text-fg">温度</label>
+                    <div className="flex items-center gap-2">
+                      {settings.temperature !== null && (
+                        <button type="button" className="text-xs text-fg-3 hover:text-accent" onClick={() => onChange('temperature', null)}>
+                          恢复跟随
+                        </button>
+                      )}
+                      <span className="num text-sm font-medium text-accent">
+                        {settings.temperature !== null ? settings.temperature.toFixed(2)
+                          : settings.requestTemperature == null ? '跟随模型' : `跟随模型 (${settings.requestTemperature.toFixed(2)})`}
+                      </span>
+                    </div>
                   </div>
                   <input
+                    id="chat-temperature"
                     type="range"
                     min={0}
                     max={2}
                     step={0.05}
-                    value={settings.temperature}
+                    value={settings.temperature ?? settings.requestTemperature ?? 1}
                     onChange={(e) => onChange('temperature', Number(e.target.value))}
                     className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[var(--glass-border-strong)] accent-[rgb(var(--rgb-accent))]"
                   />

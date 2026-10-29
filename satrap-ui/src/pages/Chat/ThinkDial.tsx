@@ -6,6 +6,9 @@ export interface ThinkOption {
   label: string;
 }
 
+// 默认档不指定强度, 由模型服务决定; 指针与旋钮停在中间偏右以示"由服务端选择"
+const DEFAULT_RATIO = 0.6;
+
 /** 仪表盘图标: 弧线按档位填充, 指针随档位旋转 */
 function Gauge({ ratio }: { ratio: number }) {
   const radius = 8;
@@ -27,11 +30,11 @@ function Gauge({ ratio }: { ratio: number }) {
 }
 
 /** 分档滑条: 胶囊轨道 + 档位圆点 + 白色旋钮, 可拖动, 可点击, 可键盘调节 */
-function LevelSlider({ index, count, label, onChange }: { index: number; count: number; label: string; onChange: (index: number) => void }) {
+function LevelSlider({ index, count, label, onChange }: { index: number | null; count: number; label: string; onChange: (index: number) => void }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const steps = Math.max(1, count - 1);
-  const ratio = index / steps;
+  const ratio = index === null ? DEFAULT_RATIO : index / steps;
 
   const pick = (clientX: number) => {
     const rect = trackRef.current?.getBoundingClientRect();
@@ -40,8 +43,8 @@ function LevelSlider({ index, count, label, onChange }: { index: number; count: 
     onChange(Math.round(position * steps));
   };
   const onKey = (event: KeyboardEvent) => {
-    const next = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? index + 1
-      : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? index - 1
+    const next = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? (index === null ? 0 : index + 1)
+      : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? (index === null ? 0 : index - 1)
         : event.key === 'Home' ? 0 : event.key === 'End' ? steps : null;
     if (next === null) return;
     event.preventDefault();
@@ -56,7 +59,7 @@ function LevelSlider({ index, count, label, onChange }: { index: number; count: 
       aria-label="思考强度"
       aria-valuemin={0}
       aria-valuemax={steps}
-      aria-valuenow={index}
+      aria-valuenow={index ?? undefined}
       aria-valuetext={label}
       onPointerDown={(event: PointerEvent) => { event.currentTarget.setPointerCapture(event.pointerId); setDragging(true); pick(event.clientX); }}
       onPointerMove={(event: PointerEvent) => { if (dragging) pick(event.clientX); }}
@@ -64,23 +67,24 @@ function LevelSlider({ index, count, label, onChange }: { index: number; count: 
       onKeyDown={onKey}
       className="relative h-11 cursor-pointer touch-none select-none rounded-full border border-line bg-glass p-[3px] shadow-[inset_0_1px_3px_rgba(0,0,0,0.12)]"
     >
-      <div
+      {index !== null && <div
         aria-hidden
         className="absolute bottom-[3px] left-[3px] top-[3px] rounded-full bg-[linear-gradient(90deg,rgb(var(--rgb-accent)/0.85),rgb(var(--rgb-accent)))] shadow-[0_6px_18px_-6px_rgb(var(--rgb-accent)/0.8)]"
         style={{ width: `calc(${ratio} * (100% - 42px) + 36px)`, transition: dragging ? 'none' : 'width 420ms var(--ease-spring)' }}
-      />
+      />}
       {Array.from({ length: count }, (_, step) => (
         <span
           key={step}
           aria-hidden
-          className={cn('absolute top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full transition-colors duration-300', step <= index ? 'bg-white/45' : 'bg-[var(--glass-border-strong)]')}
+          className={cn('absolute top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full transition-colors duration-300', index !== null && step <= index ? 'bg-white/45' : 'bg-[var(--glass-border-strong)]')}
           style={{ left: `calc(${step / steps} * (100% - 42px) + 21px)` }}
         />
       ))}
       <span
         aria-hidden
-        className={cn('absolute top-[3px] h-[36px] w-[36px] rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.25),0_0_0_0.5px_rgba(0,0,0,0.06)]', dragging && 'scale-110')}
-        style={{ left: `calc(${ratio} * (100% - 42px) + 3px)`, transition: dragging ? 'transform 200ms' : 'left 420ms var(--ease-spring), transform 200ms' }}
+        className={cn('absolute top-[3px] h-[36px] w-[36px] rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.25),0_0_0_0.5px_rgba(0,0,0,0.06)] transition-opacity duration-300',
+          dragging && 'scale-110', index === null && 'opacity-45')}
+        style={{ left: `calc(${ratio} * (100% - 42px) + 3px)`, transition: dragging ? 'transform 200ms' : 'left 420ms var(--ease-spring), transform 200ms, opacity 300ms' }}
       />
     </div>
   );
@@ -95,11 +99,13 @@ export function ThinkDial({ value, options, onChange, disabled }: {
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const found = options.findIndex((option) => option.value === value);
-  const index = found < 0 ? 0 : found;
-  const current = options[index];
-  const ratio = options.length > 1 ? index / (options.length - 1) : 0;
-  const off = value === 'off';
+  const defaultOption = options.find((option) => option.value === 'default');
+  const levels = options.filter((option) => option.value !== 'default');
+  const found = levels.findIndex((option) => option.value === value);
+  const index = found < 0 ? null : found;
+  const current = index === null ? (defaultOption ?? levels[0]) : levels[index];
+  const ratio = index === null ? DEFAULT_RATIO : levels.length > 1 ? index / (levels.length - 1) : 0;
+  const off = index === null || value === 'off';
 
   useEffect(() => {
     if (!open) return;
@@ -110,7 +116,7 @@ export function ThinkDial({ value, options, onChange, disabled }: {
     return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', escape); };
   }, [open]);
 
-  if (options.length < 2 || !current) return null;
+  if (options.length < 2 || !current || levels.length === 0) return null;
 
   return (
     <div ref={ref} className="relative shrink-0 mb-0.5">
@@ -133,19 +139,35 @@ export function ThinkDial({ value, options, onChange, disabled }: {
 
       {open && (
         <div role="dialog" aria-label="思考强度" className="surface surface-strong absolute bottom-[calc(100%+10px)] left-0 z-[60] w-[300px] max-w-[calc(100vw-32px)] !rounded-[22px] p-4 !shadow-[var(--shadow-3)] animate-pop" style={{ transformOrigin: 'bottom left' }}>
-          <div className="mb-1 text-center text-[11px] font-medium tracking-[0.1em] text-fg-4">思考强度</div>
-          <div className="relative mb-4 h-9 overflow-hidden text-center">
-            {options.map((option, step) => (
-              <div key={option.value} aria-hidden={step !== index}
-                className="absolute inset-0 text-2xl font-semibold text-fg transition-all duration-500 [transition-timing-function:var(--ease-spring)]"
-                style={{ transform: `translateY(${(step - index) * 100}%)`, opacity: step === index ? 1 : 0 }}>
-                {option.label}
-              </div>
-            ))}
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-[11px] font-medium tracking-[0.1em] text-fg-4">思考强度</span>
+            {defaultOption && (
+              <button type="button" aria-pressed={index === null} onClick={() => onChange(defaultOption.value)}
+                title="不发送思考参数, 由模型服务决定"
+                className={cn('rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors',
+                  index === null ? 'border-[rgb(var(--rgb-accent)/0.35)] bg-[rgb(var(--rgb-accent)/0.12)] text-accent'
+                    : 'border-line text-fg-3 hover:bg-glass-hover hover:text-fg')}>
+                跟随模型
+              </button>
+            )}
           </div>
-          <LevelSlider index={index} count={options.length} label={current.label} onChange={(step) => onChange(options[step].value)} />
+          <div className="relative mb-4 h-9 overflow-hidden text-center">
+            {[...levels, ...(defaultOption ? [defaultOption] : [])].map((option, step) => {
+              const position = option === defaultOption ? -1 : step;
+              const active = index === null ? -1 : index;
+              return (
+                <div key={option.value} aria-hidden={position !== active}
+                  className={cn('absolute inset-0 text-2xl font-semibold transition-all duration-500 [transition-timing-function:var(--ease-spring)]',
+                    option === defaultOption ? 'text-fg-3' : 'text-fg')}
+                  style={{ transform: `translateY(${(position - active) * 100}%)`, opacity: position === active ? 1 : 0 }}>
+                  {option === defaultOption ? '默认' : option.label}
+                </div>
+              );
+            })}
+          </div>
+          <LevelSlider index={index} count={levels.length} label={current.label} onChange={(step) => onChange(levels[step].value)} />
           <div className="mt-2 flex justify-between px-1 text-[11px] text-fg-4">
-            {options.map((option, step) => (
+            {levels.map((option, step) => (
               <button key={option.value} type="button" onClick={() => onChange(option.value)}
                 className={cn('transition-colors hover:text-fg', step === index && 'font-medium text-accent')}>{option.label}</button>
             ))}

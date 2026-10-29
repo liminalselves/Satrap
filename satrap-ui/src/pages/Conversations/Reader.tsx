@@ -431,6 +431,8 @@ export function ConversationReader({ platform, record, requestedContext, onDirty
           <Button variant="tinted" tint="green" loading={busy} disabled={!dirty || busy} onClick={() => void saveEditor()}>保存修改</Button></>}>
         <div className="space-y-3">
           {(dialogError || (error && editor !== null)) && <Notice tone="error">{dialogError || error}</Notice>}
+          {layer === 'context' && snapshot?.items.find((entry) => entry.index === editor)?.protocol_payload
+            && <Notice tone="info">该消息带有 Responses 原始推理资料, 保存后将不再向模型回放原始推理资料</Notice>}
           {layer === 'context' ? (
             <>
               <Field label="内容格式">
@@ -579,6 +581,7 @@ function ContextRow({ message, busy, onEdit, onDelete, readOnly }: {
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex flex-wrap items-center gap-1.5">
           <Badge tone={roleTint(role)}>{label}</Badge>
+          {Boolean(message.protocol_payload) && <Badge tone="purple">原始推理资料</Badge>}
           <span className="num text-[10.5px] text-fg-4">#{message.index + 1} · {time}</span>
           {tokens ? <span className="num text-[10.5px] text-fg-4">· {tokens} tokens</span> : null}
           <span className="ml-auto">{actions}</span>

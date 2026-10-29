@@ -287,7 +287,7 @@ export const MessageBubble = memo(function MessageBubble({
     <div data-message-id={message.id} className="chat-message-item group flex gap-3.5 animate-rise">
       <div className="relative mt-0.5 h-8 w-8 flex-none">
         <Logo className="h-8 w-8" />
-        {message.streaming && <span className="absolute -inset-1 animate-ping rounded-full border border-[rgb(var(--rgb-accent)/0.5)]" />}
+        {message.streaming && <span className="chat-avatar-halo absolute -inset-1 rounded-full border border-[rgb(var(--rgb-accent)/0.5)]" />}
       </div>
       <div className="min-w-0 flex-1 space-y-2 pt-0.5">
         {attachments && (

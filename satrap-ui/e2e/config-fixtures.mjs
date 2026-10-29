@@ -14,6 +14,7 @@ export function emptyConfigResponse(requestUrl) {
       : resource === 'edictum_configs' ? ['edictum_configs', 'plugin_catalog'] : [resource];
     return { data: resource === 'plugin_catalog' ? [] : {}, versions: Object.fromEntries(resources.map((name) => [name, { state: 'available', change_token: 'empty-fixture-v1' }])) };
   }
+  if (/^\/api\/chat\/conversations\/[^/]+\/settings$/.test(url.pathname)) return { temperature: null, request_temperature: 0.7 };
   assert.ok(!url.pathname.startsWith('/api/chat/conversations'), `未声明 Chat 目录夹具: ${url.pathname}`);
   return { ok: true };
 }

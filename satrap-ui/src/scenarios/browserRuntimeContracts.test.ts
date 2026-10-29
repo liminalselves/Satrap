@@ -56,36 +56,36 @@ describe("utils/clipboard", () => {
 
 describe("utils/constants", () => {
   describe('getThinkingOptions', () => {
-    it('filters configured levels for strength fields', () => {
+    const def = { value: 'default', label: '默认' };
+    const off = { value: 'off', label: '关闭' };
+
+    it('filters configured levels and shows off only when none is checked', () => {
       expect(getThinkingOptions({
         thinking_fields: ['thinking.type', 'reasoning_effort'],
         thinking_levels: ['low', 'xhigh', 'ultra'],
-      })).toEqual([
-        { value: 'off', label: '关闭' },
-        { value: 'low', label: '低' },
-        { value: 'xhigh', label: '高+' },
-        { value: 'ultra', label: '最高' },
-      ]);
+      })).toEqual([def, { value: 'low', label: '低' }, { value: 'xhigh', label: '高+' }, { value: 'ultra', label: '最高' }]);
+      expect(getThinkingOptions({ thinking_fields: ['reasoning_effort'], thinking_levels: ['none', 'minimal'] }))
+        .toEqual([def, off, { value: 'minimal', label: '极低' }]);
     });
 
-    it('uses the standard three levels for an existing config without metadata', () => {
-      expect(getThinkingOptions({ thinking_fields: ['thinking_level'] })).toEqual([
-        { value: 'off', label: '关闭' },
-        { value: 'low', label: '低' },
-        { value: 'medium', label: '中' },
-        { value: 'high', label: '高' },
+    it('treats an existing config without levels as none plus the standard three', () => {
+      expect(getThinkingOptions({ thinking_fields: ['reasoning_effort'] })).toEqual([
+        def, off, { value: 'low', label: '低' }, { value: 'medium', label: '中' }, { value: 'high', label: '高' },
       ]);
     });
 
     it('shows one enabled state for switch-only models', () => {
-      expect(getThinkingOptions({ thinking_fields: ['thinking.type'] })).toEqual([
-        { value: 'off', label: '关闭' },
-        { value: 'high', label: '开启' },
-      ]);
+      expect(getThinkingOptions({ thinking_fields: ['thinking.type'] })).toEqual([def, off, { value: 'high', label: '开启' }]);
+      expect(getThinkingOptions({ thinking_fields: ['enable_thinking'], thinking_levels: [] })).toEqual([def, { value: 'high', label: '开启' }]);
     });
 
-    it('keeps only off when the model has no thinking request field', () => {
-      expect(getThinkingOptions()).toEqual([{ value: 'off', label: '关闭' }]);
+    it('uses levels for Responses without request fields', () => {
+      expect(getThinkingOptions({ api_type: 'responses', thinking_levels: ['low', 'high'] }))
+        .toEqual([def, { value: 'low', label: '低' }, { value: 'high', label: '高' }]);
+    });
+
+    it('keeps only default when the model has no thinking request field', () => {
+      expect(getThinkingOptions()).toEqual([def]);
     });
   });
 });

@@ -89,8 +89,9 @@ function tagsFor(type: ModelType, config: ModelConfig): string[] {
     case 'llm': {
       const llm = config as LLMConfig;
       return [
+        llm.api_type === 'responses' ? 'Responses' : '',
         llm.supports_visual_input ? '视觉' : '',
-        llm.thinking_fields?.length ? '思考' : '',
+        llm.api_type === 'responses' || llm.thinking_fields?.length ? '思考' : '',
         llm.lock_api_key ? '密钥锁定' : '',
       ].filter(Boolean).slice(0, 3);
     }

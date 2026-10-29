@@ -101,6 +101,7 @@ export function responseFor(request, fixture) {
     };
   }
   if (path === '/api/projects') return { projects: [] };
+  if (/^\/api\/chat\/conversations\/[^/]+\/settings$/.test(path)) return { temperature: null, request_temperature: 0.7 };
   if (path === '/api/health') {
     return {
       running: true,

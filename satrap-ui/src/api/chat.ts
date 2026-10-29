@@ -229,9 +229,14 @@ export interface ChatPreloadSettings {
   approvalMode?: ApprovalMode;   // 草稿首次发送时应用, 不改变已有会话的审批策略
   model: string;
   think: string;
-  temperature: number;
+  temperature?: number | null;   // null 跟随模型配置, undefined 不提交并保留会话当前值
   systemPrompt: string;
   projectId: string | null;
+}
+
+export interface ChatGenerationSettings {
+  temperature: number | null;   // 会话覆盖值, null 表示跟随模型
+  request_temperature: number | null;   // 下一轮拟发送值, null 表示不发送
 }
 
 // 能力项
@@ -380,7 +385,7 @@ export const chatApi = {
   setModel: (conversation: string, model: string, expectedModel?: string) => request<ConversationModel>('PUT',
     `/api/chat/model?conversation=${encodeURIComponent(conversation)}`, { model, expected_model: expectedModel }),
 
-  createConversation: (model?: string, think = 'off', systemPrompt?: string, projectId?: string) =>
+  createConversation: (model?: string, think = 'default', systemPrompt?: string, projectId?: string) =>
     request<{ ok: boolean; conversation_id: string }>('POST', '/api/chat/conversations', {
       model, think,
       ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
@@ -391,7 +396,7 @@ export const chatApi = {
     request<{ ok: boolean; conversation_id: string }>('POST', '/api/chat/conversations/preload', {
       model: settings.model,
       think: settings.think,
-      temperature: settings.temperature,
+      temperature: settings.temperature ?? null,
       system_prompt: settings.systemPrompt,
       default_agent_prompt_enabled: settings.defaultAgentPromptEnabled ?? false,
       project_id: settings.projectId,
@@ -415,6 +420,12 @@ export const chatApi = {
 
   setCommandHistory: (conversation: string, enabled: boolean) =>
     request<{ ok: boolean; command_history_enabled: boolean; error?: string }>('PUT', `/api/chat/command-history?conversation=${encodeURIComponent(conversation)}`, { command_history_enabled: enabled }),
+
+  getGenerationSettings: (conversation: string) =>
+    request<ChatGenerationSettings>('GET', `/api/chat/conversations/${encodeURIComponent(conversation)}/settings`),
+
+  setGenerationSettings: (conversation: string, settings: { temperature: number | null }) =>
+    request<ChatGenerationSettings>('PATCH', `/api/chat/conversations/${encodeURIComponent(conversation)}/settings`, settings),
 
   getMaxIterations: (conversation: string) =>
     request<{ ok: boolean; max_iterations: number }>('GET', `/api/chat/max-iterations?conversation=${encodeURIComponent(conversation)}`),
@@ -475,7 +486,7 @@ export const chatApi = {
   send: (
     conversation: string,
     text: string,
-    think = 'off',
+    think = 'default',
     attachments?: Attachment[],
     preloadSettings?: ChatPreloadSettings,
     expectedModel?: string,
@@ -495,7 +506,7 @@ export const chatApi = {
       expected_model: expectedModel,
       ...(preloadSettings ? {
         model: preloadSettings.model,
-        temperature: preloadSettings.temperature,
+        ...(preloadSettings.temperature !== undefined ? { temperature: preloadSettings.temperature } : {}),
         system_prompt: preloadSettings.systemPrompt,
         project_id: preloadSettings.projectId,
         approval_mode: preloadSettings.approvalMode,

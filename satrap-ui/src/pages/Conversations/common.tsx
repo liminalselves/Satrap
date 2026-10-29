@@ -115,6 +115,7 @@ export function ExportDialog({ open, onClose, title, layer, payload }: {
         delete clone.reasoning;
         delete clone.reasoning_content;
         delete clone.thinking;
+        delete clone.protocol_payload;
         return clone;
       });
       const name = `satrap-${title.replace(/[^\w.-]+/g, '-')}-${layer === 'context' ? 'model-context' : 'chat-history'}.${format}`;
@@ -150,7 +151,7 @@ export function ExportDialog({ open, onClose, title, layer, payload }: {
           </Field>
         </div>
         <div className="rounded-xl border border-line bg-glass px-4">
-          <Field inline label="包含思考内容" hint="默认不导出 reasoning / thinking 字段">
+          <Field inline label="包含思考内容" hint="默认不导出 reasoning / thinking / protocol_payload 字段">
             <Switch label="包含思考内容" checked={includeReasoning} onChange={setIncludeReasoning} />
           </Field>
         </div>

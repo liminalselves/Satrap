@@ -105,14 +105,11 @@ export const THINKING_FIELD_OPTIONS = [
     label: 'enable_thinking',
     description: '使用 true/false 控制思考开关',
   },
-  {
-    value: 'thinking_level',
-    label: 'thinking_level',
-    description: '传递当前选择的思考强度',
-  },
 ] as const;
 
 export const THINKING_LEVEL_OPTIONS = [
+  { value: 'none', label: '关闭' },
+  { value: 'minimal', label: '极低' },
   { value: 'low', label: '低' },
   { value: 'medium', label: '中' },
   { value: 'high', label: '高' },
@@ -121,24 +118,44 @@ export const THINKING_LEVEL_OPTIONS = [
   { value: 'ultra', label: '最高' },
 ] as const;
 
-export const DEFAULT_THINKING_LEVELS = ['low', 'medium', 'high'] as const;
+export const DEFAULT_THINKING_LEVELS = ['none', 'low', 'medium', 'high'] as const;
 
-const THINKING_LEVEL_FIELDS = new Set(['thinking_level', 'reasoning_effort']);
+export const API_TYPE_OPTIONS = [
+  { value: 'chat_completions', label: 'Chat Completions' },
+  { value: 'responses', label: 'Responses' },
+] as const;
 
-export function getThinkingOptions(config?: {
+export const DEFAULT_THINKING_OPTION = { value: 'default', label: '默认' } as const;
+
+export interface ThinkingCapability {
+  api_type?: string;
   thinking_fields?: string[];
   thinking_levels?: string[];
-}): { value: string; label: string }[] {
+}
+
+/** 模型声明可调节思考强度时返回 true, 仅有开关字段时返回 false */
+export function hasThinkingLevels(config?: ThinkingCapability): boolean {
+  return config?.api_type === 'responses' || Boolean(config?.thinking_fields?.includes('reasoning_effort'));
+}
+
+/**
+ * 按模型配置列出可选思考强度
+ * default 不发送任何思考参数; off 仅在勾选 none 时出现, 避免向纯推理或非推理模型发送关闭参数
+ * 未保存 thinking_levels 的旧配置视为勾选 none 与低中高
+ */
+export function getThinkingOptions(config?: ThinkingCapability): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [{ ...DEFAULT_THINKING_OPTION }];
   const fields = config?.thinking_fields ?? [];
-  const offOption = { value: 'off', label: '关闭' };
-  if (fields.some((field) => THINKING_LEVEL_FIELDS.has(field))) {
-    const enabled = config?.thinking_levels ?? [...DEFAULT_THINKING_LEVELS];
-    return [offOption, ...THINKING_LEVEL_OPTIONS.filter((option) => enabled.includes(option.value))];
+  const responses = config?.api_type === 'responses';
+  if (!responses && fields.length === 0) return options;
+  const levels: readonly string[] = config?.thinking_levels ?? DEFAULT_THINKING_LEVELS;
+  if (levels.includes('none')) options.push({ value: 'off', label: '关闭' });
+  if (hasThinkingLevels(config)) {
+    options.push(...THINKING_LEVEL_OPTIONS.filter((option) => option.value !== 'none' && levels.includes(option.value)));
+  } else {
+    options.push({ value: 'high', label: '开启' });
   }
-  if (fields.length > 0) {
-    return [offOption, { value: 'high', label: '开启' }];
-  }
-  return [offOption];
+  return options;
 }
 
 export const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] as const;
