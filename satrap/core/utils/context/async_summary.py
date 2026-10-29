@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 from satrap.core.type import RequestContextBlock
-from satrap.core.telemetry.capture import bind_scope
+from satrap.core.APICall.LLMCall.observation import bind_call_purpose
 from satrap.core.utils.context.request import freeze_request_blocks, attach_request_blocks, attach_system_suffix
 from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING
 import copy
@@ -53,7 +53,7 @@ class _AsyncSummary(_AsyncCheckpoints):
         for chunk in text_chunks:
             previous = f"\n\n已有摘要:\n{summary}" if summary else ""
             prompt = f"{self._SUMMARY_PROMPT}{previous}\n\n新增对话:\n{chunk}"
-            with bind_scope(purpose="summary"):
+            with bind_call_purpose("summary"):
                 result = await llm.chat(
                     [{"role": "user", "content": prompt}],
                     thinking="off",
@@ -61,7 +61,7 @@ class _AsyncSummary(_AsyncCheckpoints):
                 )
             if not isinstance(result, str) or not result.strip():
                 logger.warning("[异步上下文管理] 摘要正文为空, 使用扩展输出预算重试")
-                with bind_scope(purpose="summary"):
+                with bind_call_purpose("summary"):
                     result = await llm.chat(
                         [{"role": "user", "content": prompt}],
                         thinking="off",
@@ -85,7 +85,7 @@ class _AsyncSummary(_AsyncCheckpoints):
             "保留关键事实、决定和待办事项:\n\n"
             f"{self._runtime_state.summary}"
         )
-        with bind_scope(purpose="summary"):
+        with bind_call_purpose("summary"):
             result = await llm.chat(
                 [{"role": "user", "content": prompt}],
                 thinking="off",
@@ -93,7 +93,7 @@ class _AsyncSummary(_AsyncCheckpoints):
             )
         if not isinstance(result, str) or not result.strip():
             logger.warning("[异步上下文管理] 二次压缩正文为空, 使用扩展输出预算重试")
-            with bind_scope(purpose="summary"):
+            with bind_call_purpose("summary"):
                 result = await llm.chat(
                     [{"role": "user", "content": prompt}],
                     thinking="off",

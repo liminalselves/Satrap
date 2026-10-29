@@ -461,22 +461,10 @@ def _as_async_llm(fake: Any) -> _stream_call_AsyncLLM:
     return cast(_stream_call_AsyncLLM, fake)
 
 def _make_llm(cls: type[_LLM], client: object) -> _LLM:
-    llm = cls.__new__(cls)
-    # 测试替身非真实 OpenAI 客户端, 边界断言集中在工厂内
-    llm.client = cast(Any, client)
-    llm.model = "deepseek-v4-flash"
-    llm.temperature = 0.2
-    llm.top_p = 0.95
-    llm.max_tokens = 100
-    llm.network_timeout = 60.0
-    llm.base_url = "https://model.test/v1"
-    llm.thinking_field_name = "reasoning_content"
-    llm.thinking_fields = None
-    llm.omit_none_thinking_fields = False
-    llm.supports_visual_input = False
-    llm.suppress_error = False
-    llm.return_false = False
-    return llm
+    from unittest.mock import patch
+
+    with patch.object(cls, "_create_client", return_value=client):
+        return cls(api_key="test", model="deepseek-v4-flash", base_url="https://model.test/v1", temperature=0.2, max_tokens=100, suppress_error=False)
 
 def test_sync_stream_call_aggregates_tool_arguments():
     llm = _make_llm(LLM, _SyncClient())

@@ -2,7 +2,7 @@
 # Generated from GitHub: https://github.com/midway2333/Satrap
 
 # 请求依赖
-openai>=2.0.0
+openai>=2.41.1
 
 # 日志系统
 colorlog>=6.7.0

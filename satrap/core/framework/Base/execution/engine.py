@@ -130,6 +130,8 @@ def configuration(wf: Workflow) -> str:
         "model", "base_url", "temperature", "top_p", "max_tokens",
         "supports_visual_input", "supports_native_video_input", "video_frame_interval", "thinking_fields", "omit_none_thinking_fields",
     )}
+    if getattr(wf.llm, "api_type", "chat_completions") != "chat_completions":
+        model["api_type"] = wf.llm.api_type
     tools: list[dict[str, Any]] = []
     registry = cast(dict[str, Any], wf.tools_manager.tools)
     for name, tool in sorted(registry.items()):
@@ -366,7 +368,7 @@ async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[Ex
             elif isinstance(action, Prepare):
                 value = await wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                            tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks, system_suffix=action.system_suffix)
-                from satrap.core.log.debug.capture import record_debug
+                from satrap.core.log.debug.hooks import record_debug
 
                 record_debug("context_preparation", "end", metadata={"context_id": wf.ctx.conversation_id, **prepared_metadata(value)})
             elif isinstance(action, InvokeTool):
@@ -444,7 +446,7 @@ def _run_sync_scoped(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptio
             elif isinstance(action, Prepare):
                 value = wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                      tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks, system_suffix=action.system_suffix)
-                from satrap.core.log.debug.capture import record_debug
+                from satrap.core.log.debug.hooks import record_debug
 
                 record_debug("context_preparation", "end", metadata={"context_id": wf.ctx.conversation_id, **prepared_metadata(value)})
             elif isinstance(action, InvokeTool):

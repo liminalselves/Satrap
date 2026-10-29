@@ -956,6 +956,7 @@ class ChatService:
                 supports_visual_input=config.get("supports_visual_input", False),
                 supports_native_video_input=config.get("supports_native_video_input", False),
                 video_frame_interval=config.get("video_frame_interval", 2.0),
+                api_type=config.get("api_type", "chat_completions"),
                 thinking_levels=thinking_levels,
                 omit_none_thinking_fields=bool(config.get("omit_none_thinking_fields")),
             )
@@ -988,6 +989,7 @@ class ChatService:
             "temperature",
             "top_p",
             "max_tokens",
+            "api_type",
             "network_timeout",
             "context_window",
             "history_ratio",

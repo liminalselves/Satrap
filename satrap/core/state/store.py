@@ -483,12 +483,14 @@ class StateStore:
                     ).fetchone()
                     # 指针型源: 复制到水位为止的消息行 (追加式语义)
                     if has_table is not None:
+                        from satrap.core.utils.context.utils import _ensure_protocol_column
+                        _ensure_protocol_column(conn)
                         conn.execute(
                             "INSERT INTO chat_history "
                             "(conversation_id, role, content, content_json, tool_call_id, "
-                            " tool_calls, reasoning_content) "
+                            " tool_calls, reasoning_content, protocol_payload) "
                             "SELECT ?, role, content, content_json, tool_call_id, "
-                            "tool_calls, reasoning_content FROM chat_history "
+                            "tool_calls, reasoning_content, protocol_payload FROM chat_history "
                             "WHERE conversation_id = ? AND id IN "
                             "(SELECT id FROM chat_history WHERE conversation_id = ? "
                             "ORDER BY id LIMIT ?)",

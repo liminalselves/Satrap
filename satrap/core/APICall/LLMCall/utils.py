@@ -179,7 +179,7 @@ def prepare_call_messages(
     thinking_field_name: str | None,
     img_urls: list[str] | None,
     *, video_urls: list[str] | None = None, supports_visual_input: bool = False,
-    supports_native_video_input: bool = False, video_frame_interval: float = 2.0,
+    supports_native_video_input: bool = False, video_frame_interval: float = 2.0, expand_media: bool = True,
 ) -> list[dict[str, Any]]:
     """
     统一思考字段与多模态消息预处理
@@ -192,6 +192,7 @@ def prepare_call_messages(
     - supports_visual_input: 是否支持图片输入, 默认 False
     - supports_native_video_input: 是否支持原生视频输入, 默认 False
     - video_frame_interval: 抽帧间隔秒数, 默认 2.0
+    - expand_media: 是否将工具媒体展开为兼容接口的补充用户消息
 
     返回:
     - 可发送给模型的消息, 工具媒体只在此处展开; 未启用视觉时拒绝媒体
@@ -222,7 +223,7 @@ def prepare_call_messages(
     media_bytes = sum(len(part[part["type"]]["url"]) for message in prepared if isinstance(message.get("content"), list) for part in message["content"] if part.get("type") in {"image_url", "video_url"})
     if media_bytes > 32 * 1024 * 1024 * 4 // 3 + 4096:
         raise ValueError("本轮媒体总量超过 32 MiB, 请分段读取")
-    return expand_tool_media(prepared)
+    return expand_tool_media(prepared) if expand_media else prepared
 
 
 def prepare_structured_messages(

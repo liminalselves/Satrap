@@ -16,11 +16,8 @@ from typing import (
 )
 
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, safe_getattr_str
-from .responses import parse_chat_response, parse_call_response
-from .stream import _StreamCallAccumulator
 from .utils import (
     _stream_usage_option_unsupported,
-    prepare_call_messages,
     prepare_structured_messages,
 )
 from .base import _LLMBase
@@ -42,10 +39,14 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         返回:
         - SDK 响应或相同迭代协议的观察流
         """
-        from satrap.core.telemetry.model import complete_async
+        from .observation import current_observers
 
-        return await complete_async(self.client.chat.completions.create, request, self.network_timeout,
-                                    provider=str(self.base_url or ""), model_config=self.model_config_name, context_window=self.model_context_window)
+        create = self.client.responses.create if self.api_type == "responses" else self.client.chat.completions.create
+        observers = current_observers()
+        if observers is None:
+            return await create(**request)
+        return await observers.complete_async(create, request, self.network_timeout,
+            provider=str(self.base_url or ""), model_config=self.model_config_name, context_window=self.model_context_window)
 
     async def chat(
         self,
@@ -81,9 +82,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                 **self._build_request(parameters, messages, thinking=thinking)
             )  # 发起网络请求并等待结果
 
-            return parse_chat_response(
-                api_response=response, suppress_error=self.suppress_error
-            )
+            return self._parse_text_response(response, model)
 
         except APIError as e:
             info = self._report_error(e)
@@ -116,6 +115,15 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         返回:
         - 异步生成器, 每次 yield 一个文本片段; 如果出错, 根据配置返回空字符串或 False
         """
+        if self.api_type == "responses":
+            stream = self.stream_call(messages, model=model, thinking=thinking, temperature=temperature, top_p=top_p, max_tokens=max_tokens)
+            async for event in stream:
+                if event.kind == "content_delta":
+                    yield event.delta
+                elif event.kind == "error":
+                    yield False if self.return_false else event.error or ""
+            return
+
         parameters = self._generation_parameters(model, temperature, top_p, max_tokens)
 
         if not messages:
@@ -196,7 +204,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                 **self._build_request(parameters, processed_messages, structured=True)
             )  # 使用注入了格式提示的消息列表发起请求
 
-            return parse_chat_response(response, self.suppress_error)
+            return self._parse_text_response(response, model)
 
         except APIError as e:
             info = self._report_error(e)
@@ -208,7 +216,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
 
     async def call(
         self,
-        messages: List[Dict[str, str | List[Dict[str, Any]]]],
+        messages: List[Dict[str, Any]],
         model: Optional[str] = None,
         thinking: str = "off",
         temperature: Optional[float] = None,
@@ -251,11 +259,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                 else False
             )
 
-        processed_messages = await asyncio.to_thread(prepare_call_messages,
-            messages, self.thinking_field_name, img_urls,
-            video_urls=video_urls, supports_visual_input=self.supports_visual_input,
-            supports_native_video_input=getattr(self, "supports_native_video_input", False), video_frame_interval=getattr(self, "video_frame_interval", 2.0)
-        )
+        processed_messages = await asyncio.to_thread(self._prepare_messages, messages, img_urls, video_urls)
 
         try:
             response = await self._complete(
@@ -268,7 +272,8 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                 )
             )
 
-            return parse_call_response(response, self.suppress_error)
+            parsed = self._parse_response(response, model)
+            return False if parsed.error_info is not None and self.return_false else parsed
 
         except APIError as e:
             info = self._report_error(e)
@@ -280,7 +285,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
 
     async def stream_call(
         self,
-        messages: List[Dict[str, str | List[Dict[str, Any]]]],
+        messages: List[Dict[str, Any]],
         model: Optional[str] = None,
         thinking: str = "off",
         temperature: Optional[float] = None,
@@ -327,11 +332,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             )
             return
 
-        processed_messages = await asyncio.to_thread(prepare_call_messages,
-            messages, self.thinking_field_name, img_urls,
-            video_urls=video_urls, supports_visual_input=self.supports_visual_input,
-            supports_native_video_input=getattr(self, "supports_native_video_input", False), video_frame_interval=getattr(self, "video_frame_interval", 2.0)
-        )
+        processed_messages = await asyncio.to_thread(self._prepare_messages, messages, img_urls, video_urls)
         request_params = self._build_request(
             parameters,
             processed_messages,
@@ -344,7 +345,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
 
         try:
             while True:
-                accumulator = _StreamCallAccumulator()
+                accumulator = self.protocol.new_stream_decoder()
                 received_chunk = False
                 try:
                     stream = cast(
@@ -378,7 +379,11 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                         continue
                     raise
 
-            response = accumulator.response(self.suppress_error)
+            response = self._normalize_response(accumulator.response(self.suppress_error), model)
+            if response.error_info is not None:
+                yield LLMCallStreamEvent(kind="error", error=response.content, error_info=response.error_info, response=False if self.return_false else response)
+                if self.return_false:
+                    response = False
             yield LLMCallStreamEvent(
                 kind="done",
                 response=response,

@@ -155,6 +155,7 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
         "demo",
         {
             "model": "gpt-demo",
+            "api_type": "responses",
             "api_key": "secret-key",
             "lock_api_key": False,
             "temperature": 0.5,
@@ -172,6 +173,13 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
     listed = service.list_configs("llm")
 
     assert listed["demo"]["model"] == "gpt-demo"
+    assert listed["demo"]["api_type"] == "responses"
+    assert ModelConfigManager(tmp_path / "models.json").get_llm_config("demo").api_type == "responses"
+    client = build_llm_from_config(manager.get_llm_config("demo"))
+    assert client.api_type == "responses"
+    client.client.close()
+    with pytest.raises(ValueError, match="api_type"):
+        service.update("llm", "demo", {"api_type": "unsupported"})
     # 展示接口即使允许运行时更新 API Key 也必须始终脱敏
     assert listed["demo"]["api_key"] != "secret-key"
     assert str(listed["demo"]["api_key"]).endswith("-key")

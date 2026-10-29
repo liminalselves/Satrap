@@ -13,11 +13,8 @@ from typing import (
 )
 
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, safe_getattr_str
-from .responses import parse_chat_response, parse_call_response
-from .stream import _StreamCallAccumulator
 from .utils import (
     _stream_usage_option_unsupported,
-    prepare_call_messages,
     prepare_structured_messages,
 )
 from .base import _LLMBase
@@ -39,10 +36,14 @@ class LLM(_LLMBase[OpenAI]):
         返回:
         - SDK 响应或同协议的观察流
         """
-        from satrap.core.telemetry.model import complete_sync
+        from .observation import current_observers
 
-        return complete_sync(self.client.chat.completions.create, request, self.network_timeout,
-                             provider=str(self.base_url or ""), model_config=self.model_config_name, context_window=self.model_context_window)
+        create = self.client.responses.create if self.api_type == "responses" else self.client.chat.completions.create
+        observers = current_observers()
+        if observers is None:
+            return create(**request)
+        return observers.complete_sync(create, request, self.network_timeout,
+            provider=str(self.base_url or ""), model_config=self.model_config_name, context_window=self.model_context_window)
 
     def chat(
         self,
@@ -78,7 +79,7 @@ class LLM(_LLMBase[OpenAI]):
                 **self._build_request(parameters, messages, thinking=thinking)
             )  # 发起网络请求
 
-            return parse_chat_response(response, self.suppress_error)
+            return self._parse_text_response(response, model)
 
         except APIError as e:
             info = self._report_error(e)
@@ -111,6 +112,15 @@ class LLM(_LLMBase[OpenAI]):
         返回:
         - 生成器, 每次 yield 一个文本片段; 如果出错, 根据配置返回空字符串或 False
         """
+        if self.api_type == "responses":
+            stream = self.stream_call(messages, model=model, thinking=thinking, temperature=temperature, top_p=top_p, max_tokens=max_tokens)
+            for event in stream:
+                if event.kind == "content_delta":
+                    yield event.delta
+                elif event.kind == "error":
+                    yield False if self.return_false else event.error or ""
+            return
+
         parameters = self._generation_parameters(model, temperature, top_p, max_tokens)
 
         if not messages:
@@ -191,7 +201,7 @@ class LLM(_LLMBase[OpenAI]):
                 **self._build_request(parameters, processed_messages, structured=True)
             )  # 使用注入了格式提示的消息列表发起请求
 
-            return parse_chat_response(response, self.suppress_error)
+            return self._parse_text_response(response, model)
 
         except APIError as e:
             info = self._report_error(e)
@@ -246,11 +256,7 @@ class LLM(_LLMBase[OpenAI]):
                 else False
             )
 
-        processed_messages = prepare_call_messages(
-            messages, self.thinking_field_name, img_urls,
-            video_urls=video_urls, supports_visual_input=self.supports_visual_input,
-            supports_native_video_input=getattr(self, "supports_native_video_input", False), video_frame_interval=getattr(self, "video_frame_interval", 2.0)
-        )
+        processed_messages = self._prepare_messages(messages, img_urls, video_urls)
 
         try:
             response = self._complete(
@@ -263,7 +269,8 @@ class LLM(_LLMBase[OpenAI]):
                 )
             )
 
-            return parse_call_response(response, self.suppress_error)
+            parsed = self._parse_response(response, model)
+            return False if parsed.error_info is not None and self.return_false else parsed
 
         except APIError as e:
             info = self._report_error(e)
@@ -323,11 +330,7 @@ class LLM(_LLMBase[OpenAI]):
             )
             return
 
-        processed_messages = prepare_call_messages(
-            messages, self.thinking_field_name, img_urls,
-            video_urls=video_urls, supports_visual_input=self.supports_visual_input,
-            supports_native_video_input=getattr(self, "supports_native_video_input", False), video_frame_interval=getattr(self, "video_frame_interval", 2.0)
-        )
+        processed_messages = self._prepare_messages(messages, img_urls, video_urls)
         request_params = self._build_request(
             parameters,
             processed_messages,
@@ -340,7 +343,7 @@ class LLM(_LLMBase[OpenAI]):
 
         try:
             while True:
-                accumulator = _StreamCallAccumulator()
+                accumulator = self.protocol.new_stream_decoder()
                 received_chunk = False
                 try:
                     stream = cast(
@@ -371,7 +374,11 @@ class LLM(_LLMBase[OpenAI]):
                         continue
                     raise
 
-            response = accumulator.response(self.suppress_error)
+            response = self._normalize_response(accumulator.response(self.suppress_error), model)
+            if response.error_info is not None:
+                yield LLMCallStreamEvent(kind="error", error=response.content, error_info=response.error_info, response=False if self.return_false else response)
+                if self.return_false:
+                    response = False
             yield LLMCallStreamEvent(
                 kind="done",
                 response=response,

@@ -52,7 +52,7 @@ def agent_flow(user_input: str | list[dict[str, Any]] | None, max_iterations: in
             )
         if response.get("type") != "tools_call" or not response.get("tool_calls"):
             content = response.get("content") or ""
-            add_bot_message(messages, content, reasoning=response.get("thinking"))
+            add_bot_message(messages, content, reasoning=response.get("thinking"), protocol_payload=response.get("protocol_payload"))
             clear_reasoning_content(messages)
             return messages, content
         if final:
@@ -68,5 +68,5 @@ def agent_flow(user_input: str | list[dict[str, Any]] | None, max_iterations: in
             tool_message, tool_result = yield ToolStep(f"tool:{iteration}:{index}", call, visible)
             calls.append(tool_message)
             results.append(tool_result)
-        add_tools_call_flow(messages, response.get("content") or "", calls, results, response.get("thinking"))
+        add_tools_call_flow(messages, response.get("content") or "", calls, results, response.get("thinking"), protocol_payload=response.get("protocol_payload"))
     raise RuntimeError("任务未生成最终结果")

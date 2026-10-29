@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "openai>=2.0.0",
+    "openai>=2.41.1",
     "colorlog>=6.7.0",
     "splintr-rs>=0.1.0",
     "numpy>=1.24.0",

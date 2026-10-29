@@ -55,7 +55,10 @@ def bind_scope(scope: MetricScope | None = None, *, service: Service | None = No
     token = _SCOPE.set(value)
     service_token = _SERVICE.set(service or _SERVICE.get())
     try:
-        yield
+        from satrap.core.APICall.LLMCall.observation import bind_observers
+        from . import model
+        with bind_observers(model):
+            yield
     finally:
         _SCOPE.reset(token)
         _SERVICE.reset(service_token)

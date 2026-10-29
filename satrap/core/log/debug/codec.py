@@ -98,11 +98,15 @@ class DebugBodyCodec:
         返回:
         - 可独立还原的根节点摘要, 不依赖当前聊天历史
         """
-        if isinstance(value, dict) and isinstance(value.get("messages"), list):
-            messages = cast(list[DebugData], value["messages"])
-            fields = self._put("json", {name: item for name, item in value.items() if name != "messages"})
+        sequence_key = "input" if isinstance(value, dict) and isinstance(value.get("input"), list) else "messages"
+        if isinstance(value, dict) and isinstance(value.get(sequence_key), list):
+            messages = cast(list[DebugData], value[sequence_key])
+            fields = self._put("json", {name: item for name, item in value.items() if name != sequence_key})
             sequence = self._sequence(messages)
-            return self._put("request", {"fields": fields, "messages": sequence}, (fields, sequence))
+            node: dict[str, DebugData] = {"fields": fields, "messages": sequence}
+            if sequence_key != "messages":
+                node["sequence_key"] = sequence_key
+            return self._put("request", node, (fields, sequence))
         return self._put("json", value)
 
     def _sequence(self, messages: list[DebugData]) -> str:
@@ -223,7 +227,10 @@ class DebugBodyCodec:
                 fields, messages = restore(cast(str, value["fields"])), restore(cast(str, value["messages"]))
                 if not isinstance(fields, dict) or not isinstance(messages, list):
                     raise ValueError("诊断模型请求引用无效")
-                result = {**fields, "messages": messages}
+                sequence_key = value.get("sequence_key", "messages")
+                if sequence_key not in {"messages", "input"}:
+                    raise ValueError("诊断模型请求字段无效")
+                result = {**fields, cast(str, sequence_key): messages}
             elif kind == "json":
                 expansion[0] -= sizes[identity]
                 if expansion[0] < 0:
@@ -246,13 +253,14 @@ class DebugBodyCodec:
         - max_bytes: 两份快照合计解码预算, 默认 64 MB
 
         返回:
-        - 新增或变更的消息及参数, 无 messages 的正文原样返回
+        - 新增或变更的消息及参数, 无消息列表的正文原样返回
         """
         # Step.1 独立还原当前快照, 共享存储不转换为依赖历史请求的差量记录
         current = self.read(key, max_bytes=max_bytes // 2)
-        if not isinstance(current, dict) or not isinstance(current.get("messages"), list):
+        sequence_key = "input" if isinstance(current, dict) and isinstance(current.get("input"), list) else "messages"
+        if not isinstance(current, dict) or not isinstance(current.get(sequence_key), list):
             return current
-        messages = cast(list[DebugData], current["messages"])
+        messages = cast(list[DebugData], current[sequence_key])
         previous: DebugData = None
         unavailable = False
         if previous_key:
@@ -260,7 +268,7 @@ class DebugBodyCodec:
                 previous = self.read(previous_key, max_bytes=max_bytes // 2)
             except ValueError:
                 unavailable = True   # 旧正文缺失不伪装为没有变化, 当前快照仍可单独浏览
-        old = previous.get("messages") if isinstance(previous, dict) else None
+        old = previous.get(sequence_key) if isinstance(previous, dict) else None
         # Step.2 仅省略确认相同的前后片段, 中间修改和删除均明确报告
         prefix, suffix = 0, 0
         if isinstance(old, list):
@@ -276,9 +284,9 @@ class DebugBodyCodec:
             prefix = last_user if last_user is not None else 0
             removed, basis = 0, "latest_user_message" if last_user is not None else "initial_input"
         # Step.3 参数变化单独展示, 模型切换和上下文重写不伪装成仅有新消息
-        changed = {name: value for name, value in current.items() if name != "messages"
+        changed = {name: value for name, value in current.items() if name != sequence_key
                    and (not isinstance(old, list) or not isinstance(previous, dict) or name not in previous or previous[name] != value)}
-        removed_parameters = [name for name in previous if name != "messages" and name not in current] if isinstance(previous, dict) and isinstance(old, list) else []
+        removed_parameters = [name for name in previous if name != sequence_key and name not in current] if isinstance(previous, dict) and isinstance(old, list) else []
         return {"view": "delta", "basis": basis, "baseline_unavailable": unavailable,
                 "total_messages": len(messages), "hidden_prefix_messages": prefix, "hidden_suffix_messages": suffix,
                 "removed_messages": removed, "messages": messages[prefix:len(messages) - suffix if suffix else len(messages)],

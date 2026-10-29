@@ -346,7 +346,10 @@ def _extract_token_usage(response: Any) -> Optional[TokenUsage]:
     if usage is None and isinstance(response, dict):
         usage = cast(dict[str, Any], response).get("usage")
     if usage is None:
-        return None
+        nested = safe_getattr(response, "response")
+        if nested is None and isinstance(response, dict):
+            nested = response.get("response")
+        return _extract_token_usage(nested) if nested is not None else None
 
     input_tokens = _usage_int(usage, ("prompt_tokens", "input_tokens"))
     output_tokens = _usage_int(usage, ("completion_tokens", "output_tokens"))

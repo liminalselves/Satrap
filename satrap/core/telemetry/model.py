@@ -44,6 +44,10 @@ class _Observation:
                 report_failure(f"Debug 模型观察初始化失败: {type(error).__name__}")
         self.writer = current_writer()
         self.scope = replace(current_scope(), model_config=model_config or current_scope().model_config)
+        from satrap.core.APICall.LLMCall.observation import current_call_purpose
+        purpose = current_call_purpose()
+        if purpose is not None:
+            self.scope = replace(self.scope, purpose=purpose)
         self.call_id = uuid4().hex
         self.model = str(request.get("model", ""))[:512]
         self.provider = urlsplit(provider).hostname or ""   # 不保存 URL 中的凭据, 查询串或路径
@@ -51,6 +55,8 @@ class _Observation:
         self.usage: TokenUsage | None = None
         self.finished = False
         self.context_window = context_window
+        self.terminal: object = None
+        self.responses_mode = "input" in request and "messages" not in request
 
     def chunk(self, value: object) -> None:
         """
@@ -59,6 +65,11 @@ class _Observation:
         参数:
         - value: SDK 实际流式块
         """
+        from satrap.core.APICall.LLMCall.protocols.responses import field
+        if field(value, "type") in {"response.completed", "response.failed", "response.incomplete"}:
+            self.terminal = field(value, "response")
+        elif self.responses_mode and field(value, "type") == "error":
+            self.terminal = {"status": "failed"}
         if self.debug is not None:
             try:
                 self.debug.chunk(value)
@@ -94,7 +105,12 @@ class _Observation:
         try:
             usage = _extract_token_usage(response) if response is not None else self.usage
             cancelled = error is not None and type(error).__name__ in {"CancelledError", "GeneratorExit"}
-            status = "cancelled" if cancelled else "failed" if error is not None else "succeeded"
+            from satrap.core.APICall.LLMCall.protocols.responses import field
+            terminal = response if response is not None else self.terminal
+            cancelled = cancelled and field(terminal, "status") not in {"failed", "incomplete"}
+            remote_failed = (self.responses_mode and field(terminal, "status") != "completed"
+                             or field(terminal, "status") in {"failed", "incomplete", "cancelled"})
+            status = "cancelled" if cancelled else "failed" if error is not None or remote_failed else "succeeded"
             self.writer.submit(ModelCall(self.call_id, self.scope, self.model, self.provider, self.started_at, time.time(),
                                          (time.monotonic() - self.started) * 1000, status,
                                          usage.input_tokens if usage else None, usage.output_tokens if usage else None,

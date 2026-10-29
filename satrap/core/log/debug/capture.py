@@ -600,7 +600,11 @@ def debug_request(obj: DebugObject, request_id: str, *, context_id: str = "", ti
     token = _CURRENT.set(trace)
     span_token = _SPAN.set("")
     try:
-        yield trace
+        from satrap.core.APICall.LLMCall.observation import bind_observers
+        from satrap.core.telemetry import model
+        from .hooks import bind_debug_hooks
+        with bind_observers(model), bind_debug_hooks(record_debug, debug_span):
+            yield trace
     except BaseException as error:
         if trace is not None:
             info = getattr(error, "info", None)

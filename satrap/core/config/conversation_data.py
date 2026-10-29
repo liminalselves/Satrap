@@ -20,7 +20,7 @@ import json
 import time
 import uuid
 
-from satrap.core.utils.context.utils import _load_message_content, _message_content_json
+from satrap.core.utils.context.utils import _load_message_content, _message_content_json, _protocol_payload_json, _ensure_protocol_column
 from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, conversation_records, filter_records
 from satrap.core.storage.file_lock import database_session_lock
 from satrap.core.utils.vision import content_text_projection
@@ -152,9 +152,9 @@ class ConversationDataService:
         messages = []
         for row in connection.execute("SELECT * FROM chat_history WHERE conversation_id=? ORDER BY id", (conversation,)):
             message = {"role": row["role"], "content": _load_message_content(row["content"], row["content_json"] if "content_json" in row.keys() else None)}
-            for key in ("tool_calls", "tool_call_id", "reasoning_content"):
+            for key in ("tool_calls", "tool_call_id", "reasoning_content", "protocol_payload"):
                 if key in row.keys() and row[key] is not None:
-                    message[key] = json.loads(row[key]) if key == "tool_calls" else row[key]
+                    message[key] = json.loads(row[key]) if key in {"tool_calls", "protocol_payload"} else row[key]
             messages.append(message)
         return messages
 
@@ -322,9 +322,9 @@ class ConversationDataService:
                     if layer == "context":
                         item: dict[str, StoredValue] = {"record_id": f"context:{row['id']}", "id": row["id"], "role": row["role"],
                                                         "content": cast(StoredValue, _load_message_content(row["content"], row["content_json"] if "content_json" in columns else None))}
-                        for name in ("tool_calls", "tool_call_id", "reasoning_content"):
+                        for name in ("tool_calls", "tool_call_id", "reasoning_content", "protocol_payload"):
                             if name in columns and row[name] is not None:
-                                item[name] = json.loads(row[name]) if name == "tool_calls" else row[name]
+                                item[name] = json.loads(row[name]) if name in {"tool_calls", "protocol_payload"} else row[name]
                     else:
                         item = {**dict(row), "record_id": f"history:{row['id']}", "variants": [], "tool_call_records": []}
                     records[row["id"]] = item
@@ -368,6 +368,7 @@ class ConversationDataService:
             reasoning = payload.get("reasoning_content", result[index].get("reasoning_content"))
             if reasoning is not None and not isinstance(reasoning, str):
                 raise ValueError("思考内容必须是文本或 null")
+            result[index].pop("protocol_payload", None)
             result[index]["content"] = content
             if reasoning is not None:
                 result[index]["reasoning_content"] = reasoning
@@ -397,9 +398,10 @@ class ConversationDataService:
         - conversation: 对话 ID
         - messages: 新的完整消息快照
         """
+        _ensure_protocol_column(connection)
         connection.execute("DELETE FROM chat_history WHERE conversation_id=?", (conversation,))
         for item in messages:
-            connection.execute("INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)", (conversation, item["role"], None if item.get("content") is None else content_text_projection(item.get("content")), _message_content_json(item.get("content")), item.get("tool_call_id"), json.dumps(item["tool_calls"], ensure_ascii=False) if item.get("tool_calls") else None, item.get("reasoning_content")))
+            connection.execute("INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content, protocol_payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (conversation, item["role"], None if item.get("content") is None else content_text_projection(item.get("content")), _message_content_json(item.get("content")), item.get("tool_call_id"), json.dumps(item["tool_calls"], ensure_ascii=False) if item.get("tool_calls") else None, item.get("reasoning_content"), _protocol_payload_json(item.get("protocol_payload"))))
         tables = ConversationDataService._tables(connection)
         if "context_catalog" in tables:
             connection.execute("UPDATE context_catalog SET modified_at=? WHERE context_id=?", (time.time(), conversation))
@@ -470,9 +472,9 @@ class ConversationDataService:
                     updated = []
                     for row in rows:
                         message = {"role": row["role"], "content": _load_message_content(row.get("content"), row.get("content_json"))}
-                        for key in ("tool_calls", "tool_call_id", "reasoning_content"):
+                        for key in ("tool_calls", "tool_call_id", "reasoning_content", "protocol_payload"):
                             if row.get(key) is not None:
-                                message[key] = json.loads(row[key]) if key == "tool_calls" else row[key]
+                                message[key] = json.loads(row[key]) if key in {"tool_calls", "protocol_payload"} else row[key]
                         updated.append(message)
             elif action == "restore":
                 if "conversation_data_backups" not in self._tables(connection):

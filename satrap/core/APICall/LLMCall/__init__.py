@@ -71,6 +71,7 @@ def build_llm_from_config(cfg: LLMConfig, *, async_: bool = False) -> "LLM | Asy
         "timeout": safe_getattr(cfg, "network_timeout", 60.0),
         "lock_api_key": safe_getattr(cfg, "lock_api_key", True),
         "allow_insecure_base_url": safe_getattr(cfg, "allow_insecure_base_url", False),
+        "api_type": safe_getattr(cfg, "api_type", "chat_completions"),
     }
     # 可选字段: 仅非 None 时透传, 避免覆盖 LLM 类默认值 (temperature=0 也需保留)
     temperature = safe_getattr(cfg, "temperature")

@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+from satrap.core.type import ModelProtocolPayload
+from satrap.core.utils.model_history import attach_protocol_payload
+
 from collections.abc import Sequence
 import asyncio
 from typing import List, Dict, Union, Optional, Any
@@ -156,6 +159,7 @@ class AsyncContextManager(_AsyncSummary):
         tools_calls: list[dict[str, Any]] | None = None,
         ignore_think: bool = True,
         reasoning: str | None = None,
+        *, protocol_payload: ModelProtocolPayload | None = None,
     ):
         """
         添加机器人消息到上下文中
@@ -165,6 +169,7 @@ class AsyncContextManager(_AsyncSummary):
         - tools_calls: 工具调用信息列表, 可选, 每个元素格式为 {"id": "工具 ID", "type": "function", "function": {"name": "工具名", "arguments": "参数 JSON 字符串"}}
         - ignore_think: 是否忽略消息中的思考过程, 默认True
         - reasoning: 思考过程, 可选
+        - protocol_payload: 与本次助手输出关联的协议资料
         """
         if tools_calls:
             self._messages.append(
@@ -196,6 +201,7 @@ class AsyncContextManager(_AsyncSummary):
                 }
             )
 
+        attach_protocol_payload(self._messages[-1], protocol_payload)
         await self._sync()
         await self._maybe_auto_checkpoint()
 

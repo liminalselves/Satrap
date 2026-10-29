@@ -70,6 +70,10 @@ class ModelObservation:
         self.finish_reason: object = None
         self.usage: object = None
         self.finished = False
+        self.response_status: object = None
+        self.response_id: object = None
+        self.responses_call_slots: dict[str, int] = {}
+        self.responses_mode = "input" in request and "messages" not in request
         record_debug("model", "start", span_id=self.span, bodies={"input": dict(request)}, metadata={"network_timeout": timeout, "model": self.model})
 
     def chunk(self, chunk: object) -> None:
@@ -94,6 +98,11 @@ class ModelObservation:
         参数:
         - chunk: SDK 实际返回的流式块
         """
+        from satrap.core.APICall.LLMCall.protocols.responses import field
+        kind = field(chunk, "type")
+        if isinstance(kind, str) and (kind.startswith("response.") or kind == "error"):
+            self._responses_chunk(chunk)
+            return
         choices = getattr(chunk, "choices", ())
         if isinstance(choices, (list, tuple)):
             for choice in choices:
@@ -134,6 +143,52 @@ class ModelObservation:
         usage = getattr(chunk, "usage", None)
         if usage is not None:
             self.usage = _data(usage)
+        if self.buffer_bytes >= 32768 or time.monotonic() - self.last_flush >= .25:
+            self.flush()
+
+    def _responses_chunk(self, event: object) -> None:
+        """
+        采集 Responses 新增动作, 终态不重复写完整正文
+
+        参数:
+        - event: 原始 SSE 事件
+        """
+        from satrap.core.APICall.LLMCall.protocols.responses import field, text
+        kind = field(event, "type")
+        delta = text(field(event, "delta"))
+        visible = False
+        if kind in {"response.output_text.delta", "response.refusal.delta"}:
+            self.parts.setdefault(0, _ChoiceDelta()).content.append(delta)
+            visible = True
+        elif kind == "response.reasoning_summary_text.delta":
+            self.parts.setdefault(0, _ChoiceDelta()).reasoning.append(delta)
+            visible = True
+        elif kind == "response.output_item.added" and field(field(event, "item"), "type") == "function_call":
+            item = field(event, "item")
+            item_id = text(field(item, "id"))
+            index = len(self.responses_call_slots)
+            self.responses_call_slots[item_id] = index
+            tool = self.parts.setdefault(0, _ChoiceDelta()).tools.setdefault(index, _ToolDelta())
+            tool.ids.append(text(field(item, "call_id")))
+            tool.names.append(text(field(item, "name")))
+            visible = True
+        elif kind == "response.function_call_arguments.delta":
+            index = self.responses_call_slots.get(text(field(event, "item_id")))
+            if index is not None:
+                self.parts.setdefault(0, _ChoiceDelta()).tools.setdefault(index, _ToolDelta()).arguments.append(delta)
+                visible = True
+        elif kind in {"response.completed", "response.failed", "response.incomplete"}:
+            response = field(event, "response")
+            self.response_status = field(response, "status")
+            self.response_id = field(response, "id")
+            self.finish_reason = field(field(response, "incomplete_details"), "reason", self.response_status)
+            self.usage = _data(field(response, "usage"))
+        elif kind == "error":
+            self.response_status = "failed"
+        if visible:
+            self.buffer_bytes += len(delta.encode("utf-8"))
+            if self.first_chunk_ms is None:
+                self.first_chunk_ms = (time.monotonic() - self.started) * 1000
         if self.buffer_bytes >= 32768 or time.monotonic() - self.last_flush >= .25:
             self.flush()
 
@@ -179,6 +234,9 @@ class ModelObservation:
         self.finished = True
         self.flush()
         if response is not None:
+            from satrap.core.APICall.LLMCall.protocols.responses import field
+            self.response_status = field(response, "status", self.response_status)
+            self.response_id = field(response, "id", self.response_id)
             choices = getattr(response, "choices", None)
             if isinstance(choices, (list, tuple)) and choices:
                 reasons = [getattr(choice, "finish_reason", None) for choice in choices]
@@ -188,13 +246,22 @@ class ModelObservation:
                                        "first_chunk_ms": self.first_chunk_ms, "finish_reason": self.finish_reason,
                                        "usage": self.usage}
         status = "completed"
+        if self.response_status in {"failed", "incomplete", "cancelled"}:
+            status = "failed"
+        elif self.responses_mode and self.response_status != "completed":
+            status = "failed"
+        if self.response_status is not None:
+            metadata.update(response_status=self.response_status, response_id=self.response_id)
+        if self.responses_mode and status == "failed":
+            metadata.update(code="provider_error", reason="模型服务响应未完成或响应流提前结束")
         if error is not None:
             if isinstance(error, Exception):
                 info = model_error_info(error, timeout=self.timeout)
                 metadata.update(code=info.code, reason=info.message, http_status=info.status)
                 status = "timeout" if info.code.endswith("timeout") else "failed"
             else:
-                status = "cancelled" if type(error).__name__ in {"CancelledError", "GeneratorExit"} else "interrupted"
+                if not (self.responses_mode and self.response_status in {"failed", "incomplete"}):
+                    status = "cancelled" if type(error).__name__ in {"CancelledError", "GeneratorExit"} else "interrupted"
                 metadata["error_type"] = type(error).__name__
         record_debug("model", "end", span_id=self.span, status=status, metadata=metadata,
                      bodies={"output": _data(response)} if response is not None else None)
