@@ -62,7 +62,7 @@ commands:
 skills:
   message_forward: 区分原文转发与创建文字合集
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 applicability:
   session_types: [platform]
   platforms: "*"

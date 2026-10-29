@@ -1,3 +1,3 @@
 """Satrap 版本号的唯一来源; pyproject.toml 动态读取, 前端构建经同一文件注入"""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

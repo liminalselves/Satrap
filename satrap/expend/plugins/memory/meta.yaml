@@ -48,7 +48,7 @@ commands:
   memory: 管理当前范围内的长期记忆
 
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 applicability:
   session_types: [chat, platform, embedded]
   platforms: "*"

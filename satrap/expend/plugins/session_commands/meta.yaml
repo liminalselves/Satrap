@@ -16,7 +16,7 @@ commands:
   about: 查看 Satrap 平台会话信息
 
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 
 applicability:
   session_types: [platform]

@@ -44,7 +44,7 @@ tools:
 skills:
   friend_manager: "指导模型确认好友身份, 处理申请与区分执行结果"
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 applicability:
   session_types: [platform]
   platforms: "*"

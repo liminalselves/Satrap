@@ -27,7 +27,7 @@
 
 ```yaml
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 applicability:
   session_types: [platform]
   platforms: "*"
