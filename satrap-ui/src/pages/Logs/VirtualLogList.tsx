@@ -181,6 +181,10 @@ export function VirtualLogList({
   /** 上次提交时的布局: 新批次到达时 scroll 事件可能尚未派发, 需按旧布局解读当前位置 */
   const layout = useRef<{ logs: LogEntry[]; offsets: number[]; scrollHeight: number }>();
   const touchY = useRef<number | null>(null);
+  /** 手指仍在屏幕上: 拖动期间不判定贴底, 松手后再决定, 否则慢速上滑会被反复拉回底部 */
+  const touching = useRef(false);
+  /** 本次手势曾向下拉 (翻看历史): 松手时即使离底部很近也保持暂停, 由后续惯性滚动到底再恢复 */
+  const pulledDown = useRef(false);
   const [revision, setRevision] = useState(0);
   const [viewport, setViewport] = useState({ top: 0, height: EMPTY_HEIGHT });
 
@@ -241,7 +245,7 @@ export function VirtualLogList({
     }
     previousAutoScroll.current = autoScroll;
     // 未开自动滚动但上次停在底部 (例如换行行高测量后内容变长), 仍然贴底, 否则会误显示"回到最新"
-    if (autoScroll || pinned.current) {
+    if (autoScroll || (pinned.current && !touching.current)) {
       element.scrollTop = element.scrollHeight;
       lastTop.current = element.scrollTop;
       if (!autoScroll) onAutoScrollChange(true);
@@ -271,10 +275,10 @@ export function VirtualLogList({
     anchor.current = index >= 0 ? { id: logs[index].id, offset: element.scrollTop - offsets[index] } : undefined;
     const top = element.scrollTop;
     const atBottom = element.scrollHeight - top - element.clientHeight < 48;
-    pinned.current = atBottom;
+    if (!touching.current) pinned.current = atBottom;
     // 新日志追加会先撑高 scrollHeight, 迟到的 scroll 事件不能把自动滚动关掉;
     // 只有真正向上滚动(或从已暂停状态继续)才改变开关
-    if (atBottom) onAutoScrollChange(true);
+    if (atBottom) { if (!touching.current) onAutoScrollChange(true); }
     else if (performance.now() >= ignoreScrollUntil.current && (!autoScroll || top < lastTop.current - 1)) onAutoScrollChange(false);
     lastTop.current = top;
     captureViewport();
@@ -290,20 +294,27 @@ export function VirtualLogList({
       style={{ overflowAnchor: 'none' }}
       onScroll={handleScroll}
       onWheel={(event) => { if (event.deltaY < 0 && autoScroll) { pinned.current = false; onAutoScrollChange(false); } }}
-      onTouchStart={(event) => { touchY.current = event.touches[0]?.clientY ?? null; }}
+      onTouchStart={(event) => { touching.current = true; pulledDown.current = false; touchY.current = event.touches[0]?.clientY ?? null; }}
       onTouchMove={(event) => {
         // 只有手指下拉 (内容向上翻看历史) 才关闭; 向上滑到底时由 scroll 事件重新打开
         const y = event.touches[0]?.clientY;
-        if (autoScroll && touchY.current !== null && y !== undefined && y - touchY.current > 8) {
+        if (touchY.current !== null && y !== undefined && y - touchY.current > 8) pulledDown.current = true;
+        if (autoScroll && pulledDown.current) {
           pinned.current = false;
           onAutoScrollChange(false);
         }
       }}
-      onTouchEnd={() => {
+      onTouchEnd={(event) => {
+        if (event.touches.length) return;
+        touching.current = false;
         touchY.current = null;
         const element = container.current;
-        if (element && element.scrollHeight - element.scrollTop - element.clientHeight < 48) onAutoScrollChange(true);
+        if (element && !pulledDown.current && element.scrollHeight - element.scrollTop - element.clientHeight < 48) {
+          pinned.current = true;
+          onAutoScrollChange(true);
+        }
       }}
+      onTouchCancel={() => { touching.current = false; touchY.current = null; }}
       onKeyDown={(event) => {
         if (autoScroll && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { pinned.current = false; onAutoScrollChange(false); }
       }}

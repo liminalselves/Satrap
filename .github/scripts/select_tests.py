@@ -76,7 +76,7 @@ DEFAULT_E2E = (
 )
 E2E_RULES = (
     (("satrap-ui/src/pages/Chat/", "satrap/display/"), ("chat-fork-projects", "chat-sidebar-state", "chat-history-races", "chat-model-binding")),
-    (("satrap-ui/src/pages/Logs/", "satrap/core/log/"), ("log-stream", "advanced-debug")),
+    (("satrap-ui/src/pages/Logs/", "satrap/core/log/"), ("log-stream", "log-touch-scroll", "advanced-debug")),
     (("satrap-ui/src/pages/Sessions/", "satrap-ui/src/pages/Plugins/", "satrap/edictum/"), ("runtime-application-progress",)),
     (("satrap-ui/src/pages/Models/",), ("asr-models", "chat-model-binding")),
     (("satrap-ui/src/pages/Groups/",), ("group-chat-plugin",)),

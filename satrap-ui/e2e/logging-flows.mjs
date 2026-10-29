@@ -763,11 +763,89 @@ async function advanced_debug(runtime) {
   }
 }
 
+async function log_touch_scroll(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  try {
+    await runtime.listen(server);
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const context = await runtime.browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
+    const records = Array.from({ length: 600 }, (_, index) => ({ sequence: index + 1, timestamp: index + 1, pid: 1, level: 'INFO', content: `日志-${index}`, truncated: false }));
+    await page.route(origin + '/ui-config.json', (route) => route.fulfill({ json: {
+      backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
+    } }));
+    await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, (route) => {
+      const url = new URL(route.request().url());
+      if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/api/logs' && url.port === '19871') {
+        const after = Number(url.searchParams.get('after') ?? 0);
+        const limit = Number(url.searchParams.get('limit') ?? 100);
+        const entries = url.searchParams.has('after') ? records.filter((entry) => entry.sequence > after).slice(0, limit) : records.slice(-limit);
+        return route.fulfill({ json: { service: 'control', stream_id: 'touch', entries, next_cursor: entries.at(-1)?.sequence ?? after,
+          reset: false, has_more: false }, headers: cors });
+      }
+      if (url.pathname === '/api/logs') return route.abort('connectionrefused');
+      return route.fulfill({ json: { ok: true, running: false, adapters: {} }, headers: cors });
+    });
+    await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
+    await mockConfigVersions(page, origin, () => '{}');
+    await page.goto(origin + '/logs');
+    const terminal = page.getByLabel('日志内容', { exact: true });
+    await terminal.getByText('[Control] 日志-599', { exact: true }).waitFor();
+    await terminal.scrollIntoViewIfNeeded();
+    await page.getByText('自动滚动', { exact: true }).waitFor();
+    await terminal.evaluate((element) => {
+      window.touchScrollTrace = [];
+      element.addEventListener('scroll', () => window.touchScrollTrace.push(element.scrollTop));
+    });
+    const box = await terminal.boundingBox();
+    const cdp = await context.newCDPSession(page);
+    const x = Math.round(box.x + box.width / 2);
+    let y = Math.round(box.y + box.height / 3);
+    // 在底部手指每 40ms 下拉 2px: 拖动期间不能被贴底逻辑反复拉回
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    for (let step = 0; step < 60; step++) {
+      y += 2;
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+      await page.waitForTimeout(40);
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(300);
+    const trace = await page.evaluate(() => window.touchScrollTrace);
+    const reversals = trace.filter((top, index) => index && top > trace[index - 1] + 0.5).length;
+    assert.ok(trace.length > 10, '慢速上滑应产生滚动');
+    assert.equal(reversals, 0, `慢速上滑被拉回底部 ${reversals} 次`);
+    const gap = await terminal.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+    assert.ok(gap > 80, `松手后应停在上滑位置, 实际距底 ${gap}px`);
+    await page.getByText('已暂停滚动', { exact: true }).waitFor();
+    // 手指上推回到底部, 松手后恢复自动滚动
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    for (let step = 0; step < 40; step++) {
+      y -= 10;
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+      await page.waitForTimeout(20);
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.getByText('自动滚动', { exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+    console.log('PASS: 移动端在底部慢速上滑不被拉回, 松手停留; 上推回到底部恢复自动滚动');
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
   ["advanced-debug", advanced_debug],
   ["storage-audit", storage_audit],
   ["log-retention", log_retention],
-  ["log-stream", log_stream]
+  ["log-stream", log_stream],
+  ["log-touch-scroll", log_touch_scroll]
 ];
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   await runSuite(process.argv.includes('log-stream-baseline') ? [["log-stream-baseline", log_stream_baseline]] : scenarios);
