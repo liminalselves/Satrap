@@ -140,29 +140,6 @@ export function ImportModal({ context, target, capabilities, existingSources = [
     return { status, chunks };
   };
 
-  const submitViaJobs = async (documentSource: string, body: string, onJob: (job: RagJob) => void): Promise<{ status: 'indexed' | 'skipped'; chunks: number } | null> => {
-    const operationId = newOperationId();
-    let job: RagJob | null = null;
-    try {
-      const response = await ragJobsApi.submit(scope, { operation_id: operationId, expected_revision: target.revision, action: 'ingest', source: documentSource, text: body }, context.via);
-      if (!isJobPayload(response)) return null;
-      job = response.job;
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.status && reason.status >= 400 && reason.status < 500 && reason.status !== 404) throw reason;
-      job = await recoverJob(scope, operationId, reason, context.via);
-      if (!job) {
-        if (jobsUnavailable(reason) || (reason instanceof ApiError && reason.status === 404)) return null;
-        throw reason;
-      }
-    }
-    const finished = await waitForJob(scope, job, context.via, onJob);
-    if (finished.status !== 'succeeded') throw new Error(jobFailure(finished));
-    const result = (finished.result || {}) as Record<string, unknown>;
-    const chunks = Number(result.indexed_chunks ?? result.chunks ?? 0);
-    const status = result.status === 'skipped' ? 'skipped' : 'indexed';
-    return { status, chunks };
-  };
-
   const runQueue = async (retry = false) => {
     if (running.current) return;
     running.current = true;
@@ -206,10 +183,12 @@ export function ImportModal({ context, target, capabilities, existingSources = [
     setError('');
     setProgress(0);
     try {
-      const viaJobs = await submitViaJobs(source.trim(), text, (job) => {
+      // 正文按原始文件上传: JSON 任务请求体上限 1 MiB, 中文长文本会在字符上限之前超出
+      const file = new File([text], 'pasted-text.txt', { type: 'text/plain' });
+      const viaJobs = await uploadViaJobs(file, source.trim(), (job) => {
         setProgress(job.progress?.percent ?? 100);
       });
-      const result = (viaJobs ?? await ragApi.upload(context, target.id, new File([text], 'pasted-text.txt', { type: 'text/plain' }), source.trim(), setProgress)) as { ok?: unknown; status?: unknown; chunks?: unknown; error?: unknown };
+      const result = (viaJobs ?? await ragApi.upload(context, target.id, file, source.trim(), setProgress)) as { ok?: unknown; status?: unknown; chunks?: unknown; error?: unknown };
       if (result.ok === false) throw new Error(String(result.error || '导入失败'));
       const chunks = Number(result.chunks || 0);
       const summary: ImportSummary = {
