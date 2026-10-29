@@ -178,6 +178,8 @@ export function VirtualLogList({
   /** 最近一次滚动停在底部 */
   const pinned = useRef(true);
   const previousAutoScroll = useRef(autoScroll);
+  /** 上次提交时的布局: 新批次到达时 scroll 事件可能尚未派发, 需按旧布局解读当前位置 */
+  const layout = useRef<{ logs: LogEntry[]; offsets: number[]; scrollHeight: number }>();
   const touchY = useRef<number | null>(null);
   const [revision, setRevision] = useState(0);
   const [viewport, setViewport] = useState({ top: 0, height: EMPTY_HEIGHT });
@@ -227,6 +229,16 @@ export function VirtualLogList({
     ignoreScrollUntil.current = performance.now() + 100;
     // 用户主动暂停 (工具栏按钮) 时不能因为仍在底部又被重新打开
     if (previousAutoScroll.current && !autoScroll) pinned.current = false;
+    else if (!autoScroll && layout.current) {
+      // 滚动位置已变但 scroll 事件还没处理时, 锚点和贴底状态都是旧的; 按上次布局重新读取, 否则会跳回旧位置
+      const previous = layout.current;
+      const top = element.scrollTop;
+      if (top !== lastTop.current) {
+        pinned.current = previous.scrollHeight - top - element.clientHeight < 48;
+        const index = Math.min(previous.logs.length - 1, indexAt(previous.offsets, top));
+        anchor.current = index >= 0 ? { id: previous.logs[index].id, offset: top - previous.offsets[index] } : undefined;
+      }
+    }
     previousAutoScroll.current = autoScroll;
     // 未开自动滚动但上次停在底部 (例如换行行高测量后内容变长), 仍然贴底, 否则会误显示"回到最新"
     if (autoScroll || pinned.current) {
@@ -238,6 +250,7 @@ export function VirtualLogList({
       if (index >= 0) element.scrollTop = offsets[index] + anchor.current.offset;
       lastTop.current = element.scrollTop;
     }
+    layout.current = { logs, offsets, scrollHeight: element.scrollHeight };
     captureViewport();
     return undefined;
   }, [logs, offsets, autoScroll, wrap, showTime, captureViewport, onAutoScrollChange]);

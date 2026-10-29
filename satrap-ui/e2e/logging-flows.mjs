@@ -434,13 +434,32 @@ async function log_stream(runtime) {
     await page.waitForTimeout(250);
     const afterTop = await terminal.locator(`[data-log-id="${anchor.id}"]`).evaluate((element) => element.getBoundingClientRect().top);
     assert.ok(Math.abs(afterTop - anchor.top) < 2);
+    // 滚到底部的 scroll 事件尚未派发时到达新批次, 不能按旧锚点跳回原阅读位置
+    await terminal.evaluate((element) => {
+      const hold = (event) => { if (event.target === element) event.stopImmediatePropagation(); };
+      window.addEventListener('scroll', hold, true);
+      window.releaseHeldScroll = () => window.removeEventListener('scroll', hold, true);
+      element.scrollTop = element.scrollHeight;
+    });
+    const heldBatch = page.waitForResponse(async (response) => {
+      const url = new URL(response.url());
+      return url.port === '19871' && url.pathname === '/api/logs' && (await response.json()).next_cursor === 5025;
+    });
+    append(19871, 5);
+    await heldBatch;
+    await page.waitForTimeout(250);
+    const heldGap = await terminal.evaluate((element) => {
+      window.releaseHeldScroll();
+      return element.scrollHeight - element.clientHeight - element.scrollTop;
+    });
+    assert.ok(heldGap < 48, `新批次把已到底部的视图拉回 ${heldGap}px`);
     await terminal.evaluate((element) => { element.scrollTop = element.scrollHeight; });
     await page.getByText('自动滚动', { exact: true }).waitFor();
     await page.getByRole('button', { name: '暂停', exact: true }).click();
     append(19871, 20);
     await page.getByText('共 5000 条日志, 暂停期间收到 20 条', { exact: true }).waitFor();
     await page.getByRole('button', { name: '继续', exact: true }).click();
-    await terminal.getByText('[Control] 日志-5039', { exact: true }).waitFor();
+    await terminal.getByText('[Control] 日志-5044', { exact: true }).waitFor();
     await page.getByRole('button', { name: '清空', exact: true }).click();
     await page.getByText('共 0 条日志', { exact: true }).waitFor();
     append(19871, 1, () => '清空后增量');
