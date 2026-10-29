@@ -109,7 +109,7 @@ def project_parts(parts: list[dict[str, Any]], model: object) -> list[dict[str, 
         if field not in {"image_url", "video_url"}:
             result.append(copy.deepcopy(part))
             continue
-        source = part[field]["url"]
+        source = part.get("_satrap_media_reference", part[field]["url"])
         if not visual_enabled(model) and getattr(model, "supports_native_video_input", False) is not True:
             result.append({"type": "text", "text": "[视频]" if field == "video_url" else "[图片]"})
             continue
@@ -130,7 +130,14 @@ def project_parts(parts: list[dict[str, Any]], model: object) -> list[dict[str, 
             result.append({"type": "text", "text": "[图片]"})
             continue
         if kind == "video" and getattr(model, "supports_native_video_input", False) is True:
-            result.append({"type": "video_url", "video_url": {"url": f"data:{mime};base64," + base64.b64encode(data).decode("ascii")}})
+            if getattr(model, "native_video_transport", "data_url") == "url":
+                if not source.startswith(REFERENCE_PREFIX):
+                    raise ValueError("当前原生视频要求公网 URL, 本地媒体没有公网来源; 请改用 Data URL 或抽帧方式")
+                url = current_store().public_url(source)
+                result.append({"type": "video_url", "video_url": {"url": url}, "_satrap_media_reference": source})
+                # 请求副本保留已验证的引用, 避免工作流与 LLM 两次投影时重复下载
+            else:
+                result.append({"type": "video_url", "video_url": {"url": f"data:{mime};base64," + base64.b64encode(data).decode("ascii")}})
         elif kind == "video" or animated:
             if not visual_enabled(model):
                 result.append({"type": "text", "text": "[视频, 当前模型不支持图片兼容输入]"})
@@ -266,6 +273,7 @@ def freeze_media(source: str, kind: str) -> dict[str, Any]:
     """
     if kind not in {"image", "video"} or not isinstance(source, str) or not source:
         raise ValueError("媒体类型或来源无效")
+    source_url = None
     if source.startswith(REFERENCE_PREFIX):
         data, mime = current_store().read(source)
         actual = "video" if mime.startswith("video/") else "image"
@@ -285,6 +293,7 @@ def freeze_media(source: str, kind: str) -> dict[str, Any]:
     elif source.startswith(("http://", "https://")):
         response = safe_sync_get(source, max_response_bytes=MAX_MEDIA_BYTES)
         response.raise_for_status()
+        source_url = response.url
         data = response.content
         mime = next((value.split(";", 1)[0].strip() for key, value in response.headers.items()
                      if key.lower() == "content-type"), "")
@@ -302,7 +311,7 @@ def freeze_media(source: str, kind: str) -> dict[str, Any]:
         raise ValueError("无法识别媒体格式")
     if animated or kind == "video":
         field = kind + "_url"
-        return {"type": field, field: {"url": current_store().put(data, mime)}}
+        return {"type": field, field: {"url": current_store().put(data, mime, source_url=source_url)}}
     url = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
     field = f"{kind}_url"
     return {"type": field, field: {"url": url}}

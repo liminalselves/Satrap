@@ -65,6 +65,7 @@ from satrap.core.config.loader import ConfigLoader
 from satrap.display.recorder import list_conversations, query_conversations
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
+from satrap.display.settings import validate_temperature
 from satrap.core.storage import StorageMaintenanceService
 from satrap.core.rag import RagService
 
@@ -340,17 +341,15 @@ class ChatHTTPServer(MiniHTTPServer):
             payload = json.loads(body or b"{}")
             if not isinstance(payload, dict):
                 raise ValueError("创建参数必须是对象")
-            options = {"think": str(payload.get("think") or "off"),
-                       "system_prompt": str(payload.get("system_prompt") or "") or None,
-                       "project_id": str(payload.get("project_id") or "") or None,
-                       "default_agent_prompt_enabled": payload.get("default_agent_prompt_enabled", False)}
-            model = str(payload["model"]) if payload.get("model") is not None else None
-            if clean.endswith("/preload"):
-                temperature = payload.get("temperature")
-                cid = await self.service.preload_conversation(model=model,
-                    temperature=float(temperature) if temperature is not None else None, **options)
-            else:
-                cid = await self.service.create_conversation(model=model, **options)
+            values = cast(dict[str, object], payload)
+            prompt_enabled = values.get("default_agent_prompt_enabled", False)
+            if not isinstance(prompt_enabled, bool):
+                raise ValueError("default_agent_prompt_enabled 必须为布尔值")
+            model = str(values["model"]) if values.get("model") is not None else None
+            create = self.service.preload_conversation if clean.endswith("/preload") else self.service.create_conversation
+            cid = await create(model=model, temperature=validate_temperature(values.get("temperature")),
+                think=str(values.get("think") or "off"), system_prompt=str(values.get("system_prompt") or "") or None,
+                project_id=str(values.get("project_id") or "") or None, default_agent_prompt_enabled=prompt_enabled)
             return 200, {"ok": True, "conversation_id": cid}
         except (OSError, TypeError, ValueError) as error:
             logger.warning(f"[Chat 创建] 创建会话失败: {error}")
@@ -427,6 +426,21 @@ class ChatHTTPServer(MiniHTTPServer):
         if operation_status is not None:
             return operation_status
         clean = path.split("?", 1)[0]
+        if clean.startswith("/api/chat/conversations/") and clean.endswith("/settings"):
+            conversation_id = clean.removeprefix("/api/chat/conversations/").removesuffix("/settings")
+            if not conversation_id or "/" in conversation_id:
+                return 400, {"error": "会话 ID 无效"}
+            try:
+                if method == "GET":
+                    return 200, await svc.get_generation_settings(conversation_id)
+                if method == "PATCH":
+                    payload = json.loads(body or b"{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("会话生成参数必须为对象")
+                    return 200, await svc.set_generation_settings(conversation_id, cast(dict[str, object], payload))
+                return 405, {"error": "会话生成参数仅支持 GET 和 PATCH"}
+            except (OSError, TypeError, ValueError) as error:
+                return 400, {"error": str(error)}
         if method == "GET" and clean.startswith("/api/chat/conversations/") and clean.endswith("/messages"):
             return await self._route_stored_messages(path)
         if clean.startswith("/api/stats/") or clean == "/api/activity/local":

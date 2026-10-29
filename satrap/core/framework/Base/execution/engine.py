@@ -132,6 +132,8 @@ def configuration(wf: Workflow) -> str:
     )}
     if getattr(wf.llm, "api_type", "chat_completions") != "chat_completions":
         model["api_type"] = wf.llm.api_type
+    if getattr(wf.llm, "supports_native_video_input", False) and getattr(wf.llm, "native_video_transport", "data_url") != "data_url":
+        model["native_video_transport"] = wf.llm.native_video_transport
     tools: list[dict[str, Any]] = []
     registry = cast(dict[str, Any], wf.tools_manager.tools)
     for name, tool in sorted(registry.items()):

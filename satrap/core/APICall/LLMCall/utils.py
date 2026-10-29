@@ -8,6 +8,7 @@ from openai.types.chat import (
 from typing import Any, Dict, List, Optional, Iterable, cast
 from openai import APIError
 import json
+import copy
 
 from types import SimpleNamespace
 
@@ -180,6 +181,7 @@ def prepare_call_messages(
     img_urls: list[str] | None,
     *, video_urls: list[str] | None = None, supports_visual_input: bool = False,
     supports_native_video_input: bool = False, video_frame_interval: float = 2.0, expand_media: bool = True,
+    native_video_transport: str = "data_url",
 ) -> list[dict[str, Any]]:
     """
     统一思考字段与多模态消息预处理
@@ -193,13 +195,15 @@ def prepare_call_messages(
     - supports_native_video_input: 是否支持原生视频输入, 默认 False
     - video_frame_interval: 抽帧间隔秒数, 默认 2.0
     - expand_media: 是否将工具媒体展开为兼容接口的补充用户消息
+    - native_video_transport: 原生视频传输方式, 默认 data_url
 
     返回:
     - 可发送给模型的消息, 工具媒体只在此处展开; 未启用视觉时拒绝媒体
     """
 
-    capabilities = SimpleNamespace(supports_visual_input=supports_visual_input, supports_native_video_input=supports_native_video_input, video_frame_interval=video_frame_interval)
-    prepared = project_messages(_rename_thinking_field(messages, thinking_field_name), True, capabilities)
+    capabilities = SimpleNamespace(supports_visual_input=supports_visual_input, supports_native_video_input=supports_native_video_input,
+                                   video_frame_interval=video_frame_interval, native_video_transport=native_video_transport)
+    prepared = copy.deepcopy(_rename_thinking_field(messages, thinking_field_name))
     if img_urls or video_urls:
         for message in reversed(prepared):
             if message.get("role") == "user":

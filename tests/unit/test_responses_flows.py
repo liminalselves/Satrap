@@ -276,6 +276,74 @@ async def test_failures_do_not_become_successful_tool_calls(clients, async_mode,
         await llm.client.close() if async_mode else llm.client.close()
 
 
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_native_video_wire_transport_history_and_tool_projection(clients, tmp_path, monkeypatch, async_mode, stream):
+    """原生视频实际进入 SDK 请求, 两种传输均保持归属且工具视频位于用户输入"""
+    from types import SimpleNamespace
+    from satrap.core.utils import media, outbound
+    from satrap.core.utils.media_store import media_scope, current_store
+
+    requests, state = clients
+    state["result"] = response()
+    data = b'\x00\x00\x00\x18ftypisom' + bytes(32)
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(data)
+    downloads = []
+    def download(url, **kwargs):
+        downloads.append(url)
+        return SimpleNamespace(content=data, url=url, headers={"content-type": "video/mp4"}, raise_for_status=lambda: None)
+    monkeypatch.setattr(media, "safe_sync_get", download)
+    monkeypatch.setattr(outbound, "validate_outbound_http_url", lambda url: url if url.startswith("https://cdn.test/") else (_ for _ in ()).throw(ValueError("拒绝非公网来源")))
+    llm = (AsyncLLM if async_mode else LLM)(api_key="test", model="example", base_url="https://models.test/v1", api_type="responses", supports_native_video_input=True)
+
+    async def invoke(messages, **kwargs):
+        pending = llm.stream_call(messages, **kwargs) if stream else llm.call(messages, **kwargs)
+        if stream:
+            events = [event async for event in pending] if async_mode else list(pending)
+            return events[-1].response
+        return await pending if async_mode else pending
+
+    try:
+        result = await invoke([{"role": "user", "content": "看视频"}], video_urls=[str(path)])
+        assert result.content == "结果是 3"
+        part = requests[-1]["input"][-1]["content"][-1]
+        assert part["type"] == "input_video" and part["video_url"].startswith("data:video/mp4;base64,")
+        assert "fps" not in part and "file_id" not in part
+        with media_scope(str(tmp_path / "history.sqlite"), "owner"):
+            frozen = media.user_media_content("看视频", None, ["https://cdn.test/clip.mp4"], llm)
+            original = copy.deepcopy(frozen)
+            llm.set_parameters(native_video_transport="url")
+            projected = media.project_context_media([{"role": "user", "content": frozen}], llm, str(tmp_path / "history.sqlite"), "owner")
+            assert (await invoke(projected)).content == "结果是 3"
+            assert frozen == original and downloads == ["https://cdn.test/clip.mp4"]
+            part = requests[-1]["input"][-1]["content"][-1]
+            assert part == {"type": "input_video", "video_url": "https://cdn.test/clip.mp4"}
+            tool_history = [{"role": "user", "content": "读取视频"},
+                            {"role": "assistant", "content": "", "tool_calls": [{"type": "function", "id": "video-call", "function": {"name": "read_video", "arguments": "{}"}}]},
+                            {"role": "tool", "tool_call_id": "video-call", "content": frozen}]
+            await invoke(tool_history)
+            items = requests[-1]["input"]
+            assert items[-2]["type"] == "function_call_output"
+            assert all(part.get("type") != "input_video" for part in items[-2]["output"])
+            assert items[-1]["role"] == "user" and "video-call" in items[-1]["content"][0]["text"]
+            assert items[-1]["content"][-1]["type"] == "input_video"
+            assert len(downloads) == 1
+            path.write_bytes(data + b"local-only")
+            with pytest.raises(ValueError, match="公网"):
+                await invoke([{"role": "user", "content": "本地视频"}], video_urls=[str(path)])
+            reference = frozen[1]["video_url"]["url"]
+            from satrap.core.utils.media_store import MediaStore
+            other = MediaStore(current_store().root, "fork")
+            current_store().copy_to(other)
+            assert other.public_url(reference) == "https://cdn.test/clip.mp4"
+            with media_scope(str(tmp_path / "history.sqlite"), "unrelated"):
+                with pytest.raises(ValueError):
+                    await invoke([{"role": "user", "content": frozen}])
+    finally:
+        await llm.client.close() if async_mode else llm.client.close()
+
+
 def test_protocol_payload_checkpoint_fork_and_edit(clients, tmp_path):
     _, state = clients
     state["result"] = response(tool_output())

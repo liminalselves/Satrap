@@ -88,6 +88,12 @@ def encode_content(content: object) -> str | list[dict[str, object]]:
             image = part.get("image_url")
             url = text(field(image, "url")) if not isinstance(image, str) else image
             parts.append({"type": "input_image", "image_url": url, "detail": field(image, "detail", "auto")})
+        elif kind == "video_url":
+            video = part.get("video_url")
+            url = text(field(video, "url"))
+            if not url:
+                raise ModelProtocolError("invalid_request", "原生视频缺少来源")
+            parts.append({"type": "input_video", "video_url": url})
         elif kind in {"input_text", "input_image", "input_file"}:
             parts.append(part)
         else:
@@ -121,16 +127,27 @@ class ResponsesProtocol:
         - 严格保持原始顺序的 Responses 输入项
         """
         result: list[dict[str, object]] = []
+        tool_videos: list[dict[str, object]] = []
         for message in messages:
             role = message.get("role")
+            if role != "tool" and tool_videos:
+                result.append({"role": "user", "content": tool_videos})
+                tool_videos = []
             if role == "assistant":
                 native = replay_items(message, self.provider, model)
                 if native is not None:
                     result.extend(native)
                     continue
             if role == "tool":
+                content = encode_content(message.get("content"))
+                if isinstance(content, list):
+                    videos = [part for part in content if part.get("type") == "input_video"]
+                    if videos:
+                        tool_videos.append({"type": "input_text", "text": f"以下视频来自工具 {message.get('tool_call_id', '')}, 属于工具结果"})
+                        tool_videos.extend(videos)
+                        content = [part for part in content if part.get("type") != "input_video"] or "工具视频见后续关联输入"
                 result.append({"type": "function_call_output", "call_id": message.get("tool_call_id"),
-                               "output": encode_content(message.get("content"))})
+                               "output": content})
                 continue
             if role not in {"system", "developer", "user", "assistant"}:
                 raise ModelProtocolError("invalid_request", "模型消息包含不支持的角色")
@@ -144,6 +161,8 @@ class ResponsesProtocol:
                     arguments = field(function, "arguments", "{}")
                     result.append({"type": "function_call", "call_id": field(call, "id"),
                                    "name": field(function, "name"), "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)})
+        if tool_videos:
+            result.append({"role": "user", "content": tool_videos})
         return result
 
     def build_request(self, parameters: Mapping[str, object], messages: Iterable[dict[str, object]], *,

@@ -34,7 +34,7 @@ class _LLMBase(Generic[_ClientT]):
         supports_visual_input: bool = False,
         supports_native_video_input: bool = False,
         video_frame_interval: float = 2.0,
-        *, api_type: str = "chat_completions",
+        *, api_type: str = "chat_completions", native_video_transport: str = "data_url",
     ):
         """
         LLM API 共用配置初始化
@@ -58,6 +58,7 @@ class _LLMBase(Generic[_ClientT]):
         - supports_native_video_input: 是否支持当前原生视频请求格式, 默认 False
         - video_frame_interval: 动画及兼容视频抽帧间隔秒数, 默认 2.0
         - api_type: 初始化时固定的请求协议, 默认 chat_completions
+        - native_video_transport: 原生视频传输方式, data_url 或 url, 默认 data_url
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
@@ -79,8 +80,9 @@ class _LLMBase(Generic[_ClientT]):
             raise ValueError("supports_visual_input 必须是布尔值")
         self.supports_visual_input = supports_visual_input
         from satrap.core.utils.media_config import validate_video_settings
-        validate_video_settings(supports_native_video_input, video_frame_interval)
+        validate_video_settings(supports_native_video_input, video_frame_interval, native_video_transport)
         self.supports_native_video_input = supports_native_video_input
+        self.native_video_transport = native_video_transport
         self.video_frame_interval = video_frame_interval
 
         self.client = self._create_client(api_key, timeout)
@@ -158,6 +160,7 @@ class _LLMBase(Generic[_ClientT]):
         supports_visual_input: Optional[bool] = None,
         supports_native_video_input: Optional[bool] = None,
         video_frame_interval: Optional[float] = None,
+        native_video_transport: str | None = None,
     ):
         """
         更新 LLM 实例的默认参数设置
@@ -172,15 +175,18 @@ class _LLMBase(Generic[_ClientT]):
         - supports_visual_input: 是否支持图片输入, None 表示保持原值
         - supports_native_video_input: 是否支持原生视频, None 表示保持原值
         - video_frame_interval: 抽帧间隔秒数, None 表示保持原值
+        - native_video_transport: 原生视频传输方式, None 表示保持原值
         """
         from satrap.core.utils.media_config import validate_video_settings
         native = getattr(self, "supports_native_video_input", False) if supports_native_video_input is None else supports_native_video_input
         interval = getattr(self, "video_frame_interval", 2.0) if video_frame_interval is None else video_frame_interval
-        validate_video_settings(native, interval)
+        transport = self.native_video_transport if native_video_transport is None else native_video_transport
+        validate_video_settings(native, interval, transport)
         if supports_visual_input is not None and not isinstance(supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
         self.supports_native_video_input = native
         self.video_frame_interval = interval
+        self.native_video_transport = transport
         if supports_visual_input is not None:
             self.supports_visual_input = supports_visual_input
         if model is not None:
@@ -260,6 +266,7 @@ class _LLMBase(Generic[_ClientT]):
         return prepare_call_messages(messages, self.thinking_field_name if self.api_type == "chat_completions" else None,
                                      img_urls, video_urls=video_urls, supports_visual_input=self.supports_visual_input,
                                      supports_native_video_input=self.supports_native_video_input,
+                                     native_video_transport=self.native_video_transport,
                                      video_frame_interval=self.video_frame_interval, expand_media=self.api_type == "chat_completions")
 
     def _normalize_response(self, response: LLMCallResponse, model: str | None) -> LLMCallResponse:

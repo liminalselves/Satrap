@@ -84,6 +84,107 @@ async def _wait_conversation_task(service: ChatService, conversation_id: str) ->
 
 
 @pytest.mark.asyncio
+async def test_temperature_settings_round_snapshot_retry_restart_and_fork(tmp_path, monkeypatch):
+    """温度覆盖可持久修改, 本轮固定参数, 重试与分支继承最新偏好"""
+    service = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(service)
+    config = LLMConfig(name="default", model="example", api_type="responses", temperature=None)
+    configs = {"default": config, "fast": LLMConfig(name="fast", model="fast", api_type="responses", temperature=0.65)}
+    monkeypatch.setattr(service._model_cfg, "get_llm_config", lambda name="default": configs[name])
+    entered, release = asyncio.Event(), asyncio.Event()
+    captured = []
+    blocking = False
+
+    class CapturingLLM(_FakeAsyncLLM):
+        def __init__(self, cfg):
+            from satrap.core.APICall.LLMCall.protocols import select_protocol
+            self.temperature, self.model = cfg.temperature, cfg.model
+            self.protocol = select_protocol(cfg.api_type, "https://models.test/v1")
+
+        def set_parameters(self, **kwargs):
+            for name, value in kwargs.items():
+                setattr(self, name, value)
+
+        async def stream_call(self, messages, **kwargs):
+            captured.append(self.temperature)
+            if blocking:
+                entered.set()
+                await release.wait()
+                captured.append(self.temperature)
+            async for event in super().stream_call(messages, **kwargs):
+                yield event
+
+    monkeypatch.setattr(service_mod, "build_llm", CapturingLLM)
+    try:
+        cid = await service.create_conversation()
+        path = f"/api/chat/conversations/{cid}/settings"
+        assert await server._route("GET", path, b"") == (200, {"temperature": None, "request_temperature": None})
+        for value in (True, "0.7", -1, 3, float("nan"), float("inf")):
+            assert (await server._route("PATCH", path, json.dumps({"temperature": value}).encode()))[0] == 400
+        assert (await server._route("PATCH", path, b'{"unknown":1}'))[0] == 400
+        assert (await server._route("PATCH", path, b'{"temperature":0}'))[1]["temperature"] == 0
+        assert (await server._route("PATCH", path, b'{}'))[1]["temperature"] == 0
+        conv = _must_conversation(service, cid)
+        original_llm = conv.session.llm
+        blocking = True
+        assert (await service.send(cid, "首轮"))["ok"]
+        await asyncio.wait_for(entered.wait(), 3)
+        assert (await server._route("PATCH", path, b'{"temperature":0.9}'))[0] == 200
+        assert conv.session.llm is original_llm and original_llm.temperature == 0
+        release.set()
+        await _wait_conversation_task(service, cid)
+        assert captured == [0, 0]
+        blocking = False
+        assert (await service.retry(cid))["ok"]
+        await _wait_conversation_task(service, cid)
+        assert captured[-1] == 0.9
+        assert (await service.set_model(cid, "fast"))["ok"]
+        assert (await service.get_generation_settings(cid))["request_temperature"] == 0.9
+        assert (await service.set_model(cid, "default"))["ok"]
+        assert get_conversation_meta(cid, service._display_db_path)["temperature"] == 0.9
+        forked = await service.fork(cid, 1)
+        assert forked["ok"]
+        assert (await service.get_generation_settings(forked["conversation_id"]))["temperature"] == 0.9
+        from satrap.core.storage.database import snapshot_session_domain, restore_session_domain
+        import sqlite3
+        snapshot = snapshot_session_domain(service._display_db_path, cid)
+        target_path = tmp_path / "old-display.sqlite"
+        target = DisplayRecorder(str(target_path), "bootstrap")
+        target.close()
+        with sqlite3.connect(target_path) as connection:
+            connection.execute("ALTER TABLE conversation_meta DROP COLUMN temperature")
+            connection.execute("INSERT INTO conversation_meta VALUES ('legacy', 'default', 'off', NULL, 1)")
+        assert get_conversation_meta("legacy", str(target_path))["temperature"] is None
+        restore_session_domain(target_path, cid, snapshot)
+        assert get_conversation_meta(cid, str(target_path))["temperature"] == 0.9
+        service._conversations.pop(cid)
+        await service._dispose_conversation_runtime(conv)
+        conv = await service._resume_conversation(cid)
+        assert conv.temperature == 0.9
+        with monkeypatch.context() as patch:
+            patch.setattr(conv.recorder, "save_temperature", lambda value: (_ for _ in ()).throw(OSError("保存失败")))
+            assert (await server._route("PATCH", path, b'{"temperature":0.1}'))[0] == 400
+            assert conv.temperature == 0.9
+        assert (await service.send(cid, "恢复跟随", preload_settings={"temperature": None}))["ok"]
+        await _wait_conversation_task(service, cid)
+        assert captured[-1] is None and conv.temperature is None
+        config.temperature = 0.25
+        assert service._refresh_chat_model_runtimes("default", config)["refreshed_conversations"] >= 1
+        assert (await service.send(cid, "跟随模型"))["ok"]
+        await _wait_conversation_task(service, cid)
+        assert captured[-1] == 0.25
+        assert (await service.send(cid, "显式覆盖", preload_settings={"temperature": 0.4}))["ok"]
+        await _wait_conversation_task(service, cid)
+        assert captured[-1] == 0.4
+        assert (await service.send(cid, "省略保持"))["ok"]
+        await _wait_conversation_task(service, cid)
+        assert captured[-1] == 0.4
+    finally:
+        release.set()
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_chat_defaults_binding_retry_actual_model_and_cold_reselection(tmp_path, monkeypatch):
     """整体默认只影响新会话, 手动切换后的真实发送/重试及旧变体资料保持独立"""
     service = _make_service(tmp_path, monkeypatch)
@@ -446,7 +547,7 @@ class _FakeAsyncLLM(AsyncLLM):
     """流式返回固定内容的 fake LLM"""
 
     def __init__(self) -> None:
-        pass
+        self.temperature = 0.7   # 与真实兼容协议默认值一致, 恢复指纹不能依赖缺失属性
 
     async def call(self, messages: list[dict[str, Any]], **kw: Any) -> LLMCallResponse:
         return LLMCallResponse(type="answer", content="答复")
@@ -2080,7 +2181,9 @@ async def test_concurrent_retry_must_reserve_conversation(tmp_path):
     async def run_turn(*args, **kwargs):
         counts["runs"] += 1
 
-    conv = SimpleNamespace(task=None, recorder=recorder, model="default", default_think="off", plugin_lock=asyncio.Lock(), session=SimpleNamespace(
+    conv = SimpleNamespace(task=None, recorder=recorder, model="default", default_think="off", temperature=None,
+        temperature_lock=asyncio.Lock(), plugin_lock=asyncio.Lock(), session=SimpleNamespace(
+        _context_config=LLMConfig(name="default"),
         ctx=SimpleNamespace(del_last_chat=delete_turn, static_message=lambda: 0, get_context=lambda: []),
     ))
     service = ChatService.__new__(ChatService)

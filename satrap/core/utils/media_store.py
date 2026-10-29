@@ -47,13 +47,14 @@ class MediaStore:
         """返回当前工作流的引用目录"""
         return self.root / "references" / hashlib.sha256(self.scope.encode()).hexdigest()
 
-    def put(self, data: bytes, mime: str) -> str:
+    def put(self, data: bytes, mime: str, *, source_url: str | None = None) -> str:
         """
         有界保存媒体并登记当前工作流的持有权
 
         参数:
         - data: 已通过来源检查的媒体字节
         - mime: 媒体实际 MIME
+        - source_url: 下载完成后的公网来源, 仅登记在当前会话引用中
 
         返回:
         - 不含本地路径的稳定媒体引用
@@ -69,7 +70,38 @@ class MediaStore:
             marker = self.references / (key + ".json")
             if not marker.exists():
                 atomic_write(marker, json.dumps({"mime": mime, "size": len(data), "scope": self.scope, "owner": self._owner()}).encode())
+            if source_url is not None:
+                metadata = json.loads(marker.read_text(encoding="utf-8"))
+                metadata["source_url"] = source_url
+                atomic_write(marker, json.dumps(metadata).encode())
         return REFERENCE_PREFIX + key
+
+    def public_url(self, reference: str) -> str:
+        """
+        读取当前会话登记的视频公网来源, 不上传本地文件
+
+        参数:
+        - reference: 已校验的媒体引用
+
+        返回:
+        - 再次通过出站地址校验的来源, 没有公网来源时明确报错
+        """
+        from satrap.core.utils.outbound import validate_outbound_http_url
+
+        key = urlsplit(reference).netloc
+        if len(key) != 64 or any(char not in "0123456789abcdef" for char in key):
+            raise ValueError("媒体引用无效")
+        marker = self.references / (key + ".json")
+        if marker.is_symlink():
+            raise ValueError("媒体引用不允许符号链接")
+        try:
+            metadata = json.loads(marker.read_text(encoding="utf-8"))
+            url = metadata.get("source_url")
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("原媒体来源已不可用或不属于当前会话") from error
+        if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+            raise ValueError("当前原生视频要求公网 URL, 本地媒体没有公网来源; 请改用 Data URL 或抽帧方式")
+        return validate_outbound_http_url(url)
 
     def read(self, reference: str) -> tuple[bytes, str]:
         """

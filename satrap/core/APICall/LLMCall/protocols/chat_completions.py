@@ -36,6 +36,11 @@ class ChatCompletionsProtocol:
         - Chat Completions SDK 参数
         """
         request: dict[str, object] = {**parameters, "messages": [{key: value for key, value in msg.items() if key != "protocol_payload"} for msg in messages]}
+        for message in cast(list[dict[str, object]], request["messages"]):
+            content = message.get("content")
+            if isinstance(content, list):
+                message["content"] = [{key: value for key, value in cast(dict[str, object], part).items() if key != "_satrap_media_reference"}
+                                      if isinstance(part, dict) else part for part in cast(list[object], content)]
         if not structured:
             request["extra_body"] = thinking_body
         if tools is not None:

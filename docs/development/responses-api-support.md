@@ -48,9 +48,52 @@ llm.client.close()
 - 工具结果通过 call_id 对应 function_call_output, 与输出 Item 的 id 分离
 - 普通文本, 图片, 工具返回图片和 JSON 对象输出共用现有调用入口
 - `structured_output(format=...)` 保持原有自定义格式提示语义, 不把它误当 JSON Schema
-- 暂不接入托管工具, 远端 Conversations, 后台响应任务或 WebSocket; 原生视频格式不兼容时明确报错, 可使用已有抽帧能力
+- 暂不接入托管工具, 远端 Conversations, 后台响应任务或 WebSocket
 
 `session_timeout` 和 `network_timeout` 的既有作用范围不变
+
+## Chat 会话温度
+
+`GET /api/chat/conversations/{id}/settings` 返回 `temperature` 和 `request_temperature`, 前者为已保存的覆盖, 后者为下一轮合并后拟发送的值, 不代表供应商实际使用的采样温度
+
+`PATCH` 接受如下三种输入, 使用 Chat 原有鉴权:
+
+| 请求 | 语义 |
+| --- | --- |
+| `{}` | 保持当前偏好 |
+| `{"temperature": null}` | 清除覆盖, 跟随模型配置 |
+| `{"temperature": 0.6}` | 保存会话覆盖, 包括合法的 0 |
+
+只接受 0 至 2 的有限数字或 null, 不将字符串或布尔值隐式转为温度
+
+创建和预加载接受同一可空字段, 既有 send 请求中的 temperature 也更新会话偏好; 未传时不修改
+
+接受每轮发送或重试时固定有效温度, 整个工具循环使用同一值; 生成中更新偏好只影响后续轮次, 不重建客户端或会话
+
+优先级为会话覆盖, 模型配置, 协议默认; Responses 最终为 None 时省略参数, Chat Completions 保持原有 0.7 默认
+
+覆盖保存于 conversation_meta.temperature 可空列, 旧库按需升级; 模型切换保留覆盖, Fork 继承当前偏好, 重启与归档恢复保留设置; 未完成任务仍按原配置指纹检查恢复资格
+
+## 原生视频
+
+```yaml
+api_type: responses
+supports_native_video_input: true
+native_video_transport: data_url  # data_url 或 url, 默认 data_url
+```
+
+上述参数也可直接传给 LLM / AsyncLLM 构造函数, 不依赖 Backend 或配置管理器; 模型配置 API 读写相同字段
+
+- 原生视频开启时, 内部 video_url 片段编码为 `{"type": "input_video", "video_url": "..."}`
+- data_url 使用受控媒体的固定字节, url 使用当前会话媒体引用登记并再次校验的公网来源
+- 公网来源按会话保存, 不写入共享原文件的全局元数据; Fork 和归档沿用引用记录, 请求副本中的内部引用标记不会发送到供应商
+- url 模式下无公网来源的本地媒体明确失败, 不自动上传或创建媒体服务器; 已登记同内容公网来源的媒体可以复用该来源
+- 关闭原生视频但支持图片时继续抽帧, 两种视觉能力均关闭时仍拒绝新媒体
+- 工具返回的视频在完整工具结果组之后投影为带来源说明的用户输入, 工具文字和图片仍留在 function_call_output
+- 保留现有媒体大小及归属检查, 原媒体仅去重保存一份, 请求和 Debug 不把 Base64 副本写回对话历史
+- 不增加 fps 或自动取得 file_id 的流程, video_frame_interval 仍只控制本地抽帧; 服务商拒绝原生输入后不自动改用抽帧重发
+
+公网链接可能变化或到期, 请求错误应如实返回; 只有 Data URL 传输承诺发送本地已冻结的字节
 
 ## 历史与恢复
 
@@ -82,7 +125,7 @@ Debug Logger 采集新增正文和工具参数, 终态不重复记录整份流�
 - 在独立进程禁止导入 Backend, Chat Server 与计量服务, 验证两种协议下 Tool / Workflow / Session / LLMCall 实际运行
 - 实际服务商接口需在可用的 Responses 凭据环境另行验收, 本地离线通过不代表第三方接口支持完整规范
 
-2026-10-29 本地验收记录:
+2026-10-29 Responses 首版的本地验收记录:
 
 - Windows, Python 3.13.5, OpenAI SDK 2.41.1
 - 完整 Python 单元测试: `4045 passed, 8 skipped`, 用时 446.20 秒
@@ -93,9 +136,21 @@ Debug Logger 采集新增正文和工具参数, 终态不重复记录整份流�
 
 关闭思考修正的增量验收: Responses, 兼容协议, 视觉输入与模型配置整合测试 `197 passed, 1 skipped`; 变更生产模块 Pyright 无诊断, 本次未重跑完整测试集
 
+2026-10-29 会话温度与原生视频验收:
+
+- Windows / Python 3.13.5 / OpenAI SDK 2.41.1, 完整 Python 单元测试 `4050 passed, 8 skipped`, 用时 402.61 秒
+- 最后的 HTTP 参数类型收紧与初始表结构调整后, 对 Chat 服务, WebSocket, Responses, 视觉, 存储, 模型配置和兼容协议重新验收: `348 passed, 2 skipped`, 用时 87.37 秒
+- 覆盖温度在执行中修改仍保留当前请求值, 下一轮和重试采用新值, 清除覆盖, 模型切换与热更新, 保存失败回滚, 重启, Fork 和旧库归档恢复
+- 原生视频覆盖同步/异步和普通/流式四条 SDK 请求路径, Data URL, 公网 URL, 工具视频位置, 引用隔离, Fork 来源复制, 本地无公网来源拒绝及投影不重复下载
+- 23 个变更及直接关联生产模块 Pyright: 0 errors, 143 warnings; 两个协议适配器及新增或修改代码行无诊断
+- 前端目录无修改, `git diff --check` 通过; Linux / macOS 及各供应商真实视频接口本轮未验收
+
 官方参考:
 
 - [Responses 迁移](https://developers.openai.com/api/docs/guides/migrate-to-responses)
 - [工具调用](https://developers.openai.com/api/docs/guides/function-calling)
 - [推理资料与 phase](https://developers.openai.com/api/docs/guides/reasoning)
 - [流式事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)
+- [Ark 原生视频类型](https://github.com/volcengine/volcengine-python-sdk/blob/master/volcenginesdkarkruntime/types/responses/response_input_video_param.py)
+- [百炼 Responses](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses)
+- [OpenRouter 视频输入](https://openrouter.ai/docs/guides/overview/multimodal/videos)

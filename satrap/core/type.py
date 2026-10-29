@@ -391,6 +391,8 @@ class LLMConfig:
     """动画和兼容视频的抽帧间隔秒数, 范围 0.5 至 5.0"""
     api_type: Literal["chat_completions", "responses"] = "chat_completions"
     """模型请求协议, 不根据模型名称或错误自动切换"""
+    native_video_transport: Literal["data_url", "url"] = "data_url"
+    """原生视频使用固定字节的 Data URL 或当前会话登记的公网来源"""
 
     def __post_init__(self) -> None:
         """校验模型网络超时和视觉能力声明"""
@@ -401,7 +403,7 @@ class LLMConfig:
         if not isinstance(self.supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
         from satrap.core.utils.media_config import validate_video_settings
-        validate_video_settings(self.supports_native_video_input, self.video_frame_interval)
+        validate_video_settings(self.supports_native_video_input, self.video_frame_interval, self.native_video_transport)
 
 
 @dataclass

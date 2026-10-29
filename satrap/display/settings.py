@@ -1,11 +1,12 @@
 """
-Chat 整体默认设置的独立持久化
+Chat 整体默认设置的独立持久化与生成参数校验
 
 复用配置修订, 文件锁和原子保存, 只决定以后创建的会话,
 不在此处维护会话绑定或复制模型凭据
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import TypedDict
 import json
@@ -15,6 +16,22 @@ from satrap.core.storage.persist import atomic_write_text
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.config_paths import get_config_path
 
+
+def validate_temperature(value: object) -> float | None:
+    """
+    校验会话温度覆盖, 不把布尔值或字符串隐式转换为数值
+
+    参数:
+    - value: None 表示跟随模型, 数值范围为 0 至 2
+
+    返回:
+    - 标准浮点覆盖值或 None, 非法输入抛出 ValueError
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 2:
+        raise ValueError("temperature 必须为 null 或 0 至 2 的有限数字")
+    return float(value)
 
 class ChatSettings(TypedDict):
     """整体默认模型与读取时的配置版本"""

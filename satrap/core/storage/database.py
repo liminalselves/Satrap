@@ -274,6 +274,9 @@ def restore_session_domain(
         if "session_configs" in records and "session_configs" in tables and "history_started_at" not in _table_columns(connection, "session_configs"):
             connection.execute("ALTER TABLE session_configs ADD COLUMN history_started_at REAL")
             # 恢复可早于 SessionManager 初始化, 保留新版归档中的会话起点
+        if "conversation_meta" in records and "conversation_meta" in tables and "temperature" not in _table_columns(connection, "conversation_meta"):
+            connection.execute("ALTER TABLE conversation_meta ADD COLUMN temperature REAL")
+            # 新归档恢复到旧库时保留会话温度覆盖, 旧归档缺少该值则继承模型
         if "display_turn_variants" in records and "display_turn_variants" in tables and "output_files" not in _table_columns(connection, "display_turn_variants"):
             connection.execute("ALTER TABLE display_turn_variants ADD COLUMN output_files TEXT NOT NULL DEFAULT '[]'")
         ensure_conversation_indexes(connection)
