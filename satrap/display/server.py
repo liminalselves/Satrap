@@ -348,7 +348,7 @@ class ChatHTTPServer(MiniHTTPServer):
             model = str(values["model"]) if values.get("model") is not None else None
             create = self.service.preload_conversation if clean.endswith("/preload") else self.service.create_conversation
             cid = await create(model=model, temperature=validate_temperature(values.get("temperature")),
-                think=str(values.get("think") or "off"), system_prompt=str(values.get("system_prompt") or "") or None,
+                think=str(values.get("think") or "default"), system_prompt=str(values.get("system_prompt") or "") or None,
                 project_id=str(values.get("project_id") or "") or None, default_agent_prompt_enabled=prompt_enabled)
             return 200, {"ok": True, "conversation_id": cid}
         except (OSError, TypeError, ValueError) as error:

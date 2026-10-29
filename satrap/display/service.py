@@ -136,7 +136,7 @@ class _Conversation:
     model: str
     model_id: str | None = None
     """当前实际客户端对应的模型标识, 逐轮保存时不再读取共享配置"""
-    default_think: str = "off"
+    default_think: str = "default"
     """会话默认思考强度 (来自 conversation_meta, send 未显式传 think 时使用)"""
     project_id: str | None = None
     """所属项目 ID (None = 无项目, 工作区回落全局)"""
@@ -1402,7 +1402,7 @@ class ChatService:
         model: str | None = None,
         *,
         system_prompt: str | None = None,
-        think: str = "off",
+        think: str = "default",
         project_id: str | None = None,
         default_agent_prompt_enabled: bool = False,
         temperature: float | None = None,
@@ -1449,7 +1449,7 @@ class ChatService:
         model: str | None = None,
         *,
         system_prompt: str | None = None,
-        think: str = "off",
+        think: str = "default",
         project_id: str | None = None,
         temperature: float | None = None,
         conversation_id: str | None = None,
@@ -1869,7 +1869,7 @@ class ChatService:
         project: dict[str, Any] | None = None
         if meta is not None:
             model = meta.get("model", "default")
-            default_think = str(meta.get("think") or "off")
+            default_think = str(meta.get("think") or "default")
             project_id = meta.get("project_id") or None
             temperature = validate_temperature(meta.get("temperature"))
             if project_id:
@@ -1886,7 +1886,7 @@ class ChatService:
             if not turns:
                 return None
             model = "default"
-            default_think = "off"
+            default_think = "default"
             temperature = None
             logger.info(f"[聊天] 会话 {conversation_id} 无 meta 记录, 从 display_turns 恢复 (model=default)")
         logger.info(f"[聊天] 恢复会话: {conversation_id} (model={model})")
@@ -2149,7 +2149,7 @@ class ChatService:
                 await self.preload_conversation(
                     model=str(settings["model"]) if settings.get("model") is not None else None,
                     system_prompt=str(settings.get("system_prompt") or "") or None,
-                    think=think or "off",
+                    think=think or "default",
                     project_id=str(settings.get("project_id") or "") or None,
                     temperature=(
                         validate_temperature(settings["temperature"])

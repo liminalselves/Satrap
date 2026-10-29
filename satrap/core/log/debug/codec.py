@@ -287,7 +287,7 @@ class DebugBodyCodec:
         changed = {name: value for name, value in current.items() if name != sequence_key
                    and (not isinstance(old, list) or not isinstance(previous, dict) or name not in previous or previous[name] != value)}
         removed_parameters = [name for name in previous if name != sequence_key and name not in current] if isinstance(previous, dict) and isinstance(old, list) else []
-        return {"view": "delta", "basis": basis, "baseline_unavailable": unavailable,
+        return {"view": "delta", "basis": basis, "baseline_unavailable": unavailable, "sequence_key": sequence_key,
                 "total_messages": len(messages), "hidden_prefix_messages": prefix, "hidden_suffix_messages": suffix,
                 "removed_messages": removed, "messages": messages[prefix:len(messages) - suffix if suffix else len(messages)],
                 "changed_parameters": changed, "removed_parameters": cast(list[DebugData], removed_parameters)}

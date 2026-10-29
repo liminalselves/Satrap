@@ -1,6 +1,5 @@
 # Responses API 后端支持
 
-本轮只修改 Python 库和服务端, 不修改前端界面
 
 ## 使用方式
 
@@ -25,7 +24,7 @@ llm.client.close()
 
 模型配置保存相同字段, `build_llm_from_config` 将其传入构造函数; Control 和 Chat 的模型配置 API 均可读写该字段, 旧配置默认使用 Chat Completions
 
-本次没有增加前端协议选择控件, 可通过配置 API 或 CLI 的模型配置写入入口设置 `api_type`
+前端模型配置提供请求协议与视频传输方式选择, 也可通过配置 API 或 CLI 的模型配置写入入口设置 `api_type`
 
 ## 分层与独立性
 
@@ -42,8 +41,12 @@ llm.client.close()
 - 请求使用 `/v1/responses`, `store=false`, `truncation=disabled`, 由本地管理历史
 - `max_tokens` 在发送时映射为 `max_output_tokens`, 包含推理和可见输出预算
 - Responses 不默认发送 temperature 或 top_p; 调用方显式设置时按原值发送
-- 显式思考强度映射为 `reasoning.effort`, 展示思考仅使用公开摘要, 不解密加密推理资料
-- Responses 不使用 `thinking_fields` 或 `omit_none_thinking_fields`; `thinking="off"` 明确发送 `reasoning.effort="none"`, 不支持该强度的模型返回原有错误, 不静默改用服务端默认
+- 显式思考强度映射为 `reasoning.effort`; 展示思考优先使用公开摘要, 服务商不生成摘要时 (如 DeepSeek) 使用 reasoning 项的明文 `reasoning_text`, 不解密加密推理资料
+- 思考参数分三档: `thinking="default"` (库, Chat, Agent 与 Edictum 的默认) 不发送任何思考参数, 由模型服务决定; `thinking="off"` 明确关闭; 其他值为显式强度
+- Responses 不使用 `thinking_fields` 或 `omit_none_thinking_fields`; `off` 发送 `reasoning.effort="none"`, `default` 不发送 `reasoning`, 不支持该强度的模型返回原有错误
+- Chat Completions 的 `default` 不发送 extra_body 思考字段; `off` 发送各字段的关闭值, 只应对支持关闭的混合推理模型使用
+- `thinking_levels` 可声明 `none` (允许前端显示关闭) 与 `minimal`; 旧配置未保存该列表时前端视为勾选 none 与低中高
+- 已移除无供应商使用的 `thinking_level` 请求字段, 旧配置加载时自动剔除
 - 自定义函数平铺定义字段; 未声明 strict 的旧工具明确使用 strict=false
 - 工具结果通过 call_id 对应 function_call_output, 与输出 Item 的 id 分离
 - 普通文本, 图片, 工具返回图片和 JSON 对象输出共用现有调用入口

@@ -318,7 +318,7 @@ class DisplayRecorder:
 
     # ---------- 会话元数据 ----------
 
-    def save_meta(self, model: str, think: str = "off", project_id: str | None = None, *, temperature: float | None = None) -> None:
+    def save_meta(self, model: str, think: str = "default", project_id: str | None = None, *, temperature: float | None = None) -> None:
         """
         保存会话元数据及新会话的初始温度覆盖
 
@@ -1391,7 +1391,7 @@ def query_conversations(
                 "title": str(r[3] or "新对话"),
                 "project_id": r[4],
                 "model": str(r[5] or "default"),
-                "think": str(r[6] or "off"),
+                "think": str(r[6] or "default"),
                 "created_at": float(r[7] or 0),
             }
             for r in rows
@@ -1633,6 +1633,6 @@ def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> d
         ).fetchone()
         if row is None:
             return None
-        return {"model": row[0], "think": row[1] or "off", "created_at": row[2], "project_id": row[3], "temperature": row[4]}
+        return {"model": row[0], "think": row[1] or "default", "created_at": row[2], "project_id": row[3], "temperature": row[4]}
     finally:
         conn.close()

@@ -222,7 +222,7 @@ class _LLMBase(Generic[_ClientT]):
         parameters: dict[str, Any],
         messages: Iterable[dict[str, Any]],
         *,
-        thinking: str = "off",
+        thinking: str = "default",
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
         stream: bool = False,

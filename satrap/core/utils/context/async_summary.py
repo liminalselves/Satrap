@@ -56,7 +56,7 @@ class _AsyncSummary(_AsyncCheckpoints):
             with bind_call_purpose("summary"):
                 result = await llm.chat(
                     [{"role": "user", "content": prompt}],
-                    thinking="off",
+                    thinking="default",
                     max_tokens=_summary_output_budget(self.floor_tokens // 2),
                 )
             if not isinstance(result, str) or not result.strip():
@@ -64,7 +64,7 @@ class _AsyncSummary(_AsyncCheckpoints):
                 with bind_call_purpose("summary"):
                     result = await llm.chat(
                         [{"role": "user", "content": prompt}],
-                        thinking="off",
+                        thinking="default",
                         max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
                     )
             if not isinstance(result, str) or not result.strip():
@@ -88,7 +88,7 @@ class _AsyncSummary(_AsyncCheckpoints):
         with bind_call_purpose("summary"):
             result = await llm.chat(
                 [{"role": "user", "content": prompt}],
-                thinking="off",
+                thinking="default",
                 max_tokens=_summary_output_budget(target_tokens),
             )
         if not isinstance(result, str) or not result.strip():
@@ -96,7 +96,7 @@ class _AsyncSummary(_AsyncCheckpoints):
             with bind_call_purpose("summary"):
                 result = await llm.chat(
                     [{"role": "user", "content": prompt}],
-                    thinking="off",
+                    thinking="default",
                     max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
                 )
         if not isinstance(result, str) or not result.strip():

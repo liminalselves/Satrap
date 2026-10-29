@@ -745,7 +745,7 @@ class StorageMaintenanceService:
         return {
             "title": title,
             "model": str(meta.get("model") or "default"),
-            "think": str(meta.get("think") or "off"),
+            "think": str(meta.get("think") or "default"),
             "project_id": meta.get("project_id"),
             "created_at": float(meta.get("created_at") or 0),
             "turn_count": len(turns),

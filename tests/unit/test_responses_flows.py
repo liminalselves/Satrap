@@ -231,9 +231,9 @@ async def test_public_entry_points_and_media_preserve_input(clients, async_mode,
             llm.thinking_fields = fields
             llm.omit_none_thinking_fields = omit_none
             off_kwargs = {key: value for key, value in kwargs.items() if key != "thinking"}
-            pending = getattr(llm, method)(messages, **off_kwargs)
+            pending = getattr(llm, method)(messages, **off_kwargs, **({} if method == "structured_output" else {"thinking": "off"}))
             result = [item async for item in pending] if async_mode and method.startswith("stream") else list(pending) if method.startswith("stream") else await pending if async_mode else pending
-            assert requests[-1]["reasoning"] == {"effort": "none"}
+            assert requests[-1].get("reasoning") == (None if method == "structured_output" else {"effort": "none"})
             assert "extra_body" not in requests[-1] and "reasoning_effort" not in requests[-1]
             assert "thinking" not in requests[-1] and "enable_thinking" not in requests[-1]
             if method in {"call", "stream_call"}:
@@ -241,6 +241,9 @@ async def test_public_entry_points_and_media_preserve_input(clients, async_mode,
                 assert parsed.type == "message" and parsed.content == "结果是 3"
             else:
                 assert result == ["结果是 3"] if method.startswith("stream") else result == "结果是 3"
+        pending = getattr(llm, method)(messages, **{key: value for key, value in kwargs.items() if key != "thinking"})
+        _ = [item async for item in pending] if async_mode and method.startswith("stream") else list(pending) if method.startswith("stream") else await pending if async_mode else pending
+        assert "reasoning" not in requests[-1]
     finally:
         await llm.client.close() if async_mode else llm.client.close()
 
@@ -558,3 +561,18 @@ def test_components_run_without_backend_or_telemetry(tmp_path):
                                env=environment, text=True, encoding="utf-8", capture_output=True, timeout=60)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "standalone components passed" in completed.stdout
+
+
+def test_plaintext_reasoning_without_summary_is_shown_as_thinking():
+    """不生成摘要的服务商只返回 reasoning_text, 流式与终态都作为思考内容展示"""
+    from satrap.core.APICall.LLMCall.protocols.responses import ResponsesProtocol
+    decoder = ResponsesProtocol("https://models.test/v1").new_stream_decoder()
+    events = [{"type": "response.reasoning_text.delta", "item_id": "rs", "delta": "先想"},
+              {"type": "response.output_text.delta", "delta": "结果"},
+              {"type": "response.completed", "response": {"id": "r", "status": "completed", "model": "m", "output": [
+                  {"type": "reasoning", "id": "rs", "summary": [], "content": [{"type": "reasoning_text", "text": "先想"}]},
+                  {"type": "message", "id": "m", "role": "assistant", "content": [{"type": "output_text", "text": "结果"}]}]}}]
+    deltas = [(event.kind, event.delta) for chunk in events for event in decoder.consume(chunk)]
+    assert deltas == [("thinking_delta", "先想"), ("content_delta", "结果")]
+    result = decoder.response()
+    assert result.thinking == "先想" and result.content == "结果"

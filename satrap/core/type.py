@@ -15,7 +15,7 @@ from satrap.core.conversation import ConversationRoute, HistoryWindow
 from satrap.core.call_context import CallOrigin
 from satrap.core.components import BaseMessageComponent
 
-THINKING_LEVEL_VALUES = ("low", "medium", "high", "xhigh", "max", "ultra")
+THINKING_LEVEL_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 
 def validate_thinking_levels(value: object) -> Optional[List[str]]:
@@ -400,6 +400,8 @@ class LLMConfig:
         if self.api_type not in ("chat_completions", "responses"):
             raise ValueError("api_type 必须是 chat_completions 或 responses")
         self.network_timeout = positive_timeout(self.network_timeout, "network_timeout")
+        if self.thinking_fields is not None and "thinking_level" in self.thinking_fields:
+            self.thinking_fields = [item for item in self.thinking_fields if item != "thinking_level"] or None
         if not isinstance(self.supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
         from satrap.core.utils.media_config import validate_video_settings

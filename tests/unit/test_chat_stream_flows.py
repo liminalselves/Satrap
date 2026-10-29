@@ -475,7 +475,7 @@ def test_recorder_meta_roundtrip_and_schema(tmp_path: Any):
     rec2.close()
     meta2 = get_conversation_meta("c2", db_path=db)
     assert meta2 is not None
-    assert meta2["think"] == "off"
+    assert meta2["think"] == "default"
     assert meta2["project_id"] is None
 
 def test_history_batch_queries_preserve_full_variants(tmp_path):

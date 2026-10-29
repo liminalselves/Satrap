@@ -191,10 +191,10 @@ class ResponsesProtocol:
                        include=["reasoning.encrypted_content"])
         if parameters.get("max_tokens") is not None:
             request["max_output_tokens"] = parameters["max_tokens"]
-        if thinking != "off":
+        if thinking == "off":
+            request["reasoning"] = {"effort": "none"}
+        elif thinking != "default":
             request["reasoning"] = {"effort": thinking, "summary": "auto"}
-        else:
-            request["reasoning"] = {"effort": "none"}   # 显式关闭, 不沿用模型默认推理强度
         if tools is not None:
             converted: list[dict[str, object]] = []
             for tool in tools:
@@ -239,6 +239,7 @@ class ResponsesProtocol:
             items = [item_dict(item) for item in cast(list[object], output)]
             contents: list[str] = []
             summaries: list[str] = []
+            reasoning_texts: list[str] = []
             calls: list[dict[str, object]] = []
             for item in items:
                 kind = item.get("type")
@@ -246,6 +247,10 @@ class ResponsesProtocol:
                     summary = item.get("summary", [])
                     if isinstance(summary, list):
                         summaries.extend(text(field(part, "text")) for part in cast(list[object], summary))
+                    content = item.get("content", [])   # 部分服务商不生成摘要, 只返回明文推理
+                    if isinstance(content, list):
+                        reasoning_texts.extend(text(field(part, "text")) for part in cast(list[object], content)
+                                               if field(part, "type") == "reasoning_text")
                 elif kind == "message":
                     content = item.get("content", [])
                     if isinstance(content, list):
@@ -262,7 +267,7 @@ class ResponsesProtocol:
                     raise ModelProtocolError("unsupported_output", "模型返回了当前未接入的工具或输出类型")
             payload: ModelProtocolPayload = {"api_type": "responses", "provider": self.provider, "model": text(field(response, "model")),
                                              "response_id": text(field(response, "id")), "items": items}
-            return LLMCallResponse(type="tools_call" if calls else "message", content="".join(contents), thinking="".join(summaries) or None,
+            return LLMCallResponse(type="tools_call" if calls else "message", content="".join(contents), thinking="".join(summaries) or "".join(reasoning_texts) or None,
                                    tool_calls=calls or None, usage=_extract_token_usage(response),
                                    finish_reason="tool_calls" if calls else "stop", protocol_payload=payload)
         except ModelProtocolError as error:
@@ -295,6 +300,7 @@ class ResponsesStreamDecoder:
         self.terminal: object = None
         self.finish_reason: str | None = None
         self.calls: dict[str, int] = {}
+        self.summary_streamed = False
 
     def consume(self, chunk: object) -> list[LLMCallStreamEvent]:
         """
@@ -318,6 +324,9 @@ class ResponsesStreamDecoder:
         elif kind == "response.refusal.delta":
             return [LLMCallStreamEvent(kind="content_delta", delta=text(field(chunk, "delta")))]
         elif kind == "response.reasoning_summary_text.delta":
+            self.summary_streamed = True
+            return [LLMCallStreamEvent(kind="thinking_delta", delta=text(field(chunk, "delta")))]
+        elif kind == "response.reasoning_text.delta" and not self.summary_streamed:
             return [LLMCallStreamEvent(kind="thinking_delta", delta=text(field(chunk, "delta")))]
         elif kind == "response.output_item.added" and field(field(chunk, "item"), "type") == "function_call":
             item = field(chunk, "item")

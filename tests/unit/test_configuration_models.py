@@ -467,3 +467,11 @@ def test_max_tokens_zero_preserved():
     llm = build_llm_from_config(_cfg(max_tokens=0))
     assert isinstance(llm, LLM)
     assert llm.max_tokens == 0
+
+
+def test_llm_config_drops_removed_thinking_level_field_and_accepts_none_level():
+    """旧配置中的 thinking_level 字段被移除, 思考强度可声明 none 与 minimal"""
+    from satrap.core.type import validate_thinking_levels
+    assert LLMConfig(thinking_fields=["thinking_level", "reasoning_effort"]).thinking_fields == ["reasoning_effort"]
+    assert LLMConfig(thinking_fields=["thinking_level"]).thinking_fields is None
+    assert validate_thinking_levels(["none", "minimal", "low"]) == ["none", "minimal", "low"]

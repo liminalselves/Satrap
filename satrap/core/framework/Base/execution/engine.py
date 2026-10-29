@@ -176,7 +176,7 @@ def restore_prepared(metadata: dict[str, Any]) -> PreparedModelContext:
 
 def execute(
     wf: Workflow, *, user_input: str | None = "", run_id: str | None = None,
-    stream: bool = False, callback: bool = True, thinking: str = "off",
+    stream: bool = False, callback: bool = True, thinking: str = "default",
     img_urls: list[str] | None = None, max_iterations: int = 10,
     video_urls: list[str] | None = None,
     recoverable: bool = True, initial_response: LLMCallResponse | None = None,
@@ -191,7 +191,7 @@ def execute(
     - run_id: 待恢复任务 ID, 默认 None 表示新任务
     - stream: 是否使用流式模型调用, 默认 False
     - callback: 是否回传模型内容, 默认 True
-    - thinking: 模型思考强度, 默认 off
+    - thinking: 模型思考强度, 默认 default 不发送思考参数
     - img_urls: 附加图片地址, 默认 None
     - video_urls: 附加视频地址, 默认 None
     - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
@@ -347,7 +347,7 @@ def _request_kwargs(request: dict[str, Any]) -> dict[str, Any]:
     返回:
     - 模型参数字典, thinking 为 off 时不显式传递该字段
     """
-    return {key: value for key, value in request.items() if key not in {"messages", "_prepared"} and (key != "thinking" or value != "off")}
+    return {key: value for key, value in request.items() if key not in {"messages", "_prepared"} and (key != "thinking" or value != "default")}
 
 
 async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[ExecutionOptions]) -> str:

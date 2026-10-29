@@ -6,7 +6,7 @@ import math
 from typing import Any
 
 
-THINKING_LEVELS = {"off", "low", "medium", "high", "xhigh", "max", "ultra"}
+THINKING_LEVELS = {"default", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 MODEL_PARAMETERS = {"temperature", "top_p", "max_tokens"}
 
 
@@ -29,9 +29,9 @@ def normalize_session_settings(params: dict[str, Any]) -> dict[str, Any]:
         value = normalized["max_iterations"]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError("max_iterations 必须是正整数")
-    thinking = normalized.get("thinking", "off")
+    thinking = normalized.get("thinking", "default")
     if not isinstance(thinking, str) or thinking not in THINKING_LEVELS:
-        raise ValueError("thinking 必须是 off/low/medium/high/xhigh/max/ultra")
+        raise ValueError("thinking 必须是 default/off/minimal/low/medium/high/xhigh/max/ultra")
     model_params = normalized.get("model_params", {})
     if not isinstance(model_params, dict):
         raise ValueError("model_params 必须是对象")

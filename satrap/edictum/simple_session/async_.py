@@ -54,7 +54,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         *,
         system_prompt: str | None = None,
         default_agent_prompt_enabled: bool = False,
-        thinking: str = "off",
+        thinking: str = "default",
         command_history_enabled: bool = False,
         model_params: dict[str, Any] | None = None,
         max_iterations: int = 10,
@@ -76,7 +76,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         - llm: 主模型实例
         - system_prompt: 系统提示词, 默认 None 保留已有系统提示词, 提供时在初始化阶段重置
         - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
-        - thinking: 默认思考强度, 默认 off; run 可逐次覆盖
+        - thinking: 默认思考强度, 默认 default 不发送思考参数; run 可逐次覆盖
         - command_history_enabled: 是否记录命令及回复到模型上下文, 默认 False
         - model_params: temperature/top_p/max_tokens 的会话覆盖, 默认 None 继承模型配置
         - max_iterations: 默认最大工具迭代次数, 默认 10; run 可逐次覆盖

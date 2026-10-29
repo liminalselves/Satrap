@@ -18,7 +18,6 @@ _THINKING_FIELD_MAP: Dict[str, tuple[Any, Any]] = {
     "reasoning_effort": ("none", None),  # 空值表示沿用 thinking 原值
     "thinking.type": ("disabled", "enabled"),
     "enable_thinking": (False, True),
-    "thinking_level": ("none", None),
 }
 
 from satrap.core.utils.media import user_media_content, project_messages, expand_tool_media
@@ -127,14 +126,14 @@ def _build_thinking_extra_body(
     根据思考强度构造 extra_body
 
     参数:
-    - thinking: 思考强度, off 表示关闭, 其他值按供应商约定原样传递
+    - thinking: 思考强度, default 表示不发送思考字段, off 表示关闭, 其他值按供应商约定原样传递
     - thinking_fields: 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
     - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
 
     返回:
     - extra_body dict, 或 None (不传 extra_body)
     """
-    if not thinking_fields:
+    if not thinking_fields or thinking == "default":
         return None
     body: Dict[str, Any] = {}
     for field in thinking_fields:

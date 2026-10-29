@@ -467,7 +467,7 @@ async def test_summarize_and_compress_keeps_full_history(tmp_path: Path, asynchr
         original_messages = [dict(message) for message in cm.get_context()]
         summary = await _maybe(asynchronous, cm.summarize_and_compress(mock_llm, keep_recent_turns=2))
         assert summary == "用户问了5个问题, 分别是问题0到问题4"
-        assert mock_llm.chat.call_args.kwargs["thinking"] == "off"
+        assert mock_llm.chat.call_args.kwargs["thinking"] == "default"
         assert mock_llm.chat.call_args.kwargs["max_tokens"] >= 512
         # 完整历史不变, 模型视图仅保留摘要与最近 2 轮
         assert cm.get_context() == original_messages
