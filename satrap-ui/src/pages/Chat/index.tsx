@@ -281,7 +281,9 @@ export function Chat() {
   const directoryFilters = useRef({ search: search.trim(), project_id: sidebarProject });
   directoryFilters.current = { search: search.trim(), project_id: sidebarProject };
   const [pagingError, setPagingError] = useState('');
+  const [historyError, setHistoryError] = useState<{ conversationId: string; epoch: number; message: string } | null>(null);
   const pageBusy = useRef(false);
+  const initialHistoryBusy = useRef(new Set<string>());
   const olderBusy = useRef(new Set<string>());
   // 项目组折叠状态 (project_id -> 是否折叠)
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
@@ -327,6 +329,10 @@ export function Chat() {
   const generatingRef = useRef(false);
   const mutationPendingRef = useRef(false);
   const snapshotEpochRef = useRef<Record<string, number>>({});
+  const currentHistoryError = historyError?.conversationId === activeId
+    && historyError.epoch === (snapshotEpochRef.current[activeId] ?? 0) ? historyError.message : '';
+  const visiblePagingError = pagingError || currentHistoryError;
+  // 历史错误只属于发起请求的会话与快照, 不与目录错误共用失效条件
   const settingsThinkRef = useRef(DEFAULT_SETTINGS.think);
   const bindingEpoch = useRef<Record<string, number>>({});
   const bindingMutations = useRef(new Set<string>());
@@ -761,17 +767,21 @@ export function Chat() {
   // 加载会话历史消息
   const loadTurns = useCallback(
     async (conversationId: string) => {
+      if (initialHistoryBusy.current.has(conversationId)) return;
       const epoch = snapshotEpochRef.current[conversationId] ?? 0;
+      initialHistoryBusy.current.add(conversationId);
       try {
         const { turns, has_more, next_before } = await chatApi.listTurnPage(conversationId);
         if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch) return;
         const messages = turnsToMessages(turns);
         updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true, hasOlder: has_more, olderBefore: next_before }));
       } catch (err) {
-        if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch) return;
+        if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch || activeIdRef.current !== conversationId) return;
         console.error('[Chat] 加载历史失败:', err);
-        setPagingError(err instanceof Error ? err.message : '历史加载失败');
+        setHistoryError({ conversationId, epoch, message: err instanceof Error ? err.message : '历史加载失败' });
         updateConversation(conversationId, (c) => ({ ...c, loaded: true }));
+      } finally {
+        initialHistoryBusy.current.delete(conversationId);
       }
     },
     [updateConversation]
@@ -790,10 +800,10 @@ export function Chat() {
         ...current, messages: [...messages.filter((message) => !current.messages.some((item) => item.id === message.id)), ...current.messages],
         hasOlder: page.has_more, olderBefore: page.next_before,
       });
-      setPagingError('');
+      setHistoryError((current) => current?.conversationId === conversation.id && current.epoch === epoch ? null : current);
     } catch (error) {
-      if ((snapshotEpochRef.current[conversation.id] ?? 0) !== epoch) return;
-      setPagingError(error instanceof Error ? error.message : '历史加载失败');
+      if ((snapshotEpochRef.current[conversation.id] ?? 0) !== epoch || activeIdRef.current !== conversation.id) return;
+      setHistoryError({ conversationId: conversation.id, epoch, message: error instanceof Error ? error.message : '历史加载失败' });
     }
     finally { olderBusy.current.delete(conversation.id); }
   }, [updateConversation]);
@@ -890,12 +900,14 @@ export function Chat() {
   }, [publishedModels, settingsOpen, handleModelSaved]);
   // 等待首次详情后比较实际配置, 初始化期间来源变化仍会刷新, 不盲目忽略首次发布
 
-  // 切换会话时按需加载历史
+  const activeHistoryId = active?.id;
+  const activeHistoryLoaded = active?.loaded;
   useEffect(() => {
-    if (active && !active.loaded) {
-      void loadTurns(active.id);
+    if (activeHistoryId && !activeHistoryLoaded) {
+      void loadTurns(activeHistoryId);
     }
-  }, [active, loadTurns]);
+  }, [activeHistoryId, activeHistoryLoaded, loadTurns]);
+  // 仅会话身份或加载状态变化时读取历史, 模型与目录元数据回填不重新触发
 
   // 模型下拉选项(保证当前选中项总在选项中)
   const modelOptions = useMemo(() => {
@@ -1937,7 +1949,7 @@ export function Chat() {
               grouped={grouped}
               activeId={active?.id ?? ''}
               directoryLoading={directoryLoading}
-              pagingError={pagingError}
+              pagingError={visiblePagingError}
               conversationsCount={conversations.length}
               nextConversations={nextConversations}
               onLoadMore={() => void loadConversationPage()}
@@ -1956,9 +1968,9 @@ export function Chat() {
 
         {/* 聊天主区 */}
         <main className="surface relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden !rounded-[20px]">
-          {pagingError && (
+          {visiblePagingError && (
             <div role="alert" className="mx-3 mt-3 rounded-xl border border-[rgb(var(--rgb-red)/0.3)] bg-[rgb(var(--rgb-red)/0.1)] px-3 py-2 text-sm text-red">
-              {pagingError}
+              {visiblePagingError}
             </div>
           )}
 

@@ -697,17 +697,24 @@ async function chat_history_races(runtime) {
   const fixture = createBenchmarkFixture(120), errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await installHttpMocks(context, origin, fixture);
-  const gates = [0, 1, 2].map(() => {
+  const gates = [0, 1, 2, 3].map(() => {
     let enter, release;
     const entered = new Promise((resolve) => { enter = resolve; });
     const released = new Promise((resolve) => { release = resolve; });
     return { entered, released, enter, release };
   });
-  let olderPhase = 'stale', chatSocket, socketReady;
+  let olderPhase = 'stale', chatSocket, socketReady, initialRequests = 0;
   const connected = new Promise((resolve) => { socketReady = resolve; });
+  await context.route('http://127.0.0.1:19872/api/chat/model?**', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    gates[3].enter(); await gates[3].released;
+    return route.fallback();
+  });
   await context.route('http://127.0.0.1:19872/api/chat/turns/page**', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
     const older = new URL(route.request().url()).searchParams.has('before');
     if (!older) {
+      initialRequests++;
       gates[0].enter(); await gates[0].released;
       return route.fulfill({ ...jsonResponse({ error: '旧历史迟到失败0' }, origin), status: 503 });
     }
@@ -737,9 +744,16 @@ async function chat_history_races(runtime) {
     await page.goto(origin + '/chat');
     await openConversation(page, fixture.conversations[0].title);
     await waitForRequestEntry(gates[0].entered); await waitForRequestEntry(connected);
+    await waitForRequestEntry(gates[3].entered);
+    await page.locator('textarea').fill('只检查历史读取, 不发送');
+    gates[3].release();
+    await page.waitForFunction(() => document.querySelector('button[title="发送"]')?.disabled === false);
+    await afterRender();
+    assert.equal(initialRequests, 1, '首屏历史请求未完成时, 模型绑定回填不能重复发起历史读取');
     await sendSnapshot(1);
     const firstFailed = page.waitForResponse((response) => response.url().includes('/api/chat/turns/page') && !new URL(response.url()).searchParams.has('before') && response.status() === 503);
     gates[0].release(); await firstFailed; await afterRender();
+    assert.equal(initialRequests, 1, '新快照到达后不能补发首屏历史请求');
     assert.equal(await page.getByRole('alert').filter({ hasText: '旧历史迟到失败0' }).count(), 0);
     await page.getByRole('button', { name: '加载更早消息', exact: true }).click();
     await waitForRequestEntry(gates[1].entered);
@@ -748,6 +762,10 @@ async function chat_history_races(runtime) {
     olderPhase = 'current-error';
     gates[1].release(); await olderFailed; await afterRender();
     assert.equal(await page.getByRole('alert').filter({ hasText: '旧历史迟到失败1' }).count(), 0);
+    await page.getByRole('button', { name: '加载更早消息', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor();
+    await sendSnapshot(3);
+    await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor({ state: 'hidden' });
     await page.getByRole('button', { name: '加载更早消息', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor();
     const automaticFailed = page.waitForResponse((response) => response.url().includes('/api/chat/turns/page') && new URL(response.url()).searchParams.has('before') && response.status() === 503);
@@ -767,9 +785,9 @@ async function chat_history_races(runtime) {
     gates[2].release();
     await page.getByText('第 1 轮用户消息, 请解释当前测试内容', { exact: true }).waitFor();
     await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor({ state: 'hidden' });
-    assert.equal(await page.getByText('快照版本2', { exact: true }).count(), 1);
+    assert.equal(await page.getByText('快照版本3', { exact: true }).count(), 1);
     assert.deepEqual(errors, []); assert.deepEqual(fixture.errors, []);
-    console.log('PASS: 历史失败按显式阶段处理, 自动滚动不提前消耗成功响应, 迟到失败不污染新快照且当前失败可重试');
+    console.log('PASS: 首屏历史去重, 快照使旧错误失效, 迟到失败不污染新快照且当前失败可重试');
   } finally {
     gates.forEach((gate) => gate.release());
     await runtime.closeContexts(); await runtime.releaseServer(server);
