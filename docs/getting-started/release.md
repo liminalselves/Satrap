@@ -64,4 +64,4 @@ runtime\python.exe -X utf8 release\smoke_release.py
 
 验证包括原生依赖、分词器、插件资源、CLI、管理面板、服务地址、启动、重复启动、停止和端口释放。测试配置仅供验证, 之后重新解压用于正式使用。
 
-GitHub Actions 工作流 `.github/workflows/release.yml` 支持手动构建并上传下载附件; 推送与 `setup.py` 版本一致的 `v<版本>` 标签会自动创建 GitHub Release。工作流在含中文与空格的解压路径执行完整冒烟验证。
+GitHub Actions 工作流 `.github/workflows/release.yml` 支持手动构建并上传下载附件; 推送与 `satrap/_version.py` 版本一致的 `v<版本>` 标签会自动创建 GitHub Release。工作流在含中文与空格的解压路径执行完整冒烟验证。

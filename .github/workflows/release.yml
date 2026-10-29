@@ -53,7 +53,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($env:RELEASE_REF_TYPE -eq 'tag') {
             $releaseInfo = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $releaseRoot.FullName 'release.json') | ConvertFrom-Json
-            if ($env:RELEASE_REF_NAME -ne "v$($releaseInfo.version)") { throw '标签与 setup.py 的发行版本不一致' }
+            if ($env:RELEASE_REF_NAME -ne "v$($releaseInfo.version)") { throw '标签与 satrap/_version.py 的发行版本不一致' }
           }
       - uses: actions/upload-artifact@v4
         with:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path
 
 import satrap
@@ -23,10 +24,17 @@ def test_runtime_readers_use_the_single_source():
         health._build_identity.cache_clear()
 
 
-def test_setup_reads_version_instead_of_hard_coding():
-    text = (ROOT / "setup.py").read_text(encoding="utf-8")
-    assert "version=read_version()" in text
-    assert not re.search(r'version\s*=\s*"\d', text)
+def test_package_reads_version_instead_of_hard_coding():
+    from setuptools.config.pyprojecttoml import read_configuration
+
+    config_path = ROOT / "pyproject.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert "version" in config["project"]["dynamic"]
+    assert "version" not in config["project"]
+    assert config["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "satrap._version.__version__"}
+    assert read_configuration(config_path)["project"]["version"] == __version__
+    extras = config["project"]["optional-dependencies"]
+    assert set(extras["all"]) == {dependency for name, dependencies in extras.items() if name != "all" for dependency in dependencies}
 
 
 def test_frontend_package_matches_and_ui_has_no_literal_version():

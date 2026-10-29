@@ -9,7 +9,6 @@ on:
       - 'scripts/**'
       - 'satrap-ui/**'
       - 'pyproject.toml'
-      - 'setup.py'
       - 'requirements.txt'
       - '.github/workflows/code-sandbox.yml'
 
@@ -39,7 +38,6 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.txt
-            setup.py
             pyproject.toml
       - name: Install execution dependencies
         run: |
