@@ -27,6 +27,8 @@ export interface ChatMessage {
   responseMetadata?: ResponseMetadata | null;
   outputFiles?: OutputFile[];
   id: string;
+  // React 渲染键: 本地乐观消息被服务端同一轮次替换时沿用, 避免气泡重建闪烁
+  renderKey?: string;
   role: MessageRole;
   content: string;
   timestamp: number;

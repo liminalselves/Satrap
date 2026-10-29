@@ -116,8 +116,6 @@ async function chat_reconnect(runtime) {
         '/api/chat/models/detail': { ok: true, models: { 'benchmark-model': { name: 'benchmark-model', model: 'benchmark-model' } } },
         '/api/chat/plugins': { plugins: [{ name: 'permissions', enabled: true, version: '0.1.0',
           description: '执行审批', dir: '', capabilities: {} }] },
-        // 执行记录与恢复面板在聊天页常驻, 缺该接口会让整个页面渲染失败
-        '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
         '/api/projects': { projects: [] },
       };
       return route.fulfill({

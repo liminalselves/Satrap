@@ -2,6 +2,14 @@
    颜色以 RGB 三元组存储, 组件通过 rgb(var(--tint) / α) 派生任意透明度;
    任意元素加 tint-* 即可继承整套染色, 与 globals.css 中的旧变量并存 */
 
+/* 反光坐标只属于被引擎写入的元素; 不继承, 否则嵌套在已点亮面板里的磁片会按父元素坐标画出反光 */
+@property --mx { syntax: '<length>'; inherits: false; initial-value: -999px; }
+@property --my { syntax: '<length>'; inherits: false; initial-value: -999px; }
+@property --mouse-x { syntax: '<length>'; inherits: false; initial-value: -999px; }
+@property --mouse-y { syntax: '<length>'; inherits: false; initial-value: -999px; }
+/* 反光层是宿主自身的伪元素或贴边子层, 显式继承宿主坐标 */
+*::before, *::after, .glass-rim { --mx: inherit; --my: inherit; --mouse-x: inherit; --mouse-y: inherit; }
+
 :root {
   color-scheme: dark;
 

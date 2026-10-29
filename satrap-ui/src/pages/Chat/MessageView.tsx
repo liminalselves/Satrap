@@ -262,7 +262,7 @@ export const MessageBubble = memo(function MessageBubble({
 
   if (isUser) {
     return (
-      <div data-message-id={message.id} className="chat-message-item group flex justify-end animate-rise">
+      <div data-message-id={message.id} className="chat-message-item group flex justify-end">
         <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1.5 sm:max-w-[78%]">
           {attachments && (
             <div className="flex flex-wrap justify-end gap-2">
@@ -284,7 +284,7 @@ export const MessageBubble = memo(function MessageBubble({
   }
 
   return (
-    <div data-message-id={message.id} className="chat-message-item group flex gap-3.5 animate-rise">
+    <div data-message-id={message.id} className="chat-message-item group flex gap-3.5">
       <div className="relative mt-0.5 h-8 w-8 flex-none">
         <Logo className="h-8 w-8" />
         {message.streaming && <span className="chat-avatar-halo absolute -inset-1 rounded-full border border-[rgb(var(--rgb-accent)/0.5)]" />}

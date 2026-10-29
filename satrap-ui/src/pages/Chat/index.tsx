@@ -4,7 +4,6 @@ import { useConfirm } from '@/hooks/useConfirm';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { conversationBoundaryReached, restoreConversation, sidebarConversationVisible } from './conversations';
-import { RunRecovery } from "./RunRecovery";
 import { LLMConfigModal } from '@/components/common/LLMConfigModal';
 import { RagManager } from '@/components/common/RagManager';
 import { MediaAttachment } from './MediaAttachment';
@@ -170,6 +169,18 @@ function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
   };
 }
 
+/** 服务端消息替换同一轮次的本地消息时沿用原渲染键, 气泡原地更新而不是卸载重建 */
+function keepRenderKeys(previous: ChatMessage[], next: ChatMessage[]): ChatMessage[] {
+  const keys = new Map<string, string>();
+  for (const message of previous) {
+    if (message.turnIndex !== undefined) keys.set(`${message.turnIndex}:${message.role}`, message.renderKey ?? message.id);
+  }
+  return next.map((message) => {
+    const key = message.turnIndex === undefined ? undefined : keys.get(`${message.turnIndex}:${message.role}`);
+    return key && key !== message.id ? { ...message, renderKey: key } : message;
+  });
+}
+
 function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
   const messages: ChatMessage[] = [];
   for (const turn of turns) {
@@ -333,6 +344,13 @@ export function Chat() {
     [conversations, activeId]
   );
   const modelBusy = bindingPending.has(activeId);
+  // 绑定确认通常在一次往返内完成, 只有确实较慢时才提示, 避免发送后提示闪现挤动输入区
+  const [modelBusyVisible, setModelBusyVisible] = useState(false);
+  useEffect(() => {
+    if (!modelBusy) { setModelBusyVisible(false); return; }
+    const timer = window.setTimeout(() => setModelBusyVisible(true), 400);
+    return () => window.clearTimeout(timer);
+  }, [modelBusy]);
   const modelReady = Boolean(defaults) && !modelBusy && !bindingProblem && models.includes(settings.model);
   const approval = useApprovalMode(
     backendOk && active && active.id !== '__draft__' && !active.preloaded ? active.id : '',
@@ -533,7 +551,7 @@ export function Chat() {
           snapshotEpochRef.current[conversationId] = (snapshotEpochRef.current[conversationId] ?? 0) + 1;
           const preservePending = mutationPendingRef.current && event.state === 'idle';
           updateConversation(conversationId, (conversation) => {
-            let messages = turnsToMessages(event.turns);
+            let messages = keepRenderKeys(conversation.messages, turnsToMessages(event.turns));
             if (preservePending) {
               const pending = conversation.messages.find((message) => message.streaming);
               if (pending) {
@@ -571,12 +589,12 @@ export function Chat() {
             updateConversation(conversationId, (conversation) => {
               const previous = conversation.messages.find((message) => message.role === 'assistant' && message.turnIndex === event.turn_index);
               const messages = conversation.messages.filter((message) => message.turnIndex !== event.turn_index);
-              return { ...conversation, messages: [...messages, {
+              return { ...conversation, messages: [...messages, ...keepRenderKeys(conversation.messages, [{
                 id: `${event.turn_id}-u`, role: 'user', content: event.user_input, timestamp: Date.now(), turnIndex: event.turn_index,
               }, {
                 id: `${event.turn_id}-a`, role: 'assistant', content: '', timestamp: Date.now(), turnIndex: event.turn_index,
                 activeVariant: event.variant_index, streaming: true, variants: previous?.variants,
-              }] };
+              }])] };
             });
           }
           generatingRef.current = true;
@@ -1944,10 +1962,6 @@ export function Chat() {
             </div>
           )}
 
-          {active && active.id !== "__draft__" && !active.preloaded && (
-            <RunRecovery conversation={active.id} generating={generating} />
-          )}
-
           {/* 消息流 */}
           <div
             ref={messageScroll.containerRef}
@@ -1970,7 +1984,7 @@ export function Chat() {
                   )}
                   {active.messages.map((msg, idx) => (
                     <MessageBubble
-                      key={msg.id}
+                      key={msg.renderKey ?? msg.id}
                       message={msg}
                       conversationId={active.id}
                       isLast={idx === active.messages.length - 1}
@@ -1987,7 +2001,7 @@ export function Chat() {
           {/* 输入区 */}
           <div className="relative z-20 flex-none bg-gradient-to-t from-[var(--glass-bg-strong)] via-[var(--glass-bg-strong)] to-transparent px-3 pb-3 pt-2 md:px-6">
             <div className="mx-auto w-full max-w-3xl">
-              {modelBusy && <p className="mb-2 px-1 text-xs text-fg-2">正在确认会话模型…</p>}
+              {modelBusyVisible && <p className="mb-2 px-1 text-xs text-fg-2">正在确认会话模型…</p>}
               {bindingProblem && <p role="alert" className="mb-2 px-1 text-xs text-red">{bindingProblem}</p>}
               {modelsLoaded && !modelBusy && !models.includes(settings.model) && (
                 <p role="alert" className="mb-2 px-1 text-xs text-red">
