@@ -220,7 +220,7 @@ def create_default_edictum_type_registry() -> EdictumTypeRegistry:
         "properties": {
             "system_prompt": {"type": ["string", "null"]},
             "default_agent_prompt_enabled": {"type": "boolean", "default": False},
-            "thinking": {"type": "string", "enum": ["off", "low", "medium", "high", "xhigh", "max", "ultra"]},
+            "thinking": {"type": "string", "enum": ["default", "off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]},
             "command_history_enabled": {"type": "boolean"},
             "max_iterations": {"type": "integer", "minimum": 1},
             "model_params": {

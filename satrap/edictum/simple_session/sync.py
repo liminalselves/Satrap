@@ -56,7 +56,7 @@ class SimpleSession(Session, _SessionFeatures):
         *,
         system_prompt: str | None = None,
         default_agent_prompt_enabled: bool = False,
-        thinking: str = "off",
+        thinking: str = "default",
         command_history_enabled: bool = False,
         model_params: dict[str, Any] | None = None,
         max_iterations: int = 10,
@@ -78,7 +78,7 @@ class SimpleSession(Session, _SessionFeatures):
         - llm: 主模型实例
         - system_prompt: 系统提示词, 默认 None 保留已有系统提示词, 提供时在初始化阶段重置
         - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
-        - thinking: 默认思考强度, 默认 off; run 可逐次覆盖
+        - thinking: 默认思考强度, 默认 default 不发送思考参数; run 可逐次覆盖
         - command_history_enabled: 是否记录命令及回复到模型上下文, 默认 False
         - model_params: temperature/top_p/max_tokens 的会话覆盖, 默认 None 继承模型配置
         - max_iterations: 默认最大工具迭代次数, 默认 10; run 可逐次覆盖
@@ -237,7 +237,7 @@ class SimpleSession(Session, _SessionFeatures):
         user_input: str,
         img_urls: list[str] | None = None,
         *,
-        thinking: str = "off",
+        thinking: str = "default",
         max_iterations: int = 10,
         video_urls: list[str] | None = None,
         request_blocks: tuple[RequestContextBlock, ...] = (),
@@ -248,7 +248,7 @@ class SimpleSession(Session, _SessionFeatures):
         参数:
         - user_input: 用户输入
         - img_urls: 图片 URL 列表 (多模态)
-        - thinking: 模型思考强度, 默认 off, 流式和非流式均支持
+        - thinking: 模型思考强度, 默认 default 不发送思考参数, 流式和非流式均支持
         - max_iterations: 最大工具调用迭代次数
         - video_urls: 视频来源列表, 默认 None
 

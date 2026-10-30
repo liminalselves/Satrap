@@ -21,6 +21,8 @@ from .utils import (
     _message_content_json,
     _load_message_content,
     _load_tool_calls,
+    _protocol_payload_json,
+    _load_protocol_payload,
 )
 from .base import _ContextCore
 
@@ -83,7 +85,8 @@ class _SyncStorage(_ContextCore):
                     content_json TEXT,
                     tool_call_id TEXT,
                     tool_calls TEXT,
-                    reasoning_content TEXT
+                    reasoning_content TEXT,
+                    protocol_payload TEXT
                 )
             """
             )
@@ -123,6 +126,7 @@ class _SyncStorage(_ContextCore):
                 "tool_call_id",
                 "tool_calls",
                 "reasoning_content",
+                "protocol_payload",
             ):
                 try:
                     cursor.execute(f"ALTER TABLE chat_history ADD COLUMN {col} TEXT")
@@ -150,7 +154,7 @@ class _SyncStorage(_ContextCore):
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT role, content, content_json, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC",
+                "SELECT role, content, content_json, tool_call_id, tool_calls, reasoning_content, protocol_payload FROM chat_history WHERE conversation_id = ? ORDER BY id ASC",
                 (self.conversation_id,),
             )
             rows = cursor.fetchall()
@@ -165,6 +169,8 @@ class _SyncStorage(_ContextCore):
                     msg["tool_calls"] = tool_calls
                 if row[5] is not None:
                     msg["reasoning_content"] = row[5]
+                if row[6] is not None:
+                    msg["protocol_payload"] = _load_protocol_payload(row[6])
                 self._messages.append(msg)
             self._saved_count = len(rows)
             self._load_runtime_state(conn)
@@ -312,11 +318,12 @@ class _SyncStorage(_ContextCore):
                             else None
                         ),
                         msg.get("reasoning_content"),
+                        _protocol_payload_json(msg.get("protocol_payload")),
                     )
                     for msg in new_messages
                 ]
                 cursor.executemany(
-                    "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content, protocol_payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     data_to_insert,
                 )
             conn.execute(CATALOG_WRITE, catalog_values(self, appended=bool(new_messages) and prev_saved >= 0, modified=prev_saved < 0))

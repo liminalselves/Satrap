@@ -141,10 +141,11 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       description: '',
       model_name: llmNames[0] || '',
       ...readEdictumParams({}, true),
-      plugins: '[]',
+      plugins: ['simple', 'async_simple'].includes(types[0]?.name || '') && availablePlugins.some((plugin) => plugin.name === 'debug_logger')
+        ? JSON.stringify([{ name: 'debug_logger', enabled: true, config: {}, capabilities: {} }], null, 2) : '[]',
     });
     setModalOpen(true);
-  }, [llmNames, types]);
+  }, [llmNames, types, availablePlugins]);
 
   const openEdit = useCallback((name: string) => {
     const config = configs[name];
@@ -454,7 +455,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       { key: 'default_agent_prompt_enabled', label: '使用内置 Agent 提示', type: 'checkbox' as const, placeholder: '补充工具调用与结果核实的通用规则, 可与自定义提示同时使用' },
       { key: 'system_prompt', label: '系统提示词', type: 'textarea' as const, rows: 6, disabled: !form.system_prompt_enabled, placeholder: '填写 bot 的角色、行为要求和回复风格' },
       { key: 'thinking', label: '默认思考强度', type: 'select' as const,
-        options: [{ value: '', label: '默认 (关闭)' }, ...getThinkingOptions(llmConfigs[form.model_name]),
+        options: [{ value: '', label: '默认 (不发送思考参数)' }, ...getThinkingOptions(llmConfigs[form.model_name]).filter((option) => option.value !== 'default'),
           ...(form.thinking && !getThinkingOptions(llmConfigs[form.model_name]).some((option) => option.value === form.thinking)
             ? [{ value: form.thinking, label: `${form.thinking} (当前模型不支持, 请重新选择)` }] : [])] },
       { key: 'command_history_enabled', label: '命令写入上下文', type: 'checkbox' as const, placeholder: '让 AI 在后续对话中看到已执行的命令及回复, 不会额外调用模型' },

@@ -759,6 +759,9 @@ async def test_search_ambiguity_pagination_and_scope(tmp_path):
     host, adapter, _, _, _ = setup(tmp_path)
     first = await host.list_friends(adapter.account, actor="manager", query="同名", limit=1)
     assert first["ambiguous"] and first["has_more"] and first["coverage"]["complete"]
+    assert first["total"] == first["total_loaded"] == 2
+    assert first["items"][0]["avatar_url"] is None
+    assert first["items"][0]["online"] is None and first["items"][0]["added_at"] is None
     assert first["items"][0]["matched_by"] == ["nickname"]
     second = await host.list_friends(adapter.account, actor="manager", query="同名", limit=1, cursor=first["next_cursor"])
     assert second["items"][0]["user_id"] == "bob" and not second["has_more"]
@@ -776,6 +779,7 @@ async def test_incomplete_directory_cannot_prove_absence(tmp_path):
     adapter.complete = False
     found = await host.list_friends(adapter.account, actor="manager", query="alice")
     assert not found["coverage"]["complete"] and found["items"][0]["exact"]
+    assert found["total"] is None and found["total_loaded"] == 1
     with pytest.raises(FriendError) as caught:
         await host.submit(adapter.account, "delete-absent", "delete_friend", {"user_id": "missing"}, actor="panel")
     assert caught.value.code == "incomplete_directory" and adapter.delete_calls == 0
@@ -953,6 +957,9 @@ def test_v7_schema_migration_preserves_history_and_checks_missing_friend_tables(
         conn.execute("INSERT INTO session_config_overrides(session_id, namespace, config_json, updated_at) VALUES('s','prompt','{}',1)")
         conn.execute("DROP TABLE friend_actions")
         conn.execute("DROP TABLE friend_policies")
+        conn.execute("DROP TRIGGER IF EXISTS group_actions_action_revision")
+        for column in ("action_revision", "decision", "decided_by_json", "decision_note", "risk", "risk_source"):
+            conn.execute(f"ALTER TABLE group_actions DROP COLUMN {column}")
         for table in ("memory_refs", "memory_proposals", "memory_operations", "memory_audit", "memories",
                       "group_chat_reminder_attempts", "group_chat_reminders", "reminder_operations"):
             conn.execute(f"DROP TABLE {table}")

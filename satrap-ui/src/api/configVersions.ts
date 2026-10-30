@@ -34,19 +34,15 @@ export function getConfigVersions(resources: readonly ConfigResource[], force = 
 
 async function loadConfigVersions(resources: readonly ConfigResource[], force = false, signal?: AbortSignal): Promise<ConfigVersions | null> {
   if (!resources.length) return null; // 无版本来源的读取仅合并在途请求, 不缓存正文
-  try {
-    const { data } = await controlClient.get('/config/versions', { params: { resources: resources.join(','), ...(force ? { force: true } : {}) }, signal });
-    if (!data || data.ok !== true || typeof data.resources !== 'object' || !data.resources) throw new Error('配置版本响应格式无效');
-    for (const name of resources) {
-      const entry = data.resources[name];
-      if (!entry || typeof entry.change_token !== 'string' || !entry.change_token
-        || !['available', 'missing', 'damaged', 'unreadable'].includes(entry.state)) throw new Error('配置版本响应缺少有效来源: ' + name);
-      if (entry.state === 'damaged' || entry.state === 'unreadable') throw new Error('配置来源' + (entry.state === 'damaged' ? '损坏' : '不可读') + ': ' + name);
-    }
-    return data.resources as ConfigVersions;
-  } catch (error) {
-    throw error;
+  const { data } = await controlClient.get('/config/versions', { params: { resources: resources.join(','), ...(force ? { force: true } : {}) }, signal });
+  if (!data || data.ok !== true || typeof data.resources !== 'object' || !data.resources) throw new Error('配置版本响应格式无效');
+  for (const name of resources) {
+    const entry = data.resources[name];
+    if (!entry || typeof entry.change_token !== 'string' || !entry.change_token
+      || !['available', 'missing', 'damaged', 'unreadable'].includes(entry.state)) throw new Error('配置版本响应缺少有效来源: ' + name);
+    if (entry.state === 'damaged' || entry.state === 'unreadable') throw new Error('配置来源' + (entry.state === 'damaged' ? '损坏' : '不可读') + ': ' + name);
   }
+  return data.resources as ConfigVersions;
 }
 
 function sameConfigVersions(left: ConfigVersions | null, right: ConfigVersions | null, resources: readonly ConfigResource[]): boolean {

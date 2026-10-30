@@ -1,3 +1,8 @@
+@import './tokens.css';
+@import './motion.css';
+@import './glass.css';
+@import './kit.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -13,12 +18,12 @@
     --color-bg-layer3: rgba(50, 50, 60, 0.4);
     
     /* 玻璃材质 */
-    --glass-bg: rgba(255, 255, 255, 0.03);
-    --glass-bg-hover: rgba(255, 255, 255, 0.05);
+    --glass-bg: rgba(255, 255, 255, 0.035);
+    --glass-bg-hover: rgba(255, 255, 255, 0.06);
     --glass-bg-active: rgba(255, 255, 255, 0.08);
-    --glass-border: rgba(255, 255, 255, 0.06);
+    --glass-border: rgba(255, 255, 255, 0.07);
     --glass-border-hover: rgba(255, 255, 255, 0.08);
-    --glass-highlight: rgba(255, 255, 255, 0.1);
+    --glass-highlight: rgba(255, 255, 255, 0.12);
     
     /* 染色玻璃 - 蓝色系 */
     --glass-accent-bg: rgba(0, 120, 212, 0.08);
@@ -147,12 +152,12 @@
     --color-bg-layer2: rgba(255, 255, 255, 0.6);
     --color-bg-layer3: rgba(255, 255, 255, 0.5);
     
-    --glass-bg: rgba(255, 255, 255, 0.7);
-    --glass-bg-hover: rgba(255, 255, 255, 0.85);
+    --glass-bg: rgba(255, 255, 255, 0.58);
+    --glass-bg-hover: rgba(255, 255, 255, 0.78);
     --glass-bg-active: rgba(255, 255, 255, 0.95);
-    --glass-border: rgba(0, 0, 0, 0.08);
+    --glass-border: rgba(0, 0, 0, 0.07);
     --glass-border-hover: rgba(0, 0, 0, 0.12);
-    --glass-highlight: rgba(255, 255, 255, 0.9);
+    --glass-highlight: rgba(255, 255, 255, 0.95);
     
     /* 染色玻璃 - 蓝色系 */
     --glass-accent-bg: rgba(0, 120, 212, 0.12);
@@ -414,6 +419,9 @@
   .chat-message-item {
     content-visibility: auto;
     contain-intrinsic-size: auto 120px;
+    /* content-visibility 隐含绘制裁剪, 四周留出余量让头像与气泡的光晕不被切掉, 负外边距抵消, 布局不变 */
+    margin: -12px;
+    padding: 12px;
   }
 
   /* ===== 基础玻璃效果 ===== */
@@ -908,18 +916,30 @@
     transform: translateY(0);
   }
 
+  .glass-button:active {
+    transform: scale(0.97);
+  }
+
+  .glass-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  /* 主要按钮: 实色主色玻璃, 内高光 + 主色投影 */
   .glass-button-primary {
-    background: var(--glass-accent-bg);
-    border-color: var(--glass-accent-border);
-    color: var(--color-accent);
-    --reflect-color: var(--reflect-accent);
+    color: #fff;
+    background: linear-gradient(180deg, rgb(var(--rgb-accent) / 0.95), rgb(var(--rgb-accent) / 0.82));
+    border-color: rgb(var(--rgb-accent) / 0.9);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 6px 20px -6px rgb(var(--rgb-accent) / 0.65);
+    --reflect-color: rgba(255, 255, 255, 0.28);
   }
 
   .glass-button-primary:hover {
-    background: var(--color-accent);
-    border-color: var(--color-accent);
+    background: linear-gradient(180deg, rgb(var(--rgb-accent)), rgb(var(--rgb-accent) / 0.9));
+    border-color: rgb(var(--rgb-accent));
     color: white;
-    box-shadow: var(--shadow-glow-accent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 10px 28px -6px rgb(var(--rgb-accent) / 0.8);
   }
 
   /* ===== 玻璃输入框 ===== */
@@ -947,10 +967,14 @@
 
   .glass-input:focus {
     outline: none;
-    border-color: var(--color-accent);
+    border-color: rgb(var(--rgb-accent) / 0.7);
     background: var(--glass-bg-hover);
-    box-shadow: 0 0 0 3px var(--color-accent-subtle);
+    box-shadow: 0 0 0 4px rgb(var(--rgb-accent) / 0.16);
   }
+
+  .glass-input[aria-invalid='true'] { border-color: rgb(var(--rgb-red) / 0.7); }
+
+  .glass-input:disabled { opacity: 0.55; cursor: not-allowed; }
 
   /* ===== 玻璃徽章 ===== */
   .glass-badge {
@@ -1047,13 +1071,13 @@
 
   .glass-dialog,
   .glass-modal {
-    background: var(--glass-bg);
+    background: var(--glass-bg-strong);
     backdrop-filter: blur(40px) saturate(180%);
     -webkit-backdrop-filter: blur(40px) saturate(180%);
     border: 1px solid var(--glass-border);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-modal);
-    animation: slideIn 250ms cubic-bezier(0.1, 0.9, 0.2, 1);
+    border-radius: 22px;
+    box-shadow: var(--shadow-3);
+    animation: dialog-in 420ms var(--ease-out) both;
     padding: 24px;
   }
 
@@ -1110,8 +1134,14 @@
     white-space: nowrap;
   }
 
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--glass-border-strong) transparent;
+  }
+
   .custom-scrollbar::-webkit-scrollbar {
-    width: 6px;
+    width: 8px;
+    height: 8px;
   }
 
   .custom-scrollbar::-webkit-scrollbar-track {
@@ -1119,12 +1149,14 @@
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: var(--glass-border);
-    border-radius: 3px;
+    background: var(--glass-border-strong);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: content-box;
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: var(--glass-border-hover);
+    background-color: var(--color-text-disabled);
   }
 
   /* 文字颜色 */
@@ -1156,30 +1188,33 @@
 
 /* ===== Toast 通知样式 ===== */
 .glass-toast {
-  background: var(--glass-bg);
+  position: relative;
+  overflow: hidden;
+  background: var(--glass-bg-strong);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   border: 1px solid var(--glass-border);
-  box-shadow: var(--shadow-glass);
+  box-shadow: var(--shadow-2);
+  animation: toast-in 420ms var(--ease-out) both;
 }
 
 .glass-toast-success {
-  background: linear-gradient(135deg, var(--glass-success-bg) 0%, var(--glass-bg) 100%);
+  background: linear-gradient(135deg, var(--glass-success-bg) 0%, transparent 70%), var(--glass-bg-strong);
   border-color: var(--glass-success-border);
 }
 
 .glass-toast-error {
-  background: linear-gradient(135deg, var(--glass-error-bg) 0%, var(--glass-bg) 100%);
+  background: linear-gradient(135deg, var(--glass-error-bg) 0%, transparent 70%), var(--glass-bg-strong);
   border-color: var(--glass-error-border);
 }
 
 .glass-toast-warning {
-  background: linear-gradient(135deg, var(--glass-warning-bg) 0%, var(--glass-bg) 100%);
+  background: linear-gradient(135deg, var(--glass-warning-bg) 0%, transparent 70%), var(--glass-bg-strong);
   border-color: var(--glass-warning-border);
 }
 
 .glass-toast-info {
-  background: linear-gradient(135deg, var(--glass-accent-bg) 0%, var(--glass-bg) 100%);
+  background: linear-gradient(135deg, var(--glass-accent-bg) 0%, transparent 70%), var(--glass-bg-strong);
   border-color: var(--glass-accent-border);
 }
 
@@ -1308,6 +1343,7 @@
   .markdown-code-copy { opacity: 0.8; }
   .chat-message-actions { opacity: 1; }
 }
+
 .markdown-body pre code {
   background: transparent;
   border: none;
@@ -1373,3 +1409,19 @@ input[type='password']::-ms-reveal,
 input[type='password']::-ms-clear {
   display: none;
 }
+
+/* 用户文档: 长文阅读的层级与节奏, 聊天消息不受影响 */
+.doc-body { font-size: 14.5px; line-height: 1.8; }
+.doc-body p { margin: 0.75em 0; }
+.doc-body h1 { font-size: 1.75em; margin: 0 0 0.6em; }
+.doc-body h2 {
+  font-size: 1.35em;
+  margin: 2em 0 0.7em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--glass-border);
+}
+.doc-body h3 { font-size: 1.12em; margin: 1.6em 0 0.5em; }
+.doc-body > h2:first-child { margin-top: 0; }
+.doc-body ul, .doc-body ol { margin: 0.75em 0; }
+.doc-body li { margin: 0.35em 0; }
+.doc-body table { margin: 1em 0; }

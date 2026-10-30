@@ -11,7 +11,7 @@ import sqlite3
 from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 
 
-PLATFORM_SCHEMA_VERSION = 11
+PLATFORM_SCHEMA_VERSION = 12
 
 _OVERRIDE_TABLE = SESSION_OVERRIDE_TABLE
 _GROUP_TABLES = frozenset({
@@ -58,6 +58,15 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(group_actions)")}
         if "model_origin_json" not in columns:
             raise RuntimeError("平台数据库结构损坏: 群动作表缺少模型来源字段")
+    if version >= 12:
+        fields = {"action_revision", "decision", "decided_by_json", "decision_note", "risk", "risk_source"}
+        for table in ("group_actions", "friend_actions", "memory_proposals"):
+            columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+            if not fields <= columns:
+                raise RuntimeError(f"平台数据库结构损坏: {table} 缺少动作项修订或决策字段")
+
+    if version < PLATFORM_SCHEMA_VERSION and not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")   # DDL 与版本水位一起提交, 中断时不留下部分新增列
 
     if version < 1:
         connection.execute(
@@ -248,3 +257,15 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     if version < 11:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_platform_messages_received ON platform_messages(scope_key, status, received_at, message_time, message_id)")
         connection.execute("PRAGMA user_version = 11")
+    if version < 12:
+        for table in ("group_actions", "friend_actions", "memory_proposals"):
+            for name, definition in (("action_revision", "INTEGER NOT NULL DEFAULT 1"), ("decision", "TEXT"),
+                                     ("decided_by_json", "TEXT"), ("decision_note", "TEXT NOT NULL DEFAULT ''"),
+                                     ("risk", "TEXT NOT NULL DEFAULT 'unknown'"), ("risk_source", "TEXT NOT NULL DEFAULT 'unknown'")):
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+            changed = "NEW.state IS NOT OLD.state" + (" OR NEW.result_json IS NOT OLD.result_json" if table != "memory_proposals" else "")
+            identity = "proposal_id" if table == "memory_proposals" else "action_id"
+            account = " AND self_id=NEW.self_id" if table == "friend_actions" else ""
+            connection.execute(f"CREATE TRIGGER {table}_action_revision AFTER UPDATE ON {table} WHEN {changed} "
+                               f"BEGIN UPDATE {table} SET action_revision=OLD.action_revision+1 WHERE {identity}=NEW.{identity}{account}; END")
+        connection.execute("PRAGMA user_version = 12")

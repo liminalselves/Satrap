@@ -675,8 +675,8 @@ async def test_event_send_records_and_flags():
     assert adapter.sent[0][0] == "s1"
 
 @pytest.mark.asyncio
-async def test_event_send_failure_silently_caught():
-    """适配器发送失败被捕获, 不冒泡"""
+async def test_event_send_failure_returns_unknown_and_suppresses_duplicate_fallback():
+    """适配器异常不能确认是否已发送, 返回未知回执并禁止全文兜底重发"""
     class _BoomAdapter(RecorderAdapter):
         async def send_message(
         self, session_id: str, message: MessageChain, *, request_id: str = "",
@@ -686,8 +686,9 @@ async def test_event_send_failure_silently_caught():
 
     adapter = _BoomAdapter()
     event = _make_event(adapter)
-    await event.send(MessageChain.from_text("x"))
-    assert event.has_send_operation() is False
+    receipt = await event.send(MessageChain.from_text("x"))
+    assert receipt.status == "unknown" and receipt.reason == "send_error"
+    assert event.has_send_operation() is True
 
 def test_event_temporary_files():
     """临时文件跟踪与清理"""

@@ -7,7 +7,7 @@ Satrap 共享类型定义
 from dataclasses import dataclass, field
 from datetime import datetime
 import sqlite3
-from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar, cast, overload, NotRequired, TypedDict
+from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar, cast, overload, NotRequired, TypedDict, Literal
 from enum import Enum
 import time
 
@@ -15,7 +15,7 @@ from satrap.core.conversation import ConversationRoute, HistoryWindow
 from satrap.core.call_context import CallOrigin
 from satrap.core.components import BaseMessageComponent
 
-THINKING_LEVEL_VALUES = ("low", "medium", "high", "xhigh", "max", "ultra")
+THINKING_LEVEL_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 
 def validate_thinking_levels(value: object) -> Optional[List[str]]:
@@ -182,6 +182,40 @@ class ModelContextTurnStats:
         }
 
 
+@dataclass(frozen=True)
+class LLMErrorInfo:
+    """可公开展示的模型调用错误, 不携带原始请求或认证资料"""
+    code: str
+    message: str
+    status: int | None = None
+    provider_code: str | None = None
+    request_id: str | None = None
+
+    @property
+    def text(self) -> str:
+        """
+        生成聊天与平台共用的简短失败说明
+
+        返回:
+        - 含稳定错误码和可用 HTTP 状态的展示文本
+        """
+        label = self.provider_code or self.code
+        if self.status is not None:
+            label = f"HTTP {self.status} / {label}"
+        return f"请求失败 [{label}]: {self.message}"
+
+
+class ModelProtocolPayload(TypedDict):
+    """与一次助手输出关联的协议资料, 不保存整份输入或认证凭据"""
+
+    api_type: Literal["responses"]
+    provider: str
+    model: str
+    response_id: str
+    items: List[Dict[str, object]]
+    message_fingerprint: NotRequired[str]
+
+
 @dataclass
 class LLMCallResponse:
     """LLM 调用响应数据结构"""
@@ -197,6 +231,10 @@ class LLMCallResponse:
     """API 返回的真实 token 使用量, 供应商未返回时为 None"""
     finish_reason: Optional[str] = None
     """模型结束原因; length 可帮助识别被截断的工具调用"""
+    error_info: LLMErrorInfo | None = None
+    """失败响应的脱敏资料, 工作流不得将其提交为正常回答"""
+    protocol_payload: Optional["ModelProtocolPayload"] = None
+    """本次输出的可重放协议资料, 与展示用思考文本分离"""
 
     def __iter__(self) -> Iterator[Any]:
         """
@@ -235,6 +273,8 @@ class LLMCallStreamEvent:
     """模型结束原因"""
     error: Optional[str] = None
     """error 事件的错误信息"""
+    error_info: LLMErrorInfo | None = None
+    """与非流式响应共用的结构化错误"""
 
 @dataclass
 class LLMCallRequest:
@@ -349,15 +389,23 @@ class LLMConfig:
     """是否声明当前 API 支持原生视频, 默认关闭"""
     video_frame_interval: float = 2.0
     """动画和兼容视频的抽帧间隔秒数, 范围 0.5 至 5.0"""
+    api_type: Literal["chat_completions", "responses"] = "chat_completions"
+    """模型请求协议, 不根据模型名称或错误自动切换"""
+    native_video_transport: Literal["data_url", "url"] = "data_url"
+    """原生视频使用固定字节的 Data URL 或当前会话登记的公网来源"""
 
     def __post_init__(self) -> None:
         """校验模型网络超时和视觉能力声明"""
         from satrap.core.utils.validation import positive_timeout
+        if self.api_type not in ("chat_completions", "responses"):
+            raise ValueError("api_type 必须是 chat_completions 或 responses")
         self.network_timeout = positive_timeout(self.network_timeout, "network_timeout")
+        if self.thinking_fields is not None and "thinking_level" in self.thinking_fields:
+            self.thinking_fields = [item for item in self.thinking_fields if item != "thinking_level"] or None
         if not isinstance(self.supports_visual_input, bool):
             raise ValueError("supports_visual_input 必须是布尔值")
         from satrap.core.utils.media_config import validate_video_settings
-        validate_video_settings(self.supports_native_video_input, self.video_frame_interval)
+        validate_video_settings(self.supports_native_video_input, self.video_frame_interval, self.native_video_transport)
 
 
 @dataclass

@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, useLocation, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
+import { AlertTriangle, ArrowLeft, ChevronRight, Clock3, RefreshCw, ShieldCheck } from 'lucide-react';
 import { groupApi, type GroupConfigResult } from '@/api/groups';
-import { PageHeader } from '@/components/common/PageHeader';
-import { Card } from '@/components/ui/Card';
-import { Badge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/kit/Card';
+import { Badge } from '@/components/kit/Badge';
+import { Button } from '@/components/kit/Button';
+import { PageHeader } from '@/components/kit/Feedback';
+import { toast } from '@/components/kit/Toast';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { errorText } from '@/utils/errorText';
 import { VersionedConfigRead } from '@/api/configVersions';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import { getApiBaseUrl, getControlApiUrl } from '@/utils/constants';
+import { Avatar, CopyValue, Note, ProgressBar, hueFor } from './shared';
 
 const sections = [
   ['overview', '概览'], ['policy', '响应策略'], ['session', '会话配置'],
@@ -40,8 +43,15 @@ export function GroupDefault() {
 export function GroupInvalidSection() {
   const { adapterId, account } = useGroupContext();
   const listPath = `/platforms/${encodeURIComponent(adapterId)}/groups?account=${encodeURIComponent(account)}`;
-  return <Card role="alert">群详情标签不存在。<Link className="text-accent" to={listPath}>返回群列表</Link></Card>;
+  return <Card role="alert" padding="lg">
+    <Note tone="orange" title="群详情标签不存在" action={<Link className="ctl ctl-sm" to={listPath}>返回群列表</Link>}>
+      该分区已不存在, 请选择上方标签。
+    </Note>
+  </Card>;
 }
+
+const applyText = (config: GroupConfigResult) => config.apply_status === 'applied' ? '已生效'
+  : config.apply_status === 'failed' ? '应用失败' : '已保存, 待应用';
 
 export function GroupLayout() {
   const { adapterId = '', groupId = '' } = useParams();
@@ -51,9 +61,12 @@ export function GroupLayout() {
   const [params, setParams] = useSearchParams();
   const account = params.get('account') || '';
   const isRunning = useBackendStore((state) => state.isRunning);
+  const adapterOnline = useBackendStore((state) => state.health?.adapters?.[adapterId]?.status === 'running');
   const [config, setConfig] = useState<GroupConfigResult | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [applying, setApplying] = useState(false);
   const request = useRef(0);
   const configRead = useMemo(() => new VersionedConfigRead([], (signal) =>
     groupApi.config(adapterId, groupId, account, isRunning, signal), isRunning ? getApiBaseUrl : getControlApiUrl), [adapterId, groupId, account, isRunning]);
@@ -108,6 +121,26 @@ export function GroupLayout() {
     return () => { request.current++; poll.stop(); };
   }, [account, isRunning, reload]);
 
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await reload();
+      toast.success('群配置已刷新', '已重新读取有效策略与会话路由');
+    } catch { /* 错误已写入页面状态 */ }
+    finally { setRefreshing(false); }
+  }, [reload]);
+
+  const retryApply = useCallback(async () => {
+    if (!config || !isRunning || historical || applying) return;
+    setApplying(true);
+    try {
+      setConfig(await groupApi.applyConfig(adapterId, groupId, account, config.saved_revision));
+      setError('');
+      toast.success('配置已重新应用');
+    } catch (caught) { setError(errorText(caught)); }
+    finally { setApplying(false); }
+  }, [config, isRunning, historical, applying, adapterId, groupId, account]);
+
   if (!account && !loading) return <Card>等待机器人确认账号。<Link className="text-accent" to={listPath}>返回群列表</Link></Card>;
   if (loading && !config) return <Card className="min-h-52 animate-pulse" aria-label="群详情加载中" />;
   if (!config || config.account !== account || config.group.group_id !== groupId) {
@@ -118,33 +151,117 @@ export function GroupLayout() {
   const title = group.group_name || `群 ${groupId}`;
   const membership = group.membership === 'joined' ? '已加入' : group.membership === 'left' ? '已离开' : group.membership === 'config_only' ? '仅保留配置' : '待确认';
   const enabled = config.effective.policy.enabled === true;
+  const binding = config.effective.session.binding as { provider?: string; config_name?: string } | undefined;
+  const memberRatio = group.member_count && group.max_member_count ? (group.member_count / group.max_member_count) * 100 : 0;
+  const scope = String(config.effective.session.scope ?? '');
+  const scopeLabel = scope === 'group_shared' ? '全群共享' : scope === 'group_member' ? '按成员隔离' : '平台默认';
+  const validSection = sections.some(([key]) => key === section);
+
   return (
     <div className="space-y-5">
-      <PageHeader title={title} description={`平台 ${adapterId} / 机器人 ${account} / 群 ${groupId}`}
-        actions={<Link className="glass-button px-3 py-2 text-sm" to={listPath}>返回群列表</Link>} />
-      {error && <Card role="alert" className="border border-error text-error">{error} <Button size="sm" onClick={() => void reload().catch(() => undefined)}>重试读取</Button></Card>}
-      <Card className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2 text-sm" aria-live="polite">
-          <Badge variant={group.membership === 'joined' ? 'success' : 'default'}>{membership}</Badge>
-          <Badge variant={enabled ? 'success' : 'default'}>响应{enabled ? '开启' : '关闭'}</Badge>
-          <span className="text-text-secondary">配置修订 {config.saved_revision} · {config.apply_status === 'applied' ? '已生效' : config.apply_status === 'failed' ? '应用失败' : '已保存, 待应用'}</span>
-          <button type="button" className="text-accent hover:underline" onClick={() => navigator.clipboard.writeText(groupId)}>复制群号</button>
+      <PageHeader title={title}
+        description={<>平台 <span className="font-mono text-fg-2">{adapterId}</span> / 机器人 <span className="font-mono text-fg-2">{account}</span> / 群 <span className="font-mono text-fg-2">{groupId}</span></>}
+        eyebrow={<div className="flex flex-wrap items-center gap-2 text-[12px] text-fg-3">
+          <Link to="/platforms" className="transition hover:text-pink">平台状态</Link>
+          <ChevronRight className="h-3 w-3 text-fg-4" />
+          <Link to={listPath} className="transition hover:text-pink">群聊管理</Link>
+          <ChevronRight className="h-3 w-3 text-fg-4" />
+          <span className="num font-mono text-fg-2">{groupId}</span>
+        </div>}
+        actions={<>
+          <Link to={listPath} className="ctl ctl-ghost"><ArrowLeft className="h-4 w-4" />返回群列表</Link>
+          <Button variant="ghost" icon={<RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin-slow' : ''}`} />} onClick={refresh} disabled={refreshing}>刷新配置</Button>
+        </>} />
+
+      {error && <Note tone="red" title="读取失败" action={<Button size="sm" onClick={() => void reload().catch(() => undefined)}>重试读取</Button>}>{error}</Note>}
+
+      <Card padding="none" tint={config.apply_status === 'failed' ? 'red' : 'pink'} className="relative overflow-hidden animate-rise">
+        <div aria-hidden className="pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-[radial-gradient(circle,rgb(var(--tint)/0.28),transparent_66%)] blur-2xl" />
+        <div className="relative flex flex-col gap-5 p-5 lg:flex-row lg:items-center">
+          <div className="flex min-w-0 items-center gap-4">
+            <Avatar name={title} hue={hueFor(groupId)} size="xl" square />
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge tone={group.membership === 'joined' ? 'green' : group.membership === 'left' ? 'red' : 'neutral'} dot>{membership}</Badge>
+                <Badge tone={enabled ? 'green' : 'neutral'} dot>{enabled ? '响应开启' : '响应关闭'}</Badge>
+                <Badge tone={config.apply_status === 'applied' ? 'green' : config.apply_status === 'failed' ? 'red' : 'orange'}>{applyText(config)}</Badge>
+                {adapterOnline && <Badge tone="pink" dot live>适配器在线</Badge>}
+              </div>
+              <h2 className="display mt-1.5 truncate text-[24px] font-semibold text-fg">{title}</h2>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-fg-3">
+                <span className="num font-mono">群 {group.group_id}</span>
+                <span>·</span>
+                <span>确认于 {group.confirmed_at ? new Date(group.confirmed_at * 1000).toLocaleString('zh-CN') : '未知'}</span>
+                <CopyValue value={group.group_id} label="复制群号" />
+              </div>
+            </div>
+          </div>
+          <div className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="rounded-xl border border-line bg-glass px-3 py-2">
+              <div className="text-[10.5px] text-fg-4">成员</div>
+              <div className="num text-[15px] font-semibold text-fg">{group.member_count ?? '—'}<span className="text-[11px] font-normal text-fg-3"> / {group.max_member_count ?? '—'}</span></div>
+              <ProgressBar value={memberRatio} tone="pink" className="mt-1.5" />
+            </div>
+            <div className="rounded-xl border border-line bg-glass px-3 py-2">
+              <div className="text-[10.5px] text-fg-4">绑定 Agent</div>
+              <div className="truncate text-[12px] font-medium text-fg">{binding?.config_name || '继承平台'}</div>
+              <div className="truncate text-[10.5px] text-fg-4">{binding?.provider === 'edictum' ? 'Edictum' : binding?.provider === 'session_class' ? 'SessionClass' : '未指定'}</div>
+            </div>
+            <div className="rounded-xl border border-line bg-glass px-3 py-2">
+              <div className="text-[10.5px] text-fg-4">会话范围</div>
+              <div className="truncate text-[12px] font-medium text-fg">{scopeLabel}</div>
+              <div className="truncate text-[10.5px] text-fg-4">可归属实例 {config.session_instances?.current_route_count ?? '—'}</div>
+            </div>
+            <div className="rounded-xl border border-line bg-glass px-3 py-2">
+              <div className="text-[10.5px] text-fg-4">配置修订</div>
+              <div className="num text-[15px] font-semibold text-fg">#{config.saved_revision}</div>
+              <div className="text-[10.5px] text-fg-4">路由代次 {config.route_generation}</div>
+            </div>
+          </div>
         </div>
-        {config.apply_status === 'failed' && config.apply_error && <p className="text-sm text-error" role="alert">应用失败: {config.apply_error}</p>}
-        {historical && <p className="text-sm text-warning">当前连接账号不同, 此账号的群配置只读</p>}
-        {!isRunning && <p className="text-sm text-warning">{historical
-          ? '后端离线或未确认绑定账号, 此页仅可查看历史快照'
-          : '后端离线。可保存冷配置, 网络动作暂不可执行'}</p>}
-        <nav className="flex gap-1 overflow-x-auto border-t border-glass-border pt-3" aria-label="群详情标签">
-          {sections.map(([key, label]) => (
-            <NavLink key={key} to={`/platforms/${encodeURIComponent(adapterId)}/groups/${encodeURIComponent(groupId)}/${key}?account=${encodeURIComponent(account)}`}
-              className={`shrink-0 rounded-lg px-3 py-2 text-sm transition-colors ${section === key ? 'bg-accent/15 text-accent' : 'text-text-secondary hover:bg-glass-active hover:text-text-primary'}`}>
-              {label}
-            </NavLink>
-          ))}
-        </nav>
+        {config.apply_status === 'failed' && (
+          <div className="relative px-5 pb-4">
+            <Note tone="red" title="配置应用失败" icon={<AlertTriangle className="h-4 w-4" />}
+              action={<Button size="sm" variant="danger" loading={applying} onClick={retryApply} disabled={!isRunning || historical}>重试应用</Button>}>
+              {config.apply_error || '未提供失败原因'}
+            </Note>
+          </div>
+        )}
+        {historical && <div className="relative px-5 pb-4"><Note tone="orange">当前连接账号不同, 此账号的群配置只读。</Note></div>}
+        {!isRunning && (
+          <div className="relative px-5 pb-4"><Note tone="orange">{historical
+            ? '后端离线或未确认绑定账号, 此页仅可查看历史快照。'
+            : '后端离线。可保存冷配置, 网络动作暂不可执行。'}</Note></div>
+        )}
+        <div className="relative -mx-1 overflow-x-auto border-t border-line px-4 py-2.5">
+          <nav className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-[12px] border border-line bg-glass p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" aria-label="群详情标签">
+            {sections.map(([key, label]) => {
+              const active = (validSection ? section : 'overview') === key;
+              return (
+                <NavLink key={key} to={`/platforms/${encodeURIComponent(adapterId)}/groups/${encodeURIComponent(groupId)}/${key}?account=${encodeURIComponent(account)}`}
+                  // 动作记录同时是审批与执行记录入口, 保留可访问名以兼容既有导航契约
+                  aria-label={key === 'actions' ? '审批与记录' : undefined}
+                  className={`relative inline-flex h-8 shrink-0 items-center gap-2 whitespace-nowrap rounded-[9px] px-3.5 text-sm font-medium transition-colors duration-200 ${
+                    active ? 'border border-[rgb(var(--rgb-accent)/0.28)] bg-[rgb(var(--rgb-accent)/0.14)] text-accent shadow-[inset_0_1px_0_var(--glass-highlight)]' : 'text-fg-3 hover:text-fg'}`}>
+                  {label}
+                  {key === 'members' && group.member_count !== null && (
+                    <span className={`num rounded-full px-1.5 text-[11px] leading-[18px] ${active ? 'bg-[rgb(var(--rgb-accent)/0.2)]' : 'bg-glass-hover text-fg-3'}`}>{group.member_count}</span>
+                  )}
+                </NavLink>
+              );
+            })}
+          </nav>
+        </div>
       </Card>
+
       <Outlet context={{ adapterId, groupId, account, isRunning, historical, config, setConfig: acceptConfig, reload: reloadConfig } satisfies GroupContext} />
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 text-[11px] text-fg-4">
+        <span className="flex items-center gap-1.5"><Clock3 className="h-3 w-3" />配置修订 {config.saved_revision} · 生效 {config.active_revision ?? '无'} · 每 5 秒自动刷新有效设置</span>
+        <div className="flex items-center gap-1.5">
+          <ShieldCheck className="h-3 w-3" />写操作使用修订号避免覆盖并发修改
+        </div>
+      </div>
     </div>
   );
 }

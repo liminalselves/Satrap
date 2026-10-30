@@ -373,7 +373,7 @@ async function groups(runtime) {
     await page.getByRole('link', { name: '进入' }).click();
     assert.equal(injectAtMessage('@100 启用前不应回复'), null);
     await page.getByRole('link', { name: '响应策略', exact: true }).click();
-    await page.locator('label:has-text("本群设置") select').selectOption('true');
+    await page.locator('label:has-text("本群设置") [role=combobox]').selectOption('true');
     await page.getByRole('button', { name: '保存并应用' }).click();
     await page.getByText('响应开启').first().waitFor();
     assert.equal(config.effective.policy.enabled, true);
@@ -414,7 +414,7 @@ async function groups(runtime) {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByRole('button', { name: '管理默认设置' }).click();
     await page.getByText('当前继承群 1').waitFor();
-    await page.getByText('移出成员', { exact: true }).locator('..').locator('select').selectOption('auto_execute');
+    await page.getByText('移出成员', { exact: true }).locator('..').locator('[role=combobox]').selectOption('auto_execute');
     await Promise.all([
       page.waitForResponse((response) => response.url().includes('/groups/settings') && response.request().method() === 'PATCH'),
       page.getByRole('button', { name: '保存默认设置' }).click(),
@@ -422,7 +422,7 @@ async function groups(runtime) {
     assert.deepEqual(settingsWrites.at(-1).approval_defaults, { kick_group_member: 'auto_execute' });
     assert.equal(settingsMode, 'selected');
     await page.getByRole('button', { name: '管理默认设置' }).click();
-    assert.equal(await page.getByText('移出成员', { exact: true }).locator('..').locator('select').inputValue(), 'auto_execute');
+    assert.equal(await page.getByText('移出成员', { exact: true }).locator('..').locator('[role=combobox]').inputValue(), 'auto_execute');
     await page.getByRole('button', { name: '取消' }).click();
     await page.getByRole('button', { name: '修改接入模式' }).click();
     await page.getByLabel('全部群, 含以后新加入群').check();
@@ -468,7 +468,7 @@ async function groups(runtime) {
     await page.getByRole('button', { name: '我已核实平台状态, 可以创建新操作' }).click();
     assert.equal(await page.getByPlaceholder('输入 1 到 1000 字符').inputValue(), '');
     await page.getByRole('link', { name: '响应策略', exact: true }).click();
-    await page.locator('label:has-text("本群设置") select').selectOption('true');
+    await page.locator('label:has-text("本群设置") [role=combobox]').selectOption('true');
     await page.locator('label:has-text("示例消息") textarea').fill('@机器人 你好');
     await page.getByLabel('示例消息 @机器人').check();
     const policyWrites = writes.length;
@@ -486,9 +486,9 @@ async function groups(runtime) {
     ]);
     await page.reload();
     await page.getByText('有效状态: 开启').waitFor();
-    assert.equal(await page.locator('label:has-text("本群设置") select').inputValue(), 'true');
+    assert.equal(await page.locator('label:has-text("本群设置") [role=combobox]').inputValue(), 'true');
     assert.equal(await page.getByText('本群覆盖').count() > 0, true);
-    await page.locator('label:has-text("本群设置") select').selectOption('inherit');
+    await page.locator('label:has-text("本群设置") [role=combobox]').selectOption('inherit');
     await Promise.all([
       page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
       page.getByRole('button', { name: '保存并应用' }).click(),
@@ -509,11 +509,11 @@ async function groups(runtime) {
     await page.getByText('模型与提示词').waitFor();
     await page.getByText('当前路由可归属实例: 1').waitFor();
     await page.getByText('本群可归属实例 ID: session-a').waitFor();
-    await page.locator('label:has-text("模型来源") select').first().selectOption('value');
-    await page.locator('label:has-text("模型来源") select').last().selectOption('other');
-    await page.locator('label:has-text("系统提示词") select').selectOption('value');
+    await page.locator('label:has-text("模型来源") [role=combobox]').first().selectOption('value');
+    await page.locator('label:has-text("模型来源") [role=combobox]').last().selectOption('other');
+    await page.locator('label:has-text("系统提示词") [role=combobox]').selectOption('value');
     await page.locator('label:has-text("系统提示词") textarea').fill('');
-    await page.locator('label:has-text("search") select').selectOption('disabled');
+    await page.locator('label:has-text("search") [role=combobox]').selectOption('disabled');
     let backPrompt = 0;
     page.once('dialog', async (dialog) => {
       assert.equal(dialog.message(), '当前表单有未保存的修改, 确定放弃吗?');
@@ -524,7 +524,7 @@ async function groups(runtime) {
     await page.waitForTimeout(100);
     assert.equal(backPrompt, 1);
     assert.equal(new URL(page.url()).pathname.endsWith('/session'), true);
-    assert.equal(await page.locator('label:has-text("模型来源") select').last().inputValue(), 'other');
+    assert.equal(await page.locator('label:has-text("模型来源") [role=combobox]').last().inputValue(), 'other');
     await page.getByRole('button', { name: '保存并应用' }).click();
     await Promise.all([
       page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
@@ -551,8 +551,8 @@ async function groups(runtime) {
     assert.equal(await page.getByText('session-b', { exact: true }).count(), 0);
     await page.goBack();
     await page.getByText('模型与提示词').waitFor();
-    await page.locator('label:has-text("范围来源") select').selectOption('value');
-    await page.locator('label:has-text("本群范围") select').selectOption('group_shared');
+    await page.locator('label:has-text("范围来源") [role=combobox]').selectOption('value');
+    await page.locator('label:has-text("本群范围") [role=combobox]').selectOption('group_shared');
     await page.getByRole('button', { name: '保存并应用' }).click();
     const impactDialog = page.getByRole('dialog', { name: '切换会话绑定或范围' });
     await impactDialog.getByText('此后使用新会话; 原历史保留, 不自动迁移').waitFor();
@@ -564,8 +564,8 @@ async function groups(runtime) {
     await page.getByRole('button', { name: '取消' }).click();
     assert.equal(await page.getByRole('button', { name: '保存并应用' })
       .evaluate((element) => element === document.activeElement), true);
-    await page.locator('label:has-text("本群范围") select').selectOption('group_member');
-    await page.locator('label:has-text("范围来源") select').selectOption('inherit');
+    await page.locator('label:has-text("本群范围") [role=combobox]').selectOption('group_member');
+    await page.locator('label:has-text("范围来源") [role=combobox]').selectOption('inherit');
     await page.getByRole('link', { name: '审批与记录' }).click();
     await page.getByText('action-123456').waitFor();
     await Promise.all([
@@ -583,27 +583,27 @@ async function groups(runtime) {
     await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-actions.png') });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.locator('select').first().selectOption('failed');
+    await page.locator('[role=combobox]').first().selectOption('failed');
     await page.getByText('结果: 平台拒绝执行该动作 (retcode=100)', { exact: true }).waitFor();
     await page.getByText('结果: AdminActionRejected', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '批准', exact: true }).count(), 0);
-    await page.locator('select').first().selectOption('all');
+    await page.locator('[role=combobox]').first().selectOption('all');
     await page.getByText('action-123456').waitFor();
     holdPendingActions = true;
     await Promise.all([
       page.waitForRequest((request) => request.url().includes('/groups/456/actions?')
         && request.url().includes('state=pending')),
-      page.locator('select').first().selectOption('pending'),
+      page.locator('[role=combobox]').first().selectOption('pending'),
     ]);
     const canceledAction = page.waitForEvent('requestfailed', { predicate: (request) => request.url().includes('/groups/456/actions?') && request.url().includes('state=pending') });
-    await page.locator('select').first().selectOption('succeeded');
+    await page.locator('[role=combobox]').first().selectOption('succeeded');
     await page.getByText('action-succeeded').waitFor();
     await canceledAction;
     holdPendingActions = false;
     releasePendingActions();
     await page.waitForTimeout(100);
     assert.equal(await page.getByText('action-123456').count(), 0);
-    await page.locator('select').first().selectOption('all');
+    await page.locator('[role=combobox]').first().selectOption('all');
     await page.getByText('action-123456').waitFor();
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
     const hiddenActionReads = actionReads;
@@ -616,7 +616,7 @@ async function groups(runtime) {
     const afterActionsLeave = actionReads;
     await page.waitForTimeout(10_300);
     assert.equal(actionReads, afterActionsLeave);
-    await page.getByText('移出成员', { exact: true }).locator('..').locator('select').selectOption('auto_execute');
+    await page.getByText('移出成员', { exact: true }).locator('..').locator('[role=combobox]').selectOption('auto_execute');
     await Promise.all([
       page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
       page.getByRole('button', { name: '保存本群审批设置' }).click(),
@@ -624,10 +624,10 @@ async function groups(runtime) {
     assert.equal(writes.at(-1).section, 'approval');
     assert.deepEqual(writes.at(-1).values.kick_group_member, { mode: 'value', value: 'auto_execute' });
     assert.equal(writes.at(-1).expected_revision, 3);
-    await page.locator('label:has-text("动作") select').selectOption('kick_group_member');
+    await page.locator('label:has-text("动作") [role=combobox]').selectOption('kick_group_member');
     await page.getByText('此动作当前不可用: 平台已确认不支持').waitFor();
     assert.equal(await page.getByRole('button', { name: '提交管理动作' }).isDisabled(), true);
-    await page.locator('label:has-text("动作") select').selectOption('set_group_name');
+    await page.locator('label:has-text("动作") [role=combobox]').selectOption('set_group_name');
     actionReject = 403;
     await page.locator('label:has-text("群名") input').fill('新群名');
     await page.getByRole('button', { name: '提交管理动作' }).click();
@@ -671,17 +671,17 @@ async function groups(runtime) {
     await page.getByText('群配置已变化').waitFor();
     assert.equal(await page.locator('label:has-text("系统提示词") textarea').inputValue(), '未保存草稿');
     await page.getByRole('button', { name: '取消' }).click();
-    await page.locator('label:has-text("绑定来源") select').selectOption('value');
-    await page.locator('label:has-text("流程") select').selectOption('session_class');
-    await page.locator('label:has-text("命名配置") select').selectOption('basic');
+    await page.locator('label:has-text("绑定来源") [role=combobox]').selectOption('value');
+    await page.locator('label:has-text("流程") [role=combobox]').selectOption('session_class');
+    await page.locator('label:has-text("命名配置") [role=combobox]').selectOption('basic');
     await page.getByText('目标配置不支持已有的').waitFor();
     assert.equal(await page.getByRole('button', { name: '保存并应用' }).isDisabled(), true);
     await page.getByRole('button', { name: '模型恢复继承' }).click();
     await page.getByRole('button', { name: '提示词恢复继承' }).click();
     await page.getByRole('button', { name: '插件恢复继承' }).click();
     assert.equal(await page.getByRole('button', { name: '保存并应用' }).isEnabled(), true);
-    await page.locator('label:has-text("范围来源") select').selectOption('value');
-    await page.locator('label:has-text("本群范围") select').selectOption('group_shared');
+    await page.locator('label:has-text("范围来源") [role=combobox]').selectOption('value');
+    await page.locator('label:has-text("本群范围") [role=combobox]').selectOption('group_shared');
     let discardPrompt = 0;
     page.once('dialog', async (dialog) => {
       assert.equal(dialog.message(), '当前表单有未保存的修改, 确定放弃吗?');
@@ -691,7 +691,7 @@ async function groups(runtime) {
     await page.getByRole('link', { name: '响应策略', exact: true }).click();
     assert.equal(discardPrompt, 1);
     assert.equal(new URL(page.url()).pathname.endsWith('/session'), true);
-    assert.equal(await page.locator('label:has-text("本群范围") select').inputValue(), 'group_shared');
+    assert.equal(await page.locator('label:has-text("本群范围") [role=combobox]').inputValue(), 'group_shared');
     page.once('dialog', async (dialog) => { await dialog.accept(); });
     await page.getByRole('link', { name: '返回群列表' }).click();
     await page.getByLabel('查看账号').selectOption('101');
@@ -699,13 +699,13 @@ async function groups(runtime) {
     await page.getByRole('link', { name: '进入' }).click();
     await page.getByRole('link', { name: '会话配置' }).click();
     await page.getByText('当前连接账号不同, 此账号的群配置只读').waitFor();
-    assert.equal(await page.locator('label:has-text("范围来源") select').inputValue(), 'inherit');
+    assert.equal(await page.locator('label:has-text("范围来源") [role=combobox]').inputValue(), 'inherit');
     assert.equal(await page.getByRole('button', { name: '保存并应用' }).count(), 0);
     conflict = false;
     await page.goto(`${origin}/platforms/ob/groups/456/session?account=100`);
     await page.getByText('模型与提示词').waitFor();
-    await page.locator('label:has-text("范围来源") select').selectOption('value');
-    await page.locator('label:has-text("本群范围") select').selectOption('group_shared');
+    await page.locator('label:has-text("范围来源") [role=combobox]').selectOption('value');
+    await page.locator('label:has-text("本群范围") [role=combobox]').selectOption('group_shared');
     await page.getByRole('button', { name: '保存并应用' }).click();
     await Promise.all([
       page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
@@ -780,8 +780,12 @@ async function group_chat_plugin(runtime) {
     await page.getByText('group_chat.environment', { exact: true }).waitFor();
     await page.getByRole('button', { name: '全局参数', exact: true }).click();
     for (const [name, field] of Object.entries(schema)) {
-      const input = page.getByLabel(name, { exact: true });
+      const input = page.getByLabel(field.label || name, { exact: true });
       await input.waitFor();
+      if (field.type === 'select') {
+        assert.equal(await input.getAttribute('data-value'), String(field.default));
+        continue;
+      }
       if (field.type === 'bool') {
         assert.equal(await input.isChecked(), field.default);
         continue;

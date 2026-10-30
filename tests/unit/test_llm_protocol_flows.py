@@ -5,7 +5,44 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 import pytest
+from satrap.core.type import LLMErrorInfo
 from openai import APIError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["401", "429", "503", "timeout", "connection", "unknown"])
+async def test_request_failure_details_are_shared_and_do_not_leak_credentials(monkeypatch, caplog, kind):
+    """真实 SDK 异常贯通同步/异步与流式/非流式, 只回传脱敏原因"""
+    import httpx
+    from openai import APIStatusError, APITimeoutError, APIConnectionError
+
+    secret = "sk-private-credential-do-not-return"
+    request = httpx.Request("POST", f"https://example.com/?key={secret}", headers={"Authorization": f"Bearer {secret}"})
+    if kind.isdigit():
+        error = APIStatusError(secret, response=httpx.Response(int(kind), request=request),
+                               body={"error": {"code": "rate_limit_exceeded" if kind == "429" else "request_rejected", "message": secret}})
+    elif kind == "timeout":
+        error = APITimeoutError(request=request)
+    elif kind == "connection":
+        error = APIConnectionError(request=request, message=secret)
+    else:
+        error = RuntimeError(secret)
+    llm, async_llm, _ = _clients(monkeypatch, error=error)
+    for client in (llm, async_llm):
+        response = client.call([{"role": "user", "content": "问题"}])
+        if isinstance(client, _llm_call_parity_AsyncLLM):
+            response = await response
+            events = [event async for event in client.stream_call([{"role": "user", "content": "问题"}])]
+        else:
+            events = list(client.stream_call([{"role": "user", "content": "问题"}]))
+        assert response.type == "error" and isinstance(response.error_info, LLMErrorInfo)
+        assert events[0].kind == "error" and events[0].error_info == response.error_info
+        assert events[-1].finish_reason == "error"
+        assert "请求失败" in response.content and secret not in response.content
+        assert response.error_info.status == (int(kind) if kind.isdigit() else None)
+        if kind == "timeout":
+            assert response.error_info.code == "network_timeout" and "60" in response.content
+    assert secret not in caplog.text
 from satrap import LLM, AsyncLLM as _llm_call_parity_AsyncLLM
 from satrap.core.APICall.LLMCall import sync, async_
 from satrap.core.type import LLMCallResponse as _llm_call_parity_LLMCallResponse
@@ -424,20 +461,10 @@ def _as_async_llm(fake: Any) -> _stream_call_AsyncLLM:
     return cast(_stream_call_AsyncLLM, fake)
 
 def _make_llm(cls: type[_LLM], client: object) -> _LLM:
-    llm = cls.__new__(cls)
-    # 测试替身非真实 OpenAI 客户端, 边界断言集中在工厂内
-    llm.client = cast(Any, client)
-    llm.model = "deepseek-v4-flash"
-    llm.temperature = 0.2
-    llm.top_p = 0.95
-    llm.max_tokens = 100
-    llm.thinking_field_name = "reasoning_content"
-    llm.thinking_fields = None
-    llm.omit_none_thinking_fields = False
-    llm.supports_visual_input = False
-    llm.suppress_error = False
-    llm.return_false = False
-    return llm
+    from unittest.mock import patch
+
+    with patch.object(cls, "_create_client", return_value=client):
+        return cls(api_key="test", model="deepseek-v4-flash", base_url="https://model.test/v1", temperature=0.2, max_tokens=100, suppress_error=False)
 
 def test_sync_stream_call_aggregates_tool_arguments():
     llm = _make_llm(LLM, _SyncClient())
@@ -695,7 +722,7 @@ def test_off_can_omit_none_fields_without_dropping_explicit_switches():
     """开启省略选项后只删除 none 字段并保留显式关闭开关"""
     body = _build_thinking_extra_body(
         "off",
-        ["thinking.type", "reasoning_effort", "thinking_level", "enable_thinking"],
+        ["thinking.type", "reasoning_effort", "enable_thinking"],
         omit_none_thinking_fields=True,
     )
 
@@ -708,22 +735,25 @@ def test_enabled_level_is_not_affected_by_none_omission():
     """开启思考时应完整发送开关和强度"""
     body = _build_thinking_extra_body(
         "low",
-        ["thinking.type", "reasoning_effort", "thinking_level", "enable_thinking"],
+        ["thinking.type", "reasoning_effort", "enable_thinking"],
         omit_none_thinking_fields=True,
     )
 
     assert body == {
         "thinking": {"type": "enabled"},
         "reasoning_effort": "low",
-        "thinking_level": "low",
         "enable_thinking": True,
     }
 
 def test_extended_levels_are_forwarded_unchanged():
     """扩展思考强度应由强度字段原样传给供应商"""
-    for level in ("xhigh", "max", "ultra"):
-        body = _build_thinking_extra_body(level, ["reasoning_effort", "thinking_level"])
-        assert body == {"reasoning_effort": level, "thinking_level": level}
+    for level in ("minimal", "xhigh", "max", "ultra"):
+        body = _build_thinking_extra_body(level, ["reasoning_effort"])
+        assert body == {"reasoning_effort": level}
+
+def test_default_thinking_sends_no_fields():
+    """default 不发送任何思考字段, 由模型服务决定"""
+    assert _build_thinking_extra_body("default", ["thinking.type", "reasoning_effort", "enable_thinking"]) is None
 
 def test_empty_effective_field_set_returns_none():
     """全部字段被忽略或省略时不发送 extra_body"""

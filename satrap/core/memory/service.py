@@ -156,7 +156,8 @@ class MemoryService:
                 if set(values) - allowed:
                     raise MemoryError("invalid_argument", "记忆参数包含不可由模型指定的字段")
                 operation_id = origin.request_id + ":" + operation + ":" + str(values.get("key") or values.get("memory_id", ""))
-                result = repository.mutate(operation, values, actor=origin.actor_id, current_message=origin.source_message_id, operation_id=operation_id)
+                result = repository.mutate(operation, values, actor=origin.actor_id, current_message=origin.source_message_id,
+                                           require_approval=config.get("group_auto_approve") is not True, operation_id=operation_id)
             else:
                 raise MemoryError("invalid_argument", "不支持的群记忆操作")
             await revalidate()

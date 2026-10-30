@@ -1,4 +1,16 @@
 """平台账号级好友管理, 与模型插件和群管理独立"""
+from typing import TypedDict
+
+
+class FriendDirectoryEntry(TypedDict):
+    """适配器明确提供的好友资料, 未知资料保持为空"""
+
+    user_id: str
+    nickname: str
+    remark: str
+    avatar_url: str | None
+    online: bool | None
+    added_at: float | None
 
 
 class FriendError(Exception):

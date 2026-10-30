@@ -2,7 +2,7 @@
 # Generated from GitHub: https://github.com/midway2333/Satrap
 
 # 请求依赖
-openai>=2.0.0
+openai>=2.41.1
 
 # 日志系统
 colorlog>=6.7.0
@@ -67,3 +67,4 @@ pytest-xdist>=3.8,<4
 setuptools>=68
 
 packaging>=23.0
+tzdata>=2025.2

@@ -16,7 +16,7 @@ from typing import Any, Generator, TYPE_CHECKING, TypedDict, Unpack, cast
 from satrap.core.type import RequestContextBlock
 from satrap.core.utils.context.request import freeze_request_blocks, serialize_request_blocks, restore_request_blocks, compose_agent_system_suffix
 from satrap.core.utils.context import PreparedModelContext
-from satrap.core.type import LLMCallResponse, TokenUsage
+from satrap.core.type import LLMCallResponse, LLMErrorInfo, TokenUsage
 from satrap.core.utils.media import user_media_content, freeze_tool_result, project_messages
 from .errors import ModelCallError
 from satrap.core.call_context import bind_tool_workflow
@@ -130,6 +130,10 @@ def configuration(wf: Workflow) -> str:
         "model", "base_url", "temperature", "top_p", "max_tokens",
         "supports_visual_input", "supports_native_video_input", "video_frame_interval", "thinking_fields", "omit_none_thinking_fields",
     )}
+    if getattr(wf.llm, "api_type", "chat_completions") != "chat_completions":
+        model["api_type"] = wf.llm.api_type
+    if getattr(wf.llm, "supports_native_video_input", False) and getattr(wf.llm, "native_video_transport", "data_url") != "data_url":
+        model["native_video_transport"] = wf.llm.native_video_transport
     tools: list[dict[str, Any]] = []
     registry = cast(dict[str, Any], wf.tools_manager.tools)
     for name, tool in sorted(registry.items()):
@@ -172,7 +176,7 @@ def restore_prepared(metadata: dict[str, Any]) -> PreparedModelContext:
 
 def execute(
     wf: Workflow, *, user_input: str | None = "", run_id: str | None = None,
-    stream: bool = False, callback: bool = True, thinking: str = "off",
+    stream: bool = False, callback: bool = True, thinking: str = "default",
     img_urls: list[str] | None = None, max_iterations: int = 10,
     video_urls: list[str] | None = None,
     recoverable: bool = True, initial_response: LLMCallResponse | None = None,
@@ -187,7 +191,7 @@ def execute(
     - run_id: 待恢复任务 ID, 默认 None 表示新任务
     - stream: 是否使用流式模型调用, 默认 False
     - callback: 是否回传模型内容, 默认 True
-    - thinking: 模型思考强度, 默认 off
+    - thinking: 模型思考强度, 默认 default 不发送思考参数
     - img_urls: 附加图片地址, 默认 None
     - video_urls: 附加视频地址, 默认 None
     - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
@@ -292,6 +296,8 @@ def execute(
                     response = yield InvokeModel(request, payload["stream"], callback, seeded)
                     if not isinstance(response, LLMCallResponse):
                         raise ModelCallError("模型调用失败")
+                    if response.error_info is not None:
+                        raise ModelCallError(response.error_info)
                     value = asdict(response)
                     if store is not None and run_id is not None:
                         store.finish_step(run_id, step.key, value)
@@ -341,7 +347,7 @@ def _request_kwargs(request: dict[str, Any]) -> dict[str, Any]:
     返回:
     - 模型参数字典, thinking 为 off 时不显式传递该字段
     """
-    return {key: value for key, value in request.items() if key not in {"messages", "_prepared"} and (key != "thinking" or value != "off")}
+    return {key: value for key, value in request.items() if key not in {"messages", "_prepared"} and (key != "thinking" or value != "default")}
 
 
 async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[ExecutionOptions]) -> str:
@@ -364,6 +370,9 @@ async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[Ex
             elif isinstance(action, Prepare):
                 value = await wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                            tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks, system_suffix=action.system_suffix)
+                from satrap.core.log.debug.hooks import record_debug
+
+                record_debug("context_preparation", "end", metadata={"context_id": wf.ctx.conversation_id, **prepared_metadata(value)})
             elif isinstance(action, InvokeTool):
                 with bind_tool_workflow(wf, action.messages):
                     tool_message, tool_result = await wf.tools_manager.execute_tool_call(action.call)
@@ -390,6 +399,8 @@ async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[Ex
                         await wf._content_callback(value.content)
                 elif action.stream:
                     async for event in wf.llm.stream_call(request["messages"], **_request_kwargs(request)):
+                        if event.kind == "error":
+                            raise ModelCallError(event.error_info or LLMErrorInfo("model_call_failed", "模型调用失败"))
                         if event.kind == "done":
                             value = event.response
                         elif action.callback and event.kind == "content_delta":
@@ -398,6 +409,8 @@ async def _run_async_scoped(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[Ex
                             await (wf.thinking_callback or wf._content_callback)(event.delta)
                 else:
                     value = await wf.llm.call(request["messages"], **_request_kwargs(request))
+                    if isinstance(value, LLMCallResponse) and value.error_info is not None:
+                        raise ModelCallError(value.error_info)
                     if action.callback and isinstance(value, LLMCallResponse):
                         if wf.return_thinking and value.thinking:
                             await (wf.thinking_callback or wf._content_callback)(value.thinking)
@@ -435,6 +448,9 @@ def _run_sync_scoped(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptio
             elif isinstance(action, Prepare):
                 value = wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                      tools=action.tools, img_urls=action.images, request_blocks=action.request_blocks, system_suffix=action.system_suffix)
+                from satrap.core.log.debug.hooks import record_debug
+
+                record_debug("context_preparation", "end", metadata={"context_id": wf.ctx.conversation_id, **prepared_metadata(value)})
             elif isinstance(action, InvokeTool):
                 with bind_tool_workflow(wf, action.messages):
                     tool_message, tool_result = wf.tools_manager.execute_tool_call(action.call)
@@ -461,6 +477,8 @@ def _run_sync_scoped(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptio
                         wf._content_callback(value.content)
                 elif action.stream:
                     for event in wf.llm.stream_call(request["messages"], **_request_kwargs(request)):
+                        if event.kind == "error":
+                            raise ModelCallError(event.error_info or LLMErrorInfo("model_call_failed", "模型调用失败"))
                         if event.kind == "done":
                             value = event.response
                         elif action.callback and event.kind == "content_delta":
@@ -469,6 +487,8 @@ def _run_sync_scoped(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptio
                             (wf.thinking_callback or wf._content_callback)(event.delta)
                 else:
                     value = wf.llm.call(request["messages"], **_request_kwargs(request))
+                    if isinstance(value, LLMCallResponse) and value.error_info is not None:
+                        raise ModelCallError(value.error_info)
                     if action.callback and isinstance(value, LLMCallResponse):
                         if wf.return_thinking and value.thinking:
                             (wf.thinking_callback or wf._content_callback)(value.thinking)

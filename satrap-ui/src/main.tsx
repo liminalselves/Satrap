@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles/globals.css';
+import './styles/effects.css';
 import { loadRuntimeConfig } from '@/utils/constants';
 import { GlassReflectProvider } from '@/hooks/useGlassReflect';
 import { establishApiSessions } from '@/api/auth';

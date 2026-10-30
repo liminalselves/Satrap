@@ -1,3 +1,27 @@
+export function mergeLogSources<T extends { source?: string; timestamp?: number; id: number }>(logs: T[]): T[] {
+  const sources = new Map<string, T[]>();
+  for (const log of logs) {
+    const key = log.source ?? '';
+    const entries = sources.get(key) ?? [];
+    entries.push(log); sources.set(key, entries);
+  }
+  const queues = [...sources.values()].map((entries) => ({ entries, index: 0 }));
+  const result: T[] = [];
+  while (result.length < logs.length) {
+    let selected: typeof queues[number] | undefined;
+    for (const queue of queues) {
+      const entry = queue.entries[queue.index];
+      const previous = selected?.entries[selected.index];
+      if (entry && (!previous || (entry.timestamp ?? 0) < (previous.timestamp ?? 0)
+        || entry.timestamp === previous.timestamp && entry.id < previous.id)) selected = queue;
+    }
+    if (!selected) break;
+    result.push(selected.entries[selected.index++]);
+  }
+  return result;
+}
+// 按各来源的下一条时间合并, 即使宿主时钟回拨也不倒置同一来源的发布顺序
+
 export class LogBuffer<T> {
   private ring: T[] = [];
   private next = 0;

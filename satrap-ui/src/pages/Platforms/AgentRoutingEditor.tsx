@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import type { AgentBinding, EdictumSessionConfig, SessionClassConfig } from '@/api/types';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 export interface AgentOption {
   provider: 'session_class' | 'edictum';
@@ -71,18 +72,18 @@ export function AgentRoutingEditor({ bindings, kinds, options, defaultProvider, 
           }}>删除 {label} 绑定</button>
         </div>}
         <label className="block text-sm">{label} Agent 来源
-          <select aria-label={`${label} Agent 来源`} className="glass-input mt-1 w-full" value={binding.mode} onChange={(event) => onChange({
-            ...bindings, [kind]: event.target.value === 'inherit' ? { mode: 'inherit' }
+          <KitSelect aria-label={`${label} Agent 来源`} className="field mt-1 w-full" value={binding.mode} onChange={(next) => onChange({
+            ...bindings, [kind]: next === 'inherit' ? { mode: 'inherit' }
               : { mode: 'value', provider: defaultProvider === 'edictum' ? 'edictum' : 'session_class', config_name: '' },
           })}>
             <option value="inherit">继承平台默认</option>
             <option value="value">指定 Agent 配置</option>
-          </select>
+          </KitSelect>
         </label>
         {binding.mode === 'value' ? <>
           <label className="block text-sm">{label} Agent 配置
-            <select aria-label={`${label} Agent 配置`} className="glass-input mt-1 w-full" value={optionValue(binding.provider, binding.config_name)} onChange={(event) => {
-              const [provider, name] = JSON.parse(event.target.value) as [AgentOption['provider'], string];
+            <KitSelect aria-label={`${label} Agent 配置`} className="field mt-1 w-full" value={optionValue(binding.provider, binding.config_name)} onChange={(next) => {
+              const [provider, name] = JSON.parse(next) as [AgentOption['provider'], string];
               onChange({ ...bindings, [kind]: { mode: 'value', provider, config_name: name } });
             }}>
               {!binding.config_name && <option value={optionValue(binding.provider, '')}>请选择 Agent 配置</option>}
@@ -90,7 +91,7 @@ export function AgentRoutingEditor({ bindings, kinds, options, defaultProvider, 
                 {option.name} · {option.provider === 'edictum' ? 'Edictum' : 'SessionClass'}{option.enabled ? '' : ' · 已停用'}
               </option>)}
               {binding.config_name && !selected && <option value={optionValue(binding.provider, binding.config_name)} disabled>{binding.config_name} · 已删除</option>}
-            </select>
+            </KitSelect>
           </label>
           <p className={`text-sm ${selected?.enabled ? 'text-text-secondary' : 'text-warning'}`}>
             {selected ? `${selected.summary}${selected.enabled ? '' : ' · 所选配置已停用'}` : binding.config_name ? '所选配置已删除, 请重新选择' : '尚未选择配置'}

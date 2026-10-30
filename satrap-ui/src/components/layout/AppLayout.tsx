@@ -1,27 +1,36 @@
-import { Outlet } from 'react-router-dom';
-import { useState } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
-import { ToastContainer, useToasts } from '@/components/ui/Toast';
+import { CommandPalette } from './CommandPalette';
 
 export function AppLayout() {
-  const { toasts, closeToast } = useToasts();
   const [menuOpen, setMenuOpen] = useState(false);
+  const { pathname } = useLocation();
+
+  useEffect(() => setMenuOpen(false), [pathname]);
 
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar className="hidden md:flex" />
-      {menuOpen && <div className="fixed inset-0 z-50 md:hidden">
-        <button className="absolute inset-0 bg-black/40" aria-label="关闭导航菜单" onClick={() => setMenuOpen(false)} />
-        <Sidebar className="!fixed !inset-y-0 !left-0 !top-0 z-10 flex" onNavigate={() => setMenuOpen(false)} />
-      </div>}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+      {menuOpen && (
+        <div className="fixed inset-0 z-[100] md:hidden">
+          <button className="absolute inset-0 bg-black/40 backdrop-blur-sm animate-fade" aria-label="关闭导航菜单" onClick={() => setMenuOpen(false)} />
+          <div className="relative h-full w-fit" style={{ animation: 'rise-in 360ms var(--ease-out) both' }}>
+            <Sidebar forceExpanded className="surface-strong" onNavigate={() => setMenuOpen(false)} />
+          </div>
+        </div>
+      )}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Header onOpenMenu={() => setMenuOpen(true)} />
-        <main className="flex-1 min-h-0 p-3 md:p-6 overflow-auto custom-scrollbar">
-          <Outlet />
+        <main className="scroll min-h-0 flex-1">
+          {/* key 让路由切换时重新播放进场动画; h-full 供日志等全高页面使用 */}
+          <div key={pathname} className="mx-auto h-full w-full max-w-[1400px] px-3 py-5 md:px-6 md:py-6">
+            <Outlet />
+          </div>
         </main>
       </div>
-      <ToastContainer toasts={toasts} onClose={closeToast} />
+      <CommandPalette />
     </div>
   );
 }

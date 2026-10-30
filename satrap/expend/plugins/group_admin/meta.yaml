@@ -88,7 +88,7 @@ tools:
   group_admin_list_group_requests: "查询指定群待处理的成员入群申请"
 
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 
 applicability:
   session_types: [platform]

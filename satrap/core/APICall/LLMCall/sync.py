@@ -13,11 +13,8 @@ from typing import (
 )
 
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, safe_getattr_str
-from .responses import parse_chat_response, parse_call_response
-from .stream import _StreamCallAccumulator
 from .utils import (
     _stream_usage_option_unsupported,
-    prepare_call_messages,
     prepare_structured_messages,
 )
 from .base import _LLMBase
@@ -29,11 +26,30 @@ class LLM(_LLMBase[OpenAI]):
     def _create_client(self, api_key: str, timeout: float) -> OpenAI:
         return OpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
 
+    def _complete(self, **request: Any) -> Any:
+        """
+        在 SDK 实际请求边界接入诊断, 保留动态供应商字段
+
+        参数:
+        - request: 已准备的 SDK 参数
+
+        返回:
+        - SDK 响应或同协议的观察流
+        """
+        from .observation import current_observers
+
+        create = self.client.responses.create if self.api_type == "responses" else self.client.chat.completions.create
+        observers = current_observers()
+        if observers is None:
+            return create(**request)
+        return observers.complete_sync(create, request, self.network_timeout,
+            provider=str(self.base_url or ""), model_config=self.model_config_name, context_window=self.model_context_window)
+
     def chat(
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        thinking: str = "off",
+        thinking: str = "default",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -59,28 +75,25 @@ class LLM(_LLMBase[OpenAI]):
             return "" if not self.return_false else False
 
         try:
-            response = self.client.chat.completions.create(
+            response = self._complete(
                 **self._build_request(parameters, messages, thinking=thinking)
             )  # 发起网络请求
 
-            return parse_chat_response(response, self.suppress_error)
+            return self._parse_text_response(response, model)
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[LLM] LLM API 错误: {e}")
-            return "" if not self.return_false else False
+            info = self._report_error(e)
+            return False if self.return_false else info.text
+
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
-            return "" if not self.return_false else False
+            info = self._report_error(e)
+            return False if self.return_false else info.text
 
     def stream_chat(
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        thinking: str = "off",
+        thinking: str = "default",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -99,6 +112,15 @@ class LLM(_LLMBase[OpenAI]):
         返回:
         - 生成器, 每次 yield 一个文本片段; 如果出错, 根据配置返回空字符串或 False
         """
+        if self.api_type == "responses":
+            stream = self.stream_call(messages, model=model, thinking=thinking, temperature=temperature, top_p=top_p, max_tokens=max_tokens)
+            for event in stream:
+                if event.kind == "content_delta":
+                    yield event.delta
+                elif event.kind == "error":
+                    yield False if self.return_false else event.error or ""
+            return
+
         parameters = self._generation_parameters(model, temperature, top_p, max_tokens)
 
         if not messages:
@@ -109,7 +131,7 @@ class LLM(_LLMBase[OpenAI]):
         try:
             stream = cast(
                 Any,
-                self.client.chat.completions.create(
+                self._complete(
                     **self._build_request(
                         parameters, messages, thinking=thinking, stream=True
                     )
@@ -124,15 +146,12 @@ class LLM(_LLMBase[OpenAI]):
                         yield content
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[LLM] LLM API 错误: {e}")
-            yield "" if not self.return_false else False
+            info = self._report_error(e)
+            yield False if self.return_false else info.text
+
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
-            yield "" if not self.return_false else False
+            info = self._report_error(e)
+            yield False if self.return_false else info.text
 
     def structured_output(
         self,
@@ -178,28 +197,25 @@ class LLM(_LLMBase[OpenAI]):
         processed_messages = prepare_structured_messages(messages, format)
 
         try:
-            response = self.client.chat.completions.create(
+            response = self._complete(
                 **self._build_request(parameters, processed_messages, structured=True)
             )  # 使用注入了格式提示的消息列表发起请求
 
-            return parse_chat_response(response, self.suppress_error)
+            return self._parse_text_response(response, model)
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[LLM] LLM API 错误: {e}")
-            return "" if not self.return_false else False
+            info = self._report_error(e)
+            return False if self.return_false else info.text
+
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
-            return "" if not self.return_false else False
+            info = self._report_error(e)
+            return False if self.return_false else info.text
 
     def call(
         self,
         messages: List[Dict[str, Any]],
         model: Optional[str] = None,
-        thinking: str = "off",
+        thinking: str = "default",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -240,14 +256,10 @@ class LLM(_LLMBase[OpenAI]):
                 else False
             )
 
-        processed_messages = prepare_call_messages(
-            messages, self.thinking_field_name, img_urls,
-            video_urls=video_urls, supports_visual_input=self.supports_visual_input,
-            supports_native_video_input=getattr(self, "supports_native_video_input", False), video_frame_interval=getattr(self, "video_frame_interval", 2.0)
-        )
+        processed_messages = self._prepare_messages(messages, img_urls, video_urls)
 
         try:
-            response = self.client.chat.completions.create(
+            response = self._complete(
                 **self._build_request(
                     parameters,
                     processed_messages,
@@ -257,37 +269,22 @@ class LLM(_LLMBase[OpenAI]):
                 )
             )
 
-            return parse_call_response(response, self.suppress_error)
+            parsed = self._parse_response(response, model)
+            return False if parsed.error_info is not None and self.return_false else parsed
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[LLM] LLM API 错误: {e}")
-            return (
-                LLMCallResponse(
-                    type="message", content="LLM API 错误，请在后台日志中查看详细信息"
-                )
-                if not self.return_false
-                else False
-            )
+            info = self._report_error(e)
+            return False if self.return_false else LLMCallResponse(type="error", content=info.text, error_info=info)
+
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
-            return (
-                LLMCallResponse(
-                    type="message",
-                    content="调用过程发生未知异常，请在后台日志中查看详细信息",
-                )
-                if not self.return_false
-                else False
-            )
+            info = self._report_error(e)
+            return False if self.return_false else LLMCallResponse(type="error", content=info.text, error_info=info)
 
     def stream_call(
         self,
         messages: List[Dict[str, Any]],
         model: Optional[str] = None,
-        thinking: str = "off",
+        thinking: str = "default",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -333,11 +330,7 @@ class LLM(_LLMBase[OpenAI]):
             )
             return
 
-        processed_messages = prepare_call_messages(
-            messages, self.thinking_field_name, img_urls,
-            video_urls=video_urls, supports_visual_input=self.supports_visual_input,
-            supports_native_video_input=getattr(self, "supports_native_video_input", False), video_frame_interval=getattr(self, "video_frame_interval", 2.0)
-        )
+        processed_messages = self._prepare_messages(messages, img_urls, video_urls)
         request_params = self._build_request(
             parameters,
             processed_messages,
@@ -350,15 +343,23 @@ class LLM(_LLMBase[OpenAI]):
 
         try:
             while True:
-                accumulator = _StreamCallAccumulator()
+                accumulator = self.protocol.new_stream_decoder()
                 received_chunk = False
                 try:
                     stream = cast(
-                        Any, self.client.chat.completions.create(**request_params)
+                        Any, self._complete(**request_params)
                     )
-                    for chunk in stream:
-                        received_chunk = True
-                        yield from accumulator.consume(chunk)
+                    try:
+                        for chunk in stream:
+                            received_chunk = True
+                            yield from accumulator.consume(chunk)
+                    finally:
+                        close = getattr(stream, "close", None)
+                        if callable(close):
+                            try:
+                                close()
+                            except Exception as error:
+                                logger.warning(f"[LLM] 关闭响应流失败: {type(error).__name__}")
                     break
                 except APIError as error:
                     if (
@@ -373,7 +374,11 @@ class LLM(_LLMBase[OpenAI]):
                         continue
                     raise
 
-            response = accumulator.response(self.suppress_error)
+            response = self._normalize_response(accumulator.response(self.suppress_error), model)
+            if response.error_info is not None:
+                yield LLMCallStreamEvent(kind="error", error=response.content, error_info=response.error_info, response=False if self.return_false else response)
+                if self.return_false:
+                    response = False
             yield LLMCallStreamEvent(
                 kind="done",
                 response=response,
@@ -381,34 +386,13 @@ class LLM(_LLMBase[OpenAI]):
             )
 
         except APIError as e:
-            if not self.suppress_error:
-                raise e
-            message = f"LLM API 错误，请在后台日志中查看详细信息"
-            logger.error(f"[LLM] LLM API 错误: {e}")
-            response = (
-                False
-                if self.return_false
-                else LLMCallResponse(type="message", content=message)
-            )
-
-            yield LLMCallStreamEvent(kind="error", error=message, response=response)
-            yield LLMCallStreamEvent(
-                kind="done", response=response, finish_reason="error"
-            )
+            info = self._report_error(e)
+            response = False if self.return_false else LLMCallResponse(type="error", content=info.text, error_info=info)
+            yield LLMCallStreamEvent(kind="error", error=info.text, error_info=info, response=response)
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
 
         except Exception as e:
-            if not self.suppress_error:
-                raise e
-
-            message = "调用过程发生未知异常，请在后台日志中查看详细信息"
-            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
-            response = (
-                False
-                if self.return_false
-                else LLMCallResponse(type="message", content=message)
-            )
-
-            yield LLMCallStreamEvent(kind="error", error=message, response=response)
-            yield LLMCallStreamEvent(
-                kind="done", response=response, finish_reason="error"
-            )
+            info = self._report_error(e)
+            response = False if self.return_false else LLMCallResponse(type="error", content=info.text, error_info=info)
+            yield LLMCallStreamEvent(kind="error", error=info.text, error_info=info, response=response)
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")

@@ -29,7 +29,7 @@ import secrets
 import atexit
 import ctypes
 import signal
-from typing import Any, cast
+from typing import Any, Literal, cast
 import base64
 import json
 import hashlib
@@ -37,6 +37,7 @@ import sys
 import os
 import time
 import zipfile
+import sqlite3
 
 from satrap.core.config.session_instance_service import SessionInstanceConfigService
 from satrap.core.log import logger
@@ -52,8 +53,8 @@ from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConfl
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
-from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, platform_catalog, filter_records, record_facets
-from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
+from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, platform_catalog, filter_records, record_facets, conversation_aggregates
+from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict, MessagePageTooLarge
 from satrap.core.config.platform_message_data import platform_archive_catalog, platform_archive_operation
 from satrap.core.config.group_chat_data import summary_management, parse_sticker_upload, native_sticker_catalog, sticker_settings_management
 from satrap.core.memory.management import memory_management
@@ -70,9 +71,13 @@ from satrap.core.config.edictum_references import list_edictum_config_references
 from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.config.model_service import ASR_TEST_MAX_AUDIO_BYTES, ModelConfigService
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
+from satrap.core.config.rag_jobs import RagJobError, RagJobManager, rag_jobs_response
+from satrap.core.config.maintenance_settings import MaintenanceRunner, MaintenanceSettingsStore
 from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
 from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError, progress_phase
+from satrap.core.telemetry.health import ServiceRuntime
+from satrap.core.telemetry.contracts import ServiceProbe
 from satrap.core.backend.plugin_application import relay_plugin_application, runtime_result
 from satrap.core.config.versions import ConfigVersionService, ConfigVersionsResult
 from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
@@ -107,10 +112,10 @@ from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin_archive import PluginArchiveInstaller, MAX_ARCHIVE_BYTES
+from satrap.edictum.plugin_archive import PluginAlreadyInstalled, PluginArchiveInstaller, MAX_ARCHIVE_BYTES
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.core.config.plugin_service import PluginManagementService
+from satrap.core.config.plugin_service import PluginHealth, PluginHealthCoverage, PluginHealthSource, PluginManagementService
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageLayout, StorageMaintenanceService
 from satrap.core.rag import RagService
@@ -190,6 +195,8 @@ CONTROL_MAX_CONNECTIONS = 256
 """控制服务最大并发连接数"""
 
 _CONTROL_ACTIVE_CONNECTIONS = 0
+_CONTROL_RUNTIME = ServiceRuntime("control")
+_RAG_JOBS: RagJobManager | None = None
 """控制服务当前并发连接数"""
 
 CONTROL_STATIC_UI = SPAStaticService(
@@ -321,6 +328,24 @@ def _connect_host(host: str) -> str:
     if host == "::":
         return "::1"
     return host
+
+
+def _configured_chat_url(path: str) -> str:
+    """
+    从受信任的宿主环境解析 Chat 服务地址, 支持独立容器
+
+    参数:
+    - path: 控制服务自身固定的接口路径, 不来自请求指定的 URL
+
+    返回:
+    - 共享探测与内部调用使用的 HTTP 地址
+    """
+    host = _connect_host(os.getenv("SATRAP_CHAT_HOST", "127.0.0.1").strip())
+    port = int(os.getenv("SATRAP_CHAT_PORT", "19872"))
+    if not host or any(char in host for char in "/@?#") or not 1 <= port <= 65535:
+        raise ValueError("Chat 宿主地址无效")
+    authority = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    return f"http://{authority}{path}"
 
 
 def _runtime_matches(record: BackendRuntimeRecord, health: Mapping[str, object]) -> bool:
@@ -610,6 +635,7 @@ async def _send_control_json(
     response = (
         f"HTTP/1.1 {status} {status_text}\r\n"
         "Content-Type: application/json\r\n"
+        "Connection: close\r\n"
         f"Content-Length: {len(response_body)}\r\n"
     )
     response += "".join(f"{key}: {value}\r\n" for key, value in headers.items())
@@ -643,7 +669,7 @@ def _is_control_api_path(path: str) -> bool:
     返回:
     - 路径属于控制 API 时返回 True
     """
-    return path == "/api/skills" or path.startswith((
+    return path in {"/api/skills", "/api/logs", "/api/health"} or path.startswith((
         "/status",
         "/start",
         "/stop",
@@ -655,6 +681,11 @@ def _is_control_api_path(path: str) -> bool:
         "/api/platforms/",
         "/api/group-chat/",
         "/api/skills/",
+        "/api/debug/",
+        "/api/stats/",
+        "/api/activity",
+        "/api/platform-actions",
+        "/api/logs/",
     ))
 
 
@@ -806,12 +837,13 @@ def _configured_storage_path(config_data: dict[str, Any], key: str) -> Path | No
     return storage_path
 
 
-def _session_instance_config_service(platform_id: str) -> SessionInstanceConfigService:
+def _session_instance_config_service(platform_id: str, *, readonly: bool = False) -> SessionInstanceConfigService:
     """
     根据当前后端配置创建指定平台的会话实例冷管理服务
 
     参数:
     - platform_id: 平台实例 ID
+    - readonly: 列表查询不初始化或迁移领域数据库
 
     返回:
     - SessionInstanceConfigService: 共享运行时数据库的冷管理服务
@@ -833,12 +865,13 @@ def _session_instance_config_service(platform_id: str) -> SessionInstanceConfigS
         storage_path=_configured_storage_path(config_data, "edictum_config_path"),
     )
     return SessionInstanceConfigService(
-        SessionConfigStore(database),
-        UserInfoStore(database),
+        SessionConfigStore(database, readonly=readonly),
+        UserInfoStore(database, readonly=readonly),
         session_class_manager,
         edictum_manager,
         platform_id,
         storage_layout,
+        platform=next((item for item in (config_data.get("platforms") or []) if isinstance(item, dict) and item.get("id") == platform_id), None),
     )
 
 
@@ -892,7 +925,7 @@ def _configured_platform_ids(config_data: dict[str, Any] | None = None) -> list[
 def _check_chat_health() -> bool:
     """检查独立 Chat 服务是否正在运行"""
     try:
-        request = _authenticated_request("http://127.0.0.1:19872/api/chat/health")
+        request = _authenticated_request(_configured_chat_url("/api/chat/health"))
         with urllib.request.urlopen(request, timeout=0.4) as response:
             return response.status == 200
     except (OSError, urllib.error.URLError):
@@ -1146,6 +1179,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                     page=int(query.get("page", ["1"])[0]),
                     page_size=int(query.get("page_size", ["25"])[0]),
                     response_gate=bool(platform.get("enable", True)) and bool(platform["settings"].get("enable_group", True)),
+                    platform_snapshot=platform,
                 ),
                 asyncio.to_thread(store.sync_status, self_id),
             )
@@ -1330,12 +1364,21 @@ async def _route_ui_config_status(ctx: _RouteContext) -> ControlResponse | None:
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
+    if ctx.method == "GET" and ctx.path == "/api/health":
+        return 200, dict(_CONTROL_RUNTIME.snapshot())
+
     if ctx.method == "GET" and ctx.path == "/status":
+        measured_at, started = time.time(), time.monotonic()
         health = await asyncio.to_thread(_check_backend_health)
+        reachable = bool(health.get("running")) or "healthy" in health
+        probe: ServiceProbe = {"target_service": "backend", "measured_at": measured_at,
+                               "latency_ms": (time.monotonic() - started) * 1000 if reachable else None,
+                               "state": "available" if reachable else "auth_required" if str(health.get("error")) in {"HTTP 401", "HTTP 403"} else "offline"}
         return 200, {
             "running": health.get("running", False),
             "managed": _backend_process is not None and _backend_process.poll() is None,
             "health": health,
+            "probe": probe,
         }
 
     return None
@@ -1602,6 +1645,209 @@ async def _run_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
     return None
 
 
+def _read_telemetry_source(service: str, path: str) -> dict[str, object]:
+    """
+    使用宿主配置和内部凭据读取固定服务, 不接受用户提供地址
+
+    参数:
+    - service: backend 或 chat
+    - path: 统计模块生成的固定内部查询
+
+    返回:
+    - 有界 JSON 资料, 不可用时只暴露固定原因码
+    """
+    from satrap.core.telemetry.api import SourceUnavailable
+
+    if service == "backend":
+        host, port = _configured_backend_address()
+        host = _connect_host(host)
+    elif service == "chat":
+        url = _configured_chat_url(path)
+    else:
+        raise ValueError("未知统计来源")
+    if service == "backend":
+        authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        url = f"http://{authority}{path}"
+    try:
+        with urllib.request.urlopen(_authenticated_request(url), timeout=2) as response:
+            body = response.read(8_000_001)
+            if len(body) > 8_000_000:
+                raise SourceUnavailable("error", "source_response_too_large")
+            value = json.loads(body)
+            if not isinstance(value, dict):
+                raise SourceUnavailable("error", "source_invalid_response")
+            return cast(dict[str, object], value)
+    except urllib.error.HTTPError as error:
+        raise SourceUnavailable("auth_required" if error.code in {401, 403} else "error",
+                                "service_auth_required" if error.code in {401, 403} else "unsupported_version" if error.code == 404 else "source_http_error") from error
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        raise SourceUnavailable("offline", "service_unreachable") from error
+
+
+async def _route_telemetry(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    处理已鉴权的全局统计和配置, 单来源失败不拖垮其它来源
+
+    参数:
+    - ctx: 既有 HTTP 解析与认证后的请求
+
+    返回:
+    - 统计响应或 None
+    """
+    if not ctx.path.startswith("/api/stats/") and ctx.path not in {"/config/telemetry", "/api/activity", "/api/activity/local"}:
+        return None
+    from satrap.core.telemetry.api import QUERY_WORKERS, telemetry_response
+    from satrap.core.telemetry.contracts import JsonValue, Service
+    from collections.abc import Callable
+
+    try:
+        layout = await QUERY_WORKERS.run(_configured_storage_layout)
+    except (ValueError, OSError, WorkerBusyError) as error:
+        logger.warning(f"[统计] 当前存储配置或查询队列不可用: {type(error).__name__}")
+        return 503, {"error": "当前统计存储配置或查询队列不可用", "code": "telemetry_unavailable"}
+    body = await _read_json_body(ctx.reader, ctx.raw_request) if ctx.method == "PUT" else None
+    return await telemetry_response(ctx.method, ctx.raw_path, "control", layout, payload=body,
+                                    fetch=cast(Callable[[Service, str], dict[str, JsonValue]], _read_telemetry_source))
+
+
+async def _action_backend_request(path: str, payload: object = None) -> tuple[int, dict[str, object]]:
+    """
+    异步访问固定 Backend, 长审批等待不占用统计或 SQLite 工作线程
+
+    参数:
+    - path: 宿主生成的审批接口路径
+    - payload: 可选的已校验决策批次, 缺少时为 GET
+
+    返回:
+    - 有界 JSON 响应, 发送后连接不确定时不重试或改走其它执行路径
+    """
+    import aiohttp
+    from satrap.core.platform.action_catalog import ACTION_READS
+    from satrap.core.telemetry.api import SourceUnavailable
+
+    def request_spec() -> tuple[str, dict[str, str]]:
+        """
+        在线程中读取服务地址和内部认证资料
+
+        返回:
+        - 仅当前配置允许的地址及请求头
+        """
+        host, port = _configured_backend_address()
+        host = _connect_host(host)
+        authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        request = _authenticated_request(f"http://{authority}{path}")
+        return request.full_url, dict(request.header_items())
+    url, headers = await ACTION_READS.run(request_spec)
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=330 if payload is not None else 3)) as session:
+            async with session.request('POST' if payload is not None else 'GET', url, json=payload, headers=headers) as response:
+                if response.status in {401, 403}:
+                    raise SourceUnavailable('auth_required', 'service_auth_required')
+                if response.status == 404:
+                    raise SourceUnavailable('error', 'unsupported_version')
+                data = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    data.extend(chunk)
+                    if len(data) > 8_000_000:
+                        raise SourceUnavailable('error', 'source_response_too_large')
+                result = json.loads(data)
+                if not isinstance(result, dict):
+                    raise SourceUnavailable('error', 'source_invalid_response')
+                return response.status, cast(dict[str, object], result)
+    except (aiohttp.ClientError, TimeoutError) as error:
+        raise SourceUnavailable('error' if payload is not None else 'offline',
+                                'decision_unconfirmed' if payload is not None else 'service_unreachable') from error
+
+
+async def _route_platform_actions(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    提供统一审批目录和批量入口, Backend 不可用时只允许本地记忆审批
+
+    参数:
+    - ctx: 已通过 Control 认证的请求
+
+    返回:
+    - 原业务账本的目录或逐项处理结果, 认证失败不改走离线执行
+    """
+    if ctx.path not in {'/api/platform-actions', '/api/platform-actions/summary', '/api/platform-actions/decisions'}:
+        return None
+    from satrap.core.platform.action_catalog import ACTION_READS, UnifiedActionQuery, cold_action_scopes, unified_action_catalog
+    from satrap.core.platform.action_decisions import DecisionItem, DecisionTarget, parse_decisions, run_decisions
+    from satrap.core.memory.management import memory_management
+    from satrap.core.telemetry.api import SourceUnavailable
+
+    try:
+        is_decision = ctx.path.endswith('/decisions')
+        if ctx.method != ('POST' if is_decision else 'GET'):
+            return 405, {'error': '审批接口方法无效', 'code': 'method_not_allowed'}
+        values = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True)
+        if any(len(parts) != 1 for parts in values.values()):
+            raise ValueError('审批查询不能重复')
+        params = {name: parts[0] for name, parts in values.items()}
+        payload = await _read_json_body(ctx.reader, ctx.raw_request) if is_decision else None
+        items = parse_decisions(payload) if is_decision else []
+        if is_decision and params:
+            raise ValueError('批量决策不接受查询参数')
+        summary = ctx.path.endswith('/summary')
+        query = UnifiedActionQuery.parse(params, summary=summary) if not is_decision else None
+        suffix = '/summary' if summary or is_decision else ''
+        target = '/api/platform-actions/unified' + suffix + ('?' + urllib.parse.urlencode(params) if params else '')
+        try:
+            status, response = await _action_backend_request(target)
+            if status != 200 or not is_decision:
+                return status, response
+        except SourceUnavailable as error:
+            if error.state != 'offline':
+                raise
+        else:
+            try:
+                return await _action_backend_request('/api/platform-actions/decisions', payload)
+            except SourceUnavailable as error:
+                logger.warning(f'[统一审批] 决策回执未确认: {error.reason_code}')
+                receipts: list[dict[str, object]] = [{'key': item.key, 'result': 'unknown', 'action': None,
+                                       'error': {'code': error.reason_code, 'message': '执行回执尚未确认, 请先查询原记录, 不要重复提交'}} for item in items]
+                return 200, {'items': receipts}
+        document = await ACTION_READS.run(load_config_document, CONFIG_PATH)
+        layout = await ACTION_READS.run(_configured_storage_layout, document)
+        scopes = await ACTION_READS.run(cold_action_scopes, layout, _configured_platform_ids(document))
+        if not is_decision:
+            assert query is not None
+            result = await unified_action_catalog(scopes, query, summary=summary)
+            result['complete'] = False
+            warnings = result.get('warnings')
+            if isinstance(warnings, list):
+                warnings.append('Backend 离线, 当前账号采用最后确认记录; 群/好友动作不可审批')
+            result['sources'] = [{'service': 'backend', 'state': 'stale', 'reason_code': 'service_unreachable'}]
+            return 200, result
+        async def dispatch(item: DecisionItem, target: DecisionTarget) -> object:
+            """
+            离线时仅复用原记忆管理事务, 不执行任何平台网络动作
+
+            参数:
+            - item: 已核验当前范围的记忆提案
+            - target: 原记忆作用域与基准修订
+
+            返回:
+            - 原记忆管理服务的结果
+            """
+            if item.source != 'memory':
+                raise PermissionError('平台离线')
+            return await ACTION_READS.run(memory_management, layout, document, item.platform_id,
+                {'self_id': item.self_id, 'chat_id': target.group_id, 'conversation_kind': 'group'}, 'decide', item.action_id,
+                {'approve': item.approve, 'expected_revision': target.base_revision})
+        return 200, await run_decisions(items, scopes, dispatch)
+    except SourceUnavailable as error:
+        logger.warning(f'[统一审批] Backend 来源不可用: {error.reason_code}')
+        return 503, {'error': '审批来源当前不可用', 'code': error.reason_code,
+                     'sources': [{'service': 'backend', 'state': error.state, 'reason_code': error.reason_code}]}
+    except (ValueError, TypeError) as error:
+        logger.warning(f'[统一审批] 参数无效: {type(error).__name__}')
+        return 400, {'error': str(error), 'code': 'invalid_action_query'}
+    except Exception:
+        logger.error('[统一审批] 请求失败\n' + traceback.format_exc())
+        return 503, {'error': '审批存储或处理队列暂不可用', 'code': 'actions_unavailable'}
+
+
 async def _route_logging(ctx: _RouteContext) -> ControlResponse | None:
     """
     独立管理日志策略, 保存不触发后端重启
@@ -1612,6 +1858,55 @@ async def _route_logging(ctx: _RouteContext) -> ControlResponse | None:
     返回:
     - 策略快照或清理结果, 无关路径返回 None; 失败返回明确状态
     """
+    from satrap.core.log.api import log_response
+
+    logs = log_response(ctx.method, ctx.raw_path)
+    if logs is not None:
+        return logs
+    from satrap.core.log.debug.api import debug_response
+
+    advanced = await debug_response(ctx.method, ctx.raw_path, "control")
+    if advanced is not None:
+        return advanced
+    if ctx.path == "/config/debug-logging/contexts":
+        from satrap.core.log.debug.catalog import available_contexts
+
+        try:
+            if ctx.method != "GET":
+                return 405, {"error": "已有上下文只支持 GET"}
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True)
+            if set(query) - {"platform_id", "cursor", "limit"} or any(len(items) != 1 for items in query.values()):
+                raise ValueError("已有上下文查询参数无效")
+            return 200, await RAG_WORKERS.run(available_contexts, _configured_storage_layout(), query.get("platform_id", ["chat"])[0],
+                                             cursor=query.get("cursor", [""])[0], limit=int(query.get("limit", ["50"])[0]))
+        except (ValueError, TypeError) as error:
+            return 400, {"error": str(error)}
+        except (OSError, sqlite3.Error):
+            return 503, {"error": "已有上下文目录暂时不可用"}
+    if ctx.path == "/config/debug-logging":
+        from satrap.core.log.debug.policy import DebugPolicy, policy_store
+
+        try:
+            settings = policy_store()
+            if ctx.method == "GET":
+                return 200, await RAG_WORKERS.run(settings.snapshot)
+            if ctx.method == "PUT":
+                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                revision = payload.get("expected_revision")
+                if not isinstance(revision, str):
+                    raise ValueError("缺少高级 Debug 设置修订")
+                policy = DebugPolicy.parse(payload.get("policy"))
+                saved = await RAG_WORKERS.run(settings.save, policy, revision)
+                logger.info(f"[高级 Debug 设置] 面板修改成功 revision={saved['revision']} default={policy.default_enabled} objects={len(policy.objects)}")
+                return 200, saved
+            return 405, {"error": "高级 Debug 设置不支持此方法"}
+        except ConfigRevisionConflict as error:
+            return 409, {"error": str(error)}
+        except (ValueError, TypeError) as error:
+            return 400, {"error": str(error)}
+        except (OSError, TimeoutError) as error:
+            logger.warning(f"[高级 Debug 设置] 保存或读取失败: {type(error).__name__}")
+            return 503, {"error": "高级 Debug 设置暂时不可用"}
     if ctx.path not in {"/config/logging", "/config/logging/cleanup"}:
         return None
     try:
@@ -2192,7 +2487,10 @@ async def _route_session_class_collection_get(ctx: _RouteContext) -> ControlResp
     """
     if ctx.method == "GET" and ctx.path == "/config/session-classes":
         try:
-            return 200, _session_class_config_service().list_configs()
+            configs = await RAG_WORKERS.run(lambda: _session_class_config_service().list_with_metadata())
+            return 200, await _agent_instance_counts(configs, "session_class")
+        except WorkerBusyError as error:
+            return 503, {"error": str(error), "code": "worker_busy"}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
@@ -2307,6 +2605,44 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
             return 400, {"error": str(e)}
 
     return None
+
+
+async def _route_validation_maintenance(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    提供无副作用的原始 YAML 预检与带修订的维护设置
+
+    参数:
+    - ctx: 已通过 Control 鉴权的请求
+
+    返回:
+    - 真实解析位置或维护策略, 无关路径返回 None
+    """
+    if ctx.path not in {"/config/validate-yaml", "/config/storage-maintenance"}:
+        return None
+    try:
+        if ctx.path == "/config/validate-yaml" and ctx.method == "POST":
+            from satrap.core.config.document import validate_yaml_document
+
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            if not isinstance(payload, dict) or set(payload) != {"yaml"} or not isinstance(payload["yaml"], str):
+                raise ValueError("必须提供且仅提供 yaml 文本")
+            return 200, await RAG_WORKERS.run(validate_yaml_document, payload["yaml"])
+        if ctx.path == "/config/storage-maintenance":
+            settings = MaintenanceSettingsStore()
+            if ctx.method == "GET":
+                return 200, dict(await RAG_WORKERS.run(settings.read))
+            if ctx.method == "PUT":
+                return 200, dict(await RAG_WORKERS.run(settings.save, await _read_json_body(ctx.reader, ctx.raw_request)))
+        return 405, {"error": "该入口不支持此方法", "code": "method_not_allowed"}
+    except ConfigRevisionConflict as error:
+        return 409, {"error": str(error), "code": "revision_conflict"}
+    except WorkerBusyError as error:
+        return 503, {"error": str(error), "code": "worker_busy"}
+    except OSError as error:
+        logger.error(f"[维护设置] 存储不可用, type={type(error).__name__}")
+        return 500, {"error": "维护设置存储不可用", "code": "storage_unavailable"}
+    except (TypeError, ValueError) as error:
+        return 400, {"error": str(error), "code": "invalid_request"}
 
 
 def _conversation_data_request(url: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
@@ -2666,6 +3002,55 @@ async def _route_group_chat_media(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": "表情管理暂不可用, 请查看控制服务日志", "code": "unavailable"}
 
 
+async def _route_stored_messages(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    只读浏览已保存消息, 不转交运行实例或取得编辑锁
+
+    参数:
+    - ctx: 已通过 Control 鉴权的请求
+
+    返回:
+    - 数据库范围分页或稳定错误, 无关路径返回 None
+    """
+    if ctx.path != "/config/conversations/messages" or ctx.method != "GET":
+        return None
+    try:
+        parsed = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True)
+        if any(len(values) != 1 for values in parsed.values()) or set(parsed) - {"platform_id", "conversation_id", "layer", "q", "role", "limit", "cursor", "order"}:
+            raise ValueError("消息查询包含重复或未知参数")
+        query = {key: values[0] for key, values in parsed.items()}
+        platform, conversation = query.get("platform_id", "local"), query.get("conversation_id", "")
+
+        def read() -> Mapping[str, object]:
+            """
+            在线程中核验平台身份并读取当前数据库页
+
+            返回:
+            - 已限定平台与实际上下文或展示对话的存储快照
+            """
+            document = load_config_document(CONFIG_PATH)
+            layout = _configured_storage_layout(document)
+            if not any(item["id"] == platform for item in platform_catalog(layout, document)):
+                raise KeyError("平台不存在")
+            return ConversationDataService(layout.platform_db(platform)).messages(conversation, query)
+
+        return 200, await RAG_WORKERS.run(read)
+    except KeyError:
+        return 404, {"error": "平台或已保存对话不存在", "code": "conversation_not_found"}
+    except MessagePageTooLarge as error:
+        return 413, {"error": str(error), "code": "message_too_large"}
+    except WorkerBusyError as error:
+        return 503, {"error": str(error), "code": "worker_busy"}
+    except json.JSONDecodeError as error:
+        logger.error(f"[历史只读分页] 已存正文无法解码, type={type(error).__name__}")
+        return 500, {"error": "已保存对话数据不可解码", "code": "storage_unavailable"}
+    except ValueError as error:
+        return 400, {"error": str(error), "code": "invalid_request"}
+    except (OSError, sqlite3.DatabaseError) as error:
+        logger.error(f"[历史只读分页] 读取失败, type={type(error).__name__}")
+        return 500, {"error": "已保存对话数据不可读取", "code": "storage_unavailable"}
+
+
 async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None:
     """
     对话目录只读查询和冷热统一的数据操作入口
@@ -2697,8 +3082,8 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
             platform_type = query.get("platform_type", [""])[0]
             if platform_type:
                 selected_platforms = [item for item in selected_platforms if item["type"] == platform_type]
-            items = []
-            warnings = []
+            items: list[dict[str, Any]] = []
+            warnings: list[str] = []
             semaphore = asyncio.Semaphore(4)
 
             async def read_platform(descriptor: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
@@ -2734,7 +3119,8 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
                 matched = [item for item in matched if item["conversation_id"] == identity or identity in item["context_ids"]]
             offset = max(0, int(query.get("offset", ["0"])[0]))
             limit = min(100, max(1, int(query.get("limit", ["40"])[0])))
-            return 200, {"items": matched[offset:offset + limit], "total": len(matched), "facets": record_facets(items), "facets_scope": "result" if identity else "platform", "facet_names": {key: label for item in items for key, label in item["facet_names"].items()}, "warnings": warnings}
+            summary: dict[str, object] = {"aggregates": conversation_aggregates(matched), "aggregates_complete": not warnings} if "aggregates" in query.get("include", [""])[0].split(",") else {}
+            return 200, {"items": matched[offset:offset + limit], "total": len(matched), "facets": record_facets(items), "facets_scope": "result" if identity else "platform", "facet_names": {key: label for item in items for key, label in cast(dict[str, str], item["facet_names"]).items()}, "warnings": warnings, **summary}
         if ctx.path != prefix + "/data" or ctx.method != "POST":
             return None
         payload = await _read_json_body(ctx.reader, ctx.raw_request)
@@ -2743,7 +3129,7 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
         if not isinstance(platform, str) or not platform.strip() or not isinstance(conversation, str) or not conversation.strip():
             raise ValueError("缺少有效的平台和对话 ID")
         if platform == "chat":
-            url = f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/conversation-data"
+            url = _configured_chat_url("/api/chat/conversation-data")
         else:
             host, port = _configured_backend_address()
             host = _connect_host(host)
@@ -2850,9 +3236,9 @@ def _plugin_runtime_targets(kind: str | None, location_id: str | None) -> list[t
         raise ValueError("location_id 必须同时提供 kind")
     if kind is not None and (kind not in {"chat", "edictum"} or not location_id or (kind == "chat" and location_id != "chat")):
         raise ValueError("未知插件应用位置")
-    urls = []
+    urls: list[tuple[str, str]] = []
     if kind in {None, "chat"}:
-        urls.append(("Chat", f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/plugins/reconcile"))
+        urls.append(("Chat", _configured_chat_url("/api/chat/plugins/reconcile")))
     if kind in {None, "edictum"}:
         host, port = _configured_backend_address()
         host = _connect_host(host)
@@ -2894,7 +3280,7 @@ async def _apply_plugin_runtime(*, plugin_name: str | None = None, kind: str | N
     return normalized
 
 
-def _plugin_snapshot_request(target: str, url: str, name: str) -> dict[str, Any]:
+def _plugin_snapshot_request(target: str, url: str, name: str | None) -> dict[str, Any]:
     """
     读取运行服务的插件状态, 不触发配置应用
 
@@ -2912,16 +3298,119 @@ def _plugin_snapshot_request(target: str, url: str, name: str) -> dict[str, Any]
         instances: list[dict[str, Any]] = []
         for session in payload.get("sessions", []):
             plugins = session.get("plugins", session.get("runtime", {}).get("plugins", []))
-            plugin = next((item for item in plugins if item.get("name") == name), None)
-            if plugin is not None:
+            for plugin in plugins:
+                if name is not None and plugin.get("name") != name:
+                    continue
                 instances.append({"platform_id": session.get("platform_id", "chat"), "session_id": session.get("session_id", session.get("conversation_id")),
                                   "location_id": "chat" if target == "Chat" else session.get("session_type_name"), "plugin": plugin})
         return {"target": target, "status": "available", "instances": instances}
+    except urllib.error.HTTPError as error:
+        return {"target": target, "status": "auth_required" if error.code in {401, 403} else "error", "error": f"运行服务返回 HTTP {error.code}", "instances": []}
     except urllib.error.URLError as error:
         refused = isinstance(error.reason, ConnectionRefusedError)
         return {"target": target, "status": "stopped" if refused else "error", "error": "" if refused else str(error), "instances": []}
     except (OSError, TypeError, ValueError, AttributeError) as error:
         return {"target": target, "status": "error", "error": str(error), "instances": []}
+
+
+async def _plugin_health(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    每个服务仅读取一次实例列表, 批量补齐插件健康资料
+
+    参数:
+    - items: 当前请求固定的目录与使用位置
+
+    返回:
+    - 附带来源覆盖和实际加载状态的插件目录
+    """
+    targets = await RAG_WORKERS.run(_plugin_runtime_targets, None, None)
+    urls = [(target, url.replace("/reconcile", "/runtime") if target == "Chat" else url.replace("/api/edictum/plugins/reconcile", "/api/sessions"))
+            for target, url in targets]
+    outcomes = await asyncio.gather(*(RAG_WORKERS.run(_plugin_snapshot_request, target, url, None) for target, url in urls), return_exceptions=True)
+    sources: dict[str, PluginHealthSource] = {}
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    observed = time.time()
+    for (target, _), result in zip(urls, outcomes):
+        available = isinstance(result, dict) and result.get("status") == "available"
+        sources[target] = PluginHealthSource(service=target, state="available" if available else "error", as_of=observed if available else None)
+        if isinstance(result, dict):
+            if result.get("status") == "stopped":
+                sources[target]["state"] = "offline"
+            elif result.get("status") == "auth_required":
+                sources[target]["state"] = "auth_required"
+            for instance in result.get("instances", []):
+                plugin = instance.get("plugin", {})
+                if isinstance(plugin.get("name"), str):
+                    by_name.setdefault(plugin["name"], []).append({"service": target, **instance})
+    result_items: list[dict[str, Any]] = []
+    for item in items:
+        expected = (["Chat"] if item.get("chat_enabled") else []) + (["Edictum"] if item.get("edictum_configs") else [])
+        # 只用期望来源的样本判定: Chat 未启用时其停用样本不代表平台侧状态
+        samples = [sample for sample in by_name.get(item["name"], []) if sample["service"] in expected]
+        complete = all(sources[target]["state"] == "available" for target in expected)
+        state: Literal["healthy", "attention", "disabled", "unknown"]
+        reason: Literal["ok", "instance_error", "execution_off", "all_disabled", "not_used", "source_unavailable", "not_loaded"]
+        # 停用只在书面配置或完整观测下成立; 部分来源离线时其余服务的停用样本不代表整体
+        if not item.get("execution_enabled", True):
+            state, reason = "disabled", "execution_off"
+        elif any(sample["plugin"].get("error") or sample["plugin"].get("status") in {"error", "blocked", "restart_required"} for sample in samples):
+            state, reason = "attention", "instance_error"
+        elif not expected:
+            state, reason = "disabled", "not_used"
+        elif not complete:
+            state, reason = "unknown", "source_unavailable"
+        elif not samples:
+            state, reason = "unknown", "not_loaded"
+        elif all(not sample["plugin"].get("enabled", True) for sample in samples):
+            state, reason = "disabled", "all_disabled"
+        else:
+            state, reason = "healthy", "ok"
+        health = PluginHealth(state=state, reason=reason, as_of=observed if complete and samples else None,
+                              coverage=PluginHealthCoverage(complete=complete, expected_services=expected, sources=[sources[target] for target in expected]),
+                              instances=cast(list[dict[str, object]], samples))
+        result_items.append({**item, "health": health})
+    return result_items
+
+
+async def _agent_instance_counts(configs: dict[str, dict[str, Any]], provider: str) -> dict[str, dict[str, Any]]:
+    """
+    一次读取运行服务内存计数, 离线或未获认证时数量保持未知
+
+    参数:
+    - configs: 本次请求的命名 Agent 目录
+    - provider: edictum 或 session_class
+
+    返回:
+    - 附带实例计数及其来源覆盖的目录
+    """
+    from satrap.core.telemetry.api import SourceUnavailable
+
+    try:
+        status, payload = await _action_backend_request("/api/agents/runtime")
+        entries = payload.get("items")
+        if status != 200 or not isinstance(entries, list) or payload.get("complete") is not True:
+            raise SourceUnavailable("error", "source_invalid_response")
+        counts: dict[str, dict[str, int]] = {}
+        for raw_entry in cast(list[object], entries):
+            if not isinstance(raw_entry, dict):
+                raise SourceUnavailable("error", "source_invalid_response")
+            entry = cast(dict[str, object], raw_entry)
+            agent = entry.get("agent")
+            if not isinstance(agent, str) or not isinstance(entry.get("provider"), str):
+                raise SourceUnavailable("error", "source_invalid_response")
+            if any(not isinstance(entry.get(key), int) or isinstance(entry[key], bool) or cast(int, entry[key]) < 0 for key in ("active_instances", "running_instances")):
+                raise SourceUnavailable("error", "source_invalid_response")
+            if entry["provider"] == provider:
+                if agent in counts:
+                    raise SourceUnavailable("error", "source_invalid_response")
+                counts[agent] = {key: cast(int, entry[key]) for key in ("active_instances", "running_instances")}
+        source: dict[str, object] = {"state": "available", "as_of": payload.get("as_of"), "complete": True}
+    except SourceUnavailable as error:
+        counts = {}
+        source = {"state": error.state, "as_of": None, "complete": False, "reason_code": error.reason_code}
+    return {name: {**config, "active_instances": counts.get(name, {}).get("active_instances", 0) if source["complete"] else None,
+                   "running_instances": counts.get(name, {}).get("running_instances", 0) if source["complete"] else None,
+                   "runtime_source": source} for name, config in configs.items()}
 
 
 async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
@@ -2947,7 +3436,7 @@ async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
             host, port = _configured_backend_address()
             host = _connect_host(host)
             host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-            urls = [("Chat", f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/plugins/runtime"),
+            urls = [("Chat", _configured_chat_url("/api/chat/plugins/runtime")),
                     ("Edictum", f"http://{host}:{port}/api/sessions")]
             results = await asyncio.gather(*(RAG_WORKERS.run(_plugin_snapshot_request, target, url, name) for target, url in urls), return_exceptions=True)
             return 200, {"ok": True, "services": [result if isinstance(result, dict) else {"target": urls[index][0], "status": "error", "error": str(result), "instances": []} for index, result in enumerate(results)]}
@@ -3034,6 +3523,41 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
     return 200, {**result, "runtime": await _apply_plugin_runtime(plugin_name=name)}
 
 
+async def _route_plugin_execution(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    独立保存宿主执行总闸, 保留每个使用位置的原始配置
+
+    参数:
+    - ctx: 已通过 Control 鉴权的管理请求
+
+    返回:
+    - 保存结果及逐服务应用状态, 无关路径返回 None
+    """
+    prefix = "/config/plugins/"
+    if not ctx.path.startswith(prefix) or not ctx.path.endswith("/execution") or ctx.method not in {"GET", "PUT"}:
+        return None
+    name = urllib.parse.unquote(ctx.path[len(prefix):-len("/execution")])
+    try:
+        catalog = await PluginCatalog().snapshot_async()
+        if catalog.get(name) is None:
+            return 404, {"error": "插件不存在", "code": "not_found"}
+        manager = PluginConfigManager()
+        if ctx.method == "GET":
+            return 200, dict(await RAG_WORKERS.run(manager.host_state, name))
+        payload = await _read_json_body(ctx.reader, ctx.raw_request)
+        if not isinstance(payload, dict) or set(payload) != {"execution_enabled", "expected_revision"}:
+            raise ValueError("必须提供 execution_enabled 和 expected_revision")
+        state = await RAG_WORKERS.run(manager.save_execution, name, payload["execution_enabled"], payload["expected_revision"])
+    except ConfigRevisionConflict as error:
+        return 409, {"error": str(error), "code": "revision_conflict"}
+    except WorkerBusyError as error:
+        return 503, {"error": str(error), "code": "worker_busy"}
+    except (OSError, TypeError, ValueError) as error:
+        return 400, {"error": str(error), "code": "invalid_request"}
+    runtime = await _apply_plugin_runtime(plugin_name=name)
+    return 200, {"saved": True, **state, "runtime": runtime}
+
+
 async def _route_plugin_application(ctx: _RouteContext) -> ControlResponse | None:
     """
     在原控制鉴权之后只读查询进程内应用任务, 查询不提交或重试写操作
@@ -3044,13 +3568,97 @@ async def _route_plugin_application(ctx: _RouteContext) -> ControlResponse | Non
     返回:
     - 本进程任务快照或明确的输入/未知记录错误, 不匹配时为 None
     """
-    prefix = "/config/plugin-operations/"
+    prefix = "/config/operations/" if ctx.path.startswith("/config/operations/") else "/config/plugin-operations/"
     if ctx.method != "GET" or not ctx.path.startswith(prefix):
         return None
     try:
         return 200, _PLUGIN_APPLICATIONS.get(ctx.path[len(prefix):])
     except ApplicationProgressError as error:
         return error.status, {"error": str(error)}
+
+
+async def _route_platform_execution(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    保存平台启停意图并复用已有热应用流程, 回执不冒充已生效
+
+    参数:
+    - ctx: 已通过 Control 鉴权的启停请求
+
+    返回:
+    - 保存修订和后台应用身份, 无关路径返回 None
+    """
+    match = re.fullmatch(r"/api/platforms/([^/]+)/(enable|disable)", ctx.path)
+    if ctx.method != "POST" or match is None:
+        return None
+    platform_id, desired = urllib.parse.unquote(match[1]), match[2] == "enable"
+    try:
+        payload = await _read_json_body(ctx.reader, ctx.raw_request)
+        if not isinstance(payload, dict) or set(payload) - {"expected_revision", "operation_id"}:
+            raise ValueError("启停请求只接受 expected_revision 和 operation_id")
+        expected = payload.get("expected_revision", _expected_revision(ctx))
+        if not isinstance(expected, str) or not expected:
+            raise ValueError("必须提供最近读取的 expected_revision")
+        operation_id = _PLUGIN_APPLICATIONS.validate_id(payload.get("operation_id", secrets.token_urlsafe(24)))
+
+        def save() -> str:
+            """
+            按现有文档 CAS 保存一个平台的总开关
+
+            返回:
+            - 实际保存后的整份配置修订
+            """
+            document = load_config_document(CONFIG_PATH)
+            platforms = validate_platforms(document.get("platforms", []))
+            target = next((item for item in platforms if item["id"] == platform_id), None)
+            if target is None:
+                raise KeyError("平台不存在")
+            target["enable"] = desired
+            document["platforms"] = platforms
+            saved = save_config_document(CONFIG_PATH, document, expected_revision=expected)
+            return config_document_revision(saved)
+
+        revision = await RAG_WORKERS.run(save)
+    except ConfigRevisionConflict as error:
+        return 409, {"error": str(error), "code": "config_revision_conflict"}
+    except KeyError:
+        return 404, {"error": "平台不存在", "code": "not_found"}
+    except ApplicationProgressError as error:
+        return error.status, {"error": str(error), "code": "invalid_operation_id"}
+    except WorkerBusyError as error:
+        return 503, {"error": str(error), "code": "worker_busy"}
+    except (OSError, TypeError, ValueError) as error:
+        return 400, {"error": str(error), "code": "invalid_request"}
+
+    async def apply() -> dict[str, Any]:
+        """
+        等待原配置应用回执, 请求不确定时不重发
+
+        返回:
+        - 已确认的目标平台状态或明确的未确认原因
+        """
+        from satrap.core.telemetry.api import SourceUnavailable
+
+        try:
+            await _action_backend_request("/api/health")
+            status, result = await _action_backend_request("/api/config/reload", {"expected_config_revision": revision})
+            raw_rows = result.get("platforms")
+            rows: list[object] = cast(list[object], raw_rows) if isinstance(raw_rows, list) else []
+            target = next((cast(dict[str, object], item) for item in rows if isinstance(item, dict) and cast(dict[str, object], item).get("id") == platform_id), None)
+            actual = target.get("status") if target else None
+            state = "applied" if actual == "applied" else "pending" if actual in {"pending_restart", "pending"} else "failed" if status != 200 or actual == "failed" else "unconfirmed"
+            runtime: dict[str, object] = {"status": state, "reason_code": None if state == "applied" else actual or "application_unconfirmed"}
+        except SourceUnavailable as error:
+            runtime = {"status": "pending" if error.state == "offline" else "unconfirmed", "reason_code": error.reason_code}
+        return {"ok": runtime["status"] in {"applied", "pending"}, "saved": True, "desired_enabled": desired,
+                "revision": revision, "operation_id": operation_id, "runtime": runtime}
+
+    try:
+        application = _PLUGIN_APPLICATIONS.submit(operation_id, {"route": ctx.path, "revision": revision, "platform_id": platform_id}, apply)
+        return 202, {"saved": True, "desired_enabled": desired, "revision": revision, "operation_id": operation_id,
+                     "runtime": {"status": "pending"}, "application": application}
+    except ApplicationProgressError as error:
+        return 200, {"saved": True, "desired_enabled": desired, "revision": revision, "operation_id": None,
+                     "runtime": {"status": "unconfirmed", "reason_code": "application_not_accepted"}, "error": str(error)}
 
 
 async def _route_plugin_install(ctx: _RouteContext) -> ControlResponse | None:
@@ -3077,6 +3685,8 @@ async def _route_plugin_install(ctx: _RouteContext) -> ControlResponse | None:
             await RAG_WORKERS.run(PLUGIN_INSTALLER.discard, token)
             return 200, {"ok": True}
         return 200, await RAG_WORKERS.run(PLUGIN_INSTALLER.install, token)
+    except PluginAlreadyInstalled as error:
+        return 409, {"error": str(error), "code": "plugin_already_installed", "installed_version": error.installed_version}
     except WorkerBusyError as error:
         return 503, {"error": str(error)}
     except (OSError, TypeError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
@@ -3096,7 +3706,11 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
     if ctx.method == "GET" and ctx.path == "/config/plugins":
         try:
             catalog = await PluginCatalog().snapshot_async()
-            return 200, {"plugins": await RAG_WORKERS.run(lambda: _plugin_management_service(catalog).list_plugins())}
+            items = await RAG_WORKERS.run(lambda: _plugin_management_service(catalog).list_plugins())
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            if "health" in query.get("include", [""])[0].split(","):
+                items = await _plugin_health(items)
+            return 200, {"plugins": items}
         except WorkerBusyError as e:
             logger.warning(f"[插件目录] 工作队列已满: {e}")
             return 503, {"error": str(e)}
@@ -3125,7 +3739,8 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
     if ctx.method == "GET" and ctx.path == "/config/edictum/sessions":
         try:
             catalog = await PluginCatalog().snapshot_async()
-            return 200, await RAG_WORKERS.run(lambda: _edictum_config_service(catalog).list_configs())
+            configs = await RAG_WORKERS.run(lambda: _edictum_config_service(catalog).list_with_metadata())
+            return 200, await _agent_instance_counts(configs, "edictum")
         except WorkerBusyError as e:
             logger.warning(f"[Edictum 配置] 工作队列已满: {e}")
             return 503, {"error": str(e)}
@@ -3203,18 +3818,31 @@ async def _route_session_plugin_config(ctx: _RouteContext) -> ControlResponse | 
 
 async def _route_rag(ctx: _RouteContext) -> ControlResponse | None:
     """统一 RAG 管理入口, 阻塞索引和模型调用在线程执行"""
-    if not ((ctx.path == "/config/rag" and ctx.method in {"GET", "POST"}) or (ctx.path == "/config/rag/upload" and ctx.method == "POST")):
+    jobs_path = ctx.path.startswith(("/config/rag/jobs", "/config/rag/documents"))
+    if not (jobs_path or (ctx.path == "/config/rag" and ctx.method in {"GET", "POST"}) or (ctx.path == "/config/rag/upload" and ctx.method == "POST")):
         return None
     try:
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
         platform_id = query.get("platform_id", ["local"])[0]
         session_id = query.get("session_id", [""])[0]
-        if platform_id not in {*_configured_platform_ids(), "chat", "local"}:
-            raise ValueError("平台不存在")
-        layout = _configured_storage_layout()
-        if session_id:
-            require_stored_session(layout.platform_db(platform_id), session_id)
-        service = RagService(layout, _model_config_service().manager, platform_id, session_id)
+        def scoped_service() -> RagService:
+            """在线程中读取配置及存储身份, 不阻塞 Control 事件循环"""
+            if platform_id not in {*_configured_platform_ids(), "chat", "local"}:
+                raise ValueError("平台不存在")
+            layout = _configured_storage_layout()
+            if session_id:
+                require_stored_session(layout.platform_db(platform_id), session_id)
+            return RagService(layout, _model_config_service().manager, platform_id, session_id)
+
+        service = await RAG_WORKERS.run(scoped_service)
+        if jobs_path:
+            uploading = ctx.path == "/config/rag/jobs/upload" and ctx.method == "POST"
+            content = await read_request_body(ctx.reader, ctx.raw_request, max_bytes=DEFAULT_MAX_FILE_SIZE, timeout=DEFAULT_BODY_TIMEOUT, required=True) if uploading else None
+            request = await _read_json_body(ctx.reader, ctx.raw_request) if ctx.method == "POST" and not uploading else {}
+            if not isinstance(request, dict):
+                raise ValueError("请求体必须为对象")
+            return await rag_jobs_response(_RAG_JOBS, service, ctx.method, ctx.path.removeprefix("/config/rag"),
+                                           {key: values[0] for key, values in query.items()}, request, content)
         if ctx.path.endswith("/upload"):
             service._get(query.get("kb_id", [""])[0])
             content = await read_request_body(ctx.reader, ctx.raw_request, max_bytes=DEFAULT_MAX_FILE_SIZE, timeout=DEFAULT_BODY_TIMEOUT, required=True)
@@ -3224,6 +3852,8 @@ async def _route_rag(ctx: _RouteContext) -> ControlResponse | None:
             )
         payload = {key: values[0] for key, values in query.items()} if ctx.method == "GET" else await _read_json_body(ctx.reader, ctx.raw_request)
         return 200, await RAG_WORKERS.run(rag_admin_request, service, ctx.method, payload)
+    except RagJobError as error:
+        return error.status, {"error": str(error), "code": error.code}
     except RagOperationError as error:
         return error.status, {"error": str(error), "stage": error.stage}
     except WorkerBusyError as error:
@@ -3245,11 +3875,18 @@ async def _route_session_instances(ctx: _RouteContext) -> ControlResponse | None
     """
     if ctx.method == "GET" and ctx.path == "/config/session-instances":
         try:
-            sessions: list[dict[str, Any]] = []
-            for platform_id in _configured_platform_ids():
-                sessions.extend(_session_instance_config_service(platform_id).list_instances())
-            sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
+            def collect() -> list[dict[str, Any]]:
+                """在线程中读取冷实例与路由, 不初始化领域表"""
+                sessions: list[dict[str, Any]] = []
+                for platform_id in _configured_platform_ids():
+                    sessions.extend(_session_instance_config_service(platform_id, readonly=True).list_instances())
+                sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
+                return sessions
+
+            sessions = await RAG_WORKERS.run(collect)
             return 200, {"sessions": sessions}
+        except WorkerBusyError as error:
+            return 503, {"error": str(error), "code": "worker_busy"}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
@@ -3724,6 +4361,10 @@ async def _handle_request(
             await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
             return
 
+        from satrap.core.log.debug.api import stream_debug_export
+        if await stream_debug_export(writer, method, raw_path, headers, _CONTROL_AUTH, "control"):
+            return
+
         status = 200
         body: Mapping[str, object] = {}
 
@@ -3753,6 +4394,8 @@ async def _handle_request(
             _route_ui_config_status,
             _route_chat_history,
             _route_lifecycle,
+            _route_telemetry,
+            _route_platform_actions,
             _route_logging,
             _route_administrator_settings,
             _route_config_document,
@@ -3761,6 +4404,7 @@ async def _handle_request(
             _route_wake_dry_run,
             _route_session_class_collection_get,
             _route_storage,
+            _route_validation_maintenance,
             _route_conversation_users,
             _route_platform_archive,
             _route_group_chat_content,
@@ -3769,9 +4413,12 @@ async def _handle_request(
             _route_group_chat_media,
             _route_skills,
             _route_conversation_data,
+            _route_stored_messages,
             _route_plugin_install,
             _route_plugin_application,
+            _route_platform_execution,
             _route_plugin_config,
+            _route_plugin_execution,
             _route_plugin_usages,
             _route_edictum_metadata,
             _route_session_instances,
@@ -3826,7 +4473,8 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     - host: 主机
     - port: 端口
     """
-    global _CONTROL_AUTH, _PLUGIN_APPLICATIONS
+    global _CONTROL_AUTH, _PLUGIN_APPLICATIONS, _CONTROL_RUNTIME
+    _CONTROL_RUNTIME = ServiceRuntime("control")
     _CONTROL_AUTH = ServerAuth.create(host, port, session_namespace="control")
 
     # 检查单实例
@@ -3852,6 +4500,32 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
         port,
         limit=MAX_HEADER_BYTES + 4,
     )
+    from satrap.core.telemetry.capture import start_service_capture
+
+    global _RAG_JOBS
+    try:
+        job_layout = await asyncio.to_thread(_configured_storage_layout)
+        _RAG_JOBS = RagJobManager(job_layout, "control", _CONTROL_RUNTIME.runtime_id, lambda: _model_config_service().manager)
+        await _RAG_JOBS.start([*await asyncio.to_thread(_configured_platform_ids), "chat", "local"])
+    except (OSError, ValueError) as error:
+        _RAG_JOBS = None
+        logger.warning(f"[RAG 任务] 启动未就绪: {type(error).__name__}")
+    telemetry_writer = None
+    try:
+        telemetry_writer = await start_service_capture("control", _CONTROL_RUNTIME, await asyncio.to_thread(_configured_storage_layout))
+    except (OSError, ValueError) as error:
+        logger.warning(f"[统计] 当前配置无法绑定采集目录: {type(error).__name__}")
+    maintenance_runner: MaintenanceRunner | None = None
+    try:
+        maintenance_layout = await asyncio.to_thread(_configured_storage_layout)
+        maintenance_runner = MaintenanceRunner(maintenance_layout, layout_is_current=lambda: _configured_storage_layout().root == maintenance_layout.root)
+        if not await maintenance_runner.start():
+            await maintenance_runner.close()
+            maintenance_runner = None
+            logger.warning("[回收区] 该数据根已有维护任务, 当前进程不重复启动")
+    except (OSError, ValueError) as error:
+        maintenance_runner = None
+        logger.warning(f"[回收区] 自动维护未就绪: {type(error).__name__}")
     print(f"Backend control server running at http://{host}:{port}")
     print("Endpoints:")
     print("  GET  /status   - Get backend status")
@@ -3869,8 +4543,21 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     print("  GET  /config/session/discovery - Discover session classes")
     print("  POST /config/session/discovery/directories - Create session scan directory")
 
-    async with server:
-        await server.serve_forever()
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        try:
+            if maintenance_runner is not None:
+                await maintenance_runner.close()
+        finally:
+            try:
+                if _RAG_JOBS is not None:
+                    await _RAG_JOBS.close()
+                    _RAG_JOBS = None
+            finally:
+                if telemetry_writer is not None:
+                    await asyncio.to_thread(telemetry_writer.close)
 
 
 def main():

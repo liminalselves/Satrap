@@ -68,7 +68,7 @@ tools:
   rag_ingest: "导入文本或当前工作区及会话文件目录中的文档"
 
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 
 applicability:
   session_types: [chat, platform, embedded]

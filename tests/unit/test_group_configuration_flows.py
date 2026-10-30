@@ -260,7 +260,7 @@ def test_trusted_event_after_sync_start_is_not_overwritten(tmp_path: Path) -> No
     assert store.finish_sync("100", 1, "first", [], complete=True, truncated=False)
     assert store.list_groups("100", membership="joined")["total"] == 1
 
-def test_pagination_and_counts_use_full_identity_snapshot(tmp_path: Path) -> None:
+def test_pagination_and_counts_use_full_identity_snapshot(tmp_path: Path, monkeypatch) -> None:
     store = _store(tmp_path)
     store.begin_sync("100", 1, "first")
     store.finish_sync("100", 1, "first", [
@@ -273,6 +273,30 @@ def test_pagination_and_counts_use_full_identity_snapshot(tmp_path: Path) -> Non
     assert second["counts"]["joined"] == 54
     assert second["counts"]["response_enabled"] == 1
     assert store.list_groups("100", query="群5", membership="all")["total"] == 6
+    store.patch_group("100", "1", "session", {"binding": {"mode": "value", "value": {"provider": "edictum", "config_name": "group-agent"}}}, expected_revision=1)
+    GroupActionStore(store.database).submit("page-action-123", "100", "1", "kick_group_member", {"user_id": "42"}, "panel", 1, approval_required=True)
+    from satrap.core.config.platform_messages import MessageScope
+
+    scope = MessageScope("bot", "100", "group", "1")
+    with sqlite3.connect(store.database) as connection:
+        connection.execute("INSERT INTO platform_message_chats(scope_key,adapter_id,self_id,conversation_kind,chat_id,captured_from,captured_to) VALUES(?,?,?,?,?,1,9)",
+                           (scope.key, "bot", "100", "group", "1"))
+    queries = []
+    connect = store._connect
+
+    def traced():
+        connection = connect()
+        connection.set_trace_callback(queries.append)
+        return connection
+
+    monkeypatch.setattr(store, "_connect", traced)
+    listed = store.list_groups("100", platform_snapshot={"id": "bot", "session_provider": "edictum", "session_type": "platform-agent"})
+    group = next(item for item in listed["items"] if item["group_id"] == "1")
+    assert group["binding"] == {"agent": "group-agent", "provider": "edictum", "source": "group"}
+    assert group["pending_actions"] == 1 and group["last_activity_at"] == 9
+    assert not group["activity_coverage"]["complete"]
+    assert all(item["binding"]["agent"] == "platform-agent" for item in listed["items"] if item["group_id"] != "1")
+    assert len([query for query in queries if query.lstrip().upper().startswith("SELECT")]) <= 7
 
 def test_approval_inheritance_counts_only_joined_groups(tmp_path: Path) -> None:
     store = _store(tmp_path)

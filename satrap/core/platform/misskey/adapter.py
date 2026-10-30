@@ -29,7 +29,7 @@ from satrap.core.platform.misskey.misskey_utils import (
     serialize_message_chain,
     upload_local_with_retries,
 )
-from satrap.core.platform.misskey.client import AuthenticationError, MisskeyAPI, StreamingClient
+from satrap.core.platform.misskey.client import APIError, APIConnectionError, AuthenticationError, MisskeyAPI, StreamingClient
 from satrap.core.platform.connection import ConnectionProbeError
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.components import File, Image, PlatformComponentType, Record, Video
@@ -215,6 +215,8 @@ class MisskeyAdapter(PlatformAdapter):
             self.bot_self_id = str(user_info.get("id", ""))
             self.client_self_id = self.bot_self_id or self.client_self_id
             self._bot_username = str(user_info.get("username", ""))
+            self._bot_profile = {"self_id": self.bot_self_id, "nickname": user_info.get("name") or self._bot_username,
+                                 "avatar_url": user_info.get("avatarUrl"), "as_of": time()}
             logger.info(f"[MisskeyAdapter] 已连接用户: {self._bot_username} ({self.bot_self_id})")
         except Exception as e:
             self._running = False
@@ -251,6 +253,7 @@ class MisskeyAdapter(PlatformAdapter):
                 streaming = self._client.get_streaming_client()
                 self._register_event_handlers(streaming)
                 if await streaming.connect():
+                    self.note_connection(True)
                     attempts = 0
                     backoff_delay = 1.0
                     await streaming.subscribe_channel("main")
@@ -260,6 +263,8 @@ class MisskeyAdapter(PlatformAdapter):
                     await streaming.listen()
             except Exception as e:
                 logger.error(f"[MisskeyAdapter] WebSocket 异常: {type(e).__name__}")
+            finally:
+                self.note_connection(False)
 
             if self._running:
                 sleep_time = backoff_delay + random.uniform(0, 1.0)
@@ -564,24 +569,30 @@ class MisskeyAdapter(PlatformAdapter):
         - list[str]: 上传消息链中的文件组件并收集 fileId
         """
         if not self.enable_file_upload:
+            if any(self._has_file_component(comp) for comp in message_chain):
+                raise GroupChatError("media_upload_failed", "图片上传已停用")
             return []
         components = [comp for comp in message_chain if self._has_file_component(comp)]
         if len(components) > MAX_FILE_UPLOAD_COUNT:
-            logger.warning(f"[MisskeyAdapter] 文件数量超过限制, 只上传前 {MAX_FILE_UPLOAD_COUNT} 个")
-            components = components[:MAX_FILE_UPLOAD_COUNT]
+            raise GroupChatError("quota_exceeded", f"文件数量超过 {MAX_FILE_UPLOAD_COUNT} 个")
         concurrency = max(1, min(int(self.upload_concurrency), 10))
         sem = asyncio.Semaphore(concurrency)
         try:
-            results = await asyncio.gather(*(self._upload_component(comp, sem) for comp in components))
+            outcomes = await asyncio.gather(*(self._upload_component(comp, sem) for comp in components), return_exceptions=True)
+            # 等待同批上传全部结束后再释放租约, 首个失败不能让其余任务失去文件引用
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+            results = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
+        except APIError as exc:
+            exc.stage = "upload"
+            raise
         except Exception as exc:
-            if not any(getattr(comp, "asset_lease", None) is not None for comp in components):
-                raise
+            from satrap.core.platform.receipt import public_delivery_message
 
-            logger.error(f"[MisskeyAdapter] 必需图片上传异常: {traceback.format_exc()}")
-            raise GroupChatError("media_upload_failed", "结构化回复的必需图片上传失败") from exc
-        if any(getattr(comp, "asset_lease", None) is not None and not result for comp, result in zip(components, results)):
-
-            raise GroupChatError("media_upload_failed", "结构化回复的必需图片上传失败")
+            raise GroupChatError("media_upload_failed", public_delivery_message(str(exc)) or "图片上传失败") from exc
+        if any(not result for result in results):
+            raise GroupChatError("media_upload_failed", "图片上传未取得有效文件 ID")
         return [file_id for file_id in results if file_id]
 
     async def send_text(self, session_id: str, text: str) -> Any:
@@ -600,7 +611,7 @@ class MisskeyAdapter(PlatformAdapter):
     async def send_message(
         self, session_id: str, message: MessageChain, *, request_id: str = "",
         purpose: str = "business", require_tracking: bool = False,
-    ) -> SendReceipt | dict[str, Any] | None:
+    ) -> SendReceipt:
         """
         持有受控图片至发送任务实际结束, 调用方取消不会提前释放文件
 
@@ -612,25 +623,32 @@ class MisskeyAdapter(PlatformAdapter):
         - require_tracking: 是否要求持久发送跟踪
 
         返回:
-        - 原生结果或结构化媒体的明确发送回执
+        - 统一的发送回执, 纯文本和媒体使用相同的确认与错误语义
         """
         from satrap.core.group_chat.assets import fork_message_leases
 
+        if self._client is None:
+            return SendReceipt("failed", reason="client_unavailable", error_message="Misskey 客户端未初始化", stage="validation")
         leases = fork_message_leases(message)
-        if not leases:
-            return await self._send_message(session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking)
         if len(self._media_send_tasks) >= 64:
             for lease in leases:
                 lease.release()
             logger.warning("[MisskeyAdapter] 结构化媒体发送队列已满")
             return SendReceipt("failed", reason="send_queue_unavailable")
         async def send() -> SendReceipt:
-            """实际提交媒体, 缺少平台消息 ID 时不冒充成功"""
+            """实际提交消息, 区分上传失败, 发布拒绝与回执丢失"""
+            submitted_self_id = self.bot_self_id
             try:
                 result = await self._send_message(session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking)
-                if isinstance(result, dict) and isinstance(result.get("id"), str) and result["id"]:
-                    if is_valid_room_session_id(session_id) and (result.get("toRoomId") is not None and result["toRoomId"] != extract_room_id_from_session_id(session_id)
-                            or result.get("fromUserId") is not None and result["fromUserId"] != self.bot_self_id):
+                if isinstance(result, dict) and isinstance(result.get("createdNote"), dict):
+                    result = result["createdNote"]
+                if isinstance(result, dict) and isinstance(result.get("id"), str) and result["id"].strip():
+                    room, private = is_valid_room_session_id(session_id), is_valid_chat_session_id(session_id)
+                    target_field = "toRoomId" if room else "toUserId" if private else ""
+                    target = extract_room_id_from_session_id(session_id) if room else extract_user_id_from_session_id(session_id)
+                    sender_field = "fromUserId" if room or private else "userId"
+                    if (target_field and result.get(target_field) is not None and result[target_field] != target
+                            or result.get(sender_field) is not None and result[sender_field] != submitted_self_id):
                         logger.warning("[MisskeyAdapter] 结构化媒体确认身份不符")
                         return SendReceipt("unknown", reason="unverified_confirmation")
                     return SendReceipt("success", (result["id"],))
@@ -639,7 +657,13 @@ class MisskeyAdapter(PlatformAdapter):
                 raise
             except GroupChatError as exc:
                 logger.warning(f"[MisskeyAdapter] 结构化媒体发送拒绝, 原因={exc.code}")
-                return SendReceipt("failed", reason=exc.code)
+                return SendReceipt("failed", reason=exc.code, error_message=str(exc), stage="upload" if exc.code == "media_upload_failed" else "validation")
+            except APIError as exc:
+                stage = exc.stage or "publish"
+                status = "unknown" if stage == "publish" and isinstance(exc, APIConnectionError) else "failed"
+                logger.warning(f"[MisskeyAdapter] 消息发送失败, 阶段={stage}, 错误={exc.code}: {exc}")
+                return SendReceipt(status, reason="media_upload_failed" if stage == "upload" else "action_rejected" if status == "failed" else "action_unconfirmed",
+                                   error_code=exc.code, error_message=str(exc), stage=stage)
             except Exception:
 
                 logger.error(f"[MisskeyAdapter] 结构化媒体发送失败: {traceback.format_exc()}")
@@ -647,6 +671,8 @@ class MisskeyAdapter(PlatformAdapter):
             finally:
                 for lease in leases:
                     lease.release()
+        if not leases:
+            return await send()
         task = asyncio.create_task(send())
         self._media_send_tasks.add(task)
         def settle(finished: asyncio.Task[SendReceipt]) -> None:
@@ -689,6 +715,7 @@ class MisskeyAdapter(PlatformAdapter):
             logger.error("[MisskeyAdapter] 客户端未初始化, 无法发送消息")
             return None
 
+        client, submitted_self_id = self._client, self.bot_self_id
         text, has_at_user = serialize_message_chain(message)
         if any(getattr(comp, "asset_lease", None) is not None for comp in message) and (not self.enable_file_upload or len(text) > self.max_message_length):
 
@@ -702,6 +729,8 @@ class MisskeyAdapter(PlatformAdapter):
             if origin is None:
                 raise PermissionError("图片发送轮次已经结束")
             await self.group_chat_scope(origin)
+        if self._client is not client or self.bot_self_id != submitted_self_id or not self.config.enable:
+            raise GroupChatError("stale_call", "上传期间平台连接或账号已变化, 消息未发布")
         if is_valid_room_session_id(session_id) and any(getattr(comp, "asset_lease", None) is not None for comp in message) and len(file_ids) > 1:
             raise ValueError("Misskey 房间单条消息最多附带一张图片")
         if not text.strip() and not file_ids:

@@ -98,7 +98,6 @@ async function rag_settings(runtime) {
   await page.goto(`${origin}/rag`);
     await page.getByRole('button', { name: '共享产品资料', exact: true }).waitFor();
     await page.getByLabel('管理范围').selectOption('platform:chat');
-    await page.getByRole('option', { name: '测试会话', exact: true }).waitFor({ state: 'attached' });
     await page.getByLabel('Chat 会话', { exact: true }).selectOption('chat-one');
     await page.getByRole('button', { name: '新建知识库', exact: true }).click();
     await page.getByLabel('知识库名称').fill('当前会话资料');
@@ -224,12 +223,16 @@ async function rag_upload(runtime) {
     const uploaded = await response;
     assert.equal(uploaded.status(), 200);
     assert.equal(uploaded.request().postDataBuffer().length, content.length);
-    await page.getByText('真实中文.md · 4 块', { exact: true }).waitFor();
+    await page.getByText('已导入 · 4 块', { exact: true }).waitFor();
     await page.getByRole('button', { name: '关闭', exact: true }).click();
-    await page.getByLabel('检索问题').fill('中文文档');
-    await page.getByRole('button', { name: '测试检索' }).click();
-    await page.locator('pre').filter({ hasText: '真实中文.md' }).waitFor();
-    await page.getByRole('button', { name: '上传文档', exact: true }).click();
+    // 检索测试位于知识库详情抽屉, 抽屉内的上传入口继续导入同一个库
+    await page.getByRole('button', { name: '详情', exact: true }).click();
+    const drawer = page.getByRole('dialog', { name: '上传验证知识库 详情', exact: true });
+    await drawer.getByLabel('检索问题').fill('中文文档');
+    await drawer.getByRole('button', { name: '测试检索' }).click();
+    await drawer.getByText(/^找到 \d+ 个片段$/).waitFor();
+    await drawer.getByTitle('真实中文.md', { exact: true }).first().waitFor();
+    await drawer.getByRole('button', { name: '上传文档', exact: true }).first().click();
     await page.getByRole('group', { name: '文件拖放区域' }).evaluate((element) => {
       const transfer = new DataTransfer();
       transfer.items.add(new File(['中文文档'.repeat(100000)], '真实中文.md', { type: 'text/markdown' }));
@@ -250,7 +253,7 @@ async function rag_upload(runtime) {
     assert.deepEqual(retryRequests, ['稍后重试.txt']);
     await page.screenshot({ path: path.join(artifacts, 'rag-batch-results.png'), fullPage: true });
     await page.getByRole('button', { name: '关闭', exact: true }).click();
-    await page.getByRole('button', { name: '上传文档', exact: true }).click();
+    await drawer.getByRole('button', { name: '上传文档', exact: true }).first().click();
     await page.getByRole('button', { name: '粘贴文本', exact: true }).click();
     await page.getByLabel('文档来源').fill('粘贴资料');
     await page.getByLabel('导入文本').fill('中文文档'.repeat(100000));

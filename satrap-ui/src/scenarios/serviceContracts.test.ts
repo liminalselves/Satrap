@@ -6,6 +6,59 @@ import { administratorError } from "@/api/administrators";
 import { loggingError } from "@/api/logging";
 import { ragErrorMessage } from "@/api/rag";
 import { errorText } from "@/utils/errorText";
+import { debugMode, withDebugMode, sameDebugObject, type DebugPolicy } from '@/api/debugLogging';
+import { diagnosticTone, eventPresentation, inputDeltaPresentation, requestHint } from '@/pages/Logs/debugPresentation';
+
+describe('高级诊断对象设置', () => {
+  it('覆盖绑定完整对象, 切换上下文不复制覆盖, reset 恢复默认且不修改原草稿', () => {
+    const group = { platform_id: 'qq', self_id: 'bot', conversation_kind: 'group' as const, target_id: 'group' };
+    const policy: DebugPolicy = { version: 1, default_enabled: false, retention_days: 7, max_total_mb: 512, max_body_mb: 8, max_request_mb: 32, objects: [] };
+    const enabled = withDebugMode(policy, group, 'on');
+    expect(policy.objects).toEqual([]);
+    expect(debugMode(enabled, { ...group })).toBe('on');
+    for (const changed of [{ ...group, self_id: 'other' }, { ...group, platform_id: 'other' }, { ...group, target_id: 'other' }, { ...group, conversation_kind: 'private' as const }]) {
+      expect(sameDebugObject(group, changed)).toBe(false);
+      expect(debugMode(enabled, changed)).toBe('inherit');
+    }
+    expect(withDebugMode(enabled, group, 'inherit').objects).toEqual([]);
+    expect(debugMode(withDebugMode(enabled, group, 'off'), group)).toBe('off');
+  });
+});
+
+describe('高级诊断标题与级别', () => {
+  it('输入增量说明隐藏历史和移除范围, 不把压缩后的改变伪装成只追加', () => {
+    const delta = { view: 'delta', basis: 'previous_model_input', hidden_prefix_messages: 10, hidden_suffix_messages: 2,
+      removed_messages: 3, messages: [{ role: 'system', content: '新摘要' }], changed_parameters: {}, removed_parameters: ['temperature'] };
+    const presentation = inputDeltaPresentation(delta);
+    expect(presentation.summary).toContain('移除 3 条');
+    expect(presentation.summary).toContain('隐藏未变消息 12 条');
+    expect(presentation.text).toContain('新摘要');
+    expect(presentation.text).toContain('temperature');
+    expect(inputDeltaPresentation({ ...delta, basis: 'latest_user_message', baseline_unavailable: true }).summary).toContain('基线不可用');
+    expect(inputDeltaPresentation({ original: '旧正文' }).summary).toBeUndefined();
+  });
+  it('业务终态与异常颜色分别保留, 旧记录不猜测, 标题不读取动态正文', () => {
+    const request = { request_id: 'request', context_id: 'context', parent_request_id: '', status: 'success', incomplete: 0,
+      updated_at: 2, started_at: 1, settings_revision: 'v1' };
+    expect(requestHint({ ...request, diagnostic_level: 'warning' })).toBe('含调用问题');
+    expect(requestHint({ ...request, diagnostic_level: 'error' })).toBe('含系统错误');
+    expect(requestHint(request)).toBe('旧记录未分类');
+    expect(diagnosticTone('info', 'cancelled')).toBe('neutral');
+    expect(diagnosticTone('error', 'cancelled')).toBe('error');
+    expect(diagnosticTone('info', 'success', true)).toBe('warning');
+    const event = { event_id: 'event', sequence: 1, category: 'tool_result', phase: 'end', span_id: '', parent_span_id: '',
+      status: 'returned', recorded_at: 1, body_slots: ['result'], metadata: {} };
+    expect(eventPresentation(event).tone).toBe('unknown');
+    const warning = eventPresentation({ ...event, metadata: { diagnostic_level: 'warning', name: 'read_document', error_kind: 'model_input', error_code: 'invalid_arguments' } });
+    expect(warning.title).toBe('工具返回 · read_document · 参数或调用错误');
+    expect(warning.tone).toBe('warning');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'info', result_status: 'pending' } }).tone).toBe('neutral');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'info', result_status: 'sent' } }).title).toBe('工具返回 · 已发送');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'error', result_status: 'partial' } }).title).toBe('工具返回 · 部分完成 · 系统错误');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'warning', result_status: 'unknown', error_kind: 'uncertain_result' } }).title).toBe('工具返回 · 结果待确认');
+    expect(eventPresentation({ ...event, metadata: { diagnostic_level: 'info', data: { ok: false, error_type: 'execution_error' } } }).tone).toBe('normal');
+  });
+});
 
 describe("api/client", () => {
   function responseError(status: number, data: unknown): AxiosError<{ error?: string; reason?: string }> {

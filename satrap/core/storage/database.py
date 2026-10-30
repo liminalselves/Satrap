@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any, cast
 import json
+import time
 
 from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 from satrap.core.storage.context_catalog import CATALOG_SCHEMA
@@ -17,7 +18,7 @@ from satrap.core.storage.context_catalog import CATALOG_SCHEMA
 _RESTORABLE_TABLES = frozenset({
     "session_configs",
     SESSION_OVERRIDE_TABLE,
-    "rag_knowledge_bases",
+    "rag_knowledge_bases", "rag_jobs", "rag_documents",
     "conversation_meta",
     "display_turns",
     "display_turn_variants",
@@ -140,6 +141,8 @@ def snapshot_session_domain(database: str | Path, session_id: str) -> dict[str, 
             "session_configs": ("session_id = ?", (session_id,)),
             SESSION_OVERRIDE_TABLE: ("session_id = ?", (session_id,)),
             "rag_knowledge_bases": ("session_id = ? AND scope = 'session'", (session_id,)),
+            "rag_jobs": ("session_id = ? AND kb_id IN (SELECT id FROM rag_knowledge_bases WHERE session_id=? AND scope='session')", (session_id, session_id)),
+            "rag_documents": ("session_id = ? AND kb_id IN (SELECT id FROM rag_knowledge_bases WHERE session_id=? AND scope='session')", (session_id, session_id)),
             "conversation_meta": ("conversation_id = ?", (session_id,)),
             "display_turns": ("conversation_id = ?", (session_id,)),
             "display_turn_variants": (
@@ -252,7 +255,7 @@ def restore_session_domain(
             from satrap.core.config.session_overrides import ensure_override_tables
             # core.config 包导出依赖存储维护模块, 延迟到恢复时避免循环导入
             ensure_override_tables(connection)
-        if "rag_knowledge_bases" in records:
+        if any(table in records for table in ("rag_knowledge_bases", "rag_jobs", "rag_documents")):
             from satrap.core.rag import ensure_rag_tables
             # RAG 依赖 storage 包且会加载可选 FAISS, 延迟到知识库恢复时导入
             ensure_rag_tables(connection)
@@ -271,6 +274,9 @@ def restore_session_domain(
         if "session_configs" in records and "session_configs" in tables and "history_started_at" not in _table_columns(connection, "session_configs"):
             connection.execute("ALTER TABLE session_configs ADD COLUMN history_started_at REAL")
             # 恢复可早于 SessionManager 初始化, 保留新版归档中的会话起点
+        if "conversation_meta" in records and "conversation_meta" in tables and "temperature" not in _table_columns(connection, "conversation_meta"):
+            connection.execute("ALTER TABLE conversation_meta ADD COLUMN temperature REAL")
+            # 新归档恢复到旧库时保留会话温度覆盖, 旧归档缺少该值则继承模型
         if "display_turn_variants" in records and "display_turn_variants" in tables and "output_files" not in _table_columns(connection, "display_turn_variants"):
             connection.execute("ALTER TABLE display_turn_variants ADD COLUMN output_files TEXT NOT NULL DEFAULT '[]'")
         ensure_conversation_indexes(connection)
@@ -289,6 +295,7 @@ def restore_session_domain(
         run_ids = {row.get("id") for row in records.get("agent_runs", [])}
         step_ids = {(row.get("run_id"), row.get("step_key")) for row in records.get("agent_steps", []) if row.get("kind") == "model"}
         bodies = {(row.get("run_id"), row.get("step_key")) for row in records.get("agent_step_inputs", [])}
+        rag_ids = {row.get("id") for row in records.get("rag_knowledge_bases", [])}
         for step in records.get("agent_steps", []):
             metadata = json.loads(step.get("input") or "{}")
             if isinstance(metadata, dict) and metadata.get("_format") == 2 and (step.get("run_id"), step.get("step_key")) not in bodies:
@@ -300,12 +307,15 @@ def restore_session_domain(
                     "session_configs": "session_id", "conversation_meta": "conversation_id",
                     SESSION_OVERRIDE_TABLE: "session_id",
                     "rag_knowledge_bases": "session_id",
+                    "rag_jobs": "session_id", "rag_documents": "session_id",
                     "display_turns": "conversation_id", "context_sessions": "session_id", "context_session_history": "session_id",
                 }.get(table)
                 if identity_column and row.get(identity_column) != session_id:
                     raise ValueError(f"归档表 {table} 的会话身份不匹配")
                 if table == "rag_knowledge_bases" and row.get("scope") != "session":
                     raise ValueError("会话归档不能恢复全局知识库")
+                if table in {"rag_jobs", "rag_documents"} and row.get("kb_id") not in rag_ids:
+                    raise ValueError("知识库任务或文档引用了归档外的知识库")
                 if table in ("display_turn_variants", "display_tool_calls") and row.get("turn_id") not in turn_ids:
                     raise ValueError(f"归档表 {table} 引用了归档外的轮次")
                 if table == "agent_steps" and row.get("run_id") not in run_ids:
@@ -354,6 +364,11 @@ def restore_session_domain(
                 if table == "user_info":
                     continue
                 for row in rows:
+                    if table == "rag_jobs" and row.get("status") in {"queued", "running"}:
+                        row = {**row, "status": "interrupted", "phase": "finished", "finished_at": time.time(),
+                               "error_json": json.dumps({"phase": row.get("phase", "queued"), "code": "archive_restored", "message": "归档恢复, 未自动重放任务"}), "input_name": ""}
+                    if table == "rag_documents" and row.get("status") in {"queued", "indexing"}:
+                        row = {**row, "status": "failed", "error_json": json.dumps({"phase": "finished", "code": "archive_restored", "message": "归档恢复, 原任务已中断"})}
                     columns = _validated_restore_columns(table, row, schemas[table])
                     placeholders = ",".join("?" for _ in columns)
                     connection.execute(
@@ -506,6 +521,9 @@ def delete_session_domain_rows(database: str | Path, session_id: str, *, orphan_
             if table in tables:
                 connection.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
         if "rag_knowledge_bases" in tables:
+            for table in ("rag_jobs", "rag_documents"):
+                if table in tables:
+                    connection.execute(f"DELETE FROM {table} WHERE session_id=? AND kb_id IN (SELECT id FROM rag_knowledge_bases WHERE session_id=? AND scope='session')", (session_id, session_id))
             connection.execute("DELETE FROM rag_knowledge_bases WHERE session_id=? AND scope='session'", (session_id,))
         for table in ("state_checkpoints", "state_snapshots", "state_scopes"):
             if table in tables:

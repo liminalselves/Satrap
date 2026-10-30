@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -48,11 +47,10 @@ class PluginCompatibilityError(ValueError):
 
 
 def framework_version() -> str:
-    """读取安装版本, 源码运行时使用项目当前版本"""
-    try:
-        return version("satrap")
-    except PackageNotFoundError:
-        return "0.1.0"
+    """返回当前源码的版本; 不读安装元数据, 可编辑安装升级后元数据可能滞后"""
+    from satrap._version import __version__
+
+    return __version__
 
 
 def parse_compatibility(meta: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:

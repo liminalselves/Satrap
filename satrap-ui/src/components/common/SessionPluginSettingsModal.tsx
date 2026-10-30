@@ -5,6 +5,7 @@ import type { ConfigOption } from './PluginConfigFields';
 import { ragApi } from '@/api/rag';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 interface Props {
   context: PluginSettingsContext | null;
@@ -68,10 +69,10 @@ export function SessionPluginSettingsModal({ context, plugins, onClose }: Props)
   return <Modal open={context !== null} title="会话插件参数" onClose={() => { if (!saving) onClose(); }} size="lg">
     <div className="space-y-4">
       <p className="text-sm text-text-secondary">仅保存当前会话主动修改的参数，其余参数继续继承。{sessionId}</p>
-      <select className="glass-input w-full" value={selected} disabled={saving} onChange={(event) => setPlugin(event.target.value)}>
+      <KitSelect className="field w-full" value={selected} disabled={saving} onChange={(value) => setPlugin(value)}>
         {plugins.length === 0 && <option value="">没有可配置的插件</option>}
         {plugins.map((name) => <option key={name} value={name}>{name}</option>)}
-      </select>
+      </KitSelect>
       {error && <p role="alert" className="text-sm text-error">{error}</p>}
       {notice && <p role="status" className="text-sm text-text-secondary">{notice}</p>}
       {data ? <PluginConfigFields schema={data.schema} values={overrides} inherited={data.inherited} sources={data.inherited_sources || data.sources} modelOptions={data.model_options} knowledgeBases={knowledgeBases} sessionMode disabled={saving}

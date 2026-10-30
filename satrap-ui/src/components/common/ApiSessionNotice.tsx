@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Lock, RefreshCw, WifiOff } from 'lucide-react';
 import { establishApiSession, passwordLogin } from '@/api/auth';
 import { PasswordInput } from '@/components/ui/PasswordInput';
 import { useApiSessionStore } from '@/stores/useApiSessionStore';
@@ -20,14 +21,37 @@ export function ApiSessionNotice() {
       message: authenticationFailure ? '认证失败' : connectionFailure ? '连接失败' : '请求失败' }];
   });
   if (!errors.length && !locked.length) return null;
-  return <aside className="fixed bottom-4 right-4 z-50 max-w-[calc(100vw-2rem)] space-y-2 rounded-lg border border-glass-border bg-bg-secondary p-3 shadow-lg">
-    {locked.map((service) => <ServicePassword key={service.name} name={service.name} url={service.url} />)}
-    {errors.map((service) => <div key={service.name} className="flex items-start gap-3 text-sm">
-      <p role="alert" className="max-w-sm text-error">{service.name}{service.message}: {service.session.error}</p>
-      <button className="shrink-0 text-accent disabled:opacity-50" disabled={service.session.state === 'checking'} onClick={() => void establishApiSession(service.url).catch(() => undefined)}>
-        {service.session.state === 'checking' ? `正在重试${service.name}${service.action}…` : `重试${service.name}${service.action}`}
-      </button>
-    </div>)}
+  const tint = errors.length ? 'tint-red' : 'tint-orange';
+  return <aside aria-label="服务连接提示" className={`${tint} glass-toast ${errors.length ? 'glass-toast-error' : 'glass-toast-warning'} !fixed bottom-4 right-4 z-50 w-[min(420px,calc(100vw-2rem))] !rounded-2xl`}>
+    <span aria-hidden className="absolute inset-x-0 top-0 h-[3px] bg-[linear-gradient(90deg,rgb(var(--tint)/0.95),rgb(var(--tint)/0.15))]" />
+    <div className="flex items-center gap-2.5 px-4 pb-2 pt-3.5">
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[rgb(var(--tint)/0.14)] text-[var(--tint-fg)]">
+        {errors.length ? <WifiOff className="h-4 w-4" aria-hidden /> : <Lock className="h-4 w-4" aria-hidden />}
+      </span>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-text-primary">{errors.length ? '服务连接异常' : '需要登录'}</p>
+        <p className="text-xs text-text-tertiary">其它可用功能不受影响</p>
+      </div>
+    </div>
+    <div className="space-y-1.5 px-2.5 pb-2.5">
+      {locked.map((service) => <ServicePassword key={service.name} name={service.name} url={service.url} />)}
+      {errors.map((service) => {
+        const checking = service.session.state === 'checking';
+        return <div key={service.name} className="flex items-center gap-3 rounded-xl border border-glass-border bg-glass px-3 py-2.5">
+          <span className={`dot ${tint} shrink-0`} data-live="1" aria-hidden />
+          <p role="alert" className="min-w-0 flex-1 leading-snug">
+            <span className="block text-sm font-medium text-[var(--tint-fg)]">{service.name}{service.message}</span>
+            <span className="sr-only">: </span>
+            <span className="block text-xs text-text-tertiary">{service.session.error}</span>
+          </p>
+          <button type="button" className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-[rgb(var(--rgb-accent)/0.3)] bg-[rgb(var(--rgb-accent)/0.1)] px-2.5 py-1 text-xs font-medium text-[var(--fg-accent)] transition hover:bg-[rgb(var(--rgb-accent)/0.18)] disabled:opacity-60"
+            disabled={checking} onClick={() => void establishApiSession(service.url).catch(() => undefined)}>
+            <RefreshCw className={`h-3 w-3 ${checking ? 'animate-spin' : ''}`} aria-hidden />
+            {checking ? `正在重试${service.name}${service.action}…` : `重试${service.name}${service.action}`}
+          </button>
+        </div>;
+      })}
+    </div>
   </aside>;
 }
 
@@ -37,7 +61,7 @@ function ServicePassword({ name, url }: { name: string; url: string }) {
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  return <form className="max-w-sm space-y-2" onSubmit={(event) => {
+  return <form className="space-y-2 rounded-xl border border-glass-border bg-glass px-3 py-2.5" onSubmit={(event) => {
     event.preventDefault();
     if (!password || busy) return;
     setBusy(true); setError('');
@@ -45,10 +69,12 @@ function ServicePassword({ name, url }: { name: string; url: string }) {
       setError(reason instanceof Error ? reason.message : String(reason)); setBusy(false);
     });
   }}>
-    <p className="text-sm">{name}需要访问密码</p>
+    <p className="text-sm font-medium text-text-primary">{name}需要访问密码</p>
     <PasswordInput aria-label={`${name}访问密码`} value={password} onChange={(event) => setPassword(event.target.value)} required />
-    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />记住此浏览器 (30 天)</label>
-    {error && <p role="alert" className="text-sm text-error">{error}</p>}
-    <button className="text-sm text-accent" disabled={busy || !password} type="submit">{busy ? '正在登录…' : `登录${name}`}</button>
+    <div className="flex items-center gap-3">
+      <label className="flex flex-1 items-center gap-2 text-xs text-text-secondary"><input type="checkbox" className="accent-[rgb(var(--rgb-accent))]" checked={remember} onChange={(event) => setRemember(event.target.checked)} />记住此浏览器 (30 天)</label>
+      <button className="glass-button glass-button-primary !rounded-full !px-3.5 !py-1 text-xs" disabled={busy || !password} type="submit">{busy ? '正在登录…' : `登录${name}`}</button>
+    </div>
+    {error && <p role="alert" className="text-xs text-error">{error}</p>}
   </form>;
 }

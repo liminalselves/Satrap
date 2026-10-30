@@ -2,7 +2,7 @@
 当前群的消息读取与结构化回复宿主
 
 固定可信轮次来源, 在等待后核验平台, 账号和路由;
-验证全部回复组件后暂存草稿, 提交前再次核验引用与成员
+验证全部回复组件后直接发送, 等待平台回执后返回模型
 """
 from __future__ import annotations
 
@@ -374,16 +374,17 @@ class GroupChatService:
 
                 async def validate_reply() -> MessageChain:
                     """
-                    提交前再次核验全部目标, 防止准备后的撤回或本地删除
+                    发送前核验全部目标与当前连接
 
                     返回:
                     - 来源仍有效的完整组件链, 任一目标失效时抛出明确错误
                     """
                     if not _same_connection(connection, context.adapter.group_chat_connection_token()):
-                        raise GroupChatError("stale_call", "准备回复后平台连接已经变化")
+                        raise GroupChatError("stale_call", "回复校验期间平台连接已经变化")
                     return await self._reply_components(context, components, bounds)
 
-                return await turn.prepare(validate_reply)
+                fingerprint = hashlib.sha256(json.dumps(components, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+                return await turn.send(validate_reply, fingerprint=fingerprint)
             if operation in {"group_chat_find_members", "group_chat_list_members"}:
                 return await self._find(context, arguments, bounds, list_all=operation == "group_chat_list_members")
             if operation == "group_chat_get_member":
@@ -623,7 +624,7 @@ class GroupChatService:
 
     async def _reply_components(self, context: _ReadContext, components: object, bounds: GroupChatLimits) -> MessageChain:
         """
-        整体验证草稿, 失败时释放全部媒体租约
+        整体验证回复, 失败时释放全部媒体租约
 
         参数:
         - context: 可信群来源
@@ -653,7 +654,7 @@ class GroupChatService:
         - leases: 本次校验取得的文件引用, 由外层失败边界和轮次宿主管理
 
         返回:
-        - 引用位于首位的完整消息链, 任一目标失败时不返回部分草稿
+        - 引用位于首位的完整消息链, 任一目标失败时不发送部分组件
         """
         if not isinstance(components, list) or not 1 <= len(components) <= 64:
             raise ValueError("components 必须包含 1 到 64 个组件")
@@ -670,7 +671,9 @@ class GroupChatService:
                 raise ValueError("每个组件必须是对象")
             kind = raw.get("type")
             if kind == "text":
-                if set(raw) != {"type", "text"} or not isinstance(raw["text"], str) or not raw["text"]:
+                if set(raw) - {"type", "text"}:
+                    raise ValueError("text 只接受 type 和 text; 引用消息请使用独立的 quote 组件")
+                if not isinstance(raw.get("text"), str) or not raw["text"]:
                     raise ValueError("text 组件必须包含非空 text 字符串")
                 text_size += len(raw["text"])
                 if text_size > 100000:

@@ -149,7 +149,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         *,
         pending_messages: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
-        thinking: str = "off",
+        thinking: str = "default",
         img_urls: list[str] | None = None,
     ) -> LLMCallResponse | Literal[False]:
         """准备上下文, 异步调用模型并记录真实 usage"""
@@ -160,7 +160,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
             img_urls=img_urls,
         )
         call_kwargs: dict[str, Any] = {"tools": tools, "img_urls": img_urls}
-        if thinking != "off":
+        if thinking != "default":
             call_kwargs["thinking"] = thinking
         response = await self.llm.call(prepared.messages, **call_kwargs)
         if isinstance(response, LLMCallResponse):
@@ -177,7 +177,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
     async def agent_executor(
         self, model_response: LLMCallResponse, callback: bool = False,
         max_iterations: int = 10, img_urls: list[str] | None = None,
-        *, thinking: str = "off", video_urls: list[str] | None = None,
+        *, thinking: str = "default", video_urls: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         """
         使用共用循环处理已有模型响应, 保留元组返回接口
@@ -187,7 +187,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - callback: 是否回传模型内容, 默认 False
         - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
         - img_urls: 附加图片地址, 默认 None
-        - thinking: 后续模型请求的思考强度, 默认 off
+        - thinking: 后续模型请求的思考强度, 默认 default 不发送思考参数
         - video_urls: 视频来源列表, 默认 None
 
         返回:
@@ -233,7 +233,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
 
     async def full_agent(
         self, user_input: str, callback: bool = True, max_iterations: int = 10,
-        img_urls: list[str] | None = None, *, thinking: str = "off",
+        img_urls: list[str] | None = None, *, thinking: str = "default",
         video_urls: list[str] | None = None,
         request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
@@ -245,7 +245,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - callback: 是否回传模型内容, 默认 True
         - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
         - img_urls: 附加图片地址, 默认 None, 保留既有位置参数调用
-        - thinking: 模型思考强度, 默认 off, 仅可通过关键字传入
+        - thinking: 模型思考强度, 默认 default 不发送思考参数, 仅可通过关键字传入
 
         - video_urls: 视频来源列表, 默认 None, 仅可通过关键字传入
 
@@ -274,7 +274,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - pending_messages: 尚未写入完整历史的本轮临时消息
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - callback: 是否回调回复, 默认关闭
-        - thinking: 模型思考强度, 默认 off
+        - thinking: 模型思考强度, 默认 default 不发送思考参数
         - img_urls: 随请求发送的图片 URL 列表
 
         返回:
@@ -314,7 +314,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
 
     async def stream_full_agent(
         self, user_input: str, callback: bool = True, max_iterations: int = 10,
-        thinking: str = "off", img_urls: list[str] | None = None,
+        thinking: str = "default", img_urls: list[str] | None = None,
         *, video_urls: list[str] | None = None,
         request_blocks: tuple[RequestContextBlock, ...] = (),
     ) -> str:
@@ -325,7 +325,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - user_input: 本轮用户输入
         - callback: 是否回传模型内容, 默认 True
         - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
-        - thinking: 模型思考强度, 默认 off
+        - thinking: 模型思考强度, 默认 default 不发送思考参数
         - img_urls: 附加图片地址, 默认 None
 
         - video_urls: 视频来源列表, 默认 None, 仅可通过关键字传入
@@ -361,6 +361,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
 
         返回:
         - str: 使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出
+        - 模型失败抛出 ModelCallError 并保留错误资料, finally 仍恢复临时上下文
         """
         system_messages = self._get_system_messages(self.ctx.get_context())
         self.reset_context_stats()
@@ -373,7 +374,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
                 img_urls=img_urls, video_urls=video_urls, recoverable=False, request_blocks=request_blocks,
             )
         except ModelCallError:
-            return "模型调用失败"
+            raise
         except Exception as error:
             logger.error(f"临时工具会话执行失败: {error}")
             return "执行失败"
@@ -385,7 +386,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         user_input: str,
         callback: bool = True,
         max_iterations: int = 10,
-        thinking: str = "off",
+        thinking: str = "default",
         img_urls: list[str] | None = None,
         *, video_urls: list[str] | None = None,
         request_blocks: tuple[RequestContextBlock, ...] = (),
@@ -397,7 +398,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - user_input: 用户输入
         - callback: 是否回调回复, 默认开启
         - max_iterations: 最大迭代次数, 默认 10
-        - thinking: 模型思考强度, 默认 off
+        - thinking: 模型思考强度, 默认 default 不发送思考参数
         - img_urls: 随请求发送的图片 URL 列表
         - video_urls: 视频来源列表, 默认 None
 

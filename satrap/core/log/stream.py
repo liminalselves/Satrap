@@ -1,13 +1,21 @@
-"""标准日志实时流与有界历史缓冲"""
+"""
+标准日志实时流与有界历史缓冲
+
+为各服务提供按运行流和序号读取的增量快照, 同时保留 WebSocket 订阅,
+标准输出捕获与日志级别解析共用发布入口
+"""
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
 from threading import Lock
 import asyncio
-from typing import TextIO, cast
+from typing import TextIO, TypedDict, cast
 import sys
 import re
+import os
+import time
+import secrets
 
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -45,6 +53,30 @@ class StandardLogEntry:
 
     content: str
     level: str
+    sequence: int = 0
+    timestamp: float = 0.0
+    pid: int = 0
+    truncated: bool = False
+
+
+class LogEntryPayload(TypedDict):
+    """增量日志公开记录"""
+    content: str
+    level: str
+    sequence: int
+    timestamp: float
+    pid: int
+    truncated: bool
+
+
+class LogSnapshot(TypedDict):
+    """按运行流与序号读取的有限日志快照"""
+    service: str
+    stream_id: str
+    entries: list[LogEntryPayload]
+    next_cursor: int
+    has_more: bool
+    reset: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +108,11 @@ class StandardLogStream:
         self._subscribers: dict[int, _Subscriber] = {}
         self._next_subscription_id = 1
         self._lock = Lock()
+        self._sequence = 0
+        self.stream_id = secrets.token_hex(16)
+        self.service = "process"
+        self._counter_started_at = time.time()
+        self._level_buckets: dict[int, dict[str, int]] = {}
 
     def publish(self, content: str, level: str) -> None:
         """
@@ -85,9 +122,21 @@ class StandardLogStream:
         - content: 已格式化的标准日志文本
         - level: 日志级别
         """
-        entry = StandardLogEntry(content=content, level=level)
+        encoded = content.encode("utf-8", errors="replace")
+        truncated = len(encoded) > 16 * 1024
+        if truncated:
+            content = encoded[:16 * 1024].decode("utf-8", errors="ignore")
         with self._lock:
+            self._sequence += 1
+            entry = StandardLogEntry(content, level, self._sequence, time.time(), os.getpid(), truncated)
             self._history.append(entry)
+            bucket = int(entry.timestamp // 10) * 10
+            normalized = {"WARN": "WARNING", "FATAL": "CRITICAL"}.get(level.upper(), level.upper())
+            normalized = normalized if normalized in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"} else "OTHER"
+            counters = self._level_buckets.setdefault(bucket, {})
+            counters[normalized] = counters.get(normalized, 0) + 1
+            if len(self._level_buckets) > 181:
+                self._level_buckets.pop(min(self._level_buckets))
             subscribers = tuple(self._subscribers.values())
 
         for subscriber in subscribers:
@@ -99,6 +148,83 @@ class StandardLogStream:
                 )
             except RuntimeError:
                 continue
+
+    def stats(self, *, window_seconds: int = 120, bucket_seconds: int = 10) -> dict[str, object]:
+        """
+        从独立计数桶读取日志速率, 正文被淘汰后仍保留计数
+
+        参数:
+        - window_seconds: 120/600/1800 秒窗口
+        - bucket_seconds: 10 或 60 秒桶
+
+        返回:
+        - 各级别计数, 趋势和实际覆盖时间, 不读取日志文件
+        """
+        if window_seconds not in {120, 600, 1800} or bucket_seconds not in {10, 60}:
+            raise ValueError("日志统计窗口或粒度无效")
+        now = time.time()
+        start = int((now - window_seconds) // 10) * 10
+        with self._lock:
+            rows = [(stamp, dict(values)) for stamp, values in self._level_buckets.items() if stamp + 10 > start and stamp <= now]
+            coverage_from = max(self._counter_started_at, start)
+        totals = {level: 0 for level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "OTHER")}
+        series: dict[int, dict[str, int]] = {}
+        for stamp in range(int(start // bucket_seconds) * bucket_seconds, int(now) + 1, bucket_seconds):
+            series[stamp] = dict(totals)
+        for stamp, counts in rows:
+            target = series.get(stamp // bucket_seconds * bucket_seconds)
+            if target is not None:
+                for level, count in counts.items():
+                    target[level] += count
+                    totals[level] += count
+        observed = max(0.0, now - coverage_from)
+        return {"service": self.service, "stream_id": self.stream_id, "generated_at": now, "coverage_from": coverage_from,
+                "complete": self._counter_started_at <= start, "window_seconds": window_seconds, "bucket_seconds": bucket_seconds,
+                "window_from": start, "window_to": now, "boundary_resolution_seconds": 10,
+                "by_level": totals, "error_count": totals["ERROR"] + totals["CRITICAL"],
+                "lines_per_minute": sum(totals.values()) * 60 / observed if observed else None, "rate_window_seconds": observed,
+                "series": [{"from": max(float(stamp), start), "to": min(float(stamp + bucket_seconds), now), "by_level": counts} for stamp, counts in series.items()]}
+
+    def snapshot(self, *, after: int | None = None, stream_id: str | None = None, limit: int = 100) -> LogSnapshot:
+        """
+        获取有限历史或指定游标后的日志, 不读取磁盘
+
+        参数:
+        - after: 上次已读取的序号, 默认读取最近记录
+        - stream_id: 上次服务运行流标识, 变化时返回 reset
+        - limit: 最大记录数, 必须为 1 至 500
+
+        返回:
+        - 携带游标, 重置标记和截断说明的快照
+        """
+        if isinstance(limit, bool) or not 1 <= limit <= 500 or after is not None and (isinstance(after, bool) or after < 0):
+            raise ValueError("日志 limit 必须为 1 至 500, after 必须为非负整数")
+        if after is not None and not stream_id:
+            raise ValueError("增量读取必须提供 stream_id")
+        with self._lock:
+            history = tuple(self._history)
+            latest = self._sequence
+            identity = self.stream_id
+            service = self.service
+        oldest = history[0].sequence if history else latest + 1
+        reset = stream_id is not None and stream_id != identity or after is not None and (after < oldest - 1 or after > latest)
+        initial = after is None or reset
+        cursor_after = after if after is not None else 0
+        candidates = history[-limit:] if initial else tuple(entry for entry in history if entry.sequence > cursor_after)
+        entries: list[LogEntryPayload] = []
+        budget = 256 * 1024
+        for entry in candidates[:limit]:
+            data = entry.content.encode("utf-8")
+            if len(data) > budget and entries:
+                break
+            text = data[:budget].decode("utf-8", errors="ignore")
+            entries.append(LogEntryPayload(content=text, level=entry.level, sequence=entry.sequence,
+                                           timestamp=entry.timestamp, pid=entry.pid, truncated=entry.truncated or len(data) > budget))
+            budget -= len(text.encode("utf-8"))
+        cursor = entries[-1]["sequence"] if entries else latest if initial else after
+        assert cursor is not None
+        return LogSnapshot(service=service, stream_id=identity, entries=entries, next_cursor=cursor,
+                           has_more=bool(history and cursor < latest), reset=bool(reset))
 
     def subscribe(
         self,

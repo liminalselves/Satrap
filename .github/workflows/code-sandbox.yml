@@ -2,6 +2,11 @@ name: Python worker compatibility
 
 on:
   workflow_dispatch:
+    inputs:
+      full_suite:
+        description: '运行完整测试及全部跨平台回归'
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'satrap/**'
@@ -9,9 +14,10 @@ on:
       - 'scripts/**'
       - 'satrap-ui/**'
       - 'pyproject.toml'
-      - 'setup.py'
       - 'requirements.txt'
       - '.github/workflows/code-sandbox.yml'
+      - '.github/scripts/**'
+      - 'docs/user/**'
 
 permissions:
   contents: read
@@ -21,25 +27,55 @@ env:
   PYTHONIOENCODING: utf-8
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.select.outputs.python }}
+      compatibility: ${{ steps.select.outputs.compatibility }}
+      frontend: ${{ steps.select.outputs.frontend }}
+      browser: ${{ steps.select.outputs.browser }}
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify test selection
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py' -v
+      - name: Select changed and necessary tests
+        id: select
+        env:
+          CI_BASE: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+          CI_FULL_SUITE: ${{ inputs.full_suite || false }}
+        run: |
+          args=(--base "$CI_BASE")
+          if [ "$CI_FULL_SUITE" = true ]; then args+=(--full); fi
+          python .github/scripts/select_tests.py "${args[@]}"
+          echo '### Selected test scope' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat ci-test-plan.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-plan
+          path: ci-test-plan.json
   worker:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        python: ['3.11', '3.12', '3.13']
-    runs-on: ${{ matrix.os }}
+    needs: plan
+    if: needs.plan.outputs.python == 'true'
+    runs-on: ubuntu-latest
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-test-plan
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: '3.13'
           cache: pip
           cache-dependency-path: |
             requirements.txt
-            setup.py
             pyproject.toml
       - name: Install execution dependencies
         run: |
@@ -48,21 +84,66 @@ jobs:
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           python -m pip install '.[sandbox,vector,video,web-js]' -r requirements.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise integrated unit flows once
+      - name: Exercise selected integrated flows once
         run: |
           [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
           [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-          $testArgs = @('tests/unit', '-q', '--durations=20', '-o', 'faulthandler_timeout=90')
+          $plan = Get-Content -Raw -Encoding utf8 ci-test-plan.json | ConvertFrom-Json
+          $testArgs = @($plan.python_tests) + @('-q', '-n', '2', '--dist', 'loadfile', '--durations=20', '-o', 'faulthandler_timeout=90')
+          python -m pytest @testArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  compatibility:
+    needs: plan
+    if: needs.plan.outputs.compatibility == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-test-plan
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Install execution dependencies
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          python -m pip install '.[sandbox,vector,video,web-js]' -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise platform and interpreter compatibility
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $plan = Get-Content -Raw -Encoding utf8 ci-test-plan.json | ConvertFrom-Json
+          $testArgs = @($plan.compatibility_tests) + @('-q', '--durations=20', '-o', 'faulthandler_timeout=90')
           if ('${{ runner.os }}' -eq 'Windows') {
             $testArgs += @('-n', '2', '--dist', 'loadfile')
           }
           python -m pytest @testArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   frontend:
+    needs: plan
+    if: needs.plan.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-test-plan
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -75,14 +156,31 @@ jobs:
       - run: npm run build
         working-directory: satrap-ui
       - run: npx playwright install --with-deps chromium
+        if: needs.plan.outputs.browser == 'true'
         working-directory: satrap-ui
-      - name: Exercise authentication recovery and paged chat flows
+      - uses: actions/setup-python@v5
+        if: needs.plan.outputs.browser == 'true'
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Install backend for browser flows
+        if: needs.plan.outputs.browser == 'true'
+        run: python -m pip install '.[vector]' -r requirements.txt
+      - name: Exercise affected browser flows
+        if: needs.plan.outputs.browser == 'true'
         working-directory: satrap-ui
         run: |
-          node e2e/run.mjs --case backend-password-recovery
-          node e2e/run.mjs --case runtime-cleanup
-          node e2e/run.mjs --case attached-service-password-recovery
-          node e2e/run.mjs --case chat-fork-projects
-          node e2e/run.mjs --case chat-sidebar-state
-          node e2e/run.mjs --case chat-history-races
-          node e2e/run.mjs --case runtime-application-progress
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import { spawnSync } from 'node:child_process';
+          const plan = JSON.parse(fs.readFileSync('../ci-test-plan.json', 'utf8'));
+          for (const name of plan.e2e) {
+            const script = plan.e2e_scripts[name];
+            const result = spawnSync(process.execPath, [script, '--case', name], { stdio: 'inherit' });
+            if (result.error) throw result.error;
+            if (result.status !== 0) process.exit(result.status ?? 1);
+          }
+          JS

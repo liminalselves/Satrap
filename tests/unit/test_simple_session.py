@@ -2070,7 +2070,7 @@ def test_handler_context_fields_passthrough(tmp_path: Path):
     assert ctx.config.original_input == "你好"
     assert ctx.text == "你好"
     assert ctx.config.img_urls == ["data:image/png;base64,aW1hZ2U="]
-    assert ctx.config.thinking == "off"
+    assert ctx.config.thinking == "default"
     assert ctx.config.max_iterations == 5
     assert ctx.config.call_id
     assert ctx.error is None

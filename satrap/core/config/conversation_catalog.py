@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 from collections.abc import Callable
 from itertools import islice
 import traceback
@@ -15,8 +15,31 @@ import json
 
 from satrap.core.storage.layout import StorageLayout, CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID
 from satrap.core.platform import registry
-
 from satrap.core.log import logger
+
+
+class ConversationAggregates(TypedDict):
+    """同一已筛选目录内的去重资源计数"""
+
+    platforms: int
+    conversations: int
+    contexts: int
+    display_turns: int
+
+
+def conversation_aggregates(items: list[dict[str, Any]]) -> ConversationAggregates:
+    """
+    从已有分类元数据计算摘要, 不再次读取任何消息正文
+
+    参数:
+    - items: 应用全部目录筛选之后的记录
+
+    返回:
+    - 平台, 对话, 实际上下文和展示轮次的去重计数
+    """
+    roots = {(item["platform_id"], item["conversation_id"]): int(item["history_count"]) for item in items}
+    contexts = {(item["platform_id"], context["id"]) for item in items for context in item.get("contexts", [])}
+    return ConversationAggregates(platforms=len({key[0] for key in roots}), conversations=len(roots), contexts=len(contexts), display_turns=sum(roots.values()))
 
 MAX_CONVERSATION_ID_LENGTH = 4096   # 约束外部标识驱动的前缀枚举工作量
 
@@ -94,7 +117,7 @@ def _rows(connection: sqlite3.Connection, tables: set[str], table: str, where: s
     return [dict(row) for row in connection.execute(f"SELECT * FROM {table}" + (" WHERE " + where if where else ""), params)] if table in tables else []
 
 
-def _route_metadata(row: dict[str, Any]) -> dict[str, str]:
+def route_metadata(row: dict[str, Any]) -> dict[str, str]:
     """
     解码完整路由键, 旧版用户范围不推断成私聊或某个群
 
@@ -125,6 +148,9 @@ def _route_metadata(row: dict[str, Any]) -> dict[str, str]:
         logger.warning(f"[对话目录] 未知路由格式: {row.get('session_id')}")
         result["scope"] = "unknown"
     return result
+
+
+_route_metadata = route_metadata   # 保留旧目录解码入口
 
 
 def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any] | None = None, requested: str = '') -> list[dict[str, Any]]:

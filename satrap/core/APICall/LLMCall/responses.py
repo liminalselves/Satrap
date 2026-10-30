@@ -13,6 +13,7 @@ import re
 from satrap.core.utils import parse_tool_arguments
 from satrap.core.type import (
     LLMCallResponse,
+    LLMErrorInfo,
     TokenUsage,
     safe_getattr,
     safe_getattr_str,
@@ -169,7 +170,7 @@ def parse_chat_response(
 
     # Step.4 异常处理
     except Exception as e:
-        logger.error(f"[响应处理] 解析 LLM 响应时发生错误: {e}")
+        logger.error(f"[响应处理] 解析 LLM 响应时发生错误: {type(e).__name__}")
         if suppress_error:
             return ""
         raise e
@@ -194,7 +195,8 @@ def parse_call_response(
         msg = "LLM 接口响应为空"
         if suppress_error:
             logger.warning(f"[响应处理] {msg}")
-            return LLMCallResponse(type="message", content="")
+            info = LLMErrorInfo("invalid_response", "模型服务未返回可解析的响应")
+            return LLMCallResponse(type="error", content=info.text, error_info=info)
         raise ValueError(msg)
 
     try:
@@ -206,7 +208,8 @@ def parse_call_response(
 
         if not choices:
             logger.warning("LLM 接口响应中 'choices' 列表为空")
-            return LLMCallResponse(type="message", content="")
+            info = LLMErrorInfo("invalid_response", "模型服务未返回可解析的响应")
+            return LLMCallResponse(type="error", content=info.text, error_info=info)
 
         usage = _extract_token_usage(api_response)
 
@@ -298,9 +301,10 @@ def parse_call_response(
 
     # Step.6 异常处理
     except Exception as e:
-        logger.error(f"[响应处理] 解析 LLM 响应时发生错误: {e}")
+        logger.error(f"[响应处理] 解析 LLM 响应时发生错误: {type(e).__name__}")
         if suppress_error:
-            return LLMCallResponse(type="message", content="")
+            info = LLMErrorInfo("invalid_response", "模型服务未返回可解析的响应")
+            return LLMCallResponse(type="error", content=info.text, error_info=info)
         raise e
 
 
@@ -342,7 +346,10 @@ def _extract_token_usage(response: Any) -> Optional[TokenUsage]:
     if usage is None and isinstance(response, dict):
         usage = cast(dict[str, Any], response).get("usage")
     if usage is None:
-        return None
+        nested = safe_getattr(response, "response")
+        if nested is None and isinstance(response, dict):
+            nested = response.get("response")
+        return _extract_token_usage(nested) if nested is not None else None
 
     input_tokens = _usage_int(usage, ("prompt_tokens", "input_tokens"))
     output_tokens = _usage_int(usage, ("completion_tokens", "output_tokens"))

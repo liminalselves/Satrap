@@ -2,6 +2,109 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "satrap"
+dynamic = ["version"]
+description = "Python LLM tool library with context, tools, and workflow helpers"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-only" }
+authors = [{ name = "midway2333" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "openai>=2.41.1",
+    "colorlog>=6.7.0",
+    "splintr-rs>=0.1.0",
+    "numpy>=1.24.0",
+    "pillow>=10.0.0",
+    "pypdfium2>=4.30.0",
+    "msgpack>=1.0.5",
+    "aiosqlite>=0.19.0",
+    "beautifulsoup4>=4.12.0",
+    "curl_cffi>=0.16.3,<0.17",
+    "trafilatura>=2.3.1,<2.4",
+    "requests>=2.31.0",
+    "aiohttp>=3.9.0",
+    "websockets>=12.0",
+    "aiocqhttp>=1.4.4",
+    "aiofiles>=23.2.0",
+    "pyyaml>=6.0.0",
+    "packaging>=23.0",
+    "tzdata>=2025.2",
+    "mcp>=2.0.0,<3",
+    "RestrictedPython==8.5",
+]
+
+[project.optional-dependencies]
+web-js = ["mini-racer>=0.14.1,<0.15"]
+vector = ["faiss-cpu>=1.7.4"]
+video = ["av>=15,<19"]
+audio = ["av>=15,<19"]
+documents = [
+    "openpyxl>=3.1.0",
+    "python-docx>=1.1.0",
+    "pdfplumber>=0.11.0",
+]
+sandbox = [
+    "numpy==2.1.3",
+    "pandas==2.2.3",
+    "matplotlib==3.10.0",
+    "python-docx==1.2.0",
+    "python-pptx==1.0.2",
+    "openpyxl==3.1.5",
+    "pdfplumber==0.11.10",
+    "pypdf==6.20.1",
+    "reportlab==5.0.1",
+    "XlsxWriter==3.2.9",
+    "defusedxml==0.7.1",
+]
+all = [
+    "XlsxWriter==3.2.9",
+    "av>=15,<19",
+    "defusedxml==0.7.1",
+    "faiss-cpu>=1.7.4",
+    "matplotlib==3.10.0",
+    "mini-racer>=0.14.1,<0.15",
+    "numpy==2.1.3",
+    "openpyxl==3.1.5",
+    "openpyxl>=3.1.0",
+    "pandas==2.2.3",
+    "pdfplumber==0.11.10",
+    "pdfplumber>=0.11.0",
+    "pypdf==6.20.1",
+    "python-docx==1.2.0",
+    "python-docx>=1.1.0",
+    "python-pptx==1.0.2",
+    "reportlab==5.0.1",
+]
+
+[project.scripts]
+satrap = "satrap.main:main"
+
+[project.urls]
+Homepage = "https://github.com/midway2333/Satrap"
+Source = "https://github.com/midway2333/Satrap"
+Issues = "https://github.com/midway2333/Satrap/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["satrap", "satrap.*"]
+namespaces = false
+
+[tool.setuptools.dynamic]
+version = { attr = "satrap._version.__version__" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

@@ -57,6 +57,15 @@ class SessionClassConfigService:
         """
         return self.manager.list_configs()
 
+    def list_with_metadata(self) -> dict[str, dict[str, Any]]:
+        """
+        为只读目录附带宿主更新时间, 不改变配置及校验正文
+
+        返回:
+        - 各命名配置与可空的真实保存时间
+        """
+        return {name: {**entry, "updated_at": self.manager.config_updated_at(name)} for name, entry in self.manager.list_configs().items()}
+
     def get(self, name: str) -> dict[str, Any] | None:
         """
         获取单个会话类配置

@@ -474,36 +474,19 @@ class _FakeAsyncCompletions:
         return {"choices": [{"message": {"content": "ok"}}]}
 
 def _make_llm(fake_completions: _FakeCompletions) -> LLM:
-    llm = LLM.__new__(LLM)
-    # 测试替身非真实 OpenAI 客户端, 边界断言集中在工厂内
-    llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=fake_completions)))
-    llm.model = "mock"
-    llm.temperature = 0.7
-    llm.top_p = 0.95
-    llm.max_tokens = 1000
-    llm.suppress_error = True
-    llm.return_false = False
-    llm.thinking_field_name = "reasoning_content"
-    llm.thinking_fields = None
-    llm.omit_none_thinking_fields = False
-    llm.supports_visual_input = True
-    return llm
+    from unittest.mock import patch
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=fake_completions))
+    with patch.object(LLM, "_create_client", return_value=client):
+        return LLM(api_key="test", model="mock", base_url="https://fixture.invalid/v1", supports_visual_input=True)
+
 
 def _make_async_llm(fake_completions: _FakeAsyncCompletions) -> AsyncLLM:
-    """异步 LLM 替身工厂: 边界断言集中在此"""
-    llm = AsyncLLM.__new__(AsyncLLM)
-    llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=fake_completions)))
-    llm.model = "mock"
-    llm.temperature = 0.7
-    llm.top_p = 0.95
-    llm.max_tokens = 1000
-    llm.suppress_error = True
-    llm.return_false = False
-    llm.thinking_field_name = "reasoning_content"
-    llm.thinking_fields = None
-    llm.omit_none_thinking_fields = False
-    llm.supports_visual_input = True
-    return llm
+    from unittest.mock import patch
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=fake_completions))
+    with patch.object(AsyncLLM, "_create_client", return_value=client):
+        return AsyncLLM(api_key="test", model="mock", base_url="https://fixture.invalid/v1", supports_visual_input=True)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])

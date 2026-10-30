@@ -23,8 +23,11 @@ const GroupOverview = lazy(() => import('@/pages/Groups/GroupOverview').then((mo
 const GroupPolicy = lazy(() => import('@/pages/Groups/GroupPolicy').then((module) => ({ default: module.GroupPolicy })));
 const GroupSession = lazy(() => import('@/pages/Groups/GroupSession').then((module) => ({ default: module.GroupSession })));
 const Logs = lazy(() => import('@/pages/Logs').then((module) => ({ default: module.Logs })));
+const Usage = lazy(() => import('@/pages/Usage').then((module) => ({ default: module.Usage })));
+const DebugLogs = lazy(() => import('@/pages/Logs/Debug').then((module) => ({ default: module.DebugLogs })));
 const Checkpoints = lazy(() => import('@/pages/Checkpoints').then((module) => ({ default: module.Checkpoints })));
 const Conversations = lazy(() => import('@/pages/Conversations').then((module) => ({ default: module.Conversations })));
+const Docs = lazy(() => import('@/pages/Docs').then((module) => ({ default: module.Docs })));
 const Settings = lazy(() => import('@/pages/Settings').then((module) => ({ default: module.Settings })));
 const Chat = lazy(() => import('@/pages/Chat').then((module) => ({ default: module.Chat })));
 
@@ -41,6 +44,14 @@ function LegacyUsersRoute() {
   if (query.has('platform_id')) { query.set('platform', query.get('platform_id')!); query.delete('platform_id'); }
   if (query.has('user_id')) { query.set('user', query.get('user_id')!); query.delete('user_id'); }
   return <Navigate replace to={`/conversations?${query}${location.hash}`} />;
+}
+
+/** /settings?doc=<页面>#<标题> 转到文档页, 供其他页面以设置入口的形式深链 */
+function SettingsRoute() {
+  const location = useLocation();
+  const doc = new URLSearchParams(location.search).get('doc');
+  if (doc !== null) return <Navigate replace to={`/docs/${doc.replace(/^\/+/, '')}${location.hash}`} />;
+  return lazyRoute(<Settings />);
 }
 
 function lazyRoute(element: ReactElement) {
@@ -84,9 +95,12 @@ export const router = createBrowserRouter([
         { path: ':section', element: lazyRoute(<GroupInvalidSection />) },
       ] },
       { path: 'logs', element: lazyRoute(<Logs />) },
+      { path: 'logs/debug', element: lazyRoute(<DebugLogs />) },
+      { path: 'usage', element: lazyRoute(<Usage />) },
       { path: 'checkpoints', element: <LegacyAdminRoute destination="/conversations/versions" /> },
       { path: 'users', element: <LegacyUsersRoute /> },
-      { path: 'settings', element: lazyRoute(<Settings />) },
+      { path: 'settings', element: <SettingsRoute /> },
+      { path: 'docs/*', element: lazyRoute(<Docs />) },
     ],
   },
   // 未匹配路径重定向到首页

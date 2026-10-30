@@ -45,6 +45,11 @@ class PluginCatalogEntry:
     permissions: PluginPermissions = field(default_factory=lambda: EMPTY_PERMISSIONS)
     config_version: int = 0
     interop: dict[str, object] = field(default_factory=dict)
+    display_name: str = ""
+    icon: str = ""
+    license: str = ""
+    homepage: str = ""
+    repository: str = ""
 
     def check_environment(self, environment: PluginEnvironment):
         """根据指定环境计算适用性"""
@@ -53,6 +58,7 @@ class PluginCatalogEntry:
     def to_payload(self) -> dict[str, Any]:
         """转换为前端可使用的插件元数据"""
         return {
+            **{key: getattr(self, key) for key in ("display_name", "icon", "license", "homepage", "repository") if getattr(self, key)},
             **self.permissions.to_payload(),
             "name": self.name,
             "interop": deepcopy(self.interop),
@@ -224,7 +230,14 @@ class PluginCatalog:
         config_version = meta.get("config_version", 0)
         if type(config_version) is not int or config_version < 0:
             raise ValueError("插件配置版本必须为非负整数")
+        presentation: dict[str, str] = {}
+        for key in ("display_name", "icon", "license", "homepage", "repository"):
+            value = meta.get(key, "")
+            if not isinstance(value, str) or len(value) > 2048:
+                raise ValueError(f"插件展示字段 {key} 必须为最多 2048 字符的字符串")
+            presentation[key] = value
         return PluginCatalogEntry(
+            **presentation,
             name=name,
             config_version=config_version,
             path=plugin_dir,

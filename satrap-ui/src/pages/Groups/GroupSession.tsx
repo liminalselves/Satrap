@@ -1,12 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { AlertTriangle, Bot, CheckCircle2, Clock3, Layers, Route, Save, UserCheck } from 'lucide-react';
 import { groupApi, type GroupPolicyValue } from '@/api/groups';
-import { Card } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Modal } from '@/components/ui/Modal';
+import { Card } from '@/components/kit/Card';
+import { Badge } from '@/components/kit/Badge';
+import { Button } from '@/components/kit/Button';
+import { Modal } from '@/components/kit/Modal';
+import { Textarea } from '@/components/kit/Field';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { useGroupContext } from './GroupLayout';
+import { FieldBlock, Note, SectionHead } from './shared';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 type Provider = 'session_class' | 'edictum';
 const sourceLabels: Record<string, string> = { platform: '平台默认', conversation_kind: '群聊类型设置', group: '本群覆盖', named_config: 'Agent 命名配置' };
@@ -153,156 +158,219 @@ export function GroupSession() {
     finally { setSaving(false); }
   };
 
-  return <div className="space-y-4">
-    {error && <Card role="alert" className="border border-error text-error">{error}</Card>}
-    <Card className="space-y-4">
-      <h2 className="text-lg font-semibold">会话绑定</h2>
-      <p className="text-sm text-text-secondary">平台默认 → 群聊类型设置 → 本群覆盖</p>
-      {config.binding_chain?.map((layer) => <p key={layer.source} className="text-sm text-text-secondary">
-        {sourceLabels[layer.source] || layer.source}: {layer.mode === 'inherit' ? '继承 · ' : ''}{providerLabel(layer.provider)} / {layer.config_name || '未指定'}
-      </p>)}
-      <p className="text-sm text-text-secondary">当前: {providerLabel(binding?.provider || '') || '未知'} / {binding?.config_name || '未指定'} · 来源: {sourceLabels[config.sources.session.binding] || config.sources.session.binding || '平台默认'}</p>
-      <label className="block text-sm">绑定来源
-        <select className="glass-input mt-1 w-full max-w-md" value={draft.bindingMode}
-          onChange={(event) => setDraft((old) => ({ ...old, bindingMode: event.target.value as Draft['bindingMode'] }))}
-          disabled={historical || saving}>
-          <option value="inherit">继承群聊 Agent（未指定时使用平台默认）</option><option value="value">本群指定</option>
-        </select>
-      </label>
-      {draft.bindingMode === 'value' && <div className="grid gap-3 md:grid-cols-2">
-        <label className="block text-sm">流程
-          <select className="glass-input mt-1 w-full" value={draft.provider}
-            onChange={(event) => setDraft((old) => ({ ...old, provider: event.target.value as Provider, configName: '' }))}
-            disabled={historical || saving}>
-            <option value="session_class">SessionClass</option><option value="edictum">Edictum</option>
-          </select>
-        </label>
-        <label className="block text-sm">命名配置
-          <select className="glass-input mt-1 w-full" value={draft.configName}
-            onChange={(event) => setDraft((old) => ({ ...old, configName: event.target.value }))}
-            disabled={historical || saving || loadingOptions}>
-            <option value="">{loadingOptions ? '加载中' : '请选择命名配置'}</option>
-            {options.filter((item) => item.provider === draft.provider).map((item) => (
-              <option key={`${item.provider}:${item.config_name}`} value={item.config_name} disabled={!item.enabled || !item.available}>
-                {item.config_name}{item.enabled && item.available ? '' : ' · 不可用'}
-              </option>
-            ))}
-            {draft.configName && !selected && <option value={draft.configName} disabled>{draft.configName} · 已删除</option>}
-          </select>
-        </label>
-        {selected && (!selected.available || !selected.enabled) && <p className="text-sm text-warning">所选命名配置已删除或停用, 请重新选择</p>}
-      </div>}
-      <p className="text-sm text-text-secondary">命名配置与模型资源在原管理页维护; 修改原配置可能影响其他群。
-        <Link className="ml-2 text-accent hover:underline" to="/agents">打开或复制命名配置</Link>
-        <Link className="ml-2 text-accent hover:underline" to="/models">创建模型配置</Link>
-      </p>
-      <div className="space-y-1 text-sm text-text-secondary">
-        <p>当前路由可归属实例: {instanceSummary?.current_route_count ?? '待读取'}; 含旧路由共 {instanceSummary?.known_scoped_count ?? '待读取'}。旧版按用户共享的历史无法可靠按群统计</p>
-        <p>实例显式覆盖: 模型 {instanceSummary?.override_counts.model ?? '—'}, 提示词 {instanceSummary?.override_counts.prompt ?? '—'}, 插件 {instanceSummary?.override_counts.plugins ?? '—'}</p>
-        <Link className="text-accent hover:underline" to={`/conversations/instances?${new URLSearchParams({ groupAdapter: adapterId, groupAccount: account, groupId })}`}>查看本群可归属实例</Link>
-        {instanceSummary?.session_ids.length ? <p className="break-all">本群可归属实例 ID: {instanceSummary.session_ids.join(', ')}</p> : null}
+  return <div className="space-y-4 animate-fade">
+    {error && <Note tone="red" title="无法保存">{error}</Note>}
+    {config.apply_status === 'failed' && (
+      <Note tone="red" title="配置应用失败" icon={<AlertTriangle className="h-4 w-4" />}
+        action={<Button size="sm" variant="danger" loading={applying} onClick={retryApply} disabled={!isRunning || historical || dirty}>重试应用</Button>}>
+        {config.apply_error || '未提供失败原因'}
+      </Note>
+    )}
+
+    <Card padding="lg">
+      <SectionHead tint="pink" title="会话绑定" icon={<Route className="h-4 w-4" />} description="平台默认 → 群聊类型设置 → 本群覆盖" />
+      <div className="mb-3 space-y-1.5 rounded-xl border border-line bg-glass p-3">
+        {config.binding_chain?.map((layer) => (
+          <div key={layer.source} className="flex items-center gap-2 text-[12px]">
+            <span className={`h-1.5 w-1.5 rounded-full ${layer.source === 'group' ? 'bg-pink' : layer.source === 'conversation_kind' ? 'bg-purple' : 'bg-fg-4'}`} />
+            <span className="w-24 flex-none text-fg-3">{sourceLabels[layer.source] || layer.source}</span>
+            <span className="font-mono text-[11.5px] text-fg-2">{layer.mode === 'inherit' ? '继承 · ' : ''}{providerLabel(layer.provider)} / {layer.config_name || '未指定'}</span>
+          </div>
+        ))}
+        <p className="border-t border-line pt-2 text-[12px] text-fg-3">当前: <span className="font-mono text-fg-2">{providerLabel(binding?.provider || '') || '未知'} / {binding?.config_name || '未指定'}</span> · 来源 <span className="text-fg-2">{sourceLabels[config.sources.session.binding] || config.sources.session.binding || '平台默认'}</span></p>
       </div>
-      {unsupportedOverrides.length > 0 && <div role="alert" className="space-y-2 text-sm text-warning">
-        <p>目标配置不支持已有的 {unsupportedOverrides.join('、')} 覆盖。请明确恢复继承后再保存, 现有值不会自动丢弃</p>
-        <div className="flex flex-wrap gap-2">
-          {unsupportedOverrides.includes('模型') && <Button size="sm" variant="subtle" onClick={() => setDraft((old) => ({ ...old, modelMode: 'inherit' }))}>模型恢复继承</Button>}
-          {unsupportedOverrides.includes('提示词') && <Button size="sm" variant="subtle" onClick={() => setDraft((old) => ({ ...old, promptMode: 'inherit' }))}>提示词恢复继承</Button>}
-          {unsupportedOverrides.includes('插件') && <Button size="sm" variant="subtle" onClick={() => setDraft((old) => ({ ...old, plugins: [] }))}>插件恢复继承</Button>}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <FieldBlock label="绑定来源">
+          <KitSelect className="field w-full" value={draft.bindingMode}
+            onChange={(value) => setDraft((old) => ({ ...old, bindingMode: value as Draft['bindingMode'] }))}
+            disabled={historical || saving}>
+            <option value="inherit">继承群聊 Agent（未指定时使用平台默认）</option><option value="value">本群指定</option>
+          </KitSelect>
+        </FieldBlock>
+        {draft.bindingMode === 'value' && <>
+          <FieldBlock label="流程">
+            <KitSelect className="field w-full" value={draft.provider}
+              onChange={(value) => setDraft((old) => ({ ...old, provider: value as Provider, configName: '' }))}
+              disabled={historical || saving}>
+              <option value="session_class">SessionClass</option><option value="edictum">Edictum</option>
+            </KitSelect>
+          </FieldBlock>
+          <FieldBlock label="命名配置" className="sm:col-span-2"
+            hint={selected ? selected.description : draft.configName ? '所选配置已删除, 请重新选择' : '请选择一个可用的命名配置'}>
+            <KitSelect className="field w-full" value={draft.configName}
+              onChange={(value) => setDraft((old) => ({ ...old, configName: value }))}
+              disabled={historical || saving || loadingOptions}>
+              <option value="">{loadingOptions ? '加载中' : '请选择命名配置'}</option>
+              {options.filter((item) => item.provider === draft.provider).map((item) => (
+                <option key={`${item.provider}:${item.config_name}`} value={item.config_name} disabled={!item.enabled || !item.available}>
+                  {item.config_name}{item.enabled && item.available ? '' : ' · 不可用'}
+                </option>
+              ))}
+              {draft.configName && !selected && <option value={draft.configName} disabled>{draft.configName} · 已删除</option>}
+            </KitSelect>
+          </FieldBlock>
+        </>}
+      </div>
+      {draft.bindingMode === 'value' && selected && (!selected.available || !selected.enabled) && <Note tone="orange" className="mt-2">所选命名配置已删除或停用, 请重新选择。</Note>}
+      <p className="mt-3 text-[11.5px] text-fg-3">
+        命名配置与模型资源在原管理页维护; 修改原配置可能影响其他群。
+        <Link className="ml-1 text-pink hover:underline" to="/agents">打开或复制命名配置</Link>
+        <Link className="ml-1 text-pink hover:underline" to="/models">创建模型配置</Link>
+      </p>
+      <div className="mt-3 grid gap-2 rounded-xl border border-line bg-glass p-3 text-[11.5px] text-fg-3 sm:grid-cols-3">
+        <div>当前路由可归属实例: <span className="num font-medium text-fg-2">{instanceSummary?.current_route_count ?? '待读取'}</span></div>
+        <div>含旧路由共 <span className="num font-medium text-fg-2">{instanceSummary?.known_scoped_count ?? '待读取'}</span></div>
+        <div>实例显式覆盖: 模型 {instanceSummary?.override_counts.model ?? '—'}, 提示词 {instanceSummary?.override_counts.prompt ?? '—'}, 插件 {instanceSummary?.override_counts.plugins ?? '—'}</div>
+        <div className="break-all sm:col-span-3">
+          {instanceSummary?.session_ids.length
+            ? <>本群可归属实例 ID: {instanceSummary.session_ids.map((id) => <span key={id} className="num mr-2 font-mono text-fg-2">{id}</span>)}</>
+            : <>本群可归属实例 ID: 暂无</>}
+          <Link className="ml-1 text-pink hover:underline" to={`/conversations/instances?${new URLSearchParams({ groupAdapter: adapterId, groupAccount: account, groupId })}`}>查看本群可归属实例</Link>
         </div>
-      </div>}
+      </div>
+      <p className="mt-2 text-[11px] text-fg-4">旧版按用户共享的历史无法可靠按群统计。</p>
     </Card>
-    <Card className="space-y-4">
-      <h2 className="text-lg font-semibold">模型与提示词</h2>
-      <p className="text-sm text-text-secondary">命名配置 → 本群覆盖 → 会话实例覆盖。当前模型: {String(config.effective.session.model || '未配置')} ({config.sources.session.model || '未知'})</p>
-      {sessionFields.includes('model') ? <label className="block text-sm">模型来源
-        <select className="glass-input mt-1 block w-full max-w-md" value={draft.modelMode} disabled={historical || saving}
-          onChange={(event) => setDraft((old) => ({ ...old, modelMode: event.target.value as Draft['modelMode'] }))}>
+
+    <Card padding="lg">
+      <SectionHead tint="pink" title="模型与提示词" icon={<Bot className="h-4 w-4" />}
+        description={`命名配置 → 本群覆盖 → 会话实例覆盖。当前模型 ${String(config.effective.session.model || '未配置')} (${config.sources.session.model || '未知'})`} />
+      <label className="block text-[13px] font-medium text-fg-2">模型来源
+        <KitSelect className="field mt-1.5 block w-full max-w-md" value={draft.modelMode} disabled={historical || saving}
+          onChange={(value) => setDraft((old) => ({ ...old, modelMode: value as Draft['modelMode'] }))}>
           <option value="inherit">继承命名配置</option><option value="value">本群指定</option>
-        </select>
-        {draft.modelMode === 'value' && <select className="glass-input mt-2 block w-full max-w-md" value={draft.model} disabled={historical || saving}
-          onChange={(event) => setDraft((old) => ({ ...old, model: event.target.value }))}>
+        </KitSelect>
+        {draft.modelMode === 'value' && sessionFields.includes('model') && <KitSelect className="field mt-2 block w-full max-w-md" aria-label="模型配置" value={draft.model} disabled={historical || saving}
+          onChange={(value) => setDraft((old) => ({ ...old, model: value }))}>
           <option value="">选择模型配置</option>{models.map((name) => <option key={name} value={name}>{name}</option>)}
-        </select>}
-      </label> : <p className="text-sm text-warning">当前流程不支持群级模型覆盖</p>}
-      {sessionFields.includes('prompt') ? <label className="block text-sm">系统提示词 · 当前来源: {config.sources.session.prompt || '命名配置'}
-        <select className="glass-input mt-1 block w-full max-w-md" value={draft.promptMode} disabled={historical || saving}
-          onChange={(event) => setDraft((old) => ({ ...old, promptMode: event.target.value as Draft['promptMode'] }))}>
-          <option value="inherit">继承命名配置</option><option value="value">本群替换</option>
-        </select>
-        {draft.promptMode === 'value' && <><textarea className="glass-input mt-2 min-h-28 w-full" value={draft.prompt} maxLength={20000}
-          onChange={(event) => setDraft((old) => ({ ...old, prompt: event.target.value }))} disabled={historical || saving} />
-          <span className="text-xs text-text-secondary">{draft.prompt ? `${draft.prompt.length} / 20000 字符` : '显式清空'}</span></>}
-      </label> : <p className="text-sm text-warning">当前流程不支持群级提示词覆盖</p>}
-    </Card>
-    <Card className="space-y-4">
-      <h2 className="text-lg font-semibold">插件</h2>
-      <p className="text-sm text-text-secondary">仅展示插件 schema 允许会话覆盖的字段。未选择时继承命名配置</p>
-      {!sessionFields.includes('plugins') && <p className="text-sm text-warning">当前流程不支持群级插件覆盖</p>}
-      {sessionFields.includes('plugins') && plugins.map((plugin) => {
-        const entry = pluginDraft(plugin.name);
-        return <div key={plugin.name} className="rounded-lg border border-glass-border p-3 space-y-2 text-sm">
-          <label className="block font-medium">{plugin.name} <span className="text-text-secondary">{plugin.description}</span>
-            <select className="glass-input mt-1 block w-full max-w-md" value={entry?.mode || 'inherit'} disabled={historical || saving}
-              onChange={(event) => changePlugin(plugin.name, event.target.value as 'inherit' | 'enabled' | 'disabled')}>
-              <option value="inherit">继承</option><option value="enabled">启用</option><option value="disabled">停用</option>
-            </select>
-          </label>
-          {entry?.mode === 'enabled' && Object.entries(plugin.config_schema).filter(([, field]) => field.session_overridable).map(([key, field]) => {
-            const value = entry.config[key];
-            const update = (raw: string) => changePluginField(plugin.name, key,
-              raw === '' && field.type !== 'string' && field.type !== 'textarea' ? undefined
-                : field.type === 'number' ? Number(raw) : field.type === 'bool' ? raw === 'true'
-                : field.type === 'knowledge_bases' ? raw.split(',').map((part) => part.trim()).filter(Boolean) : raw);
-            return <label key={key} className="block">{key} <span className="text-text-secondary">{field.description}</span>
-              {field.type === 'bool' || field.type === 'select' ? <select className="glass-input mt-1 w-full"
-                value={value === undefined ? '' : String(value)} disabled={historical || saving}
-                onChange={(event) => update(event.target.value)}>
-                <option value="">继承插件参数</option>
-                {(field.type === 'bool' ? ['true', 'false'] : (field.options || []).map(String)).map((option) =>
-                  <option key={option} value={option}>{option}</option>)}
-              </select> : <input className="glass-input mt-1 w-full" type={field.type === 'number' ? 'number' : 'text'}
-                min={field.minimum} max={field.maximum} step={field.integer ? 1 : 'any'}
-                value={Array.isArray(value) ? value.join(', ') : String(value ?? '')} disabled={historical || saving}
-                onChange={(event) => update(event.target.value)} />}
-              {value !== undefined && <Button size="sm" variant="subtle" onClick={() => changePluginField(plugin.name, key, undefined)}>恢复继承</Button>}
-            </label>;
-          })}
-        </div>;
-      })}
-    </Card>
-    <Card className="space-y-4">
-      <h2 className="text-lg font-semibold">会话范围</h2>
-      <p className="text-sm text-text-secondary">当前: {scopeLabel(effectiveScope)} · 来源: {sourceLabels[config.sources.session.scope] || config.sources.session.scope || '平台默认'}</p>
-      <label className="block text-sm">范围来源
-        <select className="glass-input mt-1 w-full max-w-md" value={draft.scopeMode}
-          onChange={(event) => setDraft((old) => ({ ...old, scopeMode: event.target.value as Draft['scopeMode'] }))}
-          disabled={historical || saving}>
-          <option value="inherit">继承平台</option><option value="value">本群指定</option>
-        </select>
+        </KitSelect>}
+        {draft.modelMode === 'value' && !sessionFields.includes('model') && <span className="mt-1 block text-[11.5px] font-normal text-orange">当前流程不支持群级模型覆盖</span>}
       </label>
-      {draft.scopeMode === 'value' && <label className="block text-sm">本群范围
-        <select className="glass-input mt-1 w-full max-w-md" value={draft.scope}
-          onChange={(event) => setDraft((old) => ({ ...old, scope: event.target.value as Draft['scope'] }))}
-          disabled={historical || saving}>
-          <option value="group_member">按成员隔离</option><option value="group_shared">全群共享</option>
-        </select>
-      </label>}
-      <p className="text-sm text-text-secondary">切换绑定或范围后, 后续请求创建新会话。原历史保留且不自动合并</p>
+      <label className="mt-4 block text-[13px] font-medium text-fg-2">系统提示词 · 当前来源: {config.sources.session.prompt || '命名配置'}
+        <KitSelect className="field mt-1.5 block w-full max-w-md" value={draft.promptMode} disabled={historical || saving}
+          onChange={(value) => setDraft((old) => ({ ...old, promptMode: value as Draft['promptMode'] }))}>
+          <option value="inherit">继承命名配置</option><option value="value">本群替换</option>
+        </KitSelect>
+        {draft.promptMode === 'value' && sessionFields.includes('prompt') && <>
+          <Textarea rows={4} className="mt-2 block w-full max-w-3xl !text-[12.5px]" value={draft.prompt} maxLength={20000}
+            onChange={(event) => setDraft((old) => ({ ...old, prompt: event.target.value }))} disabled={historical || saving} />
+          <span className="mt-1 block text-[11.5px] font-normal text-fg-3">{draft.prompt ? `${draft.prompt.length} / 20000 字符` : '显式清空'}</span>
+        </>}
+        {draft.promptMode === 'value' && !sessionFields.includes('prompt') && <span className="mt-1 block text-[11.5px] font-normal text-orange">当前流程不支持群级提示词覆盖</span>}
+      </label>
     </Card>
-    {!historical && <Card className="flex flex-wrap items-center justify-between gap-3">
-      <span className="text-sm text-text-secondary">{dirty ? '有未保存修改' : config.apply_status === 'applied' ? (config.active_instance_count === 0 ? '已保存, 后续实例首轮应用' : '配置已生效') : config.apply_status === 'failed' ? '配置应用失败' : '将在下次会话安全轮次应用'}</span>
+
+    {unsupportedOverrides.length > 0 && (
+      <Note tone="orange" title={`目标配置不支持已有的 ${unsupportedOverrides.join('、')} 覆盖`}
+        action={<div className="flex flex-wrap gap-1.5">
+          {unsupportedOverrides.includes('模型') && <Button size="sm" variant="ghost" onClick={() => setDraft((old) => ({ ...old, modelMode: 'inherit' }))}>模型恢复继承</Button>}
+          {unsupportedOverrides.includes('提示词') && <Button size="sm" variant="ghost" onClick={() => setDraft((old) => ({ ...old, promptMode: 'inherit' }))}>提示词恢复继承</Button>}
+          {unsupportedOverrides.includes('插件') && <Button size="sm" variant="ghost" onClick={() => setDraft((old) => ({ ...old, plugins: [] }))}>插件恢复继承</Button>}
+        </div>}>
+        请明确恢复继承后再保存, 现有值不会自动丢弃。
+      </Note>
+    )}
+
+    <Card padding="lg">
+      <SectionHead tint="pink" title="插件" icon={<Layers className="h-4 w-4" />} description="仅展示插件 schema 允许会话覆盖的字段; 未选择时继承命名配置" />
+      {!sessionFields.includes('plugins') && <Note tone="orange" className="mb-3">当前流程不支持群级插件覆盖。</Note>}
+      <div className="space-y-2">
+        {plugins.map((plugin) => {
+          const entry = pluginDraft(plugin.name);
+          return (
+            <div key={plugin.name} className="rounded-xl border border-line bg-glass p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[13px] font-medium text-fg">{plugin.name}</span>
+                <span className="text-[11.5px] text-fg-3">{plugin.description}</span>
+                {entry && <Badge tone={entry.mode === 'enabled' ? 'green' : 'neutral'}>{entry.mode === 'enabled' ? '本群启用' : '本群停用'}</Badge>}
+                <label className="ml-auto text-[12px] text-fg-3">
+                  <span className="sr-only">{plugin.name} 覆盖</span>
+                  <KitSelect className="field !h-8 !w-[110px] !text-[12px]" value={entry?.mode || 'inherit'} disabled={historical || saving || !sessionFields.includes('plugins')}
+                    aria-label={`${plugin.name} 覆盖`}
+                    onChange={(value) => changePlugin(plugin.name, value as 'inherit' | 'enabled' | 'disabled')}>
+                    <option value="inherit">继承</option><option value="enabled">启用</option><option value="disabled">停用</option>
+                  </KitSelect>
+                </label>
+              </div>
+              {entry?.mode === 'enabled' && Object.entries(plugin.config_schema).filter(([, field]) => field.session_overridable).map(([key, field]) => {
+                const value = entry.config[key];
+                const update = (raw: string) => changePluginField(plugin.name, key,
+                  raw === '' && field.type !== 'string' && field.type !== 'textarea' ? undefined
+                    : field.type === 'number' ? Number(raw) : field.type === 'bool' ? raw === 'true'
+                    : field.type === 'knowledge_bases' ? raw.split(',').map((part) => part.trim()).filter(Boolean) : raw);
+                return <div key={key} className="mt-2 grid gap-1.5 border-t border-line pt-2 sm:grid-cols-[150px_1fr] sm:items-center">
+                  <span className="text-[12px] text-fg-2">{key} <span className="text-[10.5px] text-fg-4">{field.description}</span></span>
+                  <div className="flex items-center gap-1.5">
+                    {field.type === 'bool' || field.type === 'select' ? (
+                      <KitSelect className="field !h-8 !text-[12px]" aria-label={key} value={value === undefined ? '' : String(value)} disabled={historical || saving}
+                        onChange={(value) => update(value)}>
+                        <option value="">继承插件参数</option>
+                        {(field.type === 'bool' ? ['true', 'false'] : (field.options || []).map(String)).map((option) =>
+                          <option key={option} value={option}>{option}</option>)}
+                      </KitSelect>
+                    ) : (
+                      <input className="field !h-8 !text-[12px]" aria-label={key} type={field.type === 'number' ? 'number' : 'text'}
+                        min={field.minimum} max={field.maximum} step={field.integer ? 1 : 'any'}
+                        value={Array.isArray(value) ? value.join(', ') : String(value ?? '')} disabled={historical || saving}
+                        onChange={(event) => update(event.target.value)} />
+                    )}
+                    {value !== undefined && <Button size="sm" variant="ghost" onClick={() => changePluginField(plugin.name, key, undefined)}>恢复继承</Button>}
+                  </div>
+                </div>;
+              })}
+            </div>
+          );
+        })}
+        {plugins.length === 0 && <p className="text-[12px] text-fg-3">当前平台未返回可覆盖的插件。</p>}
+      </div>
+    </Card>
+
+    <Card padding="lg">
+      <SectionHead tint="pink" title="会话范围" icon={<UserCheck className="h-4 w-4" />}
+        description={`当前: ${scopeLabel(effectiveScope)} · 来源: ${sourceLabels[config.sources.session.scope] || config.sources.session.scope || '平台默认'} · 切换后后续请求创建新会话`} />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <FieldBlock label="范围来源">
+          <KitSelect className="field w-full" value={draft.scopeMode}
+            onChange={(value) => setDraft((old) => ({ ...old, scopeMode: value as Draft['scopeMode'] }))}
+            disabled={historical || saving}>
+            <option value="inherit">继承平台</option><option value="value">本群指定</option>
+          </KitSelect>
+        </FieldBlock>
+        {draft.scopeMode === 'value' && (
+          <FieldBlock label="本群范围">
+            <KitSelect className="field w-full" value={draft.scope}
+              onChange={(value) => setDraft((old) => ({ ...old, scope: value as Draft['scope'] }))}
+              disabled={historical || saving}>
+              <option value="group_member">按成员隔离</option><option value="group_shared">全群共享</option>
+            </KitSelect>
+          </FieldBlock>
+        )}
+      </div>
+      <p className="mt-2 text-[11.5px] text-fg-3">切换绑定或范围后, 后续请求创建新会话。原历史保留且不自动合并。</p>
+    </Card>
+
+    {!historical && <Card padding="md" className="flex flex-wrap items-center justify-between gap-3">
+      <span className="flex items-center gap-2 text-[12px] text-fg-3">
+        {dirty ? <><Clock3 className="h-3.5 w-3.5 text-orange" />有未保存修改</>
+          : config.apply_status === 'applied' ? <><CheckCircle2 className="h-3.5 w-3.5 text-green" />{config.active_instance_count === 0 ? '已保存, 后续实例首轮应用' : '配置已生效'}</>
+            : <><AlertTriangle className="h-3.5 w-3.5 text-orange" />将在下次会话安全轮次应用</>}
+      </span>
       <div className="flex gap-2">
-        {config.apply_status === 'failed' && <Button variant="subtle" onClick={retryApply} disabled={!isRunning || applying || dirty}>重试应用</Button>}
-        <Button variant="primary" onClick={() => setShowImpact(true)} disabled={!canSave}>保存并应用</Button>
+        {config.apply_status === 'failed' && <Button variant="ghost" loading={applying} onClick={retryApply} disabled={!isRunning || dirty}>重试应用</Button>}
+        <Button variant="primary" icon={<Save className="h-4 w-4" />} disabled={!canSave} onClick={() => setShowImpact(true)}>保存并应用</Button>
       </div>
     </Card>}
-    <Modal open={showImpact} onClose={() => setShowImpact(false)} title={routeChanged ? '切换会话绑定或范围' : '应用会话覆盖'}>
-      <div className="space-y-4 text-sm text-text-secondary">
-        <p>旧绑定: {providerLabel(binding?.provider || '') || '平台'} / {binding?.config_name || '未指定'}, 范围: {scopeLabel(effectiveScope)}</p>
-        <p>新绑定: {draft.bindingMode === 'inherit' ? '继承群聊 Agent（未指定时使用平台默认）' : `${providerLabel(draft.provider)} / ${draft.configName}`}, 范围: {draft.scopeMode === 'inherit' ? '继承平台' : scopeLabel(draft.scope)}</p>
-          <p>{routeChanged ? '此后使用新会话; 原历史保留, 不自动迁移' : '现有会话在下一安全轮次应用覆盖; 历史保留'}</p>
-          {routeChanged && <p>当前路由可归属实例 {instanceSummary?.current_route_count ?? '未知'} 个; 旧路由和旧版按用户共享的历史会保留, 其中旧版历史可能未计入</p>}
-        <div className="flex justify-end gap-2"><Button variant="subtle" onClick={() => setShowImpact(false)}>取消</Button><Button variant="primary" onClick={submit} disabled={saving}>{routeChanged ? '确认保存并切换' : '确认保存覆盖'}</Button></div>
+
+    <Modal open={showImpact} onClose={() => setShowImpact(false)} title={routeChanged ? '切换会话绑定或范围' : '应用会话覆盖'}
+      icon={<Route className="h-[18px] w-[18px]" />} size="md" className="tint-pink"
+      footer={<>
+        <Button variant="ghost" onClick={() => setShowImpact(false)}>取消</Button>
+        <Button variant="primary" loading={saving} onClick={submit}>{routeChanged ? '确认保存并切换' : '确认保存覆盖'}</Button>
+      </>}>
+      <div className="space-y-2.5 text-[12.5px] text-fg-2">
+        <p>旧绑定: <span className="font-mono">{providerLabel(binding?.provider || '') || '平台'} / {binding?.config_name || '未指定'}</span>, 范围 {scopeLabel(effectiveScope)}</p>
+        <p>新绑定: <span className="font-mono">{draft.bindingMode === 'inherit' ? '继承群聊 Agent（未指定时使用平台默认）' : `${providerLabel(draft.provider)} / ${draft.configName}`}</span>, 范围 {draft.scopeMode === 'inherit' ? '继承平台' : scopeLabel(draft.scope)}</p>
+        <Note tone="orange">{routeChanged ? '此后使用新会话; 原历史保留, 不自动迁移' : '现有会话在下一安全轮次应用覆盖; 历史保留'}</Note>
+        {routeChanged && <p className="text-fg-3">当前路由可归属实例 {instanceSummary?.current_route_count ?? '未知'} 个; 旧路由和旧版按用户共享的历史会保留, 其中旧版历史可能未计入。</p>}
       </div>
     </Modal>
   </div>;

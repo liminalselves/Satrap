@@ -82,7 +82,7 @@ class Logger:
         self.file_logger.propagate = False
         # 两个输出分别由本实例管理, 不再经第三方根处理器重复写入控制台和实时流
         datefmt = "%Y-%m-%d %H:%M:%S"
-        plain_format = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(message)s"
+        plain_format = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: [pid=%(process)d] %(message)s"
         handler = logging.StreamHandler()
         handler.setLevel(std_level)
         handler.setFormatter(colorlog.ColoredFormatter(
@@ -137,8 +137,11 @@ class Logger:
         参数:
         - service: 可扩展的服务名称
         """
+        standard_log_stream.service = service
         if self.file_handler is not None:
             self.file_handler.set_service(service)
+        from satrap.core.log.debug.capture import maintain_existing_debug
+        maintain_existing_debug(service)
 
     def close(self) -> None:
         """幂等关闭当前实例的全部日志句柄"""

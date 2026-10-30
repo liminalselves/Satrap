@@ -1,5 +1,52 @@
 import { errorText } from '@/utils/errorText';
 import { controlClient } from './control';
+import { ensureApiSession, establishApiSession } from './auth';
+import { getApiBaseUrl, getChatApiUrl, getControlApiUrl } from '@/utils/constants';
+
+export type LogSource = 'control' | 'backend' | 'chat';
+export interface LogRecord {
+  sequence: number;
+  timestamp: number;
+  pid: number;
+  content: string;
+  level: string;
+  truncated: boolean;
+}
+export interface LogSnapshot {
+  service: string;
+  stream_id: string;
+  entries: LogRecord[];
+  next_cursor: number;
+  has_more: boolean;
+  reset: boolean;
+}
+export const logServices = () => [
+  { id: 'control' as const, name: 'Control', url: getControlApiUrl() },
+  { id: 'backend' as const, name: '平台 Backend', url: getApiBaseUrl() },
+  { id: 'chat' as const, name: 'Chat', url: getChatApiUrl() },
+];
+
+export async function readLogSource(baseUrl: string, query: { limit: number; after?: number; stream_id?: string }, signal: AbortSignal): Promise<LogSnapshot> {
+  await ensureApiSession(baseUrl);
+  signal.throwIfAborted();
+  const parameters = new URLSearchParams({ limit: String(query.limit),
+    ...(query.after !== undefined ? { after: String(query.after) } : {}),
+    ...(query.stream_id ? { stream_id: query.stream_id } : {}),
+  });
+  const fetchLogs = () => fetch(`${baseUrl}/api/logs?${parameters}`, { credentials: 'include', signal });
+  let response = await fetchLogs();
+  if (response.status === 401 || response.status === 403) {
+    await establishApiSession(baseUrl, { background: true });
+    signal.throwIfAborted();
+    response = await fetchLogs();
+  }
+  if (!response.ok) throw new Error(`日志读取失败: HTTP ${response.status}`);
+  const result = await response.json() as LogSnapshot;
+  if (!Array.isArray(result.entries) || typeof result.stream_id !== 'string' || !Number.isInteger(result.next_cursor)) {
+    throw new Error('日志响应格式无效');
+  }
+  return result;
+}
 
 export interface LogPolicy {
   enabled: boolean;

@@ -26,18 +26,15 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       }
     }, [forwardedRef, reflectRef]);
 
-    const sizeClasses = {
-      sm: 'px-3 py-1.5 text-sm',
-      md: 'px-4 py-2 text-sm',
-      lg: 'px-5 py-2.5 text-base',
-    };
+    const sizeClasses = { sm: 'ctl-sm', md: '', lg: 'ctl-lg' };
 
+    // 沿用新组件库 .ctl 外观, 保留旧调用方的 variant 名称
     const variantClasses = {
-      default: 'glass-button',
-      primary: 'glass-button glass-button-primary',
-      subtle: 'glass-button bg-transparent border-transparent hover:bg-glass',
-      ghost: 'glass-button bg-transparent border-transparent hover:bg-glass-hover',
-      danger: 'glass-button bg-glass-error border-glass-error-border text-error hover:bg-error hover:text-white',
+      default: 'ctl',
+      primary: 'ctl ctl-primary',
+      subtle: 'ctl ctl-ghost',
+      ghost: 'ctl ctl-ghost',
+      danger: 'ctl ctl-danger',
     };
 
     return (

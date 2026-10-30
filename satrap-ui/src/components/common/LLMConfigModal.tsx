@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { LLMConfig } from '@/api/types';
-import { DEFAULT_THINKING_LEVELS, THINKING_FIELD_OPTIONS, THINKING_LEVEL_OPTIONS } from '@/utils/constants';
+import { API_TYPE_OPTIONS, DEFAULT_THINKING_LEVELS, THINKING_FIELD_OPTIONS, THINKING_LEVEL_OPTIONS } from '@/utils/constants';
 import { FormModal, type FormField } from './FormModal';
 
 interface LLMConfigModalProps {
@@ -17,6 +17,7 @@ const FIELDS: FormField[] = [
   { key: 'model', label: '模型 ID', placeholder: '如: gpt-4o' },
   { key: 'base_url', label: 'Base URL', placeholder: '如: https://api.openai.com/v1' },
   { key: 'api_key', label: 'API Key', type: 'password' },
+  { key: 'api_type', label: '请求协议', type: 'select', options: [...API_TYPE_OPTIONS] },
   { key: 'temperature', label: '温度', type: 'number', min: 0, max: 2, step: 0.1 },
   { key: 'top_p', label: 'Top P', type: 'number', min: 0, max: 1, step: 0.05 },
   { key: 'max_tokens', label: 'Max Tokens', type: 'number', min: 1, step: 1 },
@@ -35,8 +36,14 @@ const FIELDS: FormField[] = [
   { key: 'thinking_fields', label: '思考请求字段', type: 'checkbox-group', options: [...THINKING_FIELD_OPTIONS] },
   { key: 'thinking_levels', label: '可用思考强度', type: 'checkbox-group',
     options: THINKING_LEVEL_OPTIONS.map((option) => ({ ...option, label: `${option.value} ${option.label}` })) },
+  { key: 'thinking_switch_levels', label: '可用思考强度', type: 'checkbox-group',
+    options: [{ value: 'none', label: 'none 关闭', description: '模型支持关闭思考时勾选, 纯推理或非推理模型请勿勾选' }] },
   { key: 'supports_visual_input', label: '支持图片输入', type: 'checkbox', placeholder: '允许接收静态图片和抽帧画面' },
   { key: 'supports_native_video_input', label: '支持原生视频输入', type: 'checkbox', placeholder: '声明所接 API 支持 video_url, 开启后直接传视频' },
+  { key: 'native_video_transport', label: '视频传输方式', type: 'select', options: [
+    { value: 'data_url', label: 'Data URL (发送视频字节)' },
+    { value: 'url', label: '公网 URL (需服务商可访问该地址)' },
+  ] },
   { key: 'video_frame_interval', label: '抽帧间隔 (秒)', type: 'custom', render: (value, onChange) => (
     <div className="flex items-center gap-3">
       <input type="range" min={0.5} max={5} step={0.1} value={typeof value === 'number' ? value : 2}
@@ -48,25 +55,34 @@ const FIELDS: FormField[] = [
   { key: 'omit_none_thinking_fields', label: '关闭思考兼容', type: 'checkbox', placeholder: '关闭思考时不发送值为 none 的字段' },
 ];
 
+const CHAT_COMPLETIONS_ONLY = new Set(['thinking_field_name', 'thinking_fields', 'omit_none_thinking_fields']);
+
 export function LLMConfigModal({ modelName, initialConfig, defaultName = '', allowRename = false, onClose, onSave }: LLMConfigModalProps) {
   const isNew = modelName === '';
   const [draft, setDraft] = useState<LLMConfig>(() => ({
     context_strategy: 'sliding', context_threshold: 0.8, truncation_floor: 0.4, summary_keep_recent_turns: 6,
-    thinking_fields: [], thinking_levels: [...DEFAULT_THINKING_LEVELS], omit_none_thinking_fields: false,
-    supports_visual_input: false, supports_native_video_input: false, video_frame_interval: 2.0, ...initialConfig,
+    thinking_fields: [], omit_none_thinking_fields: false,
+    supports_visual_input: false, supports_native_video_input: false, video_frame_interval: 2.0,
+    api_type: 'chat_completions', native_video_transport: 'data_url', ...initialConfig,
+    thinking_levels: initialConfig?.thinking_levels ?? [...DEFAULT_THINKING_LEVELS],
     name: isNew ? defaultName : modelName,
     api_key: initialConfig?.api_key?.includes('*') ? '' : initialConfig?.api_key,
   }));   // 只在打开时建立编辑副本, 后台配置刷新不覆盖尚未保存的输入
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const responses = draft.api_type === 'responses';
+  const levelFields = responses || Boolean(draft.thinking_fields?.includes('reasoning_effort'));
   const fields = useMemo(() => FIELDS.filter((field) => (
     (field.key !== 'summary_keep_recent_turns' || draft.context_strategy === 'summarize')
     && (field.key !== 'video_frame_interval' || (draft.supports_visual_input && !draft.supports_native_video_input))
-    && (field.key !== 'thinking_levels' || draft.thinking_fields?.some((value) => ['thinking_level', 'reasoning_effort'].includes(value)))
+    && (field.key !== 'native_video_transport' || draft.supports_native_video_input)
+    && (field.key !== 'thinking_levels' || levelFields)
+    && (field.key !== 'thinking_switch_levels' || (!levelFields && Boolean(draft.thinking_fields?.length)))
+    && (!responses || !CHAT_COMPLETIONS_ONLY.has(field.key))
   )).map((field) => ({ ...field,
     ...(field.key === 'name' ? { disabled: !isNew && !allowRename } : {}),
     ...(field.key === 'api_key' ? { placeholder: isNew ? 'sk-...' : '留空表示不修改' } : {}),
-  })), [draft.context_strategy, draft.thinking_fields, draft.supports_visual_input, draft.supports_native_video_input, isNew, allowRename]);
+  })), [draft.context_strategy, draft.supports_visual_input, draft.supports_native_video_input, levelFields, responses, draft.thinking_fields?.length, isNew, allowRename]);
 
   const windowTokens = draft.context_window ?? 128000;
   const ratio = draft.history_ratio ?? 0.7;
@@ -106,8 +122,12 @@ export function LLMConfigModal({ modelName, initialConfig, defaultName = '', all
   };
 
   return <FormModal open onClose={onClose} title={isNew ? '新增模型配置' : `编辑模型: ${modelName}`} size="lg"
-    fields={fields} values={{ ...draft }} loading={saving} submitText={isNew ? '创建' : '保存修改'}
-    onChange={(key, value) => { setDraft((previous) => ({ ...previous, [key]: value })); setError(''); }}
+    fields={fields} values={{ ...draft, thinking_switch_levels: draft.thinking_levels }} loading={saving} submitText={isNew ? '创建' : '保存修改'}
+    onChange={(key, value) => {
+      const target = key === 'thinking_switch_levels' ? 'thinking_levels' : key;
+      setDraft((previous) => ({ ...previous, [target]: value }));
+      setError('');
+    }}
     onSubmit={() => { void handleSave(); }} statusContent={<>
       <div className="glass-card rounded-md px-3 py-2 text-xs text-text-tertiary grid grid-cols-2 gap-2" aria-label="上下文预算">
         <span>总窗口: {windowTokens.toLocaleString()}</span><span>历史预算: {historyBudget.toLocaleString()}</span>

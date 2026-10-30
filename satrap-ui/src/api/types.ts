@@ -65,6 +65,8 @@ export interface LLMConfig {
   supports_visual_input?: boolean;
   supports_native_video_input?: boolean;
   video_frame_interval?: number;
+  api_type?: 'chat_completions' | 'responses';
+  native_video_transport?: 'data_url' | 'url';
 }
 
 export interface EmbeddingConfig {
@@ -275,6 +277,17 @@ export interface EdictumSessionConfig {
   export interface RuntimeSession {
     platform_id: string;
     session_id: string;
+    route?: {
+      scope: string;
+      self_id: string;
+      group_id: string;
+      user_id: string;
+      conversation_kind: string;
+      conversation_id: string;
+      target_label: string | null;
+      kind_label: string | null;
+      current: boolean;
+    } | null;
     active?: boolean;
     provider_name?: string;
     session_type?: string;
@@ -463,6 +476,7 @@ export interface ConversationDataItem {
   role?: string;
   content?: unknown;
   reasoning_content?: string | null;
+  protocol_payload?: Record<string, unknown> | null;   // Responses 原始输出项, 编辑内容后由后端移除
   tool_calls?: unknown;
   tool_call_id?: string;
   user_input?: string;

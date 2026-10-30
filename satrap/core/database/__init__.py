@@ -482,6 +482,8 @@ class DataBase:
                 "vector BLOB, FOREIGN KEY(collection_name) REFERENCES collections(name) ON DELETE CASCADE)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection_name)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(collection_name, "
+                         "json_extract(metadata, '$.source_id'), json_extract(metadata, '$.chunk_index'), id)")
             conn.execute("PRAGMA user_version=2")
 
     @staticmethod
@@ -849,6 +851,20 @@ class DataBase:
                 "AND json_extract(metadata, '$.chunk_index')=0 ORDER BY id", (name,),
             ).fetchall()
             return [json.loads(row["metadata"]) for row in rows]
+
+    def source_count(self, name: str) -> int:
+        """
+        仅计算来源数量, 不读取首块中的原文
+
+        参数:
+        - name: 集合名称
+
+        返回:
+        - 已发布来源数量
+        """
+        with self._lock, self._connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM documents WHERE collection_name=? "
+                                    "AND json_extract(metadata, '$.chunk_index')=0", (name,)).fetchone()[0])
 
     def replace_source(
         self, name: str, source_id: str, documents: list[str], vectors: list[list[float]], metadata: list[dict[str, Any]],

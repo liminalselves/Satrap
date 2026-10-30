@@ -155,6 +155,8 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
         "demo",
         {
             "model": "gpt-demo",
+            "api_type": "responses",
+            "native_video_transport": "url",
             "api_key": "secret-key",
             "lock_api_key": False,
             "temperature": 0.5,
@@ -172,6 +174,16 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
     listed = service.list_configs("llm")
 
     assert listed["demo"]["model"] == "gpt-demo"
+    assert listed["demo"]["api_type"] == "responses"
+    assert ModelConfigManager(tmp_path / "models.json").get_llm_config("demo").api_type == "responses"
+    client = build_llm_from_config(manager.get_llm_config("demo"))
+    assert client.api_type == "responses"
+    assert client.native_video_transport == "url"
+    client.client.close()
+    with pytest.raises(ValueError, match="api_type"):
+        service.update("llm", "demo", {"api_type": "unsupported"})
+    with pytest.raises(ValueError, match="native_video_transport"):
+        service.update("llm", "demo", {"native_video_transport": "unsupported"})
     # 展示接口即使允许运行时更新 API Key 也必须始终脱敏
     assert listed["demo"]["api_key"] != "secret-key"
     assert str(listed["demo"]["api_key"]).endswith("-key")
@@ -455,3 +467,11 @@ def test_max_tokens_zero_preserved():
     llm = build_llm_from_config(_cfg(max_tokens=0))
     assert isinstance(llm, LLM)
     assert llm.max_tokens == 0
+
+
+def test_llm_config_drops_removed_thinking_level_field_and_accepts_none_level():
+    """旧配置中的 thinking_level 字段被移除, 思考强度可声明 none 与 minimal"""
+    from satrap.core.type import validate_thinking_levels
+    assert LLMConfig(thinking_fields=["thinking_level", "reasoning_effort"]).thinking_fields == ["reasoning_effort"]
+    assert LLMConfig(thinking_fields=["thinking_level"]).thinking_fields is None
+    assert validate_thinking_levels(["none", "minimal", "low"]) == ["none", "minimal", "low"]

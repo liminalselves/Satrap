@@ -21,7 +21,7 @@ from uuid import uuid4
 from satrap.core.storage.file_lock import FileLock
 from . import codec
 
-from satrap.core.utils.context.utils import _message_content_json
+from satrap.core.utils.context.utils import _message_content_json, _protocol_payload_json
 from satrap.core.utils.vision import content_text_projection
 
 
@@ -165,6 +165,10 @@ class RunStore:
                 "INSERT INTO agent_runs VALUES (?,?,?,?,?,?,NULL,NULL,?,?)",
                 (run_id, self.scope, "running", encode(payload), context, config, now, now),
             )
+        from satrap.core.log.debug.hooks import record_debug
+
+        record_debug("execution_run", "start", span_id=run_id, metadata={"run_id": run_id, "context_id": self.scope,
+                     "context_fingerprint": context, "configuration_fingerprint": config})
         return run_id
 
     def get(self, run_id: str) -> dict[str, Any]:
@@ -215,6 +219,10 @@ class RunStore:
             )
             if cursor.rowcount != 1:
                 raise RunConflictError("任务不存在或不属于当前会话")
+        from satrap.core.log.debug.hooks import record_debug
+
+        record_debug("execution_run", "update", span_id=run_id, status=status,
+                     metadata={"run_id": run_id, "context_id": self.scope, "has_error": error is not None})
 
     def step(self, run_id: str, key: str) -> dict[str, Any] | None:
         """
@@ -476,11 +484,11 @@ class RunStore:
                 raise RunConflictError("会话历史已改变, 不能提交旧任务结果")
             for message in messages:
                 db.execute(
-                    "INSERT INTO chat_history(conversation_id,role,content,content_json,tool_call_id,tool_calls,reasoning_content) VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO chat_history(conversation_id,role,content,content_json,tool_call_id,tool_calls,reasoning_content,protocol_payload) VALUES (?,?,?,?,?,?,?,?)",
                     (self.scope, message["role"], content_text_projection(message.get("content")),
                      _message_content_json(message.get("content")), message.get("tool_call_id"),
                      encode(message["tool_calls"]) if message.get("tool_calls") else None,
-                     message.get("reasoning_content")),
+                     message.get("reasoning_content"), _protocol_payload_json(message.get("protocol_payload"))),
                 )
             payload = json.loads(run["payload"])
             payload["committed_context_fingerprint"] = self.history_signature(db)

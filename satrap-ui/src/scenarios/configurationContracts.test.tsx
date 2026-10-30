@@ -563,15 +563,14 @@ describe("components/common/PluginConfigFields", () => {
         option_labels: { current_session: '仅当前会话', group_archive: '当前群全部保留记录', disabled: '禁止查询群记录' } } };
       const markup = renderToStaticMarkup(<PluginConfigFields schema={schema} values={{ history_scope: 'group_archive' }} onChange={() => undefined} />);
       expect(markup).toContain('群消息查询范围');
-      expect(markup).toMatch(/<option[^>]*value="group_archive"[^>]*selected[^>]*>当前群全部保留记录/);
-      expect(markup).toContain('仅当前会话');
+      expect(markup).toMatch(/role="combobox"[^>]*data-value="group_archive"[^>]*>[\s\S]*?当前群全部保留记录/);
     });
     const schema = { note: { type: 'string', default: '', description: '' }, model: { type: 'llm', default: '', description: '' } };
     it('选项未就绪时保留原值, 不误报引用失效, 普通参数仍可编辑', () => {
       const markup = renderToStaticMarkup(<PluginConfigFields schema={schema} values={{ note: '草稿', model: 'saved' }} modelState="loading" onChange={() => undefined} />);
       expect(markup).toContain('正在读取选项');
       expect(markup).not.toContain('引用失效');
-      expect(markup).toMatch(/<option[^>]*value="saved"[^>]*selected/);
+      expect(markup).toMatch(/role="combobox"[^>]*data-value="saved"/);
       expect(markup.match(/<input[^>]*value="草稿"[^>]*>/)?.[0]).not.toContain('disabled');
     });
     it('成功读取后才标记确实缺失的引用', () => {

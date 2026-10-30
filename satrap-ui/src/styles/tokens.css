@@ -1,0 +1,109 @@
+/* ===== 设计令牌 (重构层) =====
+   颜色以 RGB 三元组存储, 组件通过 rgb(var(--tint) / α) 派生任意透明度;
+   任意元素加 tint-* 即可继承整套染色, 与 globals.css 中的旧变量并存 */
+
+/* 反光坐标只属于被引擎写入的元素; 不继承, 否则嵌套在已点亮面板里的磁片会按父元素坐标画出反光 */
+@property --mx { syntax: '<length>'; inherits: false; initial-value: -999px; }
+@property --my { syntax: '<length>'; inherits: false; initial-value: -999px; }
+@property --mouse-x { syntax: '<length>'; inherits: false; initial-value: -999px; }
+@property --mouse-y { syntax: '<length>'; inherits: false; initial-value: -999px; }
+/* 反光层是宿主自身的伪元素或贴边子层, 显式继承宿主坐标 */
+*::before, *::after, .glass-rim { --mx: inherit; --my: inherit; --mouse-x: inherit; --mouse-y: inherit; }
+
+:root {
+  color-scheme: dark;
+
+  --rgb-accent: 0 120 212;
+  --rgb-purple: 139 98 179;
+  --rgb-teal: 0 153 153;
+  --rgb-pink: 229 105 158;
+  --rgb-orange: 255 140 0;
+  --rgb-green: 19 161 14;
+  --rgb-red: 232 17 35;
+  --rgb-neutral: 255 255 255;
+
+  /* 前景色: 暗色取亮一档, 保证玻璃上的对比度 */
+  --fg-accent: #4ca6f0;
+  --fg-purple: #bb98d6;
+  --fg-teal: #3cc4c4;
+  --fg-pink: #f29cc2;
+  --fg-orange: #ffad4d;
+  --fg-green: #5cc864;
+  --fg-red: #f4777f;
+
+  --glass-bg-strong: rgba(22, 22, 28, 0.985);
+  --glass-border-strong: rgba(255, 255, 255, 0.12);
+  --tint-strength: 0.1;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.18);
+  --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.22), 0 12px 32px rgba(0, 0, 0, 0.3);
+  --shadow-3: 0 0 0 1px rgba(0, 0, 0, 0.05), 0 2px 4px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.14), 0 24px 64px rgba(0, 0, 0, 0.32);
+
+  --reflect-alpha: 0.22;
+  --rim-alpha: 0.55;
+  --nav-reflect-alpha: 0.25;
+
+  --sidebar-w: 248px;
+  --sidebar-w-collapsed: 68px;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+  --dur-4: 520ms;
+
+  --tint: var(--rgb-neutral);
+  --tint-fg: var(--color-text-primary);
+
+  /* 新组件库使用的别名, 映射到 globals.css 的既有变量, 新旧组件共用同一套取值 */
+  --bg-base: var(--color-bg-base);
+  --text-1: var(--color-text-primary);
+  --text-2: var(--color-text-secondary);
+  --text-3: var(--color-text-tertiary);
+  --text-4: var(--color-text-disabled);
+  --glass-blur: 24px;
+  --radius-xl: 20px;
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  --rgb-neutral: 0 0 0;
+  --rgb-orange: 247 99 12;
+  --rgb-green: 16 124 16;
+  --rgb-red: 209 52 56;
+
+  --fg-accent: #0067b8;
+  --fg-purple: #6b3fa0;
+  --fg-teal: #006b6b;
+  --fg-pink: #b8306f;
+  --fg-orange: #b84a00;
+  --fg-green: #0e700e;
+  --fg-red: #c42b1c;
+
+  /* 亮色模式三级文字加深, 半透明玻璃上仍保持可读 */
+  --color-text-secondary: rgba(0, 0, 0, 0.72);
+  --color-text-tertiary: rgba(0, 0, 0, 0.56);
+
+  --glass-bg-strong: rgba(255, 255, 255, 0.96);
+  --glass-border-strong: rgba(0, 0, 0, 0.12);
+  --tint-strength: 0.12;
+
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.05);
+  --shadow-2: 0 2px 6px rgba(15, 23, 42, 0.06), 0 12px 32px rgba(15, 23, 42, 0.09);
+  --shadow-3: 0 0 0 1px rgba(0, 0, 0, 0.03), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.06), 0 24px 64px rgba(15, 23, 42, 0.14);
+
+  --reflect-alpha: 0.3;
+  --rim-alpha: 0.7;
+  --nav-reflect-alpha: 0.35;
+}
+
+.tint-accent { --tint: var(--rgb-accent); --tint-fg: var(--fg-accent); }
+.tint-purple { --tint: var(--rgb-purple); --tint-fg: var(--fg-purple); }
+.tint-teal { --tint: var(--rgb-teal); --tint-fg: var(--fg-teal); }
+.tint-pink { --tint: var(--rgb-pink); --tint-fg: var(--fg-pink); }
+.tint-orange { --tint: var(--rgb-orange); --tint-fg: var(--fg-orange); }
+.tint-green { --tint: var(--rgb-green); --tint-fg: var(--fg-green); }
+.tint-red { --tint: var(--rgb-red); --tint-fg: var(--fg-red); }

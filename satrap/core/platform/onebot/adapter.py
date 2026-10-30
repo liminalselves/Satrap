@@ -29,6 +29,8 @@ from satrap.core.platform.onebot.onebot_utils import (
     is_group_session,
     is_private_session,
     message_chain_to_onebot_segments,
+    prepare_media_segments,
+    component_to_onebot_segment,
     onebot_segments_to_components,
     parse_forward_nodes,
     private_session_id,
@@ -55,7 +57,7 @@ from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, 
 from satrap.core.type import GroupActionRecord, PlatformMessage, safe_getattr_callable
 
 from satrap.core.log import logger
-from satrap.core.call_context import CallOrigin
+from satrap.core.call_context import CallOrigin, current_call_origin
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.platform.message_archive import archive_snapshot
 from satrap.core.config.group_action_origin import current_group_action_preflight
@@ -209,6 +211,35 @@ class OneBotAdapter(PlatformAdapter):
             return {}
         row = connection.execute("SELECT group_name FROM group_directory WHERE self_id=? AND group_id=?", (route.get("self_id", ""), route["group_id"])).fetchone()
         return {"target": str(row[0]) or route["group_id"]} if row else {}
+
+    @classmethod
+    def conversation_catalog_metadata_batch(cls, connection: sqlite3.Connection, routes: list[dict[str, str]]) -> list[dict[str, str]]:
+        """
+        按账号与群号批量读取群名, 不随实例数量逐项查询
+
+        参数:
+        - connection: 平台数据库只读连接
+        - routes: 已解码的实例路由, 可包含同群的多个历史实例
+
+        返回:
+        - 与路由顺序对应的标签, 无实际群名时返回空映射
+        """
+        groups = sorted({(route.get("self_id", ""), route["group_id"]) for route in routes if route.get("group_id")})
+        labels: dict[tuple[str, str], str] = {}
+        if groups and connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='group_directory'").fetchone():
+            for offset in range(0, len(groups), 250):
+                batch = groups[offset:offset + 250]
+                values = ",".join("(?,?)" for _ in batch)
+                for account, group, name in connection.execute(
+                    f"WITH requested(self_id, group_id) AS (VALUES {values}) "
+                    "SELECT g.self_id, g.group_id, g.group_name FROM requested r "
+                    "JOIN group_directory g ON g.self_id=r.self_id AND g.group_id=r.group_id",
+                    [value for pair in batch for value in pair],
+                ):
+                    if isinstance(name, str) and name.strip():
+                        labels[(account, group)] = name
+        return [{"target": labels[key]} if (key := (route.get("self_id", ""), route.get("group_id", ""))) in labels else {}
+                for route in routes]
 
     def __init__(
         self,
@@ -709,9 +740,13 @@ class OneBotAdapter(PlatformAdapter):
         if meta_type == "lifecycle":
             sub_type = str(event.get("sub_type") or "")
             if sub_type == "connect":
+                if self._connection_generation:
+                    self.note_connection(False)
                 self._connection_generation += 1
                 self._self_identity.clear()
                 self._client_connected = True
+                self.note_connection(True)
+                self._bot_profile = None
                 self._heartbeats = 0
                 self._last_heartbeat_at = 0.0
                 self._capability_states.clear()
@@ -724,8 +759,11 @@ class OneBotAdapter(PlatformAdapter):
                         logger.warning(f"[OneBotAdapter] 连接后群目录同步未启动: {type(error).__name__}: {error}")
             elif sub_type == "disable":
                 self._client_connected = False
+                self.note_connection(False)
         elif meta_type == "heartbeat":
             self._client_connected = True
+            self.note_connection(True)
+            self._heartbeat_wall_at = time()
             self._heartbeats += 1
             self._last_heartbeat_at = monotonic()
 
@@ -1319,6 +1357,7 @@ class OneBotAdapter(PlatformAdapter):
             logger.info(f"[OneBotAdapter] OneBot 客户端已连接 adapter={self.config.id} self_id={incoming_self}")
         self.bot_self_id = incoming_self
         self.client_self_id = incoming_self
+        self.note_connection(True)
         if str(event.get("user_id")) == incoming_self:
             self._ingress_rejections["self_echo"] += 1
             if self.message_archive is not None:
@@ -1803,6 +1842,8 @@ class OneBotAdapter(PlatformAdapter):
         except MediaSourcePermissionError as error:
             # 媒体白名单拒绝与目标范围拒绝同属 PermissionError, 优先细分以保留真实原因码
             return self._failed_receipt(session_id, "message", "media_source_denied", error)
+        except GroupChatError as error:
+            return SendReceipt("failed", reason=error.code, error_code=error.code, error_message=str(error), stage="validation")
         except PermissionError:
             return SendReceipt("failed", reason="target_unavailable")
         except Exception as error:
@@ -1845,7 +1886,7 @@ class OneBotAdapter(PlatformAdapter):
 
         relay = len(nodes) == 1 and nodes[0].relay_forward
         strict = relay or any(node.id or node.require_forward for node in nodes)
-        messages = [] if relay else [await node.to_dict() for node in nodes]
+        messages = [] if relay else await prepare_media_segments([await component_to_onebot_segment(node) for node in nodes])
         forward_action = "send_group_forward_msg" if is_group_session(session_id) else "send_private_forward_msg"
         if relay:
             forward_action = "forward_group_single_msg" if is_group_session(session_id) else "forward_friend_single_msg"
@@ -1971,7 +2012,7 @@ class OneBotAdapter(PlatformAdapter):
         note = f"file_delivery_unconfirmed:{receipt.reason}" if receipt.reason else "file_delivery_unconfirmed"
         # 平台明确拒绝该消息动作时保留失败语义, 其余一律不是文件送达的证据
         status: Literal["failed", "unknown"] = "failed" if receipt.status == "failed" else "unknown"
-        return SendReceipt(status, receipt.message_ids, receipt.failed_index, reason=note)
+        return replace(receipt, status=status, reason=note)
 
     def _failed_receipt(self, session_id: str, action: str, reason: str, error: BaseException | None = None, *, status: Literal["failed", "unknown"] = "failed") -> SendReceipt:
         """
@@ -1981,12 +2022,23 @@ class OneBotAdapter(PlatformAdapter):
         - session_id: 目标会话
         - action: 发送类型
         - reason: 回执原因
-        - error: 触发异常, 只记类型名
+        - error: 触发异常, 只提取错误码与脱敏原因字段
         - status: 回执状态
         """
-        detail = f" {type(error).__name__}" if error is not None else ""
+        from satrap.core.platform.receipt import public_delivery_message
+
+        raw = getattr(error, "result", None)
+        payload = raw if isinstance(raw, dict) else {}
+        raw_code = payload.get("retcode")
+        code = str(raw_code)[:80] if isinstance(raw_code, (str, int)) else ""
+        reason_text = payload.get("message") or payload.get("msg") or payload.get("wording")
+        if reason_text is None:
+            reason_text = f"平台返回错误码 {code}" if isinstance(raw, dict) else str(error) if error else ""
+        message = public_delivery_message(reason_text)
+        detail = f" {type(error).__name__}: {message}" if error is not None else ""
         logger.warning(f"[OneBotAdapter] 发送失败 action={action} session={session_id} reason={reason}{detail}")
-        return SendReceipt(status, reason=reason)
+        return SendReceipt(status, reason=reason, error_code=code, error_message=message,
+                           stage="publish" if reason.startswith("action_") else "conversion")
 
     async def _send_forward_degraded(self, session_id: str, nodes: list[Node], limit: int) -> SendReceipt:
         """
@@ -2092,6 +2144,7 @@ class OneBotAdapter(PlatformAdapter):
         ):
             raise PermissionError("目标群不在当前适配器允许范围内")
 
+        connection = self.group_chat_connection_token()
         segments = await message_chain_to_onebot_segments(message.components)
         if not segments:
             logger.warning("[OneBotAdapter] 消息为空, 跳过发送")
@@ -2102,6 +2155,12 @@ class OneBotAdapter(PlatformAdapter):
                     or scheduled_target.connection_token != self.group_chat_connection_token()
                     or not self.config.enable or not self.allows_group(scheduled_target.scope.chat_id)):
                 return SendReceipt("failed", reason="scheduled_target_changed")
+
+        origin = current_call_origin()
+        if origin is not None and any(getattr(component, "asset_lease", None) is not None for component in message.components):
+            await self.group_chat_scope(origin)
+        if connection != self.group_chat_connection_token() or not self.config.enable:
+            return SendReceipt("failed", reason="stale_call", error_code="stale_call", error_message="编码期间平台连接或启用状态已变化, 消息未提交", stage="validation")
 
         sent_self_id = self.bot_self_id
         try:
@@ -2286,7 +2345,11 @@ class OneBotAdapter(PlatformAdapter):
         返回:
         - BotIdentity | None: 同一账号和连接下的确认资料, 查询失败时为 None
         """
-        return await self._self_identity.resolve(self_id, group_id)
+        identity = await self._self_identity.resolve(self_id, group_id)
+        if identity is not None and identity.self_id == self.bot_self_id:
+            self._bot_profile = {"self_id": identity.self_id, "nickname": identity.nickname or None,
+                                 "avatar_url": None, "as_of": time()}
+        return identity
 
     async def check_connection(self) -> None:
         """通过当前 OneBot 连接读取版本信息, 断线或响应异常时抛出错误"""

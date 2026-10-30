@@ -7,7 +7,7 @@ import time
 import errno
 import hashlib
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 import json
 import os
 import re
@@ -18,7 +18,7 @@ from satrap.core.approval.migration import migrate_approval_admin_config
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words, validate_event_limits
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
-from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
+from satrap.core.config._yaml import YamlDiagnostic, parse_yaml_diagnostic, safe_yaml_dump, safe_yaml_load
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.config.agent_routing import validate_session_bindings
 
@@ -361,6 +361,35 @@ def validate_config_document(data: object) -> dict[str, Any]:
 
 class ConfigRevisionConflict(ValueError):
     """配置已被其他写入者修改, 调用方应重新读取后合并"""
+
+
+class YamlValidationResult(TypedDict):
+    """原始配置预检结果, 不包含保存或应用副作用"""
+
+    valid: bool
+    errors: list[YamlDiagnostic]
+
+
+def validate_yaml_document(text: str) -> YamlValidationResult:
+    """
+    通过生产解析及配置校验链路预检原始 YAML
+
+    参数:
+    - text: 最多 1 MiB UTF-8 文本
+
+    返回:
+    - 完整解析校验结果, 语义错误没有可靠来源位置时使用 null
+    """
+    if not isinstance(text, str) or len(text.encode("utf-8")) > 1024 * 1024:
+        raise ValueError("yaml 必须为最多 1 MiB 的文本")
+    parsed, problem = parse_yaml_diagnostic(text)
+    if problem is not None:
+        return YamlValidationResult(valid=False, errors=[problem])
+    try:
+        validate_config_document(parsed)
+    except (ValueError, TypeError, OverflowError) as error:
+        return YamlValidationResult(valid=False, errors=[YamlDiagnostic(path=None, line=None, column=None, message=str(error)[:2000], code="invalid_config")])
+    return YamlValidationResult(valid=True, errors=[])
 
 
 def config_document_revision(data: object) -> str:

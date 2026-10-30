@@ -20,6 +20,86 @@ from satrap.core.platform.misskey.client import StreamingClient
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['room', 'chat', 'note'])
+async def test_real_publish_receipts_keep_errors_and_never_retry_unknown_submission(tmp_path, kind):
+    """
+    实际 HTTP 覆盖三种发布载体, 成功归一回执, 错误保留详情且不重试
+
+    参数:
+    - tmp_path: 独立的临时目录
+    - kind: 房间, 私聊或帖子载体
+    """
+    from aiohttp import web
+    from satrap.core.utils import paths
+    from unittest.mock import patch, AsyncMock
+    from satrap.core.platform.misskey.client import APIConnectionError
+    counts, uploads = [], []
+    state = {'mode': 'success'}
+    async def handler(request):
+        endpoint = request.match_info['endpoint']
+        if endpoint == 'drive/files/create':
+            reader = await request.multipart()
+            async for part in reader:
+                if part.name == 'file':
+                    uploads.append(await part.read())
+            if state['mode'] == 'upload_failed':
+                return web.json_response({'error': {'code': 'INVALID_FILE', 'message': '图片格式被拒绝'}}, status=400)
+            return web.json_response({'id': 'drive-image'})
+        counts.append(endpoint)
+        if state['mode'] in ('rejected', 'unknown'):
+            return web.json_response({'error': {'code': 'TEST_ERROR', 'message': '模拟错误 token=hidden-secret'}}, status=400 if state['mode'] == 'rejected' else 503)
+        message = {'id': 'confirmed'}
+        return web.json_response({'createdNote': message} if endpoint == 'notes/create' else message)
+    app = web.Application()
+    app.router.add_post('/api/{endpoint:.*}', handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '127.0.0.1', 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    api = MisskeyAPI(f'http://127.0.0.1:{port}', 'isolated-credential')
+    adapter = make_adapter()
+    adapter._client = api
+    source = tmp_path / 'image.png'
+    source.write_bytes(b'isolated-image-bytes')
+    target = {'room': 'room%r1', 'chat': 'chat%u1', 'note': 'note%u1'}[kind]
+    try:
+        with patch.object(paths, '_configured_media_roots', (str(tmp_path),)):
+            for mode in ('success', 'rejected', 'unknown', 'upload_failed'):
+                state['mode'] = mode
+                previous = len(counts)
+                message = MessageChain([Plain('hello'), Image(file=str(source))]) if mode == 'upload_failed' else MessageChain.from_text('hello')
+                result = await adapter.send_message(target, message)
+                assert result.status == {'success': 'success', 'rejected': 'failed', 'unknown': 'unknown', 'upload_failed': 'failed'}[mode]
+                assert len(counts) - previous == (0 if mode == 'upload_failed' else 1)
+                if mode == 'success':
+                    assert result.message_ids == ('confirmed',)
+                elif mode in ('rejected', 'unknown'):
+                    assert result.error_code == 'TEST_ERROR' and '模拟错误' in result.error_message
+                    assert 'hidden-secret' not in result.error_message and result.stage == 'publish'
+                else:
+                    assert result.error_code == 'INVALID_FILE' and result.stage == 'upload'
+            assert uploads == [source.read_bytes()]
+        attempts = []
+        async def lost_response(endpoint, data=None):
+            attempts.append(endpoint)
+            raise APIConnectionError('模拟提交后回执丢失')
+        with patch.object(api, 'request_once', lost_response), patch('satrap.core.platform.misskey.client.asyncio.sleep', new=AsyncMock()):
+            result = await adapter.send_message(target, MessageChain.from_text('once'))
+        assert result.status == 'unknown' and len(attempts) == 1
+        async def changed_upload(message):
+            adapter.bot_self_id = 'replacement-account'
+            return ['drive-image']
+        with patch.object(adapter, '_collect_file_ids', changed_upload):
+            result = await adapter.send_message(target, MessageChain.from_text('stale'))
+        assert result.status == 'failed' and result.reason == 'stale_call'
+        assert len(attempts) == 1
+    finally:
+        await api.close()
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["private", "group", "discussion"])
 async def test_file_delivery_streams_to_drive_then_publishes_once_to_original_conversation(tmp_path, kind):
     """真实 multipart 传输与原生发布, 上传或发布失败不能被文字回复掩盖"""
@@ -259,7 +339,7 @@ async def test_create_note_payload(monkeypatch: pytest.MonkeyPatch):
         captured["data"] = data
         return {"createdNote": {"id": "note-1"}}
 
-    monkeypatch.setattr(api, "_make_request", fake_make_request)
+    monkeypatch.setattr(api, "request_once", fake_make_request)
 
     result = await api.create_note(
         text="hello",

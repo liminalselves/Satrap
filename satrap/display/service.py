@@ -55,6 +55,7 @@ from satrap.edictum.plugin_apply import PluginApplySnapshot, plugin_source_versi
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
 from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
+from satrap.core.APICall.LLMCall.errors import model_error_info
 from satrap.edictum.plugin_spec import plugin_specs_fingerprint
 from satrap.core.utils.paths import get_data_dir, get_project_root
 from satrap.display.recorder import (
@@ -68,6 +69,7 @@ from satrap.display.recorder import (
     set_conversation_project as db_set_conversation_project,
 )
 from satrap.display.plugins import ChatPluginRegistry
+from satrap.display.settings import ChatSettings, ChatSettingsStore, validate_temperature
 from satrap.edictum.plugin import load_plugin_meta
 from satrap.core.storage import (
     CHAT_PLATFORM_ID,
@@ -132,14 +134,18 @@ class _Conversation:
     session: AsyncSimpleSession
     recorder: DisplayRecorder
     model: str
-    default_think: str = "off"
+    model_id: str | None = None
+    """当前实际客户端对应的模型标识, 逐轮保存时不再读取共享配置"""
+    default_think: str = "default"
     """会话默认思考强度 (来自 conversation_meta, send 未显式传 think 时使用)"""
     project_id: str | None = None
     """所属项目 ID (None = 无项目, 工作区回落全局)"""
     system_prompt: str | None = None
     """创建主工作流时使用的系统提示词"""
     temperature: float | None = None
-    """Chat 会话级温度覆盖"""
+    """下一轮使用的 Chat 会话温度覆盖, 不直接修改进行中的 LLM"""
+    temperature_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """仅串行化温度偏好保存与轮次快照, 不覆盖完整生成过程"""
     persisted: bool = True
     """是否已经写入会话元数据; 预加载会话在首次发送前为 False"""
     build_fingerprint: str = ""
@@ -164,6 +170,13 @@ class _Conversation:
         default_factory=lambda: dict[str, _PendingUserInput]()
     )
     """等待前端回答的 ask_user 请求"""
+
+
+@dataclass(frozen=True)
+class _GenerationParameters:
+    """请求接受时固定的生成参数, 工具循环中不再读取会话偏好"""
+
+    temperature: float | None
 
 
 @dataclass
@@ -291,6 +304,7 @@ class ChatService:
         ask_user_timeout_seconds: float = 300.0,
         workspace_roots: Iterable[str | Path] | None = None,
         denied_workspace_roots: Iterable[str | Path] | None = None,
+        settings: ChatSettingsStore | None = None,
     ) -> None:
         """
         初始化 ChatService
@@ -306,8 +320,10 @@ class ChatService:
         - ask_user_timeout_seconds: ask_user 等待前端回答的超时时间
         - workspace_roots: 项目目录允许浏览和绑定的根目录, 缺省或空列表使用本机磁盘, 兼容旧默认值 ["."]
         - denied_workspace_roots: 额外禁止绑定和浏览的目录根
+        - settings: 可选的整体默认设置存储, 默认使用集中配置目录
         """
         self._model_cfg = model_config
+        self._settings = settings or ChatSettingsStore()
         self._plugins = plugins
         self._storage = storage_layout or default_storage_layout
         self._platform_id = platform_id.strip() or CHAT_PLATFORM_ID
@@ -405,10 +421,13 @@ class ChatService:
                 if not turn.get("variant_count"):
                     turn["interrupted"] = True
         pending_inputs: Iterable[_PendingUserInput] = conv.pending_user_inputs.values() if conv else ()
+        meta = get_conversation_meta(conversation_id, db_path=self._display_db_path) if conv is None else None
         return {
             "type": "snapshot", "conversation_id": conversation_id, "stream_id": self._stream_id,
             "seq": self._event_sequences.get(conversation_id, 0), "state": state,
             "active_turn_id": active_turn, "turns": turns,
+            "model": conv.model if conv else str(meta.get("model") or "default") if meta else None,
+            "temperature": conv.temperature if conv else meta.get("temperature") if meta else None,
             **pagination,
             "pending_user_inputs": [
                 {"request_id": item.request_id, "question": item.question, "options": list(item.options), "approval": item.approval}
@@ -765,6 +784,215 @@ class ChatService:
         """
         return list(self._model_cfg.list_llm_configs(mask_api_key=True).keys())
 
+    def _require_model(self, model: str) -> LLMConfig:
+        """
+        取得存在的模型配置, 不使用管理器为未知名称构造的空默认
+
+        参数:
+        - model: 用户明确选择或会话已绑定的配置名
+
+        返回:
+        - 实际配置; 不存在时抛出 ValueError 并要求手动重选
+        """
+        if model not in self.list_models():
+            logger.warning(f"[聊天模型] 配置不可用: {model}")
+            raise ValueError(f"模型配置不可用: {model}, 请手动选择其它模型")
+        return self._model_cfg.get_llm_config(model)
+
+    async def get_settings(self) -> ChatSettings:
+        """
+        读取不影响已有会话的整体默认
+
+        返回:
+        - 模型名与配置修订, 文件读取在线程内执行
+        """
+        return await asyncio.to_thread(self._settings.read)
+
+    async def set_settings(self, model: str, expected_revision: str) -> ChatSettings:
+        """
+        保存整体默认, 不遍历或修改已有会话
+
+        参数:
+        - model: 已存在的目标模型配置名
+        - expected_revision: 前端最近读取的修订
+
+        返回:
+        - 已保存的模型名与新修订
+        """
+        self._require_model(model)
+        return await asyncio.to_thread(self._settings.save, model, expected_revision)
+
+    async def get_generation_settings(self, conversation_id: str) -> dict[str, object]:
+        """
+        读取温度覆盖和下一轮拟发送值, 不把它冒充供应商实际采样值
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+
+        返回:
+        - 覆盖值和按模型配置解析的请求值, 会话不存在时抛出 ValueError
+        """
+        conv = self._conversations.get(conversation_id)
+        meta = None if conv else await asyncio.to_thread(get_conversation_meta, conversation_id, self._display_db_path)
+        if conv is None and meta is None:
+            raise ValueError("会话不存在")
+        if conv is not None:
+            model, override = conv.model, conv.temperature
+        else:
+            assert meta is not None
+            model, override = str(meta["model"]), validate_temperature(meta.get("temperature"))
+        cfg = self._require_model(model)
+        return {"temperature": override, "request_temperature": self._resolve_temperature(override, cfg)}
+
+    async def set_generation_settings(self, conversation_id: str, settings: dict[str, object]) -> dict[str, object]:
+        """
+        持久保存下一轮偏好, 执行中的请求继续使用已固定参数
+
+        参数:
+        - conversation_id: 当前 Chat 会话 ID
+        - settings: 可选 temperature, 缺少字段时保持当前设置
+
+        返回:
+        - 保存后的温度设置, 保存失败时不改变内存偏好
+        """
+        if set(settings) - {"temperature"}:
+            raise ValueError("未知的会话生成参数")
+        value = validate_temperature(settings["temperature"]) if "temperature" in settings else None
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            raise ValueError("会话不存在")
+        async with conv.preload_lock:
+            if self._conversations.get(conversation_id) is not conv:
+                raise ValueError("会话运行时已变化, 请重新读取设置")
+            async with conv.temperature_lock:
+                if "temperature" in settings:
+                    if conv.persisted:
+                        await asyncio.to_thread(conv.recorder.save_temperature, value)
+                    conv.temperature = value
+                return await self.get_generation_settings(conversation_id)
+
+    @staticmethod
+    def _resolve_temperature(override: float | None, config: LLMConfig) -> float | None:
+        """
+        合并会话覆盖, 模型配置及协议默认
+
+        参数:
+        - override: None 表示继承
+        - config: 本轮模型配置
+
+        返回:
+        - 拟发送温度, Responses 未设置时为 None
+        """
+        value = override if override is not None else config.temperature
+        return 0.7 if value is None and config.api_type == "chat_completions" else value
+
+    async def _generation_parameters(self, conv: _Conversation) -> _GenerationParameters:
+        """
+        在轮次开始前固定有效温度
+
+        参数:
+        - conv: 当前会话
+
+        返回:
+        - 仅属于本轮的不可变参数
+        """
+        async with conv.temperature_lock:
+            cfg = conv.session._context_config or self._require_model(conv.model)
+            return _GenerationParameters(self._resolve_temperature(conv.temperature, cfg))
+
+    async def get_model(self, conversation_id: str) -> dict[str, object]:
+        """
+        读取会话绑定, 模型已删除时仍允许用户查看并重选
+
+        参数:
+        - conversation_id: 已有或已预加载的会话 ID
+
+        返回:
+        - 已保存的名称和可用性, 不因查询而换用整体默认
+        """
+        conv = self._conversations.get(conversation_id)
+        meta = get_conversation_meta(conversation_id, db_path=self._display_db_path) if conv is None else None
+        if conv is None and meta is None:
+            turns = self.list_turns(conversation_id, limit=1, all_variants=False)
+            if not turns:
+                raise ValueError("会话不存在")
+        model = conv.model if conv else str(meta.get("model") or "default") if meta else "default"
+        return {"ok": True, "model": model, "available": model in self.list_models()}
+
+    @_exclusive_conversation_operation
+    async def set_model(self, conversation_id: str, model: str, expected_model: str | None = None) -> dict[str, Any]:
+        """
+        在生成互斥下切换会话模型, 保存失败时恢复原客户端与上下文策略
+
+        参数:
+        - conversation_id: 当前会话 ID
+        - model: 目标模型配置名
+        - expected_model: 可选的客户端已确认绑定, 不一致时拒绝覆盖其它页面的选择
+
+        返回:
+        - 服务端确认的绑定; 忙碌或绑定冲突返回失败, 配置和持久化失败抛给请求边界
+        """
+        self._require_model(model)
+        binding = await self.get_model(conversation_id)
+        if expected_model is not None and binding["model"] != expected_model:
+            return {"ok": False, "model": binding["model"], "error": "会话模型已在其它页面变更, 请重新读取后选择"}
+        cold = conversation_id not in self._conversations
+        conv: _Conversation | None = None
+        try:
+            conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id, model_override=model, publish=False)
+            if conv is None:
+                raise ValueError("会话不存在")
+            async with conv.plugin_lock:
+                config = self._require_model(model)
+                llm = build_llm(config)
+                if conv.temperature is not None:
+                    llm.set_parameters(temperature=conv.temperature)
+                fingerprint = self._runtime_fingerprint(model, system_prompt=conv.system_prompt,
+                                                        project_id=conv.project_id, temperature=conv.temperature)
+                previous_llm, previous_config = conv.session.llm, conv.session._context_config
+                try:
+                    conv.session.reload_llm(llm)
+                    conv.session.apply_context_config(config)
+                    if conv.persisted:
+                        conv.recorder.save_meta(model, conv.default_think)
+                except BaseException:
+                    conv.session.reload_llm(previous_llm)
+                    if previous_config is not None:
+                        conv.session.apply_context_config(previous_config)
+                    raise
+                conv.model, conv.model_id = model, config.model
+                conv.build_fingerprint = fingerprint
+                conv.pending_model_config = None
+                if self._conversations.get(conversation_id) is not conv:
+                    self._conversations[conversation_id] = conv
+                    conv.subscribers.update(self._orphan_queues.pop(conversation_id, set()))
+                self._broadcast(conv, {"type": "model_changed", "model": model, "available": True})
+                return {"ok": True, "model": model, "available": True}
+        except BaseException:
+            if cold:
+                pending = self._resume_tasks.get(conversation_id)
+                if pending is not None:
+                    results = await asyncio.gather(pending, return_exceptions=True)
+                    if conv is None and isinstance(results[0], _Conversation):
+                        conv = results[0]
+                if conv is not None and self._conversations.get(conversation_id) is not conv:
+                    await self._dispose_conversation_runtime(conv)
+            raise
+
+    async def _initial_model(self, model: str | None) -> str:
+        """
+        为新建会话解析一次默认模型
+
+        参数:
+        - model: 显式名称, None 时读取整体默认
+
+        返回:
+        - 已验证存在的配置名, 不修改任何已有会话
+        """
+        selected = model if model is not None else (await self.get_settings())["default_model"]
+        self._require_model(selected)
+        return selected
+
     # ---------- 模型配置管理 ----------
 
     def list_models_detail(self) -> dict[str, Any]:
@@ -802,6 +1030,7 @@ class ChatService:
                 temperature=config.get("temperature"),
                 top_p=config.get("top_p"),
                 max_tokens=config.get("max_tokens"),
+                network_timeout=config.get("network_timeout", 60.0),
                 context_window=config.get("context_window"),
                 history_ratio=config.get("history_ratio"),
                 context_strategy=config.get("context_strategy") or "sliding",
@@ -815,6 +1044,8 @@ class ChatService:
                 supports_visual_input=config.get("supports_visual_input", False),
                 supports_native_video_input=config.get("supports_native_video_input", False),
                 video_frame_interval=config.get("video_frame_interval", 2.0),
+                api_type=config.get("api_type", "chat_completions"),
+                native_video_transport=config.get("native_video_transport", "data_url"),
                 thinking_levels=thinking_levels,
                 omit_none_thinking_fields=bool(config.get("omit_none_thinking_fields")),
             )
@@ -847,6 +1078,9 @@ class ChatService:
             "temperature",
             "top_p",
             "max_tokens",
+            "api_type",
+            "native_video_transport",
+            "network_timeout",
             "context_window",
             "history_ratio",
             "context_strategy",
@@ -906,6 +1140,7 @@ class ChatService:
             llm.set_parameters(temperature=conv.temperature)
         conv.session.reload_llm(llm)
         conv.session.apply_context_config(config)
+        conv.model_id = config.model
         conv.build_fingerprint = self._runtime_fingerprint(
             conv.model,
             system_prompt=conv.system_prompt,
@@ -971,7 +1206,7 @@ class ChatService:
         返回:
         - str: 模型完整配置, 插件状态和会话设置的稳定哈希
         """
-        cfg = self._model_cfg.get_llm_config(model)
+        cfg = self._require_model(model)
         plugin_specs = [
             spec
             for spec in self._plugins.resolve_specs(PluginConfigManager())
@@ -1029,6 +1264,7 @@ class ChatService:
             if project is None:
                 raise ValueError(f"项目不存在: {project_id}")
         cfg = self._model_cfg.get_llm_config(model)
+        temperature = validate_temperature(temperature)
         llm = build_llm(cfg)
         if temperature is not None:
             llm.set_parameters(temperature=temperature)
@@ -1070,6 +1306,9 @@ class ChatService:
             session_kwargs["db_path"] = self._chat_db_path
 
         session = AsyncSimpleSession(conversation_id, llm, plugin_environment=PluginEnvironment("chat"), **session_kwargs)
+        from satrap.core.log.debug.contracts import DebugObject, bind_debug_object
+
+        bind_debug_object(session, DebugObject(self._platform_id, "local", "chat", conversation_id))
         session.apply_context_config(cfg)
         self._apply_project(session, project)
         # 会话存储与项目工作区绑定需在插件安装前完成
@@ -1079,6 +1318,7 @@ class ChatService:
             session=session,
             recorder=recorder,
             model=model,
+            model_id=cfg.model,
             default_think=think,
             project_id=project_id,
             system_prompt=system_prompt or None,
@@ -1150,7 +1390,7 @@ class ChatService:
         if orphans:
             conv.subscribers.update(orphans)
         if persisted:
-            recorder.save_meta(model, think, project_id=project_id)
+            recorder.save_meta(model, think, project_id=project_id, temperature=temperature)
             logger.info(f"[聊天] 会话已创建: {conversation_id} (model={model})")
         else:
             conv.preload_expiry_task = asyncio.create_task(self._expire_preloaded(conversation_id, conv))
@@ -1159,32 +1399,35 @@ class ChatService:
 
     async def create_conversation(
         self,
-        model: str = "default",
+        model: str | None = None,
         *,
         system_prompt: str | None = None,
-        think: str = "off",
+        think: str = "default",
         project_id: str | None = None,
         default_agent_prompt_enabled: bool = False,
+        temperature: float | None = None,
     ) -> str:
         """
         创建并立即持久化正式会话
 
         参数:
-        - model: 模型名称
+        - model: 模型名称, None 时采用整体默认
         - system_prompt: 系统提示词
         - think: 思考模式
         - project_id: 项目 ID
         - default_agent_prompt_enabled: 是否补充内置 Agent 提示, 默认 False
+        - temperature: 温度覆盖, None 表示跟随模型配置
 
         返回:
         - str: 会话 ID
         """
+        model = await self._initial_model(model)
         conversation_id = uuid.uuid4().hex
         fingerprint = self._runtime_fingerprint(
             model,
             system_prompt=system_prompt,
             project_id=project_id,
-            temperature=None,
+            temperature=temperature,
         )
         await self._create_conversation_runtime(
             conversation_id,
@@ -1192,7 +1435,7 @@ class ChatService:
             system_prompt=system_prompt,
             think=think,
             project_id=project_id,
-            temperature=None,
+            temperature=temperature,
             persisted=True,
             build_fingerprint=fingerprint,
             default_agent_prompt_enabled=default_agent_prompt_enabled,
@@ -1203,10 +1446,10 @@ class ChatService:
 
     async def preload_conversation(
         self,
-        model: str = "default",
+        model: str | None = None,
         *,
         system_prompt: str | None = None,
-        think: str = "off",
+        think: str = "default",
         project_id: str | None = None,
         temperature: float | None = None,
         conversation_id: str | None = None,
@@ -1216,7 +1459,7 @@ class ChatService:
         预分配 ID 并在内存完成 Session, 插件和工作流初始化
 
         参数:
-        - model: 模型名称
+        - model: 模型名称, None 时采用整体默认
         - system_prompt: 系统提示词
         - think: 默认思考等级
         - project_id: 项目 ID
@@ -1227,6 +1470,9 @@ class ChatService:
         返回:
         - str: 预加载会话 ID
         """
+        existing = self._conversations.get(conversation_id or "")
+        temperature = validate_temperature(temperature)
+        model = existing.model if model is None and existing else await self._initial_model(model)
         target_id = conversation_id or uuid.uuid4().hex
         fingerprint = self._runtime_fingerprint(
             model,
@@ -1573,8 +1819,18 @@ class ChatService:
 
     # ---------- 会话恢复 ----------
 
-    async def _resume_conversation(self, conversation_id: str) -> _Conversation | None:
-        """共享初始化任务, 只发布已经完成初始化的运行时"""
+    async def _resume_conversation(self, conversation_id: str, *, model_override: str | None = None, publish: bool = True) -> _Conversation | None:
+        """
+        共享初始化任务, 只发布已经完成初始化的运行时
+
+        参数:
+        - conversation_id: 待恢复的会话 ID
+        - model_override: 显式重选时使用的目标模型, 默认沿用持久绑定
+        - publish: 是否立即发布新运行时, 模型切换时延后到绑定保存成功
+
+        返回:
+        - 已完成初始化的会话, 不存在时为 None; 模型不可用时向调用方抛错
+        """
         existing = self._conversations.get(conversation_id)
         if existing is not None:
             return existing
@@ -1583,7 +1839,7 @@ class ChatService:
             return await asyncio.shield(creating)
         pending = self._resume_tasks.get(conversation_id)
         if pending is None:
-            pending = asyncio.create_task(self._load_conversation(conversation_id))
+            pending = asyncio.create_task(self._load_conversation(conversation_id, model_override=model_override, publish=publish))
             self._resume_tasks[conversation_id] = pending
 
             def finished(task: asyncio.Task[_Conversation | None]) -> None:
@@ -1595,12 +1851,14 @@ class ChatService:
             pending.add_done_callback(finished)
         return await asyncio.shield(pending)
 
-    async def _load_conversation(self, conversation_id: str) -> _Conversation | None:
+    async def _load_conversation(self, conversation_id: str, *, model_override: str | None = None, publish: bool = True) -> _Conversation | None:
         """
         从 display.db 恢复会话运行时状态 (懒加载)
 
         参数:
         - conversation_id: 会话 ID
+        - model_override: 仅显式重选模型时使用, 允许修复已删除的旧绑定, 此处不保存元数据
+        - publish: 默认完成初始化后发布, False 时交由模型切换完成持久化后发布
 
         返回 None 表示会话在 db 中也不存在
 
@@ -1611,8 +1869,9 @@ class ChatService:
         project: dict[str, Any] | None = None
         if meta is not None:
             model = meta.get("model", "default")
-            default_think = str(meta.get("think") or "off")
+            default_think = str(meta.get("think") or "default")
             project_id = meta.get("project_id") or None
+            temperature = validate_temperature(meta.get("temperature"))
             if project_id:
                 project = db_get_project(str(project_id), db_path=self._display_db_path)
                 if project is None:
@@ -1627,12 +1886,16 @@ class ChatService:
             if not turns:
                 return None
             model = "default"
-            default_think = "off"
+            default_think = "default"
+            temperature = None
             logger.info(f"[聊天] 会话 {conversation_id} 无 meta 记录, 从 display_turns 恢复 (model=default)")
         logger.info(f"[聊天] 恢复会话: {conversation_id} (model={model})")
         # 用 create_conversation 重建, 但保留原 conversation_id
-        cfg = self._model_cfg.get_llm_config(model)
+        model = model_override if model_override is not None else model
+        cfg = self._require_model(model)
         llm = build_llm(cfg)
+        if temperature is not None:
+            llm.set_parameters(temperature=temperature)
         recorder = DisplayRecorder(db_path=self._display_db_path, conversation_id=conversation_id)
 
         async def on_content(delta: str) -> None:
@@ -1655,6 +1918,9 @@ class ChatService:
             session_kwargs["db_path"] = self._chat_db_path
 
         session = AsyncSimpleSession(conversation_id, llm, plugin_environment=PluginEnvironment("chat"), **session_kwargs)
+        from satrap.core.log.debug.contracts import DebugObject, bind_debug_object
+
+        bind_debug_object(session, DebugObject(self._platform_id, "local", "chat", conversation_id))
         session.apply_context_config(cfg)
         self._apply_project(session, project)
         conv = _Conversation(
@@ -1662,7 +1928,9 @@ class ChatService:
             session=session,
             recorder=recorder,
             model=model,
+            model_id=cfg.model,
             default_think=default_think,
+            temperature=temperature,
             project_id=str(project["project_id"]) if project is not None else None,
         )
         async def user_input_provider(question: str, options: list[str] | None = None) -> str:
@@ -1702,12 +1970,12 @@ class ChatService:
         session.tools_manager.tool_call_start = on_tool_start
         session.tools_manager.tool_call_end = on_tool_end
 
-        self._conversations[conversation_id] = conv
-        orphans = self._orphan_queues.pop(conversation_id, None)
-        # 挂入订阅时会话不在内存的孤儿队列
-        if orphans:
-            conv.subscribers.update(orphans)
-            logger.info(f"[聊天] 会话 {conversation_id} 恢复后挂入 {len(orphans)} 个孤儿订阅")
+        if publish:
+            self._conversations[conversation_id] = conv
+            orphans = self._orphan_queues.pop(conversation_id, None)
+            if orphans:
+                conv.subscribers.update(orphans)
+                logger.info(f"[聊天] 会话 {conversation_id} 恢复后挂入 {len(orphans)} 个孤儿订阅")
         return conv
 
     # ---------- 发送 ----------
@@ -1760,7 +2028,7 @@ class ChatService:
                 else conv.project_id
             )
             temperature_raw = settings.get("temperature", conv.temperature)
-            temperature = float(temperature_raw) if temperature_raw is not None else None
+            temperature = validate_temperature(temperature_raw)
             effective_think = think if think is not None else conv.default_think
             fingerprint = self._runtime_fingerprint(
                 model,
@@ -1830,7 +2098,7 @@ class ChatService:
                 # 在会话持久化和首轮任务启动前应用显式选择, 重建预加载运行时后也必须生效
 
             conv.default_think = effective_think
-            conv.recorder.save_meta(conv.model, effective_think, project_id=conv.project_id)
+            conv.recorder.save_meta(conv.model, effective_think, project_id=conv.project_id, temperature=conv.temperature)
             conv.persisted = True
             if conv.preload_expiry_task is not None:
                 conv.preload_expiry_task.cancel()
@@ -1847,6 +2115,7 @@ class ChatService:
         think: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         preload_settings: dict[str, Any] | None = None,
+        expected_model: str | None = None,
     ) -> dict[str, Any]:
         """
         发送消息: 立即返回, run 在后台 task 执行, 流式经 WS 推送
@@ -1857,6 +2126,7 @@ class ChatService:
         - think: 思考模式
         - attachments: 附件列表
         - preload_settings: 首次发送时用于校验预加载运行时的最新设置
+        - expected_model: 前端已确认的会话绑定, 不一致时先要求同步而不生成
 
         同一会话不支持并发 send (上一个 run 未完成时拒绝)
         think 为 None 时使用会话默认 (conversation_meta)
@@ -1870,16 +2140,19 @@ class ChatService:
         settings = preload_settings or {}
         conv = self._conversations.get(conversation_id)
         if conv is None:
-            conv = await self._resume_conversation(conversation_id)
+            try:
+                conv = await self._resume_conversation(conversation_id)
+            except ValueError as error:
+                return {"ok": False, "error": str(error)}
         if conv is None and settings:
             try:
                 await self.preload_conversation(
-                    model=str(settings.get("model") or "default"),
+                    model=str(settings["model"]) if settings.get("model") is not None else None,
                     system_prompt=str(settings.get("system_prompt") or "") or None,
-                    think=think or "off",
+                    think=think or "default",
                     project_id=str(settings.get("project_id") or "") or None,
                     temperature=(
-                        float(settings["temperature"])
+                        validate_temperature(settings["temperature"])
                         if settings.get("temperature") is not None
                         else None
                     ),
@@ -1901,8 +2174,14 @@ class ChatService:
             return {"ok": False, "error": "上一轮仍在进行, 请等待完成"}
 
         try:
+            self._require_model(conv.model)
+            if expected_model is not None and expected_model != conv.model:
+                return {"ok": False, "model": conv.model, "error": "会话模型已变更, 请同步当前选择后重试"}
             img_urls, video_urls = self._attachment_media(conv, attachments)
-        except ValueError as error:
+            if "temperature" in settings:
+                await self.set_generation_settings(conversation_id, {"temperature": settings["temperature"]})
+            generation_parameters = await self._generation_parameters(conv)
+        except (OSError, ValueError) as error:
             return {"ok": False, "error": str(error)}
         effective_think = think if think is not None else conv.default_think
 
@@ -1912,6 +2191,12 @@ class ChatService:
             display_text = "\n".join(att_lines) + "\n" + text if text.strip() else "\n".join(att_lines)
 
         turn = conv.recorder.start_turn(text, attachments=attachments)
+        from satrap.core.telemetry.capture import bind_scope, record_message
+        from satrap.core.telemetry.contracts import MetricScope
+
+        with bind_scope(service="chat"):
+            record_message(MetricScope(platform_id=self._platform_id, self_id="local", conversation_kind="chat", target_id=conversation_id),
+                           f"input:{turn['turn_id']}", command=conv.session.command_handler._is_cmd(text))
         context_start = conv.session.ctx.static_message()
         self._broadcast(
             conv,
@@ -1929,11 +2214,55 @@ class ChatService:
                 effective_think,
                 img_urls=img_urls, video_urls=video_urls,
                 context_start=context_start,
+                generation_parameters=generation_parameters,
             )
         )
         return {"ok": True, "conversation_id": conversation_id, **turn}
 
     async def _run_turn(
+        self, conv: _Conversation, text: str, think: str, *, img_urls: list[str] | None = None,
+        video_urls: list[str] | None = None, context_start: int, resume_run_id: str | None = None,
+        model_metadata: dict[str, object] | None = None,
+        generation_parameters: _GenerationParameters | None = None,
+    ) -> None:
+        """
+        为实际 Chat 执行创建独立诊断请求
+
+        参数:
+        - conv: 实际持久会话
+        - text: 本轮输入
+        - think: 思考设置
+        - img_urls: 输入图片
+        - video_urls: 输入视频
+        - context_start: 上下文起点
+        - resume_run_id: 可选恢复任务
+        - model_metadata: 已完成任务回放资料
+        - generation_parameters: 已接受轮次的参数快照, 恢复旧任务时保持 None
+        """
+        from satrap.core.log.debug.capture import debug_request, record_debug, previous_chat_request
+        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.telemetry.capture import bind_scope
+        from satrap.core.telemetry.contracts import MetricScope
+
+        obj = DebugObject(self._platform_id, "local", "chat", conv.conversation_id)
+        version = conv.recorder.recovery_origin()
+        with bind_scope(MetricScope(platform_id=self._platform_id, self_id="local", conversation_kind="chat", target_id=conv.conversation_id,
+                                    session_id=conv.conversation_id, context_id=conv.conversation_id, model_config=conv.model), service="chat"), \
+             debug_request(obj, "chat-" + uuid.uuid4().hex,
+                           context_id=conv.conversation_id,
+                           input_data={"text": text, "images": img_urls, "videos": video_urls}) as trace:
+            if trace is not None:
+                try:
+                    trace.parent_request_id = await asyncio.to_thread(previous_chat_request, obj, conv.conversation_id, version, resume_run_id)
+                except Exception:
+                    trace.incomplete = True
+            record_debug("chat", "start", metadata={"resume_run_id": resume_run_id,
+                         "reply_version": version})
+            await self._run_turn_traced(conv, text, think, img_urls=img_urls, video_urls=video_urls,
+                                        context_start=context_start, resume_run_id=resume_run_id, model_metadata=model_metadata,
+                                        generation_parameters=generation_parameters)
+
+    async def _run_turn_traced(
         self,
         conv: _Conversation,
         text: str,
@@ -1943,6 +2272,8 @@ class ChatService:
         video_urls: list[str] | None = None,
         context_start: int,
         resume_run_id: str | None = None,
+        model_metadata: dict[str, object] | None = None,
+        generation_parameters: _GenerationParameters | None = None,
     ) -> None:
         """
         后台执行一轮 run, 结束回填 recorder + 广播完成
@@ -1952,9 +2283,18 @@ class ChatService:
         - text: 待处理文本
         - think: 思考模式
         - img_urls: 图片 URL 列表
+        - video_urls: 视频来源列表, 默认 None
         - context_start: 运行前模型上下文消息数
+        - resume_run_id: 已校验恢复指纹的任务 ID, 默认创建新执行
+        - model_metadata: 已完成任务回放时的旧模型资料, 默认取本轮实际客户端
+        - generation_parameters: 本轮接受时固定的生成参数, None 保留恢复任务配置
         """
         async with conv.plugin_lock:
+            if generation_parameters is not None:
+                conv.session.llm.temperature = generation_parameters.temperature
+                # 显式 None 清除上轮覆盖, 整个工具循环不再读取可变偏好
+            response_model: dict[str, object] = model_metadata if model_metadata is not None else {
+                "model": conv.model, "model_id": getattr(conv.session.llm, "model", conv.model_id)}
             try:
                 await self._refresh_session_plugins(conv)
                 conv.session.recovery_origin = conv.recorder.recovery_origin()
@@ -1977,29 +2317,55 @@ class ChatService:
                     result = (await conv.session.resume_run(resume_run_id) if resume_run_id is not None
                               else await conv.session.run(text, img_urls=img_urls, video_urls=video_urls, thinking=think))
                 answer = result.message if isinstance(result, CommandAction) else result
+                from satrap.core.log.debug.capture import record_debug
+
+                record_debug("reply", "end", status="completed", bodies={"output": answer})
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
                 context_stats = conv.session.get_context_stats()
                 completed = conv.recorder.end_turn(
                     answer,
                     context_messages=context_messages,
                     context_stats=context_stats,
+                    response_metadata={"status": "completed", **response_model},
                 ) or {}
+                from satrap.core.telemetry.capture import current_scope, record_message, record_session_completed
+
+                record_message(current_scope(), f"output:{completed.get('turn_id')}:{completed.get('variant_index')}", outbound=True)
+                record_session_completed()
                 self._broadcast(
                     conv,
                     {"type": MSG_TURN_DONE, "answer": answer, "context_stats": context_stats, **completed},
                 )
+                record_debug("chat_delivery", "end", status="queued", metadata={"client_acknowledged": False, "context_stats": context_stats})
+            except asyncio.CancelledError:
+                from satrap.core.log.debug.capture import current_trace, record_debug
+
+                debug = current_trace()
+                if debug is not None:
+                    debug.status = "cancelled"
+                record_debug("reply", "end", status="cancelled")
+                raise
             except Exception as e:
-                logger.error(f"[聊天] 会话 {conv.conversation_id} run 失败: {e}")
+                info = model_error_info(e)
+                from satrap.core.log.debug.capture import current_trace, record_debug
+
+                debug = current_trace()
+                if debug is not None:
+                    debug.status = "timeout" if info.code.endswith("timeout") else "failed"
+                record_debug("reply", "end", status="failed", metadata={"code": info.code, "reason": info.message})
+                log = logger.error if info.code == "internal_error" else logger.warning
+                log(f"[聊天] 会话 {conv.conversation_id} run 失败: {info.text}")
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
                 context_stats = conv.session.get_context_stats()
                 completed = conv.recorder.end_turn(
                     "",
                     context_messages=context_messages,
                     context_stats=context_stats,
+                    response_metadata={"status": "failed", **response_model, "error": asdict(info), "error_text": info.text},
                 ) or {}
                 self._broadcast(
                     conv,
-                    {"type": MSG_ERROR, "error": str(e), "context_stats": context_stats, **completed},
+                    {"type": MSG_ERROR, "error": info.text, "error_info": asdict(info), "context_stats": context_stats, **completed},
                 )
             finally:
                 self._apply_pending_model_refresh(conv)
@@ -2052,22 +2418,25 @@ class ChatService:
                     return {"ok": False, "error": "历史或执行配置已改变, 请使用重新生成或分支"}
                 origin = run["payload"].get("origin", {})
                 turn = conv.recorder.resume_turn(int(origin["turn_id"]), int(origin["variant_index"]))
+                old_metadata = turn.get("response_metadata") or {}
+                replay_model = {key: old_metadata[key] for key in ("model", "model_id") if key in old_metadata} if run["status"] == "completed" else None
                 context_start = int(run["payload"].get("context_start", conv.session.ctx.static_message()))
                 self._broadcast(conv, {"type": "turn_start", "retry": True, "resumed": True, **turn})
                 conv.task = asyncio.ensure_future(self._run_turn(conv, "", conv.default_think,
-                                                                context_start=context_start, resume_run_id=run_id))
+                                                                context_start=context_start, resume_run_id=run_id, model_metadata=replay_model))
                 return {"ok": True, **turn}
             except (ValueError, RuntimeError, KeyError) as exc:
                 return {"ok": False, "error": str(exc)}
 
     @_exclusive_conversation_operation
-    async def retry(self, conversation_id: str, think: str | None = None) -> dict[str, Any]:
+    async def retry(self, conversation_id: str, think: str | None = None, *, expected_model: str | None = None) -> dict[str, Any]:
         """
         重试最后一轮: 保留旧回复版本, 回退模型上下文后重新生成
 
         参数:
         - conversation_id: 会话 ID
         - think: 思考模式
+        - expected_model: 前端已确认的会话模型, 不匹配时不创建回复变体
 
         think 缺省 (None) 时回落 send 的会话默认逻辑
 
@@ -2076,23 +2445,50 @@ class ChatService:
         """
         conv = self._conversations.get(conversation_id)
         if conv is None:
-            conv = await self._resume_conversation(conversation_id)
+            try:
+                conv = await self._resume_conversation(conversation_id)
+            except ValueError as error:
+                return {"ok": False, "error": str(error)}
         if conv is None:
             return {"ok": False, "error": f"会话不存在: {conversation_id}"}
         if conv.task is not None and not conv.task.done():
             return {"ok": False, "error": "上一轮仍在进行, 请等待完成"}
+        try:
+            self._require_model(conv.model)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        if expected_model is not None and expected_model != conv.model:
+            return {"ok": False, "model": conv.model, "error": "会话模型已变更, 请同步当前选择后重试"}
         async with conv.plugin_lock:
             return await self._retry_reserved(conv, conversation_id, think)
 
     async def _retry_reserved(self, conv: _Conversation, conversation_id: str, think: str | None) -> dict[str, Any]:
-        """在会话占用和插件锁保护下准备重试"""
+        """
+        在会话占用和插件锁保护下先校验媒体, 再准备重试
+
+        参数:
+        - conv: 当前会话运行时
+        - conversation_id: 会话 ID
+        - think: 显式思考等级, None 沿用会话默认
+
+        返回:
+        - 新回复版本标识或失败信息; 预检失败不修改上下文与变体
+        """
+        latest = conv.recorder.list_turns(limit=1, latest=True, all_variants=False)
+        if not latest:
+            return {"ok": False, "error": "没有可重试的轮次"}
+        attachments = cast(list[dict[str, Any]] | None, latest[-1].get("attachments"))
+        try:
+            img_urls, video_urls = self._attachment_media(conv, attachments)
+            generation_parameters = await self._generation_parameters(conv)
+        except ValueError as error:
+            logger.warning(f"[聊天重试] 媒体校验失败, 会话={conversation_id}, 原因={error}")
+            return {"ok": False, "error": str(error)}
         original_context = copy.deepcopy(conv.session.ctx.get_context())
         retry_turn = conv.recorder.start_retry_variant()
         if retry_turn is None:
             return {"ok": False, "error": "没有可重试的轮次"}
         try:
-            attachments = cast(list[dict[str, Any]] | None, retry_turn.get("attachments"))
-            img_urls, video_urls = self._attachment_media(conv, attachments)
             previous_context = retry_turn.get("previous_context_messages")
             if previous_context is None:
                 all_messages = copy.deepcopy(conv.session.ctx.get_context())
@@ -2138,6 +2534,7 @@ class ChatService:
                     effective_think,
                     img_urls=img_urls, video_urls=video_urls,
                     context_start=context_start,
+                    generation_parameters=generation_parameters,
                 )
             )
             return {
@@ -2158,6 +2555,36 @@ class ChatService:
 
     @_exclusive_conversation_operation
     async def select_variant(
+        self,
+        conversation_id: str,
+        turn_index: int,
+        variant_index: int,
+    ) -> dict[str, Any]:
+        """
+        记录用户切换回复版本的实际结果, 不复制来源历史
+
+        参数:
+        - conversation_id: 当前持久会话 ID
+        - turn_index: 目标展示轮次
+        - variant_index: 目标回复版本
+
+        返回:
+        - 原有切换结果, 诊断开关不影响业务路径
+        """
+        from satrap.core.log.debug.capture import debug_request, record_debug
+        from satrap.core.log.debug.contracts import DebugObject
+
+        with debug_request(DebugObject(self._platform_id, "local", "chat", conversation_id), "variant-" + uuid.uuid4().hex,
+                           context_id=conversation_id, input_data={"turn_index": turn_index, "variant_index": variant_index}) as trace:
+            result = await self._select_variant(conversation_id, turn_index, variant_index)
+            status = "success" if result.get("ok") else "failed"
+            record_debug("context_variant", "end", status=status, metadata={"turn_index": turn_index,
+                         "variant_index": variant_index, "reason": result.get("error", "")})
+            if trace is not None:
+                trace.status = status
+            return result
+
+    async def _select_variant(
         self,
         conversation_id: str,
         turn_index: int,
@@ -2281,6 +2708,29 @@ class ChatService:
 
     async def fork(self, conversation_id: str, turn_index: int) -> dict[str, Any]:
         """
+        关联实际 Fork 操作, 新对象继续按自己的设置决定是否采集
+
+        参数:
+        - conversation_id: 已校验的来源会话
+        - turn_index: 来源轮次
+
+        返回:
+        - 原 Fork 结果, 诊断不复制原链路或对象开关
+        """
+        from satrap.core.log.debug.capture import debug_request, record_debug
+        from satrap.core.log.debug.contracts import DebugObject
+
+        with debug_request(DebugObject(self._platform_id, "local", "chat", conversation_id), "fork-" + uuid.uuid4().hex,
+                           context_id=conversation_id, input_data={"action": "fork", "turn_index": turn_index}) as trace:
+            result = await self._fork(conversation_id, turn_index)
+            if trace is not None:
+                trace.status = "success" if result.get("ok") else "failed"
+            record_debug("context_fork", "end", status="completed" if result.get("ok") else "failed",
+                         metadata={"source_context": conversation_id, "source_turn_index": turn_index, "target_context": result.get("conversation_id")})
+            return result
+
+    async def _fork(self, conversation_id: str, turn_index: int) -> dict[str, Any]:
+        """
         从指定轮次 fork 新会话 (复制该轮之前的上下文, 继承 model 与默认 think)
 
         参数:
@@ -2301,6 +2751,7 @@ class ChatService:
                 think=src.default_think,
                 system_prompt=src.system_prompt,
                 project_id=src.project_id,
+                temperature=src.temperature,
             )
             try:
                 new_conv = self._conversations[new_cid]
@@ -3242,7 +3693,7 @@ class ChatService:
             if operation and self._operations.get(conversation_id) is operation:
                 self._operations.pop(conversation_id)
         if conv and was_running:
-            completed = conv.recorder.end_turn("") or {}
+            completed = conv.recorder.end_turn("", response_metadata={"model": conv.model, "model_id": conv.model_id}) or {}
             self._broadcast(conv, {"type": MSG_TURN_DONE, "answer": "", **completed})
         logger.info(f"[聊天] 会话 {conversation_id} 已取消")
         return {"ok": True}

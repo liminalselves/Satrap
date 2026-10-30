@@ -16,7 +16,11 @@ config_schema:
   group_write_enabled:
     type: bool
     default: false
-    description: "允许模型保存本人的群内偏好或提交群记忆提案; 不授予修改其他成员的权限"
+    description: "允许保存本人的群内偏好和操作群共享记忆, 群共享记忆按审批设置处理; 不授予修改其他成员偏好的权限"
+  group_auto_approve:
+    type: bool
+    default: false
+    description: "群共享记忆免人工审批: 开启后新增, 修改和删除直接生效; 需要先开启群记忆写入, 已有待审批提案保持原状态"
   injection_limit:
     type: number
     default: 30
@@ -44,7 +48,7 @@ commands:
   memory: 管理当前范围内的长期记忆
 
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 applicability:
   session_types: [chat, platform, embedded]
   platforms: "*"

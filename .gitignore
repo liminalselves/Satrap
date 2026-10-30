@@ -240,6 +240,7 @@ satrap-ui/benchmarks/results/smoke.json
 satrap-ui/benchmarks/results/traces/
 
 satrap-ui/test-results/
+satrap-ui-preview/
 docs/archive/
 .zcodeignore
 .runtime/

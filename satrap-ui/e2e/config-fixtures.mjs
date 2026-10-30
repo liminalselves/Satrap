@@ -5,6 +5,8 @@ export function emptyConfigResponse(requestUrl) {
   const url = new URL(requestUrl);
   if (url.pathname === '/config/models' || url.pathname === '/config/session-classes' || url.pathname === '/config/edictum/sessions') return {};
   if (url.pathname === '/config/plugins') return { plugins: [] };
+  if (url.pathname === '/api/chat/settings') return { default_model: 'benchmark-model', revision: 'chat-default-fixture-v1' };
+  if (url.pathname === '/api/chat/model') return { ok: true, model: 'benchmark-model', available: true };
   if (url.pathname === '/config/snapshot') {
     const resource = url.searchParams.get('resource');
     assert.ok(['models', 'session_classes', 'edictum_configs', 'plugin_catalog'].includes(resource), `未知快照资源: ${resource}`);
@@ -12,6 +14,7 @@ export function emptyConfigResponse(requestUrl) {
       : resource === 'edictum_configs' ? ['edictum_configs', 'plugin_catalog'] : [resource];
     return { data: resource === 'plugin_catalog' ? [] : {}, versions: Object.fromEntries(resources.map((name) => [name, { state: 'available', change_token: 'empty-fixture-v1' }])) };
   }
+  if (/^\/api\/chat\/conversations\/[^/]+\/settings$/.test(url.pathname)) return { temperature: null, request_temperature: 0.7 };
   assert.ok(!url.pathname.startsWith('/api/chat/conversations'), `未声明 Chat 目录夹具: ${url.pathname}`);
   return { ok: true };
 }

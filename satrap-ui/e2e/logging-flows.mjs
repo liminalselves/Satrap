@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs, { mkdir } from "node:fs/promises";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, waitForRequestEntry } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 async function log_retention(runtime) {
 
@@ -179,7 +180,7 @@ async function log_retention(runtime) {
 
 }
 
-async function log_stream(runtime) {
+async function log_stream_baseline(runtime) {
 
 
 
@@ -190,7 +191,10 @@ async function log_stream(runtime) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const production = process.env.LOG_STREAM_PRODUCTION === '1';
   const server = production ? await runtime.preview({ root, preview: { host: '127.0.0.1', port: 0 } })
-    : await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+    : await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'log-baseline', enforce: 'pre',
+      load(id) { const file = id.replaceAll('\\', '/').match(/\/src\/pages\/Logs\/(index\.tsx|VirtualLogList\.tsx)$/)?.[1];
+        if (file) return execFileSync('git', ['show', `97114c6:satrap-ui/src/pages/Logs/${file}`], { cwd: root, encoding: 'utf8' }); },
+    }] }, 'logs-baseline');
   let browser;
   try {
     if (!production) await runtime.listen(server);
@@ -320,6 +324,173 @@ async function log_stream(runtime) {
 
 }
 
+async function log_stream(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  try {
+    await runtime.listen(server);
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const page = await runtime.browser.newPage({ viewport: { width: 1280, height: 1000 }, acceptDownloads: true });
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
+    const records = { 19871: [], 19872: [] };
+    const identities = { 19871: 'control-run', 19872: 'chat-run' };
+    const reads = { 19870: 0, 19871: 0, 19872: 0 };
+    let bodyBytes = 0;
+    let chatAuthorized = false;
+    await page.route(origin + '/ui-config.json', (route) => route.fulfill({ json: {
+      backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
+    } }));
+    await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, async (route) => {
+      const url = new URL(route.request().url());
+      const port = Number(url.port);
+      if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/auth/password/login') {
+        assert.equal(port, 19872);
+        assert.equal(route.request().postDataJSON().password, 'test-chat-password');
+        chatAuthorized = true;
+        return route.fulfill({ json: { ok: true }, headers: cors });
+      }
+      if (url.pathname === '/auth/password/status') return route.fulfill({ json: { password_required: true }, headers: cors });
+      if (port === 19872 && !chatAuthorized) return route.fulfill({ status: 401, json: { error: '需要密码' }, headers: cors });
+      if (url.pathname === '/api/logs') {
+        reads[port]++;
+        if (port === 19870) return route.abort('connectionrefused');
+        const after = Number(url.searchParams.get('after') ?? 0);
+        const limit = Number(url.searchParams.get('limit') ?? 100);
+        const reset = url.searchParams.has('stream_id') && url.searchParams.get('stream_id') !== identities[port];
+        const history = records[port];
+        const entries = !url.searchParams.has('after') || reset ? history.slice(-limit) : history.filter((entry) => entry.sequence > after).slice(0, limit);
+        const next = entries.at(-1)?.sequence ?? (reset ? 0 : after);
+        const payload = { service: port === 19871 ? 'control' : 'chat', stream_id: identities[port], entries,
+          next_cursor: next, reset, has_more: next < (history.at(-1)?.sequence ?? 0) };
+        bodyBytes += Buffer.byteLength(JSON.stringify(payload));
+        return route.fulfill({ json: payload, headers: cors });
+      }
+      return route.fulfill({ json: { ok: true, running: false, adapters: {} }, headers: cors });
+    });
+    await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
+    await mockConfigVersions(page, origin, () => '{}');
+    await page.goto(origin + '/logs');
+    await page.getByText('Control: 已连接', { exact: true }).waitFor();
+    await page.getByText('Chat需要访问密码', { exact: true }).waitFor();
+    assert.equal(await page.getByText('正在连接服务…', { exact: true }).count(), 0);
+    await page.getByLabel('Chat访问密码', { exact: true }).fill('test-chat-password');
+    await Promise.all([page.waitForEvent('load'), page.getByRole('button', { name: '登录Chat', exact: true }).click()]);
+    await page.getByText('Chat: 已连接', { exact: true }).waitFor();
+    const terminal = page.getByLabel('日志内容', { exact: true });
+    const append = (port, count, content) => {
+      for (let index = 0; index < count; index++) {
+        const sequence = records[port].length + 1;
+        records[port].push({ sequence, timestamp: sequence, pid: 123, level: sequence % 2 ? 'WARNING' : 'INFO',
+          content: content?.(sequence) ?? `日志-${sequence - 1}`, truncated: false });
+      }
+    };
+    const started = performance.now();
+    const beforeReads = { ...reads };
+    append(19871, 5000);
+    await page.waitForFunction(() => document.querySelector('[data-log-id]'));
+    const firstLogMs = performance.now() - started;
+    await page.getByText('共 5000 条日志', { exact: true }).waitFor();
+    await terminal.getByText('[Control] 日志-4999', { exact: true }).waitFor();
+    const burstMs = performance.now() - started;
+    const burstBytes = bodyBytes;
+    const burstRequests = Object.fromEntries(Object.keys(reads).map((key) => [key, reads[key] - beforeReads[key]]));
+    assert.ok(await terminal.locator('[data-log-id]').count() < 100);
+    const downloaded = page.waitForEvent('download');
+    await page.getByRole('button', { name: '导出', exact: true }).click();
+    const text = await fs.readFile(await (await downloaded).path(), 'utf8');
+    assert.deepEqual(text.split('\n'), Array.from({ length: 5000 }, (_, index) => `[Control] 日志-${index}`));
+    await page.getByPlaceholder('搜索日志...').fill('日志-1234');
+    await page.getByText('共 1 条日志', { exact: true }).waitFor();
+    await page.getByPlaceholder('搜索日志...').fill('');
+    await page.getByRole('button', { name: 'WARNING', exact: true }).click();
+    await page.getByText('共 2500 条日志', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'WARNING', exact: true }).click();
+    await terminal.hover();
+    await page.mouse.wheel(0, -1200);
+    await page.getByText('已暂停滚动', { exact: true }).waitFor();
+    await terminal.evaluate(async (element) => {
+      let previous = element.scrollTop, stable = 0;
+      while (stable < 6) {
+        await new Promise(requestAnimationFrame);
+        const current = element.scrollTop;
+        stable = Math.abs(current - previous) < 0.1 ? stable + 1 : 0;
+        previous = current;
+      }
+    });
+    const anchor = await terminal.evaluate((element) => {
+      const row = [...element.querySelectorAll('[data-log-id]')].find((item) => item.getBoundingClientRect().top >= element.getBoundingClientRect().top);
+      return { id: row.dataset.logId, top: row.getBoundingClientRect().top };
+    });
+    const appended = page.waitForResponse(async (response) => {
+      const url = new URL(response.url());
+      return url.port === '19871' && url.pathname === '/api/logs' && (await response.json()).next_cursor === 5020;
+    });
+    append(19871, 20);
+    await appended;
+    await page.waitForTimeout(250);
+    const afterTop = await terminal.locator(`[data-log-id="${anchor.id}"]`).evaluate((element) => element.getBoundingClientRect().top);
+    assert.ok(Math.abs(afterTop - anchor.top) < 2);
+    // 滚到底部的 scroll 事件尚未派发时到达新批次, 不能按旧锚点跳回原阅读位置
+    await terminal.evaluate((element) => {
+      const hold = (event) => { if (event.target === element) event.stopImmediatePropagation(); };
+      window.addEventListener('scroll', hold, true);
+      window.releaseHeldScroll = () => window.removeEventListener('scroll', hold, true);
+      element.scrollTop = element.scrollHeight;
+    });
+    const heldBatch = page.waitForResponse(async (response) => {
+      const url = new URL(response.url());
+      return url.port === '19871' && url.pathname === '/api/logs' && (await response.json()).next_cursor === 5025;
+    });
+    append(19871, 5);
+    await heldBatch;
+    await page.waitForTimeout(250);
+    const heldGap = await terminal.evaluate((element) => {
+      window.releaseHeldScroll();
+      return element.scrollHeight - element.clientHeight - element.scrollTop;
+    });
+    assert.ok(heldGap < 48, `新批次把已到底部的视图拉回 ${heldGap}px`);
+    await terminal.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await page.getByText('自动滚动', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '暂停', exact: true }).click();
+    append(19871, 20);
+    await page.getByText('共 5000 条日志, 暂停期间收到 20 条', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '继续', exact: true }).click();
+    await terminal.getByText('[Control] 日志-5044', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '清空', exact: true }).click();
+    await page.getByText('共 0 条日志', { exact: true }).waitFor();
+    append(19871, 1, () => '清空后增量');
+    append(19872, 1, () => 'Chat 独立日志');
+    await terminal.getByText('[Control] 清空后增量', { exact: true }).waitFor();
+    await terminal.getByText('[Chat] Chat 独立日志', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '全部来源', exact: true }).click();
+    await page.getByRole('button', { name: 'Chat', exact: true }).click();
+    await page.getByText('共 1 条日志', { exact: true }).waitFor();
+    assert.equal(await terminal.getByText('[Control] 清空后增量', { exact: true }).count(), 0);
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')); });
+    await page.waitForTimeout(1200);
+    const hiddenReads = reads[19872];
+    await page.waitForTimeout(1300);
+    assert.equal(reads[19872], hiddenReads);
+    identities[19872] = 'chat-restarted'; records[19872] = [];
+    append(19872, 1, () => '重启后日志');
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')); });
+    await terminal.getByText('[Chat] 重启后日志', { exact: true }).waitFor();
+    await terminal.getByText(/服务已重启或日志游标已过期/).waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await terminal.getByText('[Chat] 重启后日志', { exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+    console.log('PASS: Backend 离线仍显示 Control/Chat, Chat 独立密码恢复, 5000 条有界增量/导出/筛选, 暂停/清空, 隐藏补取与重启提示');
+    console.log(JSON.stringify({ firstLogMs, burstMs, burstBytes, burstRequests, totalBodyBytes: bodyBytes, maxBuffer: 5000 }));
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 async function storage_audit(runtime) {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
@@ -377,9 +548,305 @@ async function storage_audit(runtime) {
   }
 }
 
+async function advanced_debug(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  await runtime.listen(server);
+  const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const page = await (await runtime.browser).newPage({ viewport: { width: 1440, height: 1100 } });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:\d+\/ws\/status/, () => {});
+  const object = { platform_id: 'qq', self_id: 'bot', conversation_kind: 'group', target_id: 'room' };
+  let snapshot = { policy: { version: 1, default_enabled: false, retention_days: 7, max_total_mb: 512, max_body_mb: 8, max_request_mb: 32, objects: [] }, revision: 'v1' };
+  let bodyReads = 0, contextReads = 0, writes = 0, traceClosed = false;
+  let releaseBody, enterBody;
+  const bodyEntered = new Promise((resolve) => { enterBody = resolve; });
+  const bodyReleased = new Promise((resolve) => { releaseBody = resolve; });
+  const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,PUT,POST,OPTIONS' };
+  await page.route('**/*', async (route) => {
+    const request = route.request(), url = new URL(request.url());
+    if (url.origin === origin && url.pathname !== '/ui-config.json') return route.continue();
+    const fulfill = (data, status = 200) => route.fulfill({ status, headers: cors, json: data });
+    if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    if (url.pathname === '/ui-config.json') return fulfill({ backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' });
+    if (url.pathname === '/auth/session') return fulfill({ ok: true });
+    if (url.pathname === '/status') return fulfill({ running: false, run_state: 'stopped' });
+    if (url.pathname === '/config/debug-logging') {
+      if (request.method() === 'PUT') {
+        const payload = request.postDataJSON();
+        assert.equal(payload.expected_revision, snapshot.revision);
+        writes++;
+        snapshot = { policy: payload.policy, revision: `v${writes+1}` };
+      }
+      return fulfill(snapshot);
+    }
+    if (url.pathname === '/config/debug-logging/contexts') return fulfill({ contexts: url.searchParams.get('platform_id') === 'qq' ? [{ object_key: 'group-key', context_id: 'cold-context', title: '未产生日志上下文', updated_at: 1, request_count: 0, error_count: 0, object, service: 'backend' }] : [], platforms: ['chat', 'qq'], has_more: false, next_cursor: null, unconfirmed: 0 });
+    if (url.pathname === '/api/debug/status') return fulfill({ database_bytes: 120000, wal_bytes: 0, used_bytes: 110000, pending_events: 0, write_error: '', maintenance_error: '' });
+    if (url.pathname === '/api/debug/objects') return fulfill({ objects: [{ object_key: url.searchParams.has('cursor') ? 'private-key' : 'group-key',
+      object: url.searchParams.has('cursor') ? { ...object, conversation_kind: 'private' } : object,
+      updated_at: 1, context_count: 2, request_count: 6, error_count: 1, service: 'backend' }],
+      has_more: !url.searchParams.has('cursor'), next_cursor: url.searchParams.has('cursor') ? null : 'objects-page2' });
+    if (url.pathname === '/api/debug/contexts') {
+      contextReads++;
+      assert.equal(url.searchParams.get('object_key'), 'group-key');
+      const more = url.searchParams.has('cursor');
+      return fulfill({ contexts: [more ? 'after-new' : 'before-new'].map((id) => ({ object_key: 'group-key', context_id: id, title: id,
+        updated_at: 1, request_count: 1, error_count: 0, object, service: 'backend' })), has_more: !more, next_cursor: more ? null : 'contexts-page2' });
+    }
+    const requestSummary = (id) => ({ request_id: id, status: id === 'r-after-new' && !traceClosed ? 'running' : id === 'r-cancelled' ? 'cancelled' : 'success',
+      diagnostic_level: id === 'r-hard-error' ? 'error' : id === 'r-after-new' ? 'warning' : id === 'r-legacy' ? 'unknown' : 'info',
+      context_id: 'after-new', parent_request_id: '', started_at: 1, updated_at: 2, incomplete: 0, settings_revision: 'v1' });
+    if (url.pathname === '/api/debug/requests') return fulfill({ requests: (url.searchParams.get('context_id') === 'after-new'
+      ? ['r-after-new', 'r-hard-error', 'r-normal', 'r-cancelled', 'r-legacy'] : ['r-before-new']).map(requestSummary), has_more: false });
+    if (url.pathname === '/api/debug/request') return fulfill({ request: requestSummary(url.searchParams.get('request_id')) });
+    if (url.pathname === '/api/debug/events') {
+      const id = url.searchParams.get('request_id'), after = Number(url.searchParams.get('after') ?? -1);
+      const event = (sequence, category, status, metadata, body_slots = []) => ({ event_id: `${id}-${sequence}`, request_id: id, sequence, category,
+        phase: sequence === 0 && category === 'model' ? 'start' : 'end', span_id: `span${sequence}`, parent_span_id: '', recorded_at: 1, status, metadata, body_slots });
+      const events = id === 'r-after-new' ? [
+        event(0, 'model', '', { model: 'synthetic', diagnostic_level: 'info', network_timeout: 60 }, ['input']),
+        event(1, 'tool', 'completed', { name: 'read_document', diagnostic_level: 'warning', error_kind: 'model_input', error_code: 'invalid_arguments', reason: '缺少 path 参数' }, ['result']),
+        event(2, 'tool_result', 'returned', { name: 'group_chat_reply', diagnostic_level: 'info', result_status: 'sent' }, ['result']),
+        event(3, 'approval', 'pending', { diagnostic_level: 'info' }),
+        ...(traceClosed ? [event(4, 'model', 'completed', { model: 'synthetic', diagnostic_level: 'info' }), event(5, 'request', 'success', { diagnostic_level: 'info' })] : []),
+      ] : [event(0, 'tool_result', id === 'r-cancelled' ? 'cancelled' : 'returned', id === 'r-legacy' ? {} : {
+        name: 'example', diagnostic_level: id === 'r-hard-error' ? 'error' : 'info', ...(id === 'r-hard-error' ? { error_kind: 'runtime_error', error_code: 'execution_error', reason: '内部执行故障' } : {}),
+      }, ['result'])];
+      const selected = events.filter((item) => item.sequence > after), visible = after === -1 && id === 'r-after-new' ? selected.slice(0, 2) : selected;
+      return fulfill({ events: visible, has_more: visible.length < selected.length });
+    }
+    if (url.pathname === '/api/debug/body' || url.pathname === '/api/debug/body-delta') {
+      bodyReads++;
+      const delayed = url.searchParams.get('event_id') === 'r-after-new-1';
+      if (delayed) { enterBody(); await bodyReleased; }
+      const messages = [{ role: 'user', content: delayed ? '延迟到达的工具结果' : '按需读取的测试正文' }];
+      return fulfill({ body: delayed ? { messages } : url.pathname === '/api/debug/body' ? { messages: [{ role: 'system', content: '完整输入才显示的旧历史' }, ...messages] }
+        : { view: 'delta', basis: 'latest_user_message', total_messages: 4, hidden_prefix_messages: 3, hidden_suffix_messages: 0,
+          removed_messages: 0, messages, changed_parameters: { model: 'synthetic' }, removed_parameters: [] } });
+    }
+    return fulfill({ error: '此浏览器场景未提供该接口' }, 404);
+  });
+  try {
+    await page.goto(`${origin}/logs/debug`);
+    await page.getByRole('heading', { name: '高级 Debug', exact: true }).waitFor();
+    await page.locator('[data-debug-object="group-key"]').waitFor();
+    assert.equal(contextReads, 0);
+    assert.equal(await page.locator('[data-debug-context]').count(), 0);
+    await page.getByRole('button', { name: '加载更多对象', exact: true }).click();
+    await page.locator('[data-debug-object="private-key"]').waitFor();
+    assert.equal(await page.locator('[data-debug-object]').count(), 2);
+    await page.locator('[data-debug-object="group-key"]').getByRole('button').click();
+    await page.getByRole('button', { name: /before-new/ }).click();
+    await page.getByRole('button', { name: /继承默认/ }).click();
+    await page.getByRole('button', { name: '强制开启', exact: true }).click();
+    await page.getByRole('button', { name: '强制开启', exact: true }).waitFor();
+    assert.equal(writes, 1);
+    await page.getByRole('button', { name: '加载更多会话', exact: true }).click();
+    await page.locator('[data-debug-context="after-new"]').click();
+    await page.getByRole('button', { name: '强制开启', exact: true }).waitFor();
+    assert.equal(snapshot.policy.objects.length, 1);
+    assert.equal(bodyReads, 0);
+    const requestCard = page.locator('[data-debug-request="r-after-new"]');
+    assert.equal(await requestCard.getAttribute('data-diagnostic-tone'), 'warning');
+    await page.getByRole('button', { name: /r-after-new/ }).click();
+    const modelNode = page.locator('[data-debug-event="r-after-new-0"]');
+    const warningNode = page.locator('[data-debug-event="r-after-new-1"]');
+    await modelNode.getByRole('button').waitFor();
+    assert.equal(await modelNode.getByRole('button').getAttribute('aria-expanded'), 'false');
+    assert.equal(await modelNode.getAttribute('data-diagnostic-tone'), 'normal');
+    assert.equal(await warningNode.getAttribute('data-diagnostic-tone'), 'warning');
+    assert.equal(await page.getByRole('button', { name: '查看 input', exact: true }).count(), 0);
+    assert.equal(bodyReads, 0);
+    await page.getByRole('button', { name: '展开全部节点', exact: true }).click();
+    assert.equal(await modelNode.locator('details').getAttribute('open'), null);
+    assert.equal(await modelNode.locator('pre').isVisible(), false);
+    assert.equal(bodyReads, 0);
+    await page.getByRole('button', { name: '查看 新增输入', exact: true }).click();
+    await page.getByText('按需读取的测试正文', { exact: false }).waitFor();
+    await page.getByText('更早历史 3 条已隐藏', { exact: false }).waitFor();
+    assert.equal(await page.getByText('完整输入才显示的旧历史', { exact: false }).count(), 0);
+    assert.equal(bodyReads, 1);
+    await page.getByRole('button', { name: '全部收起', exact: true }).click();
+    assert.equal(await page.getByText('按需读取的测试正文', { exact: false }).count(), 0);
+    await modelNode.getByRole('button').click();
+    await page.getByRole('button', { name: '查看 新增输入', exact: true }).click();
+    assert.equal(bodyReads, 1);
+    await page.getByRole('button', { name: '加载更多事件', exact: true }).click();
+    await page.locator('[data-debug-event="r-after-new-3"]').waitFor();
+    await page.locator('[data-debug-event="r-after-new-2"]').getByRole('button', { name: /已发送/ }).waitFor();
+    assert.equal(await page.locator('[data-debug-event="r-after-new-3"]').getAttribute('data-diagnostic-tone'), 'neutral');
+    assert.equal(await modelNode.getByRole('button').first().getAttribute('aria-expanded'), 'true');
+    await page.getByText('按需读取的测试正文', { exact: false }).waitFor();
+    await page.getByRole('button', { name: '刷新后续事件', exact: true }).waitFor();
+    traceClosed = true;
+    await page.getByRole('button', { name: '刷新后续事件', exact: true }).click();
+    await page.getByRole('button', { name: /已完成.*r-after-new/ }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '刷新后续事件', exact: true }).count(), 0);
+    assert.equal(await requestCard.locator('[data-debug-event]').count(), 6);
+    assert.equal(await requestCard.getAttribute('data-diagnostic-tone'), 'warning');
+    assert.equal(bodyReads, 1);
+    await warningNode.getByRole('button').click();
+    await warningNode.getByRole('button', { name: '查看 result', exact: true }).click();
+    await waitForRequestEntry(bodyEntered);
+    await page.getByRole('button', { name: '全部收起', exact: true }).click();
+    const response = page.waitForResponse((value) => new URL(value.url()).pathname === '/api/debug/body-delta');
+    releaseBody();
+    await (await response).finished();
+    await warningNode.getByRole('button').click();
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).some((button) => button.textContent === '导出本次链路' && !button.disabled));
+    assert.equal(await warningNode.getByRole('button', { name: '查看 result', exact: true }).getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.getByText('延迟到达的工具结果', { exact: false }).count(), 0);
+    await warningNode.getByRole('button', { name: '查看 result', exact: true }).click();
+    await page.getByText('延迟到达的工具结果', { exact: false }).waitFor();
+    assert.equal(bodyReads, 2);
+    await modelNode.getByRole('button').click();
+    await modelNode.getByRole('button', { name: '查看完整输入', exact: true }).click();
+    await page.getByText('完整输入才显示的旧历史', { exact: false }).waitFor();
+    assert.equal(bodyReads, 3);
+    await page.getByRole('button', { name: '全部收起', exact: true }).click();
+    await page.getByRole('button', { name: /r-hard-error/ }).click();
+    const hardCard = page.locator('[data-debug-request="r-hard-error"]');
+    assert.equal(await hardCard.getAttribute('data-diagnostic-tone'), 'error');
+    await hardCard.locator('[data-debug-event]').waitFor();
+    assert.equal(await hardCard.locator('[data-debug-event]').getAttribute('data-diagnostic-tone'), 'error');
+    assert.equal(await page.locator('[data-debug-request="r-normal"]').getAttribute('data-diagnostic-tone'), 'normal');
+    assert.equal(await page.locator('[data-debug-request="r-cancelled"]').getAttribute('data-diagnostic-tone'), 'neutral');
+    assert.equal(await page.locator('[data-debug-request="r-legacy"]').getAttribute('data-diagnostic-tone'), 'unknown');
+    await mkdir(path.join(root, 'test-results', 'advanced-debug'), { recursive: true });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
+      const colors = [];
+      for (const id of ['r-normal', 'r-after-new', 'r-hard-error', 'r-cancelled']) {
+        const border = await page.locator(`[data-debug-request="${id}"]`).evaluate((element) => {
+          const style = getComputedStyle(element);
+          return { widths: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth], color: style.borderTopColor };
+        });
+        assert.deepEqual(border.widths, ['2px', '2px', '2px', '2px']);
+        colors.push(border.color);
+      }
+      assert.equal(new Set(colors).size, 4, `${theme} 主题的四类外框应可区分`);
+      await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', `${theme}.png`), fullPage: true });
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    // 请求可同时展开多条: 两条都处于展开状态, 键盘先收起再重新展开
+    assert.equal(await page.getByRole('button', { name: /r-after-new/ }).getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.getByRole('button', { name: /r-hard-error/ }).getAttribute('aria-expanded'), 'true');
+    await page.getByRole('button', { name: /r-hard-error/ }).click();
+    await page.getByRole('button', { name: /r-after-new/ }).focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.getByRole('button', { name: /r-after-new/ }).getAttribute('aria-expanded'), 'false');
+    await page.keyboard.press('Enter');
+    await modelNode.getByRole('button').waitFor();
+    await modelNode.getByRole('button').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await modelNode.getByRole('button').first().getAttribute('aria-expanded'), 'true');
+    assert.equal(await modelNode.locator('details').getAttribute('open'), null);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, '窄屏不应出现横向页面溢出');
+    assert.equal(bodyReads, 3);
+    await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', 'mobile.png'), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.getByRole('button', { name: /为已有上下文开启记录/ }).click();
+    await page.getByRole('button', { name: 'chat', exact: true }).click();
+    await page.getByRole('button', { name: 'qq', exact: true }).click();
+    await page.getByRole('button', { name: /cold-context/ }).click();
+    assert.equal(snapshot.policy.objects[0].object.target_id, 'room');
+    assert.equal(snapshot.policy.objects[0].mode, 'on');
+    assert.deepEqual(errors, []);
+    await mkdir(path.join(root, 'test-results', 'advanced-debug'), { recursive: true });
+    await page.screenshot({ path: path.join(root, 'test-results', 'advanced-debug', 'page.png'), fullPage: true });
+    console.log('PASS: 对象与会话分层分页, 新增输入与完整快照按需读取, 对象开关与冷目录, 折叠与分色, 迟到正文, 深浅色/窄屏/键盘');
+  } finally {
+    releaseBody();
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
+async function log_touch_scroll(runtime) {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  try {
+    await runtime.listen(server);
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const context = await runtime.browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
+    const records = Array.from({ length: 600 }, (_, index) => ({ sequence: index + 1, timestamp: index + 1, pid: 1, level: 'INFO', content: `日志-${index}`, truncated: false }));
+    await page.route(origin + '/ui-config.json', (route) => route.fulfill({ json: {
+      backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
+    } }));
+    await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, (route) => {
+      const url = new URL(route.request().url());
+      if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === '/api/logs' && url.port === '19871') {
+        const after = Number(url.searchParams.get('after') ?? 0);
+        const limit = Number(url.searchParams.get('limit') ?? 100);
+        const entries = url.searchParams.has('after') ? records.filter((entry) => entry.sequence > after).slice(0, limit) : records.slice(-limit);
+        return route.fulfill({ json: { service: 'control', stream_id: 'touch', entries, next_cursor: entries.at(-1)?.sequence ?? after,
+          reset: false, has_more: false }, headers: cors });
+      }
+      if (url.pathname === '/api/logs') return route.abort('connectionrefused');
+      return route.fulfill({ json: { ok: true, running: false, adapters: {} }, headers: cors });
+    });
+    await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
+    await mockConfigVersions(page, origin, () => '{}');
+    await page.goto(origin + '/logs');
+    const terminal = page.getByLabel('日志内容', { exact: true });
+    await terminal.getByText('[Control] 日志-599', { exact: true }).waitFor();
+    await terminal.scrollIntoViewIfNeeded();
+    await page.getByText('自动滚动', { exact: true }).waitFor();
+    await terminal.evaluate((element) => {
+      window.touchScrollTrace = [];
+      element.addEventListener('scroll', () => window.touchScrollTrace.push(element.scrollTop));
+    });
+    const box = await terminal.boundingBox();
+    const cdp = await context.newCDPSession(page);
+    const x = Math.round(box.x + box.width / 2);
+    let y = Math.round(box.y + box.height / 3);
+    // 在底部手指每 40ms 下拉 2px: 拖动期间不能被贴底逻辑反复拉回
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    for (let step = 0; step < 60; step++) {
+      y += 2;
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+      await page.waitForTimeout(40);
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(300);
+    const trace = await page.evaluate(() => window.touchScrollTrace);
+    const reversals = trace.filter((top, index) => index && top > trace[index - 1] + 0.5).length;
+    assert.ok(trace.length > 10, '慢速上滑应产生滚动');
+    assert.equal(reversals, 0, `慢速上滑被拉回底部 ${reversals} 次`);
+    const gap = await terminal.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+    assert.ok(gap > 80, `松手后应停在上滑位置, 实际距底 ${gap}px`);
+    await page.getByText('已暂停滚动', { exact: true }).waitFor();
+    // 手指上推回到底部, 松手后恢复自动滚动
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    for (let step = 0; step < 40; step++) {
+      y -= 10;
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+      await page.waitForTimeout(20);
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.getByText('自动滚动', { exact: true }).waitFor();
+    assert.deepEqual(errors, []);
+    console.log('PASS: 移动端在底部慢速上滑不被拉回, 松手停留; 上推回到底部恢复自动滚动');
+  } finally {
+    await runtime.closeContexts();
+    await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
+  ["advanced-debug", advanced_debug],
   ["storage-audit", storage_audit],
   ["log-retention", log_retention],
-  ["log-stream", log_stream]
+  ["log-stream", log_stream],
+  ["log-touch-scroll", log_touch_scroll]
 ];
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) await runSuite(scenarios);
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  await runSuite(process.argv.includes('log-stream-baseline') ? [["log-stream-baseline", log_stream_baseline]] : scenarios);
+}

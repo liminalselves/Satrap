@@ -20,7 +20,9 @@ from satrap.core.storage.persist import atomic_write_json
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
+import threading
+import time
 import json
 import math
 import re
@@ -40,6 +42,19 @@ _PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 """插件配置文件使用的稳定名称格式"""
 
 from satrap.core.storage.file_lock import FileLock
+
+
+class PluginHostState(TypedDict):
+    """宿主管理状态, 与插件作者的参数结构分开保存"""
+
+    execution_enabled: bool
+    revision: int
+    updated_at: float | None
+    execution_updated_at: float | None
+
+
+_HOST_CACHE_LOCK = threading.RLock()
+_HOST_CACHE: dict[Path, tuple[tuple[int, int, int] | None, dict[str, PluginHostState]]] = {}
 
 
 @dataclass
@@ -236,6 +251,113 @@ class PluginConfigManager:
             raise ValueError(f"非法插件配置路径: {name}")
         return path
 
+    def _host_states(self) -> dict[str, PluginHostState]:
+        """
+        按文件版本复用宿主总闸快照, 不取得配置写锁
+
+        返回:
+        - 仅供内部读取的快照, 损坏配置明确失败而非放行
+        """
+        path = self._dir.resolve() / ".host-state.json"
+        with _HOST_CACHE_LOCK:
+            try:
+                stat = path.stat()
+                fingerprint = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+            except FileNotFoundError:
+                fingerprint = None
+            previous = _HOST_CACHE.get(path)
+            if previous is not None and previous[0] == fingerprint:
+                return previous[1]
+            result: dict[str, PluginHostState] = {}
+            if fingerprint is not None:
+                if fingerprint[2] > 512 * 1024:
+                    raise ValueError("插件宿主状态超过大小限制")
+                raw: object = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raise ValueError("插件宿主状态必须为对象")
+                raw = cast(dict[str, object], raw)
+                if set(raw) != {"version", "plugins"} or raw["version"] != 1 or not isinstance(raw["plugins"], dict):
+                    raise ValueError("插件宿主状态无效")
+                for name, state in cast(dict[str, object], raw["plugins"]).items():
+                    if not isinstance(name, str) or _PLUGIN_NAME_RE.fullmatch(name) is None or not isinstance(state, dict):
+                        raise ValueError("插件宿主条目无效")
+                    state = cast(dict[str, object], state)
+                    revision = state.get("revision")
+                    if set(state) != set(PluginHostState.__annotations__) or type(state.get("execution_enabled")) is not bool or not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+                        raise ValueError("插件宿主修订或总闸无效")
+                    if any(value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0)
+                           for value in (state["updated_at"], state["execution_updated_at"])):
+                        raise ValueError("插件宿主时间无效")
+                    result[name] = cast(PluginHostState, state)
+            if len(_HOST_CACHE) >= 8 and path not in _HOST_CACHE:
+                _HOST_CACHE.pop(next(iter(_HOST_CACHE)))
+            _HOST_CACHE[path] = (fingerprint, result)
+            return result
+
+    def host_states(self) -> dict[str, PluginHostState]:
+        """
+        批量取得可独立修改的宿主状态
+
+        返回:
+        - 当前全部显式状态的副本
+        """
+        return {name: PluginHostState(**state) for name, state in self._host_states().items()}
+
+    def host_state(self, name: str) -> PluginHostState:
+        """
+        查询单插件宿主状态, 旧插件默认可执行且更新时间未知
+
+        参数:
+        - name: 已注册的插件名称
+
+        返回:
+        - 总闸和宿主修订, 不含插件业务参数
+        """
+        self.global_path(name)
+        return PluginHostState(**self._host_states().get(name, PluginHostState(execution_enabled=True, revision=0, updated_at=None, execution_updated_at=None)))
+
+    def save_execution(self, name: str, enabled: bool, expected_revision: int) -> PluginHostState:
+        """
+        只修改宿主总闸, 不改写任何位置配置
+
+        参数:
+        - name: 已验证存在的插件
+        - enabled: 新的执行总闸
+        - expected_revision: 单插件宿主修订
+
+        返回:
+        - 原子保存后的宿主状态, 并发修改抛出配置冲突
+        """
+        from satrap.core.config.document import ConfigRevisionConflict
+
+        if type(enabled) is not bool or type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("总闸必须为布尔值, expected_revision 必须为非负整数")
+        self.global_path(name)
+        path = self._dir.resolve() / ".host-state.json"
+        with FileLock(path.with_suffix(".lock")):
+            states = self.host_states()
+            current = self.host_state(name)
+            if current["revision"] != expected_revision:
+                raise ConfigRevisionConflict("插件宿主状态已变化, 请刷新")
+            updated = PluginHostState(execution_enabled=enabled, execution_updated_at=time.time(), revision=current["revision"] + 1, updated_at=current["updated_at"])
+            states[name] = updated
+            atomic_write_json(path, {"version": 1, "plugins": states}, indent=2)
+            return updated
+
+    def _record_config_update(self, name: str) -> None:
+        """
+        记录本次真实参数保存, 旧文件不使用 mtime 冒充管理时间
+
+        参数:
+        - name: 已完成全局参数写入的插件
+        """
+        path = self._dir.resolve() / ".host-state.json"
+        with FileLock(path.with_suffix(".lock")):
+            states = self.host_states()
+            current = self.host_state(name)
+            states[name] = PluginHostState(execution_enabled=current["execution_enabled"], execution_updated_at=current["execution_updated_at"], updated_at=time.time(), revision=current["revision"] + 1)
+            atomic_write_json(path, {"version": 1, "plugins": states}, indent=2)
+
     def load_global(self, name: str, schema: dict[str, ConfigField]) -> dict[str, Any]:
         """
         读全局 json 并按 schema 校验 + 补默认 (无文件时全默认)
@@ -334,6 +456,7 @@ class PluginConfigManager:
                 if isinstance(previous, dict) and GLOBAL_RECEIPT in previous:
                     cleaned[GLOBAL_RECEIPT] = previous[GLOBAL_RECEIPT]
             atomic_write_json(path, cleaned, indent=2)
+            self._record_config_update(name)
         return self.load_global(name, schema)
 
     def resolve(

@@ -1,7 +1,7 @@
 """插件管理目录, 汇总来源与配置引用而不导入插件代码"""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 import hashlib
 
 from satrap.display.plugins import ChatPluginRegistry
@@ -20,6 +20,33 @@ from satrap.edictum.registry import EDICTUM_PROVIDER
 
 if TYPE_CHECKING:
     from satrap.core.rag import RagService
+
+
+class PluginHealthSource(TypedDict):
+    """运行服务观测结果, 认证失败与离线分开"""
+
+    service: str
+    state: Literal["available", "offline", "auth_required", "error"]
+    as_of: float | None
+
+
+class PluginHealthCoverage(TypedDict):
+    """当前配置期望来源的观测覆盖"""
+
+    complete: bool
+    expected_services: list[str]
+    sources: list[PluginHealthSource]
+
+
+class PluginHealth(TypedDict):
+    """批量目录中的独立健康资料"""
+
+    state: Literal["healthy", "attention", "disabled", "unknown"]
+    reason: Literal["ok", "instance_error", "execution_off", "all_disabled", "not_used", "source_unavailable", "not_loaded"]
+    """判定依据, 前端据此说明未知或停用的原因"""
+    as_of: float | None
+    coverage: PluginHealthCoverage
+    instances: list[dict[str, object]]
 
 
 class PluginManagementService:
@@ -86,9 +113,10 @@ class PluginManagementService:
         path = self.manager.global_path(name)
         with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
             overrides = self.manager.load_global_explicit(name, entry.config_schema)
+            host = self.manager.host_state(name)
             return {"ok": True, "schema": schema_to_payload(entry.config_schema), "overrides": overrides,
                     "config": {**{key: field.default for key, field in entry.config_schema.items()}, **overrides},
-                    "revision": self._revision(name)}
+                    "revision": self._revision(name), "updated_at": host["updated_at"]}
 
     def save_config(self, name: str, values: dict[str, Any], expected_revision: str) -> dict[str, Any]:
         """
@@ -123,6 +151,7 @@ class PluginManagementService:
         - 插件列表, 使用数量包含已配置的 Chat 和所有引用该插件的命名配置
         """
         chat_states = {item["name"]: item for item in self.chat.scan()}
+        host_states = self.manager.host_states()
         result: list[dict[str, Any]] = []
         for entry in self.catalog.scan():
             references = [
@@ -136,11 +165,15 @@ class PluginManagementService:
             chat_enabled = bool(chat_states.get(entry.name, {}).get("enabled", False))
             chat_configured = bool(chat_states.get(entry.name, {}).get("configured", False))
             payload = entry.to_payload()
+            host = host_states.get(entry.name)
             payload.update(
                 source="builtin" if entry.path.resolve().is_relative_to(self.catalog.preset_dir.resolve()) else "user",
-                usage_count=len(references) + int(chat_configured),
+                # Chat 默认启用的插件未写入配置也算使用位置, 与健康判定口径一致
+                usage_count=len(references) + int(chat_configured or chat_enabled),
                 edictum_configs=references,
                 chat_enabled=chat_enabled,
+                execution_enabled=host["execution_enabled"] if host else True,
+                host_revision=host["revision"] if host else 0,
             )
             result.append(payload)
         return result

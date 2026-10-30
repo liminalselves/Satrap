@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { sessionApi } from '@/api/session';
 import { edictumApi } from '@/api/edictum';
 import { useBackendStore } from '@/stores/useBackendStore';
-import { Button } from '@/components/ui/Button';
+import { Switch } from '@/components/kit/Switch';
 import { toast } from '@/components/ui/Toast';
 
 interface SessionEnabledToggleProps {
@@ -12,6 +12,7 @@ interface SessionEnabledToggleProps {
   onChanged: () => void | Promise<void>;
 }
 
+/** 命名 Agent 启用开关: 保存与运行时应用状态分开展示, 失败可单独重试 */
 export function SessionEnabledToggle({ provider, name, enabled, onChanged }: SessionEnabledToggleProps) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
@@ -62,14 +63,24 @@ export function SessionEnabledToggle({ provider, name, enabled, onChanged }: Ses
   };
   return (
     <div className="space-y-1">
-      <Button role="switch" aria-checked={displayEnabled} aria-label={`会话配置 ${name}`}
-        size="sm" variant={displayEnabled ? 'primary' : 'default'} disabled={busy || operation !== null}
-        onClick={() => void apply(true)}>
-        {busy ? '处理中...' : displayEnabled ? '已启用' : '已禁用'}
-      </Button>
-      {note && <p className="text-xs text-text-secondary" role="status">{note}</p>}
-      {retry && <Button size="sm" variant="ghost" disabled={busy || operation !== null}
-        onClick={() => void apply(false)}>重试应用</Button>}
+      <Switch
+        label={`会话配置 ${name}`}
+        checked={displayEnabled}
+        onChange={() => void apply(true)}
+        disabled={busy || operation !== null}
+        size="sm"
+      />
+      {note && <p className="text-[10.5px] text-text-secondary" role="status">{note}</p>}
+      {retry && (
+        <button
+          type="button"
+          className="text-[10.5px] font-medium text-accent hover:underline disabled:opacity-50"
+          disabled={busy || operation !== null}
+          onClick={() => void apply(false)}
+        >
+          重试应用
+        </button>
+      )}
     </div>
   );
 }

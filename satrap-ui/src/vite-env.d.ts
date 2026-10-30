@@ -9,3 +9,6 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/** 构建时由 vite.config.ts 从 satrap/_version.py 注入 */
+declare const __APP_VERSION__: string;

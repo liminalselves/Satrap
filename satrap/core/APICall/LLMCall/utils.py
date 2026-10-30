@@ -8,6 +8,7 @@ from openai.types.chat import (
 from typing import Any, Dict, List, Optional, Iterable, cast
 from openai import APIError
 import json
+import copy
 
 from types import SimpleNamespace
 
@@ -17,7 +18,6 @@ _THINKING_FIELD_MAP: Dict[str, tuple[Any, Any]] = {
     "reasoning_effort": ("none", None),  # 空值表示沿用 thinking 原值
     "thinking.type": ("disabled", "enabled"),
     "enable_thinking": (False, True),
-    "thinking_level": ("none", None),
 }
 
 from satrap.core.utils.media import user_media_content, project_messages, expand_tool_media
@@ -126,14 +126,14 @@ def _build_thinking_extra_body(
     根据思考强度构造 extra_body
 
     参数:
-    - thinking: 思考强度, off 表示关闭, 其他值按供应商约定原样传递
+    - thinking: 思考强度, default 表示不发送思考字段, off 表示关闭, 其他值按供应商约定原样传递
     - thinking_fields: 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
     - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
 
     返回:
     - extra_body dict, 或 None (不传 extra_body)
     """
-    if not thinking_fields:
+    if not thinking_fields or thinking == "default":
         return None
     body: Dict[str, Any] = {}
     for field in thinking_fields:
@@ -179,7 +179,8 @@ def prepare_call_messages(
     thinking_field_name: str | None,
     img_urls: list[str] | None,
     *, video_urls: list[str] | None = None, supports_visual_input: bool = False,
-    supports_native_video_input: bool = False, video_frame_interval: float = 2.0,
+    supports_native_video_input: bool = False, video_frame_interval: float = 2.0, expand_media: bool = True,
+    native_video_transport: str = "data_url",
 ) -> list[dict[str, Any]]:
     """
     统一思考字段与多模态消息预处理
@@ -192,13 +193,16 @@ def prepare_call_messages(
     - supports_visual_input: 是否支持图片输入, 默认 False
     - supports_native_video_input: 是否支持原生视频输入, 默认 False
     - video_frame_interval: 抽帧间隔秒数, 默认 2.0
+    - expand_media: 是否将工具媒体展开为兼容接口的补充用户消息
+    - native_video_transport: 原生视频传输方式, 默认 data_url
 
     返回:
     - 可发送给模型的消息, 工具媒体只在此处展开; 未启用视觉时拒绝媒体
     """
 
-    capabilities = SimpleNamespace(supports_visual_input=supports_visual_input, supports_native_video_input=supports_native_video_input, video_frame_interval=video_frame_interval)
-    prepared = project_messages(_rename_thinking_field(messages, thinking_field_name), True, capabilities)
+    capabilities = SimpleNamespace(supports_visual_input=supports_visual_input, supports_native_video_input=supports_native_video_input,
+                                   video_frame_interval=video_frame_interval, native_video_transport=native_video_transport)
+    prepared = copy.deepcopy(_rename_thinking_field(messages, thinking_field_name))
     if img_urls or video_urls:
         for message in reversed(prepared):
             if message.get("role") == "user":
@@ -222,7 +226,7 @@ def prepare_call_messages(
     media_bytes = sum(len(part[part["type"]]["url"]) for message in prepared if isinstance(message.get("content"), list) for part in message["content"] if part.get("type") in {"image_url", "video_url"})
     if media_bytes > 32 * 1024 * 1024 * 4 // 3 + 4096:
         raise ValueError("本轮媒体总量超过 32 MiB, 请分段读取")
-    return expand_tool_media(prepared)
+    return expand_tool_media(prepared) if expand_media else prepared
 
 
 def prepare_structured_messages(

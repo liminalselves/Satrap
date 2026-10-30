@@ -24,7 +24,7 @@ from satrap.edictum import SimpleSession
 
 async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
     recorder = _display_stream_DisplayRecorder(str(tmp_path / "display.db"), "audit")
-    conv = cast(_Conversation, SimpleNamespace(conversation_id="audit", recorder=recorder, subscribers=set(), pending_user_inputs={}, task=None))
+    conv = cast(_Conversation, SimpleNamespace(conversation_id="audit", model="default", temperature=None, recorder=recorder, subscribers=set(), pending_user_inputs={}, task=None))
     service = ChatService.__new__(ChatService)
     service._conversations = {"audit": conv}
     service._orphan_queues = {}
@@ -32,10 +32,17 @@ async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
     service._event_sequences = {}
     service._stream_id = "server-test"
     service._ask_user_timeout_seconds = 5
+    from satrap.core.storage import StorageLayout
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    service._storage = StorageLayout(tmp_path / "data")
+    service._platform_id = "chat"
+    service._model_cfg = ModelConfigManager(str(tmp_path / "models.json"), auto_create=False)
     token = "audit-only-token-that-is-at-least-32-characters"
     server = ChatHTTPServer.__new__(ChatHTTPServer)
     MiniHTTPServer.__init__(server, host="127.0.0.1", port=0, auth=ServerAuth.create("127.0.0.1", 0, token=token))
     server.service = service
+    from satrap.core.telemetry.health import ServiceRuntime
+    server._service_runtime = ServiceRuntime("chat")
     question_task = None
     await server.start()
     assert server._server is not None
@@ -468,7 +475,7 @@ def test_recorder_meta_roundtrip_and_schema(tmp_path: Any):
     rec2.close()
     meta2 = get_conversation_meta("c2", db_path=db)
     assert meta2 is not None
-    assert meta2["think"] == "off"
+    assert meta2["think"] == "default"
     assert meta2["project_id"] is None
 
 def test_history_batch_queries_preserve_full_variants(tmp_path):

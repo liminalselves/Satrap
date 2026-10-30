@@ -276,6 +276,7 @@ class DisplayRecorder:
             )
             _ensure_column_locked(conn, "display_turn_variants", "context_stats", "TEXT")
             _ensure_column_locked(conn, "display_turn_variants", "output_files", "TEXT NOT NULL DEFAULT '[]'")
+            _ensure_column_locked(conn, "display_turn_variants", "response_metadata", "TEXT")
             # 既有展示轮次按第 0 个回复版本登记
             conn.execute(
                 """
@@ -291,11 +292,13 @@ class DisplayRecorder:
                     model TEXT NOT NULL DEFAULT 'default',
                     think TEXT NOT NULL DEFAULT 'off',
                     project_id TEXT,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    temperature REAL
                 )
                 """
             )
             _ensure_project_schema_locked(conn)
+            _ensure_column_locked(conn, "conversation_meta", "temperature", "REAL")
             conn.commit()
 
     def _load_max_turn_index(self) -> int:
@@ -315,24 +318,39 @@ class DisplayRecorder:
 
     # ---------- 会话元数据 ----------
 
-    def save_meta(self, model: str, think: str = "off", project_id: str | None = None) -> None:
+    def save_meta(self, model: str, think: str = "default", project_id: str | None = None, *, temperature: float | None = None) -> None:
         """
-        保存会话元数据 (model / 默认思考强度 think / 所属项目 project_id)
+        保存会话元数据及新会话的初始温度覆盖
 
         参数:
         - model: 模型名称
         - think: 思考模式
         - project_id: 项目 ID
+        - temperature: 新会话的温度覆盖, None 表示跟随模型; 已有记录由独立设置入口更新
 
-        重复保存时只更新 model/think, project_id 保持既有绑定不变 (改绑走 set_conversation_project)
+        重复保存时只更新 model/think, 项目和温度覆盖保留既有值, 分别通过专用入口修改
         """
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "INSERT INTO conversation_meta (conversation_id, model, think, project_id, created_at) VALUES (?, ?, ?, ?, ?)"
+                "INSERT INTO conversation_meta (conversation_id, model, think, project_id, created_at, temperature) VALUES (?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(conversation_id) DO UPDATE SET model=excluded.model, think=excluded.think",
-                (self.conversation_id, model, think, project_id, time.time()),
+                (self.conversation_id, model, think, project_id, time.time(), temperature),
             )
+            conn.commit()
+
+    def save_temperature(self, temperature: float | None) -> None:
+        """
+        单独保存温度覆盖, 不覆盖会话模型及项目绑定
+
+        参数:
+        - temperature: 覆盖值, None 表示恢复跟随模型
+        """
+        with self._lock:
+            conn = self._get_conn()
+            changed = conn.execute("UPDATE conversation_meta SET temperature=? WHERE conversation_id=?", (temperature, self.conversation_id))
+            if changed.rowcount != 1:
+                raise ValueError("会话元数据不存在")
             conn.commit()
 
     # ---------- 生命周期 ----------
@@ -440,8 +458,10 @@ class DisplayRecorder:
             self._segments = []
             count = conn.execute("SELECT COUNT(*) FROM display_tool_calls WHERE turn_id=?", (turn_id,)).fetchone()
             self._tool_seq = int(count[0])
+            metadata = conn.execute("SELECT response_metadata FROM display_turn_variants WHERE turn_id=? AND variant_index=?",
+                                    (turn_id, variant_index)).fetchone()
             return {"turn_id": turn_id, "turn_index": int(row[0]), "variant_index": variant_index,
-                    "user_input": str(row[1])}
+                    "user_input": str(row[1]), "response_metadata": json.loads(metadata[0]) if metadata and metadata[0] else None}
 
     def end_turn(
         self,
@@ -449,6 +469,7 @@ class DisplayRecorder:
         *,
         context_messages: list[dict[str, Any]] | None = None,
         context_stats: dict[str, Any] | None = None,
+        response_metadata: dict[str, object] | None = None,
     ) -> dict[str, int] | None:
         """
         run 后调用: 回填 thinking / answer / segments (answer 优先回调流拼接, 空则用 run 返回值兜底)
@@ -457,6 +478,7 @@ class DisplayRecorder:
         - fallback_answer: 回退回答
         - context_messages: 本回复对应的模型上下文增量
         - context_stats: 本回复对应的上下文与 token 统计
+        - response_metadata: 本次使用模型或脱敏失败资料, 不进入模型上下文
 
         返回:
         - dict[str, int] | None: 已完成轮次和回复版本标识
@@ -501,6 +523,8 @@ class DisplayRecorder:
                     time.time(),
                 ),
             )
+            conn.execute("UPDATE display_turn_variants SET response_metadata=? WHERE turn_id=? AND variant_index=?",
+                         (json.dumps(response_metadata, ensure_ascii=False) if response_metadata else None, self._turn_id, self._variant_index))
             conn.commit()
             turn_id = self._turn_id
             turn_row = conn.execute(
@@ -512,6 +536,7 @@ class DisplayRecorder:
                 (turn_id,),
             ).fetchone()
             result = {
+                "response_metadata": response_metadata,
                 "turn_id": turn_id,
                 "turn_index": int(turn_row[0]) if turn_row else -1,
                 "variant_index": self._variant_index,
@@ -771,7 +796,7 @@ class DisplayRecorder:
                     f" WHERE id IN ({selection}) ORDER BY turn_index ASC", params,
                 ).fetchall()
                 variant_rows = conn.execute(
-                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at, output_files"
+                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at, output_files, response_metadata"
                     f" FROM display_turn_variants WHERE turn_id IN ({selection})"
                     + ('' if all_variants else ' AND variant_index=(SELECT active_variant FROM display_turns WHERE id=display_turn_variants.turn_id)')
                     + ' ORDER BY variant_index ASC', params,
@@ -800,6 +825,7 @@ class DisplayRecorder:
                     "context_stats": json.loads(row[5]) if row[5] else None,
                     "created_at": row[6], "tool_calls": tools.get((row[0], int(row[1])), []),
                     "output_files": json.loads(row[7]),
+                    "response_metadata": json.loads(row[8]) if row[8] else None,
                 })
             turns: list[dict[str, Any]] = [
                 {
@@ -817,6 +843,7 @@ class DisplayRecorder:
                     **({'variant_indices': variant_indices.get(r[0], [])} if not all_variants else {}),
                     "tool_calls": tools.get((r[0], int(r[9] or 0)), []),
                     "variants": variants.get(r[0], []),
+                    "response_metadata": next((item["response_metadata"] for item in variants.get(r[0], []) if item["variant_index"] == int(r[9] or 0)), None),
                     "output_files": next((item["output_files"] for item in variants.get(r[0], []) if item["variant_index"] == int(r[9] or 0)), []),
                 }
                 for r in rows
@@ -875,7 +902,7 @@ class DisplayRecorder:
         - list[dict[str, Any]]: 按版本索引排序的回复版本
         """
         rows = conn.execute(
-            "SELECT variant_index, thinking, answer, segments, context_stats, created_at, output_files"
+            "SELECT variant_index, thinking, answer, segments, context_stats, created_at, output_files, response_metadata"
             " FROM display_turn_variants WHERE turn_id = ? ORDER BY variant_index ASC",
             (turn_id,),
         ).fetchall()
@@ -888,6 +915,7 @@ class DisplayRecorder:
                 "context_stats": json.loads(row[4]) if row[4] else None,
                 "created_at": row[5],
                 "output_files": json.loads(row[6]),
+                "response_metadata": json.loads(row[7]) if row[7] else None,
                 "tool_calls": cls._list_tool_calls_locked(conn, turn_id, int(row[0])),
             }
             for row in rows
@@ -1109,7 +1137,7 @@ class DisplayRecorder:
             conn = self._get_conn()
             rows = conn.execute(
                 "SELECT t.id, t.turn_index, t.user_input, t.thinking, t.answer, t.attachments,"
-                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages, v.output_files"
+                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages, v.output_files, v.response_metadata"
                 " FROM display_turns t LEFT JOIN display_turn_variants v"
                 " ON v.turn_id = t.id AND v.variant_index = t.active_variant"
                 " WHERE t.conversation_id = ? AND t.turn_index < ? ORDER BY t.turn_index ASC",
@@ -1150,8 +1178,8 @@ class DisplayRecorder:
                 new_turn_id = int(cur.lastrowid or 0)
                 tconn.execute(
                     "INSERT INTO display_turn_variants"
-                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at, output_files)"
-                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?)",
+                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at, output_files, response_metadata)"
+                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         new_turn_id,
                         row[3],
@@ -1161,6 +1189,7 @@ class DisplayRecorder:
                         row[7],
                         row[8],
                         row[11] or "[]",
+                        row[12],
                     ),
                 )
                 for tool in tools:
@@ -1362,7 +1391,7 @@ def query_conversations(
                 "title": str(r[3] or "新对话"),
                 "project_id": r[4],
                 "model": str(r[5] or "default"),
-                "think": str(r[6] or "off"),
+                "think": str(r[6] or "default"),
                 "created_at": float(r[7] or 0),
             }
             for r in rows
@@ -1576,7 +1605,7 @@ def set_conversation_project(conversation_id: str, project_id: str | None, db_pa
 
 def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> dict[str, Any] | None:
     """
-    查询会话元数据 (model / think / project_id)
+    查询会话元数据及温度覆盖, 旧表缺少温度列时按继承处理
 
     参数:
     - conversation_id: 会话 ID
@@ -1585,7 +1614,7 @@ def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> d
     返回 None 表示会话不存在
 
     返回:
-    - dict[str, Any] | None: 查询会话元数据 (model / think / project_id)
+    - dict[str, Any] | None: 模型, 思考, 项目及温度覆盖, 无会话时返回 None
     """
     path = db_path or get_db_path()
     if not Path(path).exists():
@@ -1596,12 +1625,14 @@ def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> d
         conn.commit()
         if not _has_table(conn, "conversation_meta"):
             return None
+        columns = {str(column[1]) for column in conn.execute("PRAGMA table_info(conversation_meta)")}
+        temperature_column = "temperature" if "temperature" in columns else "NULL AS temperature"
         row = conn.execute(
-            "SELECT model, think, created_at, project_id FROM conversation_meta WHERE conversation_id = ?",
+            f"SELECT model, think, created_at, project_id, {temperature_column} FROM conversation_meta WHERE conversation_id = ?",
             (conversation_id,),
         ).fetchone()
         if row is None:
             return None
-        return {"model": row[0], "think": row[1] or "off", "created_at": row[2], "project_id": row[3]}
+        return {"model": row[0], "think": row[1] or "default", "created_at": row[2], "project_id": row[3], "temperature": row[4]}
     finally:
         conn.close()

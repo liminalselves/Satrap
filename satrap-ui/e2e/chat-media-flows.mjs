@@ -1,11 +1,11 @@
 import { finishConfirmation } from './confirmation.mjs';
 import { conversationPageResponse, turnPageResponse } from './config-fixtures.mjs';
-import { emptyConfigResponse } from './runtime.mjs';
+import { emptyConfigResponse, comboOptions } from './runtime.mjs';
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBenchmarkFixture, installHttpMocks, jsonResponse } from "../benchmarks/fixtures.mjs";
-import { runSuite, mockConfigVersions, assertNoConfigErrors, waitForRequestEntry } from './runtime.mjs';
+import { runSuite, mockConfigVersions, assertNoConfigErrors, waitForRequestEntry, openConversation } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function chat_history_media(runtime) {
@@ -73,7 +73,7 @@ async function chat_history_media(runtime) {
       const started = performance.now();
       await mockConfigVersions(page, origin, () => JSON.stringify({}));
   await page.goto(origin + '/chat');
-      await page.getByText('继续最近对话', { exact: true }).click();
+      await openConversation(page, fixture.conversations[0].title);
       await page.waitForFunction((expected) => document.querySelectorAll('.chat-message-item').length === expected, count);
       const openMs = performance.now() - started;
       const items = page.locator('.chat-message-item');
@@ -148,7 +148,7 @@ async function chat_history_media(runtime) {
       await previewAborted;
       assert.equal(typeof releaseMedia, 'function'); releaseMedia();
       assert.equal(await items.count(), 2);
-      assert.equal(await page.locator('.chat-message-item img').count(), 0);
+      assert.equal(await page.locator('.chat-message-item img:not([alt="Satrap"])').count(), 0);
       await page.getByText(`Benchmark ${count} 条消息`, { exact: true }).click();
       await page.waitForFunction((expected) => document.querySelectorAll('.chat-message-item').length === expected, count + 2);
       assert.equal(await items.last().textContent().then((value) => (value.match(/后续增量/g) || []).length), 100);
@@ -169,7 +169,7 @@ async function chat_history_media(runtime) {
         assert.equal(historyWrites, 1); assert.deepEqual(fixture.turns[249], untouched);
         assert.deepEqual(modelContext, [{ role: 'user', content: '独立模型上下文' }]);
         await page.goto(origin + '/chat');
-        await page.getByText('继续最近对话', { exact: true }).click();
+        await openConversation(page, fixture.conversations[0].title);
         await page.waitForFunction((expected) => document.querySelectorAll('.chat-message-item').length === expected, count + 2);
         await items.nth(501).scrollIntoViewIfNeeded();
         await items.nth(501).getByText('长历史第251轮编辑结果', { exact: true }).waitFor();
@@ -398,7 +398,7 @@ async function chat_fork_projects(runtime) {
         '/api/chat/turns': { turns: url.searchParams.get('conversation') === sent.conversation_id ? sentTurns : fixture.turns },
         '/api/chat/turns/page': turnPageResponse(route.request().url(), url.searchParams.get('conversation') === sent.conversation_id ? sentTurns : fixture.turns),
         '/api/chat/models': { models: ['benchmark-model'] },
-        '/api/chat/models/detail': { ok: true, models: {} },
+        '/api/chat/models/detail': { ok: true, models: { 'benchmark-model': { name: 'benchmark-model', model: 'benchmark-model' } } },
         '/api/chat/plugins': { plugins: [] },
         '/api/chat/history': { items: [cold], total: 1, page: 1, page_size: 50, mode: 'hot', storage_size_bytes: 0 },
         '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
@@ -429,7 +429,7 @@ async function chat_fork_projects(runtime) {
     await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
     await mockConfigVersions(page, origin, () => JSON.stringify({}));
   await page.goto(`${origin}/chat`);
-    await page.getByText('继续最近对话', { exact: true }).click();
+    await openConversation(page, '项目甲原会话');
     const group = name => page.getByText(name, { exact: true }).locator('..').locator('..');
     await group('项目甲').getByText('项目甲原会话', { exact: true }).waitFor();
     await group('项目乙').getByText('项目乙原会话', { exact: true }).waitFor();
@@ -576,7 +576,7 @@ async function chat_sidebar_state(runtime) {
     }
     const responses = {
       '/api/chat/health': { ok: true, conversations: fixture.conversations.length },
-      '/api/chat/models': { models: ['benchmark-model'] }, '/api/chat/models/detail': { ok: true, models: {} },
+      '/api/chat/models': { models: ['benchmark-model'] }, '/api/chat/models/detail': { ok: true, models: { 'benchmark-model': { name: 'benchmark-model', model: 'benchmark-model' } } },
       '/api/chat/plugins': { plugins: [] }, '/api/chat/runs': { runs: [] },
       '/api/chat/turns': { turns: fixture.turns },
         '/api/chat/turns/page': turnPageResponse(route.request().url(), fixture.turns), '/api/projects': { projects },
@@ -596,7 +596,7 @@ async function chat_sidebar_state(runtime) {
   };
   try {
     await page.goto(origin + '/chat');
-    await page.getByText('继续最近对话', { exact: true }).click();
+    await openConversation(page, '甲会话');
     const moveRefreshEntered = new Promise((resolve) => { enterMoveRefresh = resolve; });
     await row('乙会话').getByTitle('移入/移出项目', { exact: true }).click();
     await page.getByRole('dialog', { name: '移动会话到项目', exact: true }).getByRole('button', { name: /项目甲/ }).click();
@@ -620,11 +620,17 @@ async function chat_sidebar_state(runtime) {
     await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).waitFor();
     delayRefresh = true;
     await moveToB(); await waitForRequestEntry(refreshEntered);
-    assert.equal(await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).count(), 0);
+    // 刷新请求仍被挂起, 移出当前筛选项目的会话应立即从本地列表消失
+    await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).waitFor({ state: 'detached' });
+    // 切换筛选会中止旧刷新; 无论请求被中止还是迟到失败, 都不能把错误显示到新筛选下
+    const isOldRefresh = (request) => request.url().includes('/conversations/page') && new URL(request.url()).searchParams.get('project_id') === 'a';
+    const oldRefreshSettled = Promise.race([
+      page.waitForEvent('requestfailed', isOldRefresh),
+      page.waitForResponse((response) => response.status() === 503 && isOldRefresh(response.request())),
+    ]);
     await selector.selectOption('b');
     await page.locator('div.text-sm.truncate').filter({ hasText: /^甲会话$/ }).waitFor();
-    const oldRefreshFailed = page.waitForResponse((response) => response.status() === 503 && !new URL(response.url()).searchParams.has('cursor'));
-    releaseRefresh(); await oldRefreshFailed; await afterRender();
+    releaseRefresh(); await oldRefreshSettled; await afterRender();
     assert.equal(await page.getByRole('alert').filter({ hasText: '旧刷新迟到失败' }).count(), 0);
     failRefresh = true;
     await moveToB();
@@ -633,9 +639,9 @@ async function chat_sidebar_state(runtime) {
     await page.getByRole('alert').filter({ hasText: '当前刷新失败' }).waitFor({ state: 'hidden' });
     await page.getByTitle('b-workspace', { exact: true }).locator('..').getByTitle('删除项目 (仅解绑会话, 磁盘文件不动)', { exact: true }).click();
     await finishConfirmation(page);
-    await page.waitForFunction(() => document.querySelector('[aria-label="筛选对话项目"]').value === '');
+    await page.waitForFunction(() => document.querySelector('[aria-label="筛选对话项目"]')?.getAttribute('data-value') === '');
     await page.locator('div.text-sm.truncate').filter({ hasText: /^乙会话$/ }).waitFor();
-    assert.equal(await selector.locator('option[value="b"]').count(), 0);
+    assert.equal((await comboOptions(selector)).some((option) => option.value === 'b'), false);
     await page.getByRole('button', { name: '加载更多对话', exact: true }).click();
     await row('第二页会话').waitFor();
     const movePaged = async (title) => {
@@ -673,7 +679,7 @@ async function chat_sidebar_state(runtime) {
     assert.equal(await row('第二页会话').count(), 1);
     assert.equal(await row('第三页会话').count(), 1);
     assert.equal(await row('原分页末项').count(), 1);
-    assert.equal(await selector.locator('option[value="a"]').count(), 0);
+    assert.equal((await comboOptions(selector)).some((option) => option.value === 'a'), false);
     assert.deepEqual(errors, []);
     await assertNoConfigErrors(page);
     console.log('PASS: 移动和删除项目保留已展开分页及原末项, 后续页刷新失败不提交部分目录, 删除和筛选正常生效');
@@ -691,17 +697,24 @@ async function chat_history_races(runtime) {
   const fixture = createBenchmarkFixture(120), errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await installHttpMocks(context, origin, fixture);
-  const gates = [0, 1, 2].map(() => {
+  const gates = [0, 1, 2, 3].map(() => {
     let enter, release;
     const entered = new Promise((resolve) => { enter = resolve; });
     const released = new Promise((resolve) => { release = resolve; });
     return { entered, released, enter, release };
   });
-  let olderPhase = 'stale', chatSocket, socketReady;
+  let olderPhase = 'stale', chatSocket, socketReady, initialRequests = 0;
   const connected = new Promise((resolve) => { socketReady = resolve; });
+  await context.route('http://127.0.0.1:19872/api/chat/model?**', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    gates[3].enter(); await gates[3].released;
+    return route.fallback();
+  });
   await context.route('http://127.0.0.1:19872/api/chat/turns/page**', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
     const older = new URL(route.request().url()).searchParams.has('before');
     if (!older) {
+      initialRequests++;
       gates[0].enter(); await gates[0].released;
       return route.fulfill({ ...jsonResponse({ error: '旧历史迟到失败0' }, origin), status: 503 });
     }
@@ -729,11 +742,18 @@ async function chat_history_races(runtime) {
   };
   try {
     await page.goto(origin + '/chat');
-    await page.getByText('继续最近对话', { exact: true }).click();
+    await openConversation(page, fixture.conversations[0].title);
     await waitForRequestEntry(gates[0].entered); await waitForRequestEntry(connected);
+    await waitForRequestEntry(gates[3].entered);
+    await page.locator('textarea').fill('只检查历史读取, 不发送');
+    gates[3].release();
+    await page.waitForFunction(() => document.querySelector('button[title="发送"]')?.disabled === false);
+    await afterRender();
+    assert.equal(initialRequests, 1, '首屏历史请求未完成时, 模型绑定回填不能重复发起历史读取');
     await sendSnapshot(1);
     const firstFailed = page.waitForResponse((response) => response.url().includes('/api/chat/turns/page') && !new URL(response.url()).searchParams.has('before') && response.status() === 503);
     gates[0].release(); await firstFailed; await afterRender();
+    assert.equal(initialRequests, 1, '新快照到达后不能补发首屏历史请求');
     assert.equal(await page.getByRole('alert').filter({ hasText: '旧历史迟到失败0' }).count(), 0);
     await page.getByRole('button', { name: '加载更早消息', exact: true }).click();
     await waitForRequestEntry(gates[1].entered);
@@ -742,6 +762,10 @@ async function chat_history_races(runtime) {
     olderPhase = 'current-error';
     gates[1].release(); await olderFailed; await afterRender();
     assert.equal(await page.getByRole('alert').filter({ hasText: '旧历史迟到失败1' }).count(), 0);
+    await page.getByRole('button', { name: '加载更早消息', exact: true }).click();
+    await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor();
+    await sendSnapshot(3);
+    await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor({ state: 'hidden' });
     await page.getByRole('button', { name: '加载更早消息', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor();
     const automaticFailed = page.waitForResponse((response) => response.url().includes('/api/chat/turns/page') && new URL(response.url()).searchParams.has('before') && response.status() === 503);
@@ -761,9 +785,9 @@ async function chat_history_races(runtime) {
     gates[2].release();
     await page.getByText('第 1 轮用户消息, 请解释当前测试内容', { exact: true }).waitFor();
     await page.getByRole('alert').filter({ hasText: '当前历史加载失败' }).waitFor({ state: 'hidden' });
-    assert.equal(await page.getByText('快照版本2', { exact: true }).count(), 1);
+    assert.equal(await page.getByText('快照版本3', { exact: true }).count(), 1);
     assert.deepEqual(errors, []); assert.deepEqual(fixture.errors, []);
-    console.log('PASS: 历史失败按显式阶段处理, 自动滚动不提前消耗成功响应, 迟到失败不污染新快照且当前失败可重试');
+    console.log('PASS: 首屏历史去重, 快照使旧错误失效, 迟到失败不污染新快照且当前失败可重试');
   } finally {
     gates.forEach((gate) => gate.release());
     await runtime.closeContexts(); await runtime.releaseServer(server);
@@ -797,7 +821,7 @@ export const scenarios = [
     await mockConfigVersions(page, origin, () => '{}');
     try {
       await page.goto(`${origin}/chat`);
-      await page.getByText('继续最近对话', { exact: true }).click();
+      await openConversation(page, fixture.conversations[0].title);
       const button = page.getByRole('button', { name: `下载 ${file.name}`, exact: true });
       await button.waitFor();
       const download = page.waitForEvent('download');
@@ -808,9 +832,8 @@ export const scenarios = [
       for await (const chunk of await received.createReadStream()) chunks.push(chunk);
       assert.deepEqual(Buffer.concat(chunks), Buffer.from([0, 255, 65]));
       await page.reload();
-      await page.waitForFunction(() => document.querySelector('[aria-label="下载 报告.zip"]') || document.body.innerText.includes('继续最近对话'));
-      const recent = page.getByText('继续最近对话', { exact: true });
-      if (await recent.isVisible()) await recent.click();
+      await page.waitForFunction(() => document.querySelector('[aria-label="下载 报告.zip"]') || document.querySelector('div.text-sm.truncate'));
+      if (!(await button.isVisible())) await openConversation(page, fixture.conversations[0].title);
       await button.waitFor();
       fail = true;
       await button.click();

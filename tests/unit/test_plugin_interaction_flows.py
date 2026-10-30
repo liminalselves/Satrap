@@ -32,6 +32,10 @@ def _plugin(tmp_path: Path, name: str, meta: dict, **sources: str) -> Path:
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_service_install_call_isolation_and_revocation(tmp_path, monkeypatch, asynchronous):
     """模型工具经真实分派复用服务, 保留来源并拒绝停用或失效引用"""
+    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.core.config.document import ConfigRevisionConflict
+
+    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "plugin-config")
     base = "AsyncService" if asynchronous else "Service"
     tool_base = "AsyncTool" if asynchronous else "Tool"
     prefix, wait = ("async ", "await ") if asynchronous else ("", "")
@@ -120,6 +124,24 @@ async def test_service_install_call_isolation_and_revocation(tmp_path, monkeypat
         assert denied["error_type"] == "permission_denied"
         unknown = await _await(manager.execute_tool("normalize_text", {"text": "guess"}))
         assert unknown["ok"] is False and unknown["error_type"] == "not_found"
+        host_config = PluginConfigManager()
+        state = host_config.save_execution("interop_backend", False, 0)
+        assert backend.enabled and backend.services["normalize_text"]
+        assert not session._plugin_interop.plugin_available("interop_backend")
+        assert not session._plugin_interop.plugin_available("interop_consumer")
+        assert host.plugins.services.find("interop_backend", "normalize_text") is None
+        with pytest.raises(PluginInteractionError):
+            with session._plugin_interop.execution("interop_consumer", "tools", "consumer"):
+                pass
+        with pytest.raises(ConfigRevisionConflict):
+            host_config.save_execution("interop_backend", True, 0)
+        host_config.save_execution("interop_backend", True, state["revision"])
+        assert (await execute("alice"))["text"] == "hello world"
+        state = host_config.save_execution("interop_consumer", False, 0)
+        assert session._plugin_interop.plugin_available("interop_backend")
+        assert not session._plugin_interop.model_tool_available("interop_consumer", "consumer")
+        host_config.save_execution("interop_consumer", True, state["revision"])
+        assert (await execute("alice"))["text"] == "hello world"
         with session._plugin_interop.execution("interop_consumer", "tools", "consumer"):
             inherited = copy_context()
         with pytest.raises(PluginInteractionError):

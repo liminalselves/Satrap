@@ -154,6 +154,27 @@ class PlatformAdapter(ABC):
         """
         return {}
 
+    @classmethod
+    def conversation_catalog_metadata_batch(cls, connection: sqlite3.Connection, routes: list[dict[str, str]]) -> list[dict[str, str]]:
+        """
+        批量补充路由标签, 默认兼容既有单条扩展, 适配器可覆写为集合查询
+
+        参数:
+        - connection: 平台数据库只读连接
+        - routes: 已选定的完整路由, 顺序与结果对应
+
+        返回:
+        - 逐条标签映射, 单条扩展失败不会影响其它实例
+        """
+        result: list[dict[str, str]] = []
+        for route in routes:
+            try:
+                result.append(cls.conversation_catalog_metadata(connection, route))
+            except Exception as error:
+                logger.error(f"[会话实例] 适配器标签读取失败: {route.get('session_id')}, {error}")
+                result.append({})
+        return result
+
     def __init__(self, config: PlatformConfig, event_handler: EventHandler | None = None, event_queue: asyncio.Queue[Any] | None = None):
         """
         初始化 PlatformAdapter
@@ -187,6 +208,13 @@ class PlatformAdapter(ABC):
         self._status: PlatformStatus = PlatformStatus.PENDING
         self._errors: list[PlatformError] = []
         self._started_at: datetime | None = None
+        self._connected_at: float | None = None
+        self._disconnected_at: float | None = None
+        self._connection_seen = False
+        self._reconnect_count = 0
+        self._heartbeat_wall_at: float | None = None
+        self._last_message_at: float | None = None
+        self._bot_profile: dict[str, object] | None = None
         self._run_task: asyncio.Task[Any] | None = None
 
     def set_event_handler(self, handler: EventHandler | None):
@@ -318,13 +346,23 @@ class PlatformAdapter(ABC):
         - 新消息成功入档时返回 True, 未装配存储或失败时返回 False
         """
         store = self.message_archive
-        if store is None:
+        from satrap.core.telemetry.capture import current_writer, record_message
+        from satrap.core.telemetry.contracts import MetricScope
+
+        writer = current_writer()
+        if store is None and writer is None:
             return False
         try:
 
             identity = scope or self.message_archive_scope(message)
             if identity.self_id != message.self_id or identity.adapter_id != self.config.id:
                 raise ValueError("消息档案身份与原始消息不一致")
+            if writer is not None:
+                record_message(MetricScope(platform_id=identity.adapter_id, self_id=identity.self_id, conversation_kind=identity.conversation_kind,
+                                            target_id=identity.chat_id), str(message.message_id),
+                               received_at=message.received_at, outbound=direction == "outbound")
+            if store is None:
+                return False
             snapshot = archive_snapshot(message, direction=direction)
             label = message.group.group_name or "" if message.group else ""
             return await asyncio.to_thread(store.record, identity, snapshot, label=label)
@@ -344,13 +382,22 @@ class PlatformAdapter(ABC):
         - 已排入写入任务时返回 True, 未配置档案或拒绝采集时返回 False
         """
         store = self.message_archive
-        if store is None:
+        from satrap.core.telemetry.capture import current_writer, record_message
+        from satrap.core.telemetry.contracts import MetricScope
+
+        writer = current_writer()
+        if store is None and writer is None:
             return False
         try:
             if scope.adapter_id != self.config.id or snapshot.sender_id != scope.self_id:
                 raise ValueError("已确认发送的消息身份与档案范围不一致")
             if snapshot.direction != "outbound" or not snapshot.verified or not snapshot.message_id:
                 raise ValueError("出站档案需要平台已确认的实际消息")
+            if writer is not None:
+                record_message(MetricScope(platform_id=scope.adapter_id, self_id=scope.self_id, conversation_kind=scope.conversation_kind,
+                                            target_id=scope.chat_id), snapshot.message_id, received_at=snapshot.received_at, outbound=True)
+            if store is None:
+                return False
             if len(self._archive_tasks) >= self._archive_capacity:
                 raise ValueError("已确认发送的档案写入队列已满")
             task = asyncio.create_task(self._write_confirmed_message(store, scope, snapshot))
@@ -1012,6 +1059,7 @@ class PlatformAdapter(ABC):
                 pass
         self.started = False
         self._status = PlatformStatus.STOPPED
+        self.note_connection(False)
         await self.drain_message_archive()
         logger.info(f"[PlatformAdapter] 平台已停止: {self.config.id}")
 
@@ -1038,6 +1086,7 @@ class PlatformAdapter(ABC):
         返回:
         - bool: 入队成功返回 True, 队列满时返回 False
         """
+        self._last_message_at = time.time()
         event.mark_queued()
         try:
             self._event_queue.put_nowait(event)
@@ -1088,6 +1137,36 @@ class PlatformAdapter(ABC):
 
     # ---------- 统计信息 ----------
 
+    def note_connection(self, connected: bool) -> None:
+        """
+        记录已由协议确认的连接变化, 初次连接不算重连
+
+        参数:
+        - connected: 当前连接是否已确认建立
+        """
+        changed = False
+        if connected and self._connected_at is None:
+            self._reconnect_count += int(self._connection_seen)
+            self._connected_at = time.time()
+            self._connection_seen = True
+            changed = True
+        elif not connected and self._connected_at is not None:
+            self._connected_at = None
+            self._disconnected_at = time.time()
+            changed = True
+        if changed:
+            from satrap.core.telemetry.capture import bind_scope, current_writer, record_activity
+            from satrap.core.telemetry.contracts import MetricScope
+
+            with bind_scope(service="backend"):
+                writer = current_writer()
+                if writer is not None:
+                    self_id = str((self._bot_profile or {}).get("self_id") or "")
+                    record_activity("platform.connected" if connected else "platform.disconnected", "平台已连接" if connected else "平台连接断开",
+                                    scope=MetricScope(platform_id=self.config.id, self_id=self_id), tone="info" if connected else "warning",
+                                    event_key=f"{writer.runtime.runtime_id}:{self.config.id}:{self._reconnect_count}:{connected}",
+                                    reference={"kind": "platform", "platform_id": self.config.id, "self_id": self_id})
+
     def get_stats(self) -> dict[str, Any]:
         """
         获取平台运行统计信息
@@ -1099,6 +1178,11 @@ class PlatformAdapter(ABC):
             "status": self._status.value,
             "started": self.started,
             "started_at": self._started_at.isoformat() if self._started_at else None,
+            "connected_at": self._connected_at, "disconnected_at": self._disconnected_at,
+            "reconnect_count": self._reconnect_count, "last_heartbeat_at": self._heartbeat_wall_at,
+            "last_message_at": self._last_message_at, "latency_ms": None, "latency_kind": None,
+            "protocol": self.adapter_type or None, "description": (type(self).__doc__ or "").strip() or None,
+            "bot": self._bot_profile,
             "event_queue": {
                 "queued": self._event_queue.qsize(), "capacity": self._event_queue.maxsize,
                 "active": self.active_events, "pending": self.pending_events,

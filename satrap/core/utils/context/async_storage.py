@@ -21,6 +21,8 @@ from .utils import (
     _message_content_json,
     _load_message_content,
     _load_tool_calls,
+    _protocol_payload_json,
+    _load_protocol_payload,
 )
 from .base import _ContextCore
 
@@ -86,7 +88,8 @@ class _AsyncStorage(_ContextCore):
                         content_json TEXT,
                         tool_call_id TEXT,
                         tool_calls TEXT,
-                        reasoning_content TEXT
+                        reasoning_content TEXT,
+                        protocol_payload TEXT
                     )
                 """
                 )
@@ -126,6 +129,7 @@ class _AsyncStorage(_ContextCore):
                     "tool_call_id",
                     "tool_calls",
                     "reasoning_content",
+                    "protocol_payload",
                 ):
                     try:
                         await conn.execute(
@@ -154,7 +158,7 @@ class _AsyncStorage(_ContextCore):
         try:
             async with aiosqlite.connect(self.db_path) as conn:
                 cursor = await conn.execute(
-                    "SELECT role, content, content_json, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC",
+                    "SELECT role, content, content_json, tool_call_id, tool_calls, reasoning_content, protocol_payload FROM chat_history WHERE conversation_id = ? ORDER BY id ASC",
                     (self.conversation_id,),
                 )
                 rows = list(await cursor.fetchall())
@@ -169,6 +173,8 @@ class _AsyncStorage(_ContextCore):
                     msg["tool_calls"] = tool_calls
                 if row[5] is not None:
                     msg["reasoning_content"] = row[5]
+                if row[6] is not None:
+                    msg["protocol_payload"] = _load_protocol_payload(row[6])
                 self._messages.append(msg)
             self._saved_count = len(rows)
             await self._load_runtime_state()
@@ -312,11 +318,12 @@ class _AsyncStorage(_ContextCore):
                                 else None
                             ),
                             msg.get("reasoning_content"),
+                            _protocol_payload_json(msg.get("protocol_payload")),
                         )
                         for msg in new_messages
                     ]
                     await conn.executemany(
-                        "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content, protocol_payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         data_to_insert,
                     )
                 await conn.execute(CATALOG_WRITE, catalog_values(self, appended=bool(new_messages) and prev_saved >= 0, modified=prev_saved < 0))

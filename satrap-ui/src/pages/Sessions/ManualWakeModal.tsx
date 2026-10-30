@@ -1,16 +1,18 @@
-import { createUuid } from '@/utils/uuid';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
-import { FormModal } from '@/components/common';
-import { Badge } from '@/components/ui/Badge';
-import { toast } from '@/components/ui/Toast';
-import { backendApi } from '@/api/backend';
+import { AlertTriangle, RefreshCw, Send } from 'lucide-react';
+import { Badge } from '@/components/kit/Badge';
+import { Button } from '@/components/kit/Button';
+import { Field, Input, Textarea } from '@/components/kit/Field';
+import { Modal } from '@/components/kit/Modal';
+import { toast } from '@/components/kit/Toast';
+import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnosticsPanel';
+import { backendApi, type WakeStatusResult } from '@/api/backend';
 import { ApiError } from '@/api/client';
 import { controlApi } from '@/api/control';
-import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnosticsPanel';
-import type { WakeStatusResult } from '@/api/backend';
-import type { FormField } from '@/components/common';
+import { createUuid } from '@/utils/uuid';
 import type { PlatformConfig } from '@/api/types';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 const SETTLED_STATUSES = new Set(['sent', 'partial', 'failed']);
 const STATUS_LABELS: Record<string, string> = {
@@ -39,30 +41,28 @@ const REJECTION_LABELS: Record<string, string> = {
 
 function rejectionMessage(error: unknown): string {
   if (error instanceof ApiError && error.code) {
-    // 未知原因码保留原始码, 便于对照后端返回值排查
     return REJECTION_LABELS[error.code] || `请求被拒绝 (${error.code})`;
   }
   return error instanceof Error ? error.message : '请求失败';
 }
 
-function statusVariant(status: string): 'success' | 'warning' | 'error' | 'info' | 'default' {
-  if (status === 'sent') return 'success';
-  if (status === 'partial' || status === 'unknown') return 'warning';
-  if (status === 'failed') return 'error';
-  return 'info';
+function statusTone(status: string): 'green' | 'orange' | 'red' | 'accent' | 'neutral' {
+  if (status === 'sent') return 'green';
+  if (status === 'partial' || status === 'unknown') return 'orange';
+  if (status === 'failed') return 'red';
+  if (status === 'accepted' || status === 'executing') return 'accent';
+  return 'neutral';
 }
 
 function WakeStatusPanel({ requestId, adapterId, onSettled }: { requestId: string; adapterId: string; onSettled: () => void }) {
   const [record, setRecord] = useState<WakeStatusResult | null>(null);
   const [note, setNote] = useState('');
-  const [timedOut, setTimedOut] = useState(false);
   // 手动刷新计数: 超时后由用户按钮触发一次真实重取, 而不仅仅提示"稍后手动刷新"
   const [manualKey, setManualKey] = useState(0);
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
     const started = Date.now();
-    setTimedOut(false);
     const tick = async () => {
       try {
         const result = await backendApi.getWakeStatus(requestId, adapterId);
@@ -81,7 +81,7 @@ function WakeStatusPanel({ requestId, adapterId, onSettled }: { requestId: strin
         else setNote('状态查询失败, 将重试');
       }
       if (!cancelled && Date.now() - started < 60000) timer = window.setTimeout(tick, 2000);
-      else if (!cancelled) { setNote('查询窗口已结束, 可点刷新继续查看'); setTimedOut(true); }
+      else if (!cancelled) { setNote('查询窗口已结束, 可点刷新继续查看'); }
     };
     tick();
     return () => { cancelled = true; window.clearTimeout(timer); };
@@ -89,56 +89,73 @@ function WakeStatusPanel({ requestId, adapterId, onSettled }: { requestId: strin
 
   const unknown = record?.status === 'unknown';
   return (
-    <div className="rounded-sm bg-glass p-3 text-xs space-y-1" data-testid="wake-status-panel">
+    <div className="tint-green space-y-1 rounded-xl border border-line bg-glass p-3 text-xs" data-testid="wake-status-panel" aria-live="polite">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-text-secondary">request_id</span>
-        <span className="font-mono break-all">{requestId}</span>
-        {record && <Badge variant={statusVariant(record.status)}>{STATUS_LABELS[record.status] || record.status}</Badge>}
-        {unknown && <Badge variant="warning">不确定, 不自动重发</Badge>}
-        {(timedOut || !!note) && (
-          <button type="button" className="text-accent hover:underline" onClick={() => setManualKey((key) => key + 1)}>
-            刷新状态
-          </button>
-        )}
+        <span className="text-fg-3">request_id</span>
+        <span className="font-mono break-all text-fg-2">{requestId}</span>
+        {record && <Badge tone={statusTone(record.status)} dot>{STATUS_LABELS[record.status] || record.status}</Badge>}
+        {unknown && <Badge tone="orange">不确定, 不自动重发</Badge>}
+        <button type="button" className="ml-auto text-accent hover:underline" onClick={() => setManualKey((key) => key + 1)}>
+          刷新状态
+        </button>
       </div>
-      {record?.detail && <div className="text-text-secondary">明细: {record.detail}</div>}
-      {record?.target && <div className="text-text-secondary">目标: {record.target}</div>}
-      {note && <div className="text-text-secondary">{note}</div>}
+      {record?.detail && <div className="text-fg-2">明细: {record.detail}</div>}
+      {record?.target && <div className="text-fg-3">目标: {record.target}</div>}
+      {note && <div className="text-fg-3">{note}</div>}
       {unknown && (
-        <div className="text-text-secondary">
+        <div className="text-fg-3">
           结果不确定: 可能已发送也可能未发送, 系统不会自动重发; 请按下方阶段诊断确认后再决定是否重新提交。
         </div>
       )}
-      {!record && !note && <div className="text-text-secondary">查询中...</div>}
+      {!record && !note && <div className="text-fg-3">查询中...</div>}
     </div>
   );
 }
 
-export function ManualWakeModal({ onClose }: { onClose: () => void }) {
+export interface ManualWakeModalProps {
+  open: boolean;
+  onClose: () => void;
+  backendRunning: boolean;
+}
+
+export function ManualWakeModal({ open, onClose, backendRunning }: ManualWakeModalProps) {
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
+  const [platformError, setPlatformError] = useState('');
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ adapter_id: '', group_id: '', user_id: '', prompt: '', message_id: '' });
   const [tracking, setTracking] = useState<{ requestId: string; adapterId: string } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const request = useRef({ content: '', id: '' });
+
   useEffect(() => {
     let cancelled = false;
     controlApi.listPlatforms().then((result) => {
       if (!result.ok) throw new Error(result.error || '读取平台失败');
-      if (!cancelled) setPlatforms((result.platforms || []).filter((item) => item.enable !== false && ['onebot', 'aiocqhttp'].includes(item.type)));
-    }).catch((error) => toast('error', error.message));
+      if (!cancelled) {
+        setPlatforms((result.platforms || []).filter((item) => item.enable !== false && ['onebot', 'aiocqhttp'].includes(item.type)));
+      }
+    }).catch((error: unknown) => {
+      if (!cancelled) setPlatformError(error instanceof Error ? error.message : '读取平台失败');
+    });
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    if (open) return;
+    setTracking(null);
+  }, [open]);
+
   const handleSettled = useCallback(() => setRefreshKey((key) => key + 1), []);
+
+  const set = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
 
   const submit = async () => {
     if (!form.adapter_id || !/^[1-9]\d*$/.test(form.group_id) || !/^[1-9]\d*$/.test(form.user_id)) {
-      toast('error', '请选择平台并填写有效的群号和会话成员 ID');
+      toast.error('请选择平台并填写有效的群号和会话成员 ID');
       return;
     }
     if (form.prompt.trim() && form.message_id.trim()) {
-      toast('error', '唤醒正文与消息 ID 只能选择一项');
+      toast.error('唤醒正文与消息 ID 只能选择一项');
       return;
     }
     const content = JSON.stringify(form);
@@ -147,56 +164,100 @@ export function ManualWakeModal({ onClose }: { onClose: () => void }) {
     try {
       const result = await backendApi.wakePlatform({ ...form, message_id: form.message_id.trim(), request_id: request.current.id });
       if (result.status === 'accepted') {
-        toast('success', '唤醒请求已入队, 下方跟踪最终状态');
+        toast.success('唤醒请求已入队, 下方跟踪最终状态');
         setTracking({ requestId: request.current.id, adapterId: form.adapter_id });
       } else if (result.status === 'already_pending') {
-        toast('info', '此请求已受理, 未重复提交');
+        toast.info('此请求已受理, 未重复提交');
         setTracking({ requestId: request.current.id, adapterId: form.adapter_id });
       } else if (result.status === 'no_pending') {
-        toast('info', '此群与成员范围内没有待处理消息');
+        toast.info('此群与成员范围内没有待处理消息');
         return;
       } else {
         throw new Error(result.reason || '请求被拒绝');
       }
       setRefreshKey((key) => key + 1);
     } catch (error) {
-      toast('error', '唤醒失败, 输入已保留: ' + rejectionMessage(error));
+      toast.error('唤醒失败, 输入已保留', rejectionMessage(error));
     } finally {
       setSaving(false);
     }
   };
 
-  const fields: FormField[] = [
-    { key: 'adapter_id', label: '平台实例', type: 'select', options: [{ value: '', label: '请选择 OneBot 平台' }, ...platforms.map((item) => ({ value: item.id, label: item.id }))] },
-    { key: 'group_id', label: '目标群号', type: 'text' },
-    { key: 'user_id', label: '会话成员 ID（用于选择上下文，不代表操作者）', type: 'text' },
-    { key: 'prompt', label: '唤醒正文（可选）', type: 'textarea', rows: 4, placeholder: '正文和消息 ID 均为空时, 处理此范围待处理的文字和图片' },
-    { key: 'message_id', label: '指定消息 ID（可选，须属于目标群和成员）', type: 'text' },
-  ];
-  if (tracking) {
-    fields.push({
-      key: 'wake_status', label: '请求状态跟踪', type: 'custom',
-      render: () => <WakeStatusPanel requestId={tracking.requestId} adapterId={tracking.adapterId} onSettled={handleSettled} />,
-    });
-  }
-  // 普通自动事件与手动请求共用同一阶段诊断: 手动跟踪时聚焦当前 request_id
-  // 未跟踪时默认"仅看拒绝", 便于先确认近期为何没有唤醒; 跟踪期间自动取消过滤并禁用该筛选
-  fields.push({
-    key: 'wake_diagnostics', label: '请求阶段诊断', type: 'custom',
-    render: () => (
-      <RequestDiagnosticsPanel
-        adapterId={tracking?.adapterId || form.adapter_id}
-        adapterOptions={platforms.map((item) => item.id)}
-        requestId={tracking?.requestId || ''}
-        refreshKey={refreshKey}
-        allowPolling={!!tracking}
-        rejectionsOnlyDefault={!tracking}
-        onClearRequest={() => setTracking(null)}
-      />
-    ),
-  });
+  return (
+    <Modal
+      open={open}
+      onClose={() => { if (!saving) onClose(); }}
+      title="手动唤醒群聊"
+      description="向 OneBot 群补全待处理消息, 或提交指定正文/消息 ID; 结果通过 request_id 跟踪"
+      icon={<Send className="h-[18px] w-[18px]" />}
+      size="xl"
+      className="tint-green"
+      footer={<>
+        <span className="mr-auto text-[11px] text-fg-4">
+          {backendRunning ? '请求具备幂等标识, 同一输入在途时不会重复入队' : '后端已停止, 无法提交唤醒'}
+        </span>
+        <Button variant="ghost" onClick={onClose} disabled={saving}>关闭</Button>
+        <Button variant="tinted" tint="green" icon={<Send className="h-4 w-4" />} loading={saving} disabled={!backendRunning} onClick={() => void submit()}>提交唤醒</Button>
+      </>}
+    >
+      <div className="space-y-3">
+        {platformError && (
+          <div role="alert" className="tint-red flex items-start gap-2 rounded-xl border border-[rgb(var(--tint)/0.25)] bg-[rgb(var(--tint)/0.08)] px-3 py-2 text-xs text-fg-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-none text-tint" />{platformError}
+          </div>
+        )}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="平台实例" required hint="仅列出已启用的 OneBot / aiocqhttp 平台">
+            <KitSelect className="field w-full" aria-label="平台实例" value={form.adapter_id} onChange={(value) => set('adapter_id', value)} disabled={saving}>
+              <option value="">请选择 OneBot 平台</option>
+              {platforms.map((item) => <option key={item.id} value={item.id}>{`${item.id} · ${item.type}`}</option>)}
+            </KitSelect>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="目标群号" required>
+              <Input value={form.group_id} onChange={(event) => set('group_id', event.target.value)} inputMode="numeric" placeholder="如: 8823" />
+            </Field>
+            <Field label="会话成员 ID（用于选择上下文，不代表操作者）" required hint="用于选择上下文">
+              <Input value={form.user_id} onChange={(event) => set('user_id', event.target.value)} inputMode="numeric" placeholder="如: 3301" />
+            </Field>
+          </div>
+        </div>
+        <Field label="唤醒正文（可选）" hint="正文和消息 ID 均为空时, 处理此范围待处理的文字和图片">
+          <Textarea rows={3} value={form.prompt} onChange={(event) => set('prompt', event.target.value)} placeholder="例如: 请总结上面几条消息并回复" />
+        </Field>
+        <Field label="指定消息 ID（可选，须属于目标群和成员）" hint="与唤醒正文二选一">
+          <Input value={form.message_id} onChange={(event) => set('message_id', event.target.value)} placeholder="平台消息 ID" />
+        </Field>
 
-  return <FormModal open onClose={onClose} title="手动唤醒群聊" size="lg" loading={saving} submitText="提交唤醒"
-    values={form} onChange={(key, value) => setForm((current) => ({ ...current, [key]: String(value) }))} onSubmit={submit}
-    fields={fields} />;
+        {tracking && (
+          <WakeStatusPanel requestId={tracking.requestId} adapterId={tracking.adapterId} onSettled={handleSettled} />
+        )}
+
+        <div className="space-y-2 border-t border-line pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-[13px] font-semibold text-fg">请求阶段诊断</h3>
+              <p className="mt-0.5 text-[11px] text-fg-3">
+                {tracking ? '聚焦当前 request_id, 自动跟踪阶段记录' : '近期手动与自动唤醒的决策、限流、模型和发送记录'}
+              </p>
+            </div>
+            {tracking && (
+              <Button size="sm" variant="ghost" icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => { setTracking(null); setRefreshKey((key) => key + 1); }}>
+                返回近期请求
+              </Button>
+            )}
+          </div>
+          <RequestDiagnosticsPanel
+            adapterId={tracking?.adapterId || form.adapter_id}
+            adapterOptions={platforms.map((item) => item.id)}
+            requestId={tracking?.requestId || ''}
+            refreshKey={refreshKey}
+            allowPolling={!!tracking}
+            rejectionsOnlyDefault={!tracking}
+            onClearRequest={() => setTracking(null)}
+          />
+        </div>
+      </div>
+    </Modal>
+  );
 }

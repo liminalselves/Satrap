@@ -11,12 +11,16 @@ export interface ModalProps {
   children: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl';
   showClose?: boolean;
+  /** 固定在滚动区外的底栏, 按钮阴影不被滚动容器裁切 */
+  footer?: React.ReactNode;
 }
 
 // 全局 Modal 栈: 嵌套弹窗时只有栈顶(最上层)响应 Escape / 遮罩点击
 const modalStack: symbol[] = [];
 // 递增层级计数器: 每打开一个 Modal 分配更高 z-index, 避免渲染期读栈不可靠
-let zCounter = 50;
+// 基数高于新组件库的 Drawer(110)/Modal(120), 抽屉内打开的旧弹窗不被遮挡
+const Z_BASE = 125;
+let zCounter = Z_BASE;
 
 export function Modal({
   open,
@@ -25,13 +29,14 @@ export function Modal({
   children,
   size = 'md',
   showClose = true,
+  footer,
 }: ModalProps) {
   const idRef = useRef<symbol>(Symbol('modal'));
   const id = idRef.current;
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   // 本 Modal 的层级, 打开时分配(后打开者更高)
-  const [zIndex, setZIndex] = useState(50);
+  const [zIndex, setZIndex] = useState(Z_BASE);
 
   const isTop = useCallback(() => modalStack[modalStack.length - 1] === id, [id]);
 
@@ -49,7 +54,7 @@ export function Modal({
       if (idx !== -1) modalStack.splice(idx, 1);
       if (modalStack.length === 0) {
         document.body.style.overflow = '';
-        zCounter = 50;   // 全部关闭后重置, 避免无限增长
+        zCounter = Z_BASE;   // 全部关闭后重置, 避免无限增长
       }
       previousFocus?.focus();
     };
@@ -91,31 +96,38 @@ export function Modal({
 
   return createPortal(
     <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex }}>
-      <div className="glass-overlay" onClick={() => { if (isTop()) onClose(); }} />
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-[6px] animate-fade [[data-theme=light]_&]:bg-white/40" aria-hidden onClick={() => { if (isTop()) onClose(); }} />
       <div
         ref={dialogRef}
         className={cn(
-          'glass-modal relative w-full flex flex-col max-h-[85vh]',
+          'surface surface-strong relative flex max-h-[min(86vh,820px)] w-full flex-col !rounded-[22px] p-6 !shadow-[var(--shadow-3)] outline-none',
           sizeClasses[size]
         )}
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
         tabIndex={-1}
+        style={{ animation: 'dialog-in 420ms var(--ease-out) both' }}
       >
         {(title || showClose) && (
           <div className="flex items-center justify-between mb-4 shrink-0">
-            {title && <h3 id={titleId} className="text-lg font-semibold text-text-primary">{title}</h3>}
+            {title && <h3 id={titleId} className="text-lg font-semibold text-fg">{title}</h3>}
             {showClose && (
-              <Button variant="ghost" size="sm" onClick={onClose} className="ml-auto">
+              <Button variant="ghost" size="sm" onClick={onClose} className="-mr-2 ml-auto h-8 w-8 !p-0">
                 <X className="h-4 w-4" />
               </Button>
             )}
           </div>
         )}
-        <div className="overflow-y-auto custom-scrollbar flex-1 min-h-0 -mx-6 px-6">
+        {/* 上下负边距留出卡片悬停阴影的空间, 不改变内容位置 */}
+        <div className="scroll -mx-6 -my-3 min-h-0 flex-1 px-6 py-3">
           {children}
         </div>
+        {footer && (
+          <div className="-mx-6 mt-3 flex shrink-0 items-center justify-end gap-2 border-t border-line px-6 pt-4">
+            {footer}
+          </div>
+        )}
       </div>
     </div>,
     document.body

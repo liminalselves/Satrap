@@ -1,11 +1,17 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { LogBuffer } from "@/utils/logBuffer";
+import { LogBuffer, mergeLogSources } from "@/utils/logBuffer";
 import { createAnimationFrameLimiter } from "@/utils/frameLimiter";
 import { startVisiblePoll } from "@/utils/visiblePoll";
 import { calculateReflectState, getPointerCellKey, getReflectCellKeys } from "@/hooks/glassReflectGeometry";
 import { updateReflectState } from "@/hooks/useGlassReflect";
 
 describe("utils/logBuffer", () => {
+  it('按时间合并来源且时钟回拨不颠倒来源内部顺序', () => {
+    const logs = [{ id: 1, source: 'control', timestamp: 100 }, { id: 2, source: 'control', timestamp: 90 },
+      { id: 3, source: 'chat', timestamp: 95 }, { id: 4, source: 'chat', timestamp: 110 }];
+    expect(mergeLogSources(logs).map((entry) => entry.id)).toEqual([3, 1, 2, 4]);
+    expect(logs.map((entry) => entry.id)).toEqual([1, 2, 3, 4]);
+  });
   describe('有界日志缓冲', () => {
     it('突发输入只保留最新上限且顺序完整, 未更新的读取保留引用', () => {
       const buffer = new LogBuffer<number>(5000);

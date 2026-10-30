@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs, { mkdir } from "node:fs/promises";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, comboOptions } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function administrators(runtime) {
@@ -140,12 +140,13 @@ async function administrators(runtime) {
     await dialog.getByText('原平台已移除或重建, 此身份授权已失效', { exact: false }).waitFor();
     // 未接入与未在此平台加载的插件都不出现在选择器中 (option 对 Playwright 恒为 hidden)
     const allowPicker = dialog.getByLabel('添加允许的插件', { exact: true });
-    assert.equal(await allowPicker.locator('option', { hasText: 'ordinary_plugin' }).count(), 0);
-    assert.equal(await allowPicker.locator('option', { hasText: 'other_platform_plugin' }).count(), 0);
+    const allowLabels = (await comboOptions(allowPicker)).map((option) => option.label).join(' | ');
+    assert.equal(allowLabels.includes('ordinary_plugin'), false);
+    assert.equal(allowLabels.includes('other_platform_plugin'), false);
     await dialog.getByText('需开启管理写操作；需要审批的动作仍须批准', { exact: true }).waitFor();
     await dialog.getByText('temporarily_missing · 暂不可用', { exact: true }).waitFor();
     // 未启用插件不出现在选择器中; 已在名单中的保留显示并带"未启用"徽章, 仍可移除
-    assert.equal(await dialog.getByLabel('添加允许的插件', { exact: true }).locator('option', { hasText: 'disabled_plugin' }).count(), 0);
+    assert.equal((await comboOptions(dialog.getByLabel('添加允许的插件', { exact: true }))).some((option) => option.label.includes('disabled_plugin')), false);
     await dialog.getByText('disabled_plugin · 未启用', { exact: true }).waitFor();
     // 已在名单中的平台不适用条目同样保留显示并带徽章
     await dialog.getByText('other_platform_plugin · 平台不适用', { exact: true }).waitFor();
@@ -423,7 +424,7 @@ async function agent_routing(runtime) {
     await dialog.getByLabel('私聊 Agent 配置', { exact: true }).selectOption(value('edictum', 'personal'));
     await groupMode.selectOption('value');
     const groupSelect = dialog.getByLabel('群聊 Agent 配置', { exact: true });
-    assert.equal(await groupSelect.locator('option').filter({ hasText: 'disabled' }).evaluate((option) => option.disabled), true);
+    assert.equal((await comboOptions(groupSelect)).find((option) => option.label.includes('disabled'))?.disabled, true);
     await groupSelect.selectOption(value('edictum', 'group-agent'));
     await topicMode.selectOption('value');
     await dialog.getByLabel('话题 Agent 配置', { exact: true }).selectOption(value('session_class', 'flow'));
@@ -559,6 +560,25 @@ async function backend_platform_status(runtime) {
       const reply = (json, status = 200) => route.fulfill({ status, json, headers });
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
       const pathname = url.pathname;
+      if (pathname === '/api/stats/overview') {
+        const to = Number(url.searchParams.get('to')) || Math.floor(Date.now() / 1000);
+        const from = Number(url.searchParams.get('from')) || to - 86400;
+        const messages = { inbound: 538, outbound: 1, model_requests: 2, commands: 0 };
+        const usage = { calls: 2, succeeded: 2, failed: 0, cancelled: 0, usage_reported_calls: 0, usage_missing_calls: 2,
+          input_tokens: null, output_tokens: null, cached_tokens: null, total_tokens: null,
+          token_reported_calls: { input_tokens: 0, output_tokens: 0, cached_tokens: 0, total_tokens: 0 },
+          duration_p50_ms: null, duration_p95_ms: null, duration_method: 'exact' };
+        const series = Array.from({ length: 14 }, (_, index) => ({ from: from + (to - from) * index / 14,
+          to: from + (to - from) * (index + 1) / 14,
+          messages: { ...messages, inbound: index === 0 ? 538 : 0, outbound: index === 13 ? 1 : 0, model_requests: index === 13 ? 2 : 0 },
+          usage: index === 13 ? usage : { ...usage, calls: 0, succeeded: 0, usage_missing_calls: 0 } }));
+        return reply({ generated_at: to, window: { from, to, tz: 'Asia/Shanghai', bucket: url.searchParams.get('bucket') || 'hour' },
+          complete: true, sources: [{ service: 'backend', state: 'available', complete: true, as_of: to }], warnings: [],
+          messages, usage, series, by_adapter: [{ platform_id: 'bot', self_id: '10', messages, series }],
+          comparison: { mode: 'yesterday_same_elapsed', baseline_window: { from: from - 86400, to: to - 86400, tz: 'Asia/Shanghai', bucket: null },
+            messages: { current: 1, previous: 2, absolute_delta: -1, percent_delta: -50 },
+            tokens: { current: null, previous: null, absolute_delta: null, percent_delta: null } } });
+      }
       if (pathname === '/ui-config.json') return reply({ backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' });
       if (pathname === '/api/auth/session') return reply({ ok: true });
       if (pathname === '/config/versions') return reply({ ok: true, resources: Object.fromEntries(
@@ -609,6 +629,13 @@ async function backend_platform_status(runtime) {
       if (pathname.includes('/wake/diagnostics')) return reply({ records: [], available: true });
       return reply({});
     });
+    await mockConfigVersions(page, origin, () => JSON.stringify({ sessions, edictum }));
+    await page.goto(origin);
+    await page.getByRole('button', { name: '今日消息: 1, 查看详情', exact: true }).waitFor();
+    await page.goto(`${origin}/platforms`);
+    const speechMetric = page.getByText('近 14 分钟消息', { exact: true }).locator('..');
+    await speechMetric.getByText('1', { exact: true }).waitFor();
+    await page.getByText('条 / 近 14 分钟', { exact: true }).first().locator('..').getByText('1', { exact: true }).waitFor();
     await page.goto(`${origin}/sessions`);
     const switchDemo = page.getByRole('switch', { name: '会话配置 demo' });
     await switchDemo.waitFor();
@@ -661,7 +688,7 @@ async function backend_platform_status(runtime) {
     await dialog.getByRole('button', { name: '关闭检查', exact: true }).click();
 
     await page.locator('aside').getByRole('link', { name: 'Agent 配置', exact: true }).click();
-    await page.getByText('Edictum 流程', { exact: true }).click();
+    await page.getByRole('button', { name: 'Edictum 流程', exact: true }).click();
     const switchNamed = page.getByRole('switch', { name: '会话配置 named' });
     state.saveFailure = true;
     await switchNamed.click();
@@ -682,10 +709,10 @@ async function backend_platform_status(runtime) {
     await page.getByText('会话配置停用', { exact: true }).first().waitFor();
     holdStop = true;
     await page.getByRole('button', { name: '停止后端', exact: true }).click();
-    await page.getByRole('button', { name: '后端停止中', exact: true }).waitFor();
-    assert.equal(await page.getByRole('button', { name: '后端停止中', exact: true }).isDisabled(), true);
+    await page.getByRole('main').getByRole('button', { name: '后端停止中', exact: true }).waitFor();
+    assert.equal(await page.getByRole('main').getByRole('button', { name: '后端停止中', exact: true }).isDisabled(), true);
     await page.locator('aside').getByRole('link', { name: '系统设置', exact: true }).click();
-    await page.getByRole('button', { name: '后端停止中', exact: true }).waitFor();
+    await page.getByRole('main').getByRole('button', { name: '后端停止中', exact: true }).waitFor();
     state.staleHealth = true;
     stopRelease();
     await page.getByRole('button', { name: '启动后端', exact: true }).waitFor();

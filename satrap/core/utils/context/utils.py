@@ -19,7 +19,8 @@ from satrap.core.utils.vision import (
     content_text_projection,
     estimate_content_media_tokens,
 )
-from satrap.core.type import JsonRow, RestoreOptions, SnapshotDomain, StateScope
+from satrap.core.type import JsonRow, RestoreOptions, SnapshotDomain, StateScope, ModelProtocolPayload
+from satrap.core.utils.model_history import attach_protocol_payload
 
 from satrap.core.log import logger
 
@@ -149,7 +150,7 @@ def _estimate_request_tokens(
         metadata = {
             key: value
             for key, value in msg.items()
-            if key != "content" and value is not None
+            if key not in {"content", "protocol_payload"} and value is not None
         }
         if metadata:
             token_count += _estimate_text(
@@ -251,6 +252,47 @@ def _split_summary_chunks(lines: List[str], token_budget: int) -> List[str]:
     return chunks
 
 
+def _protocol_payload_json(value: object) -> str | None:
+    """
+    编码可选协议资料
+
+    参数:
+    - value: 助手消息关联的资料
+
+    返回:
+    - JSON 文本, 未提供时返回 None
+    """
+    return json.dumps(value, ensure_ascii=False) if value is not None else None
+
+
+def _load_protocol_payload(value: str) -> dict[str, object]:
+    """
+    解码消息协议资料, 不解释或执行其中的内容
+
+    参数:
+    - value: 数据库 JSON 字段
+
+    返回:
+    - 原始资料对象, 非对象或损坏 JSON 明确报错
+    """
+    result = json.loads(value)
+    if not isinstance(result, dict):
+        raise ValueError("模型协议资料必须是 JSON 对象")
+    return result
+
+
+def _ensure_protocol_column(conn: sqlite3.Connection) -> None:
+    """
+    为历史恢复或停机编辑升级已有消息表
+
+    参数:
+    - conn: 当前事务连接, 不在本函数提交
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_history)")}
+    if "protocol_payload" not in columns:
+        conn.execute("ALTER TABLE chat_history ADD COLUMN protocol_payload TEXT")
+
+
 def _messages_domain() -> SnapshotDomain:
     """
     消息领域注册: 管理 chat_history 表的对话消息
@@ -271,8 +313,7 @@ def _messages_domain() -> SnapshotDomain:
         - List[JsonRow]: 读取指定对话的全部消息行
         """
         rows = conn.execute(
-            "SELECT id, role, content, content_json, tool_call_id, tool_calls, "
-            "reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id",
+            "SELECT * FROM chat_history WHERE conversation_id = ? ORDER BY id",
             (scope.scope_id,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -292,12 +333,13 @@ def _messages_domain() -> SnapshotDomain:
         - rows: 数据行集合
         - options: 选项集合
         """
+        _ensure_protocol_column(conn)
         cleaner(conn, scope)
         for row in rows:
             conn.execute(
                 "INSERT INTO chat_history "
                 "(conversation_id, role, content, content_json, tool_call_id, "
-                " tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " tool_calls, reasoning_content, protocol_payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     scope.scope_id,
                     str(row.get("role") or ""),
@@ -306,6 +348,7 @@ def _messages_domain() -> SnapshotDomain:
                     row.get("tool_call_id"),
                     row.get("tool_calls"),
                     row.get("reasoning_content"),
+                    row.get("protocol_payload"),
                 ),
             )
 
@@ -438,6 +481,7 @@ def add_bot_message(
     message: str,
     tools_calls: list[dict[str, Any]] | None = None,
     reasoning: str | None = None,
+    *, protocol_payload: ModelProtocolPayload | None = None,
 ):
     """
     向上下文中添加一条助手消息
@@ -447,6 +491,7 @@ def add_bot_message(
     - message: 助手消息内容
     - tools_calls: 工具调用列表, 默认 None
     - reasoning: 思考内容, 默认 None
+    - protocol_payload: 本次输出的可重放协议资料
     """
     if tools_calls:
         context.append(
@@ -469,6 +514,7 @@ def add_bot_message(
                 ),
             }
         )
+    attach_protocol_payload(context[-1], protocol_payload)
 
 
 def add_tool_message(
@@ -503,6 +549,7 @@ def add_tools_call_flow(
     tool_messages: list[dict[str, Any]],
     tool_results: Sequence[dict[str, Any] | str],
     reasoning: str | None = None,
+    *, protocol_payload: ModelProtocolPayload | None = None,
 ):
     """
     添加完整的助手工具调用及结果消息流
@@ -513,8 +560,9 @@ def add_tools_call_flow(
     - tool_messages: 工具调用消息列表
     - tool_results: 字典或字符串结果序列, 与 tool_messages 按顺序配对
     - reasoning: 思考内容, 默认 None 表示不添加
+    - protocol_payload: 当前助手输出的协议资料, 绑定在工具调用消息上
     """
-    add_bot_message(context, message, tools_calls=tool_messages, reasoning=reasoning)
+    add_bot_message(context, message, tools_calls=tool_messages, reasoning=reasoning, protocol_payload=protocol_payload)
     for tool_msg, tool_res in zip(tool_messages, tool_results):
         add_tool_message(context, tool_msg["id"], tool_res)
 

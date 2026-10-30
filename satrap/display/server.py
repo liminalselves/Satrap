@@ -39,20 +39,23 @@ WebSocket:
 """
 from __future__ import annotations
 
-from urllib.parse import unquote, urlsplit, quote
+from urllib.parse import unquote, urlsplit, quote, parse_qs
 import argparse
 import asyncio
 import math
 import base64
 import signal
+import sqlite3
 from typing import Any, cast
 import json
 import traceback
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import OverrideConflictError
-from satrap.core.config.conversation_data import ConversationDataConflict
+from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict, MessagePageTooLarge
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
+from satrap.core.config.rag_jobs import RagJobError, RagJobManager, rag_jobs_response
+from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS, BoundedAsyncWorker
 from satrap.edictum.plugin_settings import model_options
 from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
@@ -62,10 +65,12 @@ from satrap.core.config.loader import ConfigLoader
 from satrap.display.recorder import list_conversations, query_conversations
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
+from satrap.display.settings import validate_temperature
 from satrap.core.storage import StorageMaintenanceService
 from satrap.core.rag import RagService
 
 from satrap.core.log import logger
+from satrap.core.telemetry.health import ServiceRuntime
 from satrap.core.file_access.artifacts import CHUNK_BYTES
 
 DEFAULT_HOST = "127.0.0.1"
@@ -97,11 +102,44 @@ class ChatHTTPServer(MiniHTTPServer):
             session_namespace="chat",
         )
         self.service = service
+        self._service_runtime = ServiceRuntime("chat")
+        from satrap.core.telemetry.capture import TelemetryWriter
+        self._telemetry_writer: TelemetryWriter | None = None
+        self._rag_jobs: RagJobManager | None = None
 
     async def start(self) -> None:
         """启动"""
-        await super().start()
+        from satrap.core.telemetry.capture import start_service_capture
+
+        self._telemetry_writer = await start_service_capture("chat", self._service_runtime, self.service._storage)
+        try:
+            await super().start()
+            self._rag_jobs = RagJobManager(self.service._storage, "chat", self._service_runtime.runtime_id, lambda: ModelConfigSnapshot.read(self.service._model_cfg))
+            try:
+                await self._rag_jobs.start([self.service._platform_id])
+            except (OSError, ValueError) as error:
+                self._rag_jobs = None
+                logger.warning(f"[RAG 任务] 启动未就绪: {type(error).__name__}")
+        except BaseException:
+            if self._telemetry_writer is not None:
+                await asyncio.to_thread(self._telemetry_writer.close)
+                self._telemetry_writer = None
+            raise
         logger.info(f"[聊天服务] HTTP API: http://{self.host}:{self.port}")
+
+    async def stop(self) -> None:
+        """停止 HTTP 后排空采集队列, 调用方先结束聊天任务"""
+        try:
+            await super().stop()
+        finally:
+            try:
+                if self._rag_jobs is not None:
+                    await self._rag_jobs.close()
+                    self._rag_jobs = None
+            finally:
+                if self._telemetry_writer is not None:
+                    await asyncio.to_thread(self._telemetry_writer.close)
+                    self._telemetry_writer = None
 
     # ---------- WebSocket 端点分发 ----------
 
@@ -183,7 +221,7 @@ class ChatHTTPServer(MiniHTTPServer):
         """
         if method == "POST" and urlsplit(path).path == "/api/chat/upload":
             return 32 * 1024 * 1024 * 4 // 3 + 65536
-        if method == "POST" and urlsplit(path).path == "/api/chat/rag/upload":
+        if method == "POST" and urlsplit(path).path in {"/api/chat/rag/upload", "/api/chat/rag/jobs/upload"}:
             return DEFAULT_MAX_FILE_SIZE
         return super()._request_body_limit(method, path)
 
@@ -239,16 +277,189 @@ class ChatHTTPServer(MiniHTTPServer):
             lease.close()
         return True
 
+    async def _route_model_settings(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]] | None:
+        """
+        路由整体默认和会话模型设置, 复用服务鉴权与会话互斥
+
+        参数:
+        - method: HTTP 方法
+        - path: 包含会话查询参数的路径
+        - body: JSON 请求正文
+
+        返回:
+        - 已确认设置或明确的冲突/失败响应, 无关路径返回 None
+        """
+        from satrap.core.config.document import ConfigRevisionConflict
+        clean = urlsplit(path).path
+        if clean not in {"/api/chat/settings", "/api/chat/model"}:
+            return None
+        if method not in {"GET", "PUT"}:
+            return 405, {"error": "模型设置仅支持 GET 和 PUT"}
+        try:
+            if clean == "/api/chat/settings":
+                if method == "GET":
+                    return 200, dict(await self.service.get_settings())
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or set(payload) != {"default_model", "expected_revision"}:
+                    raise ValueError("Chat 默认设置参数无效")
+                return 200, dict(await self.service.set_settings(payload["default_model"], payload["expected_revision"]))
+            conversation_id = self._query_param(path, "conversation")
+            if not conversation_id:
+                raise ValueError("缺少 conversation")
+            if method == "GET":
+                return 200, dict(await self.service.get_model(conversation_id))
+            payload = json.loads(body or b"{}")
+            if not isinstance(payload, dict) or not {"model"} <= set(payload) <= {"model", "expected_model"}:
+                raise ValueError("会话模型设置参数无效")
+            if not isinstance(payload["model"], str) or (payload.get("expected_model") is not None and not isinstance(payload["expected_model"], str)):
+                raise ValueError("模型配置名必须是字符串")
+            result = await self.service.set_model(conversation_id, payload["model"], payload.get("expected_model"))
+            return (200 if result.get("ok") else 409), result
+        except ConfigRevisionConflict as error:
+            logger.warning(f"[Chat 模型设置] 保存冲突: {error}")
+            return 409, {"error": str(error)}
+        except (OSError, TypeError, ValueError, TimeoutError) as error:
+            logger.warning(f"[Chat 模型设置] 读取或保存失败: {error}")
+            return 400, {"error": str(error)}
+
+    async def _route_creation(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]] | None:
+        """
+        路由正式与预加载会话创建, 未指定模型时只解析一次整体默认
+
+        参数:
+        - method: HTTP 方法
+        - path: 请求路径
+        - body: 创建选项 JSON
+
+        返回:
+        - 新会话 ID 或参数错误, 无关路径返回 None
+        """
+        clean = urlsplit(path).path
+        if method != "POST" or clean not in {"/api/chat/conversations", "/api/chat/conversations/preload"}:
+            return None
+        try:
+            payload = json.loads(body or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError("创建参数必须是对象")
+            values = cast(dict[str, object], payload)
+            prompt_enabled = values.get("default_agent_prompt_enabled", False)
+            if not isinstance(prompt_enabled, bool):
+                raise ValueError("default_agent_prompt_enabled 必须为布尔值")
+            model = str(values["model"]) if values.get("model") is not None else None
+            create = self.service.preload_conversation if clean.endswith("/preload") else self.service.create_conversation
+            cid = await create(model=model, temperature=validate_temperature(values.get("temperature")),
+                think=str(values.get("think") or "default"), system_prompt=str(values.get("system_prompt") or "") or None,
+                project_id=str(values.get("project_id") or "") or None, default_agent_prompt_enabled=prompt_enabled)
+            return 200, {"ok": True, "conversation_id": cid}
+        except (OSError, TypeError, ValueError) as error:
+            logger.warning(f"[Chat 创建] 创建会话失败: {error}")
+            return 400, {"ok": False, "error": str(error)}
+
+    async def _route_rag_jobs(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, object]]:
+        """
+        在 Chat 自身鉴权后处理知识库后台任务
+
+        参数:
+        - method: HTTP 方法
+        - path: 包含知识库范围的请求路径
+        - body: JSON 或二进制上传正文
+
+        返回:
+        - 新任务, 只读目录或稳定错误
+        """
+        svc = self.service
+        clean = urlsplit(path).path
+        try:
+            query = {key: values[0] for key, values in parse_qs(urlsplit(path).query).items()}
+            if query.get("platform_id", svc._platform_id) != svc._platform_id:
+                raise ValueError("平台不属于当前 Chat 服务")
+            session_id = query.get("session_id", "")
+            if session_id and session_id not in svc._conversations:
+                await RAG_WORKERS.run(require_stored_session, svc._storage.platform_db(svc._platform_id), session_id)
+            service = RagService(svc._storage, svc._model_cfg, svc._platform_id, session_id)
+            uploading = clean == "/api/chat/rag/jobs/upload" and method == "POST"
+            payload: object = json.loads(body or b"{}") if method == "POST" and not uploading else {}
+            if not isinstance(payload, dict):
+                raise ValueError("请求体必须为对象")
+            return await rag_jobs_response(self._rag_jobs, service, method, clean.removeprefix("/api/chat/rag"), query, cast(dict[str, object], payload), body if uploading else None)
+        except RagJobError as error:
+            return error.status, {"error": str(error), "code": error.code}
+        except WorkerBusyError as error:
+            return 503, {"error": str(error), "code": "rag_queue_full"}
+        except (OSError, TypeError, ValueError, TimeoutError) as error:
+            return 400, {"error": str(error), "code": "invalid_request"}
+
+    async def _route_stored_messages(self, path: str) -> tuple[int, dict[str, object]]:
+        """
+        使用 Chat 自己的认证和数据库读取已保存消息
+
+        参数:
+        - path: 带会话身份的只读消息路径
+
+        返回:
+        - 存储分页, 不改变当前实例内存与编辑修订
+        """
+        try:
+            clean = urlsplit(path).path
+            identity = unquote(clean[len("/api/chat/conversations/"):-len("/messages")])
+            parsed = parse_qs(urlsplit(path).query, keep_blank_values=True)
+            if any(len(values) != 1 for values in parsed.values()) or set(parsed) - {"layer", "q", "role", "limit", "cursor", "order"}:
+                raise ValueError("消息查询包含重复或未知参数")
+            service = ConversationDataService(self.service._storage.platform_db(self.service._platform_id))
+            result = await CHAT_READ_WORKERS.run(service.messages, identity, {key: values[0] for key, values in parsed.items()})
+            return 200, dict(result)
+        except KeyError:
+            return 404, {"error": "已保存对话不存在", "code": "conversation_not_found"}
+        except MessagePageTooLarge as error:
+            return 413, {"error": str(error), "code": "message_too_large"}
+        except WorkerBusyError as error:
+            return 503, {"error": str(error), "code": "worker_busy"}
+        except (sqlite3.DatabaseError, OSError, json.JSONDecodeError) as error:
+            logger.error(f"[历史只读分页] 读取失败, type={type(error).__name__}")
+            return 500, {"error": "已保存对话数据不可读取", "code": "storage_unavailable"}
+        except (TypeError, ValueError) as error:
+            return 400, {"error": str(error), "code": "invalid_request"}
+
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
         operation_status = self.application_status(method, path)
         if operation_status is not None:
             return operation_status
         clean = path.split("?", 1)[0]
+        if clean.startswith("/api/chat/conversations/") and clean.endswith("/settings"):
+            conversation_id = clean.removeprefix("/api/chat/conversations/").removesuffix("/settings")
+            if not conversation_id or "/" in conversation_id:
+                return 400, {"error": "会话 ID 无效"}
+            try:
+                if method == "GET":
+                    return 200, await svc.get_generation_settings(conversation_id)
+                if method == "PATCH":
+                    payload = json.loads(body or b"{}")
+                    if not isinstance(payload, dict):
+                        raise ValueError("会话生成参数必须为对象")
+                    return 200, await svc.set_generation_settings(conversation_id, cast(dict[str, object], payload))
+                return 405, {"error": "会话生成参数仅支持 GET 和 PATCH"}
+            except (OSError, TypeError, ValueError) as error:
+                return 400, {"error": str(error)}
+        if method == "GET" and clean.startswith("/api/chat/conversations/") and clean.endswith("/messages"):
+            return await self._route_stored_messages(path)
+        if clean.startswith("/api/stats/") or clean == "/api/activity/local":
+            from satrap.core.telemetry.api import telemetry_response
+
+            stats = await telemetry_response(method, path, "chat", svc._storage)
+            if stats is not None:
+                return stats
+        model_settings = await self._route_model_settings(method, path, body)
+        if model_settings is not None:
+            return model_settings
+        creation = await self._route_creation(method, path, body)
+        if creation is not None:
+            return creation
 
         if method == "GET" and clean == "/api/chat/health":
             persisted = sum(1 for conv in svc._conversations.values() if conv.persisted)
             return 200, {
+                **self._service_runtime.snapshot(),
                 "ok": True,
                 "conversations": persisted,
                 "preloaded": len(svc._conversations) - persisted,
@@ -351,6 +562,9 @@ class ChatHTTPServer(MiniHTTPServer):
             svc._model_cfg.reload()
             return 200, {"options": model_options(svc._model_cfg)}
 
+        if clean.startswith(("/api/chat/rag/jobs", "/api/chat/rag/documents")):
+            return await self._route_rag_jobs(method, path, body)
+
         if (clean == "/api/chat/rag" and method in {"GET", "POST"}) or (clean == "/api/chat/rag/upload" and method == "POST"):
             try:
                 session_id = self._query_param(path, "session_id")
@@ -412,36 +626,6 @@ class ChatHTTPServer(MiniHTTPServer):
             if method == "DELETE":
                 return 200, svc.delete_model(model_name)
             return 405, {"error": f"method not allowed: {method}"}
-
-        if method == "POST" and clean == "/api/chat/conversations":
-            payload = json.loads(body or b"{}")
-            try:
-                cid = await svc.create_conversation(
-                    model=str(payload.get("model") or "default"),
-                    think=str(payload.get("think") or "off"),
-                    system_prompt=str(payload.get("system_prompt") or "") or None,
-                    default_agent_prompt_enabled=payload.get("default_agent_prompt_enabled", False),
-                    project_id=str(payload.get("project_id") or "") or None,
-                )
-            except ValueError as e:
-                return 400, {"ok": False, "error": str(e)}
-            return 200, {"ok": True, "conversation_id": cid}
-
-        if method == "POST" and clean == "/api/chat/conversations/preload":
-            payload = json.loads(body or b"{}")
-            temperature = payload.get("temperature")
-            try:
-                cid = await svc.preload_conversation(
-                    model=str(payload.get("model") or "default"),
-                    think=str(payload.get("think") or "off"),
-                    system_prompt=str(payload.get("system_prompt") or "") or None,
-                    default_agent_prompt_enabled=payload.get("default_agent_prompt_enabled", False),
-                    project_id=str(payload.get("project_id") or "") or None,
-                    temperature=float(temperature) if temperature is not None else None,
-                )
-            except (TypeError, ValueError) as e:
-                return 400, {"ok": False, "error": str(e)}
-            return 200, {"ok": True, "conversation_id": cid}
 
         if method == "GET" and clean == "/api/chat/conversations":
             return 200, {"conversations": await CHAT_READ_WORKERS.run(list_conversations, db_path=svc._display_db_path)}
@@ -616,6 +800,7 @@ class ChatHTTPServer(MiniHTTPServer):
                 think=think,
                 attachments=attachments,
                 preload_settings=preload_settings,
+                expected_model=str(payload["expected_model"]) if payload.get("expected_model") is not None else None,
             )
             return (200 if result.get("ok") else 400), result
 
@@ -684,7 +869,8 @@ class ChatHTTPServer(MiniHTTPServer):
                 return 400, {"error": "缺少 conversation 参数"}
             think = payload.get("think")
             think = str(think) if think is not None else None
-            result = await svc.retry(conv, think=think)
+            result = await svc.retry(conv, think=think,
+                                     expected_model=str(payload["expected_model"]) if payload.get("expected_model") is not None else None)
             return (200 if result.get("ok") else 400), result
         # 重试与分支
 

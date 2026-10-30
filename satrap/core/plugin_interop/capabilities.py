@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from satrap.core.plugin_interop.skills import SkillHostAccess
     from satrap.core.plugin_interop.artifacts import ArtifactAccess
     from satrap.core.plugin_interop.approvals import ApprovalAccess
+    from satrap.core.plugin_interop.debug_logging import DebugLoggingAccess
 
     SessionType = SimpleSession | AsyncSimpleSession
 
@@ -394,6 +395,19 @@ class PluginHost:
 
         self._runtime()
         return ApprovalAccess(self)
+
+    @property
+    def debug_logging(self) -> DebugLoggingAccess:
+        """
+        取得当前真实命令可用的诊断设置入口
+
+        返回:
+        - 绑定插件代次和当前对象的宿主管理接口
+        """
+        from satrap.core.plugin_interop.debug_logging import DebugLoggingAccess
+
+        self._runtime()
+        return DebugLoggingAccess(self)
 
 
 @dataclass(frozen=True)
@@ -869,8 +883,10 @@ class PluginInterop:
         - 同一会话内的插件目标节点
         """
         from satrap.core.plugin_interop.contracts import CAPABILITY_KINDS
+        from satrap.edictum.plugin_config import PluginConfigManager
 
         result: dict[str, _RelationNode] = {}
+        host_states = PluginConfigManager().host_states()
         for owner, binding in tuple(self.bindings.items()):
             plugin = binding.plugin
             if plugin is None or not binding.active and owner != include:
@@ -879,7 +895,9 @@ class PluginInterop:
             for kind in CAPABILITY_KINDS:
                 states = cast(Mapping[str, bool], getattr(plugin, kind))
                 capabilities[kind] = {name: self._independent(owner, kind, name) for name in states}
-            result[owner] = _RelationNode(plugin.enabled, binding.spec, capabilities)
+            host_state = host_states.get(owner)
+            execution_enabled = host_state["execution_enabled"] if host_state is not None else True
+            result[owner] = _RelationNode(plugin.enabled and execution_enabled, binding.spec, capabilities)
         return result
 
     def _validate_target(self, nodes: Mapping[str, _RelationNode], *, activating: set[str] | None = None,
@@ -971,6 +989,10 @@ class PluginInterop:
         返回:
         - 已激活且所有必需依赖可用时为 True
         """
+        from satrap.edictum.plugin_config import PluginConfigManager
+
+        if not PluginConfigManager().host_state(name)["execution_enabled"]:
+            return False
         if any(binding.active and binding.spec.replaces for binding in self.bindings.values()):
             return _RelationView(self._relation_nodes()).value((name, None, ""))
         binding = self.bindings.get(name)
@@ -1184,6 +1206,10 @@ class PluginInterop:
         plugin = binding.plugin if binding else None
         if plugin is None:
             return "not_installed", ()
+        from satrap.edictum.plugin_config import PluginConfigManager
+
+        if not PluginConfigManager().host_state(owner)["execution_enabled"]:
+            return "execution_disabled", ()
         if not plugin.enabled:
             return "plugin_disabled", ()
         if not self._independent(owner, kind, name):

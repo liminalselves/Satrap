@@ -49,7 +49,19 @@ export interface MessageSegment {
   tool?: ToolCall;
 }
 
+export interface ResponseMetadata {
+  status?: 'completed' | 'failed';
+  error_text?: string;
+  error?: { code: string; message: string; status?: number | null; provider_code?: string | null; request_id?: string | null };
+  model?: string;
+  model_id?: string | null;
+}
+
+export interface ChatDefaults { default_model: string; revision: string }
+export interface ConversationModel { ok: boolean; model: string; available: boolean; error?: string }
+
 export interface ChatTurnVariant {
+  response_metadata?: ResponseMetadata | null;
   output_files?: OutputFile[];
   variant_index: number;
   thinking: string | null;
@@ -90,6 +102,7 @@ export interface ContextTurnStats {
 
 // 对话轮次 (对齐 display_turns)
 export interface ChatTurn {
+  response_metadata?: ResponseMetadata | null;
   output_files?: OutputFile[];
   generating?: boolean;
   interrupted?: boolean;
@@ -216,9 +229,14 @@ export interface ChatPreloadSettings {
   approvalMode?: ApprovalMode;   // 草稿首次发送时应用, 不改变已有会话的审批策略
   model: string;
   think: string;
-  temperature: number;
+  temperature?: number | null;   // null 跟随模型配置, undefined 不提交并保留会话当前值
   systemPrompt: string;
   projectId: string | null;
+}
+
+export interface ChatGenerationSettings {
+  temperature: number | null;   // 会话覆盖值, null 表示跟随模型
+  request_temperature: number | null;   // 下一轮拟发送值, null 表示不发送
 }
 
 // 能力项
@@ -275,7 +293,8 @@ export interface ApprovalPresentation {
 
 // WS 推送事件
 export type ChatEvent = (
-  | { type: 'snapshot'; has_more?: boolean; next_before?: number | null; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[]; approval?: ApprovalPresentation | null }[] }
+  | { type: 'snapshot'; model?: string | null; has_more?: boolean; next_before?: number | null; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[]; approval?: ApprovalPresentation | null }[] }
+  | { type: 'model_changed'; model: string; available: boolean }
   | { type: 'resync_required' }
   | { type: 'subscribed'; conversation_id: string }
   | { type: 'turn_start'; user_input: string; turn_id: number; turn_index: number; variant_index: number; retry?: boolean }
@@ -285,9 +304,9 @@ export type ChatEvent = (
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
   | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[]; approval?: ApprovalPresentation | null }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
-  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
+  | { type: 'turn_done'; response_metadata?: ResponseMetadata | null; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }
-  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
+  | { type: 'error'; response_metadata?: ResponseMetadata | null; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null; output_files?: OutputFile[] }
 ) & { seq?: number; stream_id?: string };
 
 // ==================== HTTP 请求 ====================
@@ -358,7 +377,15 @@ export const chatApi = {
 
   listModels: () => request<{ models: string[] }>('GET', '/api/chat/models'),
 
-  createConversation: (model: string = 'default', think = 'off', systemPrompt?: string, projectId?: string) =>
+  getSettings: () => request<ChatDefaults>('GET', '/api/chat/settings'),
+  saveSettings: (defaultModel: string, revision: string) => request<ChatDefaults>('PUT', '/api/chat/settings', {
+    default_model: defaultModel, expected_revision: revision,
+  }),
+  getModel: (conversation: string) => request<ConversationModel>('GET', `/api/chat/model?conversation=${encodeURIComponent(conversation)}`),
+  setModel: (conversation: string, model: string, expectedModel?: string) => request<ConversationModel>('PUT',
+    `/api/chat/model?conversation=${encodeURIComponent(conversation)}`, { model, expected_model: expectedModel }),
+
+  createConversation: (model?: string, think = 'default', systemPrompt?: string, projectId?: string) =>
     request<{ ok: boolean; conversation_id: string }>('POST', '/api/chat/conversations', {
       model, think,
       ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
@@ -369,7 +396,7 @@ export const chatApi = {
     request<{ ok: boolean; conversation_id: string }>('POST', '/api/chat/conversations/preload', {
       model: settings.model,
       think: settings.think,
-      temperature: settings.temperature,
+      temperature: settings.temperature ?? null,
       system_prompt: settings.systemPrompt,
       default_agent_prompt_enabled: settings.defaultAgentPromptEnabled ?? false,
       project_id: settings.projectId,
@@ -393,6 +420,12 @@ export const chatApi = {
 
   setCommandHistory: (conversation: string, enabled: boolean) =>
     request<{ ok: boolean; command_history_enabled: boolean; error?: string }>('PUT', `/api/chat/command-history?conversation=${encodeURIComponent(conversation)}`, { command_history_enabled: enabled }),
+
+  getGenerationSettings: (conversation: string) =>
+    request<ChatGenerationSettings>('GET', `/api/chat/conversations/${encodeURIComponent(conversation)}/settings`),
+
+  setGenerationSettings: (conversation: string, settings: { temperature: number | null }) =>
+    request<ChatGenerationSettings>('PATCH', `/api/chat/conversations/${encodeURIComponent(conversation)}/settings`, settings),
 
   getMaxIterations: (conversation: string) =>
     request<{ ok: boolean; max_iterations: number }>('GET', `/api/chat/max-iterations?conversation=${encodeURIComponent(conversation)}`),
@@ -453,9 +486,10 @@ export const chatApi = {
   send: (
     conversation: string,
     text: string,
-    think = 'off',
+    think = 'default',
     attachments?: Attachment[],
     preloadSettings?: ChatPreloadSettings,
+    expectedModel?: string,
   ) =>
     request<{
       ok: boolean;
@@ -469,9 +503,10 @@ export const chatApi = {
       text,
       think,
       attachments,
+      expected_model: expectedModel,
       ...(preloadSettings ? {
         model: preloadSettings.model,
-        temperature: preloadSettings.temperature,
+        ...(preloadSettings.temperature !== undefined ? { temperature: preloadSettings.temperature } : {}),
         system_prompt: preloadSettings.systemPrompt,
         project_id: preloadSettings.projectId,
         approval_mode: preloadSettings.approvalMode,
@@ -516,9 +551,9 @@ export const chatApi = {
     request<{ ok: boolean; runs: AgentRun[]; next_cursor: string | null }>("GET", `/api/chat/runs?conversation=${encodeURIComponent(conversation)}&limit=20&unfinished=${unfinished}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
   manageRun: (conversation: string, runId: string, action: string, stepId?: string) =>
     request<{ ok: boolean; error?: string }>("POST", "/api/chat/runs/action", { conversation, run_id: runId, action, step_id: stepId }),
-  retry: (conversation: string, think?: string) =>
+  retry: (conversation: string, think?: string, expectedModel?: string) =>
     request<{ ok: boolean; turn_id: number; turn_index: number; variant_index: number; error?: string }>(
-      'POST', '/api/chat/retry', { conversation, think },
+      'POST', '/api/chat/retry', { conversation, think, expected_model: expectedModel },
     ),
 
   selectVariant: (conversation: string, turnIndex: number, variantIndex: number) =>

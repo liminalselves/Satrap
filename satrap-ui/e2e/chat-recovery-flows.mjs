@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBenchmarkFixture } from "../benchmarks/fixtures.mjs";
-import { runSuite, mockConfigVersions } from './runtime.mjs';
+import { runSuite, mockConfigVersions, openConversation } from './runtime.mjs';
 import { pathToFileURL } from 'node:url';
 
 async function chat_reconnect(runtime) {
@@ -113,11 +113,9 @@ async function chat_reconnect(runtime) {
         '/api/chat/turns': { turns: fixture.turns },
         '/api/chat/turns/page': turnPageResponse(route.request().url(), fixture.turns),
         '/api/chat/models': { models: ['benchmark-model'] },
-        '/api/chat/models/detail': { ok: true, models: {} },
+        '/api/chat/models/detail': { ok: true, models: { 'benchmark-model': { name: 'benchmark-model', model: 'benchmark-model' } } },
         '/api/chat/plugins': { plugins: [{ name: 'permissions', enabled: true, version: '0.1.0',
           description: '执行审批', dir: '', capabilities: {} }] },
-        // 执行记录与恢复面板在聊天页常驻, 缺该接口会让整个页面渲染失败
-        '/api/chat/runs': { ok: true, runs: [], next_cursor: null },
         '/api/projects': { projects: [] },
       };
       return route.fulfill({
@@ -153,7 +151,7 @@ async function chat_reconnect(runtime) {
     await mockConfigVersions(page, origin, () => JSON.stringify({}));
   await page.goto(`${origin}/chat`);
     try {
-      await page.getByText('继续最近对话', { exact: true }).click({ timeout: 10_000 });
+      await openConversation(page, fixture.conversations[0].title, { timeout: 10_000 });
     } catch (error) {
       console.error('页面诊断', await page.locator('body').innerText(), errors);
       throw error;

@@ -35,24 +35,24 @@ export function AskUserPanel({
     const { tool, description, action } = request.approval;
     const isShell = tool === 'shell';
     return (
-      <div className="glass-card glass-card-accent rounded-xl px-4 py-3 mb-2" data-ask-user-panel data-approval>
+      <div className="surface surface-strong tint-accent mb-2 rounded-2xl px-4 py-3" data-ask-user-panel data-approval>
         <div className="flex items-center justify-between gap-3 text-sm font-medium text-accent">
           <span className="flex items-center gap-2"><Wrench className="h-4 w-4" />等待批准执行 · {tool}</span>
-          <span className="text-xs text-text-tertiary">1 / {queueLength}</span>
+          <span className="num text-xs text-fg-4">1 / {queueLength}</span>
         </div>
-        <details className="mt-3 text-sm text-text-primary">
-          <summary className="cursor-pointer">{isShell ? '查看待执行命令' : '查看本次操作'}</summary>
+        <details className="mt-3 text-sm text-fg">
+          <summary className="cursor-pointer select-none text-fg-2">{isShell ? '查看待执行命令' : '查看本次操作'}</summary>
           <div className="mt-2 space-y-2">
             {isShell && typeof action.command === 'string' ? (
               <>
-                <pre className="max-h-64 overflow-auto rounded-lg bg-glass p-3 whitespace-pre-wrap break-words">{action.command}</pre>
-                {typeof action.cwd === 'string' && <p className="break-all">工作目录: {action.cwd}</p>}
-                {typeof action.interpreter === 'string' && <p className="break-all">Shell: {action.interpreter}</p>}
+                <pre className="max-h-64 overflow-auto rounded-lg border border-line bg-glass p-3 whitespace-pre-wrap break-words">{action.command}</pre>
+                {typeof action.cwd === 'string' && <p className="break-all text-fg-2">工作目录: {action.cwd}</p>}
+                {typeof action.interpreter === 'string' && <p className="break-all text-fg-2">Shell: {action.interpreter}</p>}
               </>
-            ) : <p className="whitespace-pre-wrap break-words">{description}</p>}
+            ) : <p className="whitespace-pre-wrap break-words text-fg-2">{description}</p>}
             <details>
-              <summary className="cursor-pointer text-text-secondary">查看完整操作参数</summary>
-              <pre className="mt-2 max-h-64 overflow-auto rounded-lg bg-glass p-3 whitespace-pre-wrap break-all">{JSON.stringify(action, null, 2)}</pre>
+              <summary className="cursor-pointer select-none text-fg-3">查看完整操作参数</summary>
+              <pre className="mt-2 max-h-64 overflow-auto rounded-lg border border-line bg-glass p-3 whitespace-pre-wrap break-all">{JSON.stringify(action, null, 2)}</pre>
             </details>
           </div>
         </details>
@@ -84,18 +84,18 @@ export function AskUserPanel({
   };
 
   return (
-    <div className="glass-card glass-card-accent rounded-xl px-4 py-3 mb-2" data-ask-user-panel>
+    <div className="surface surface-strong tint-accent mb-2 rounded-2xl px-4 py-3" data-ask-user-panel>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-accent mb-1.5">
-            <Wrench className="h-4 w-4 shrink-0" />
+          <div className="mb-1.5 flex items-center gap-2 text-sm font-medium text-accent">
+            <Wrench className="h-4 w-4 flex-none" />
             工具正在等待你的回答
           </div>
-          <p className="text-sm text-text-primary whitespace-pre-wrap">
+          <p className="whitespace-pre-wrap text-sm text-fg">
             {request.question}
           </p>
         </div>
-        <span className="shrink-0 text-xs text-text-tertiary">1 / {queueLength}</span>
+        <span className="num flex-none text-xs text-fg-4">1 / {queueLength}</span>
       </div>
 
       {request.options.length > 0 && (
@@ -113,15 +113,15 @@ export function AskUserPanel({
                 onClick={() => onAnswerChange(option)}
                 onKeyDown={(event) => handleOptionKeyDown(event, index)}
                 className={cn(
-                  'w-full rounded-lg px-3 py-2 text-left text-sm flex items-start gap-3 border transition-colors',
+                  'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left text-sm transition-colors',
                   selected
-                    ? 'bg-accent-subtle border-accent text-text-primary'
-                    : 'bg-transparent border-transparent text-text-secondary hover:bg-glass-hover hover:text-text-primary',
+                    ? 'border-[rgb(var(--rgb-accent)/0.55)] bg-[rgb(var(--rgb-accent)/0.14)] text-fg'
+                    : 'border-transparent bg-transparent text-fg-2 hover:bg-glass-hover hover:text-fg',
                 )}
               >
-                <span className="w-5 shrink-0 text-text-tertiary tabular-nums">{index + 1}.</span>
+                <span className="num w-5 flex-none text-fg-4">{index + 1}.</span>
                 <span className="flex-1 whitespace-pre-wrap">{option}</span>
-                {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-accent mt-0.5" />}
+                {selected && <CheckCircle2 className="mt-0.5 h-4 w-4 flex-none text-accent" />}
               </button>
             );
           })}
@@ -140,11 +140,11 @@ export function AskUserPanel({
         }}
         placeholder="输入自定义回答..."
         rows={2}
-        className="mt-3 w-full rounded-lg bg-glass border border-glass-border px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-accent resize-y min-h-[42px] max-h-[160px]"
+        className="field mt-3 min-h-[42px] max-h-[160px] w-full resize-y"
       />
 
       <div className="mt-3 flex items-center justify-between gap-3">
-        <span className="text-xs text-text-tertiary">Tab / 方向键选择, Enter 提交</span>
+        <span className="text-xs text-fg-4">Tab / 方向键选择, Enter 提交</span>
         <div className="flex items-center gap-2">
           <Button
             variant="ghost"

@@ -893,7 +893,7 @@ class MessageEvent:
             if not isinstance(route_result, tuple) or route_result[1] != self.group_route_generation:
                 raise PermissionError("群会话路由已变化, 旧轮次禁止发送")
 
-    async def send(self, message: MessageChain, *, purpose: str = "business", explicit_reply: bool = False) -> None:
+    async def send(self, message: MessageChain, *, purpose: str = "business", explicit_reply: bool = False) -> SendReceipt | None:
         """
         发送消息到当前会话
 
@@ -902,11 +902,19 @@ class MessageEvent:
         - purpose: business 业务输出或 error_feedback 错误反馈, 支持发送尝试记录的平台据此归并请求结论
         - explicit_reply: 宿主已完整核验的结构化回复, True 时不自动追加引用或提及
 
+        返回:
+        - 本次实际回执, 旧适配器缺少回执时为 unknown, 不支持发送时为 None
+
         需要发送证据的请求 (已受理的手动唤醒) 由调度器在事件上设置 require_send_tracking,
         记录不可用时直接拒绝发送而不是发出一条无法确认的业务输出
         """
         if isinstance(self.adapter, PlatformAdapter):
             submitted = False
+            from satrap.core.log.debug.capture import record_debug
+
+            record_debug("delivery", "start", metadata={"purpose": purpose, "explicit_reply": explicit_reply},
+                         bodies={"message": [{"type": component.type.value, "text": safe_getattr_str(component, "text"),
+                                             "asset_id": safe_getattr_str(component, "asset_id")} for component in message.components]})
             try:
                 self._verify_send_route()
                 submitted = True
@@ -915,13 +923,18 @@ class MessageEvent:
                     purpose=purpose, require_tracking=bool(self.get_extra("require_send_tracking")),
                 )
                 self._record_send_result(result, purpose=purpose)
+                return result if isinstance(result, SendReceipt) else SendReceipt("unknown", reason="legacy_no_receipt")
             except Exception as e:
-                if explicit_reply:
-                    self._record_send_result(SendReceipt("unknown" if submitted else "failed", reason="explicit_reply_send_error"), purpose=purpose)
+                record_debug("delivery", "end", status="unknown" if submitted else "failed",
+                             metadata={"purpose": purpose, "error_type": type(e).__name__})
+                receipt = SendReceipt("unknown" if submitted else "failed", reason="explicit_reply_send_error" if explicit_reply else "send_error",
+                                      error_message="发送结果未确认" if submitted else "发送前路由校验失败", stage="publish" if submitted else "validation")
+                self._record_send_result(receipt, purpose=purpose)
                 logger.error(
                     f"[MessageEvent.send] 发送消息失败: session_id={self.session_id}, "
                     f"错误={e}, 堆栈={traceback.format_exc()}",
                 )
+                return receipt
 
     async def send_streaming(
         self,
@@ -1016,6 +1029,16 @@ class MessageEvent:
 
         旧适配器返回 None 时仍表示调用已完成, 不伪造平台确认回执
         """
+        from satrap.core.log.debug.capture import current_trace, record_debug
+
+        receipt = result if isinstance(result, SendReceipt) else None
+        record_debug("delivery", "end", status=receipt.status if receipt else "unknown", metadata={"purpose": purpose,
+                     "message_ids": list(receipt.message_ids) if receipt else [], "reason": receipt.reason if receipt else "legacy_no_receipt",
+                     "error_code": receipt.error_code if receipt else "", "error_message": receipt.error_message if receipt else "",
+                     "stage": receipt.stage if receipt else ""})
+        trace = current_trace()
+        if trace is not None and purpose == "business" and trace.status not in {"timeout", "cancelled"}:
+            trace.status = receipt.status if receipt else "unknown"
         if isinstance(result, SendReceipt):
             self.last_send_receipt = result
             if purpose == "business":

@@ -64,6 +64,9 @@ def test_real_platform_database_migration_preserves_context_and_configs(tmp_path
         for table in ("memory_refs", "memory_proposals", "memory_operations", "memory_audit", "memories", "reminder_operations",
                       "friend_actions", "friend_policies", "platform_message_policy", "platform_message_backups", "platform_messages", "platform_message_chats"):
             connection.execute(f"DROP TABLE {table}")
+        connection.execute("DROP TRIGGER group_actions_action_revision")
+        for column in ("action_revision", "decision", "decided_by_json", "decision_note", "risk", "risk_source"):
+            connection.execute(f"ALTER TABLE group_actions DROP COLUMN {column}")
         connection.execute("PRAGMA user_version=3")
     store = _platform_messages_store(tmp_path)
     assert store.query(SCOPE)["items"] == []
@@ -521,6 +524,9 @@ def test_v4_archive_policy_migrates_without_losing_messages(tmp_path: Path) -> N
             connection.execute(f"DROP TABLE {table}")
         for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'group_chat_%'").fetchall():
             connection.execute(f'DROP TABLE "{table}"')
+        connection.execute("DROP TRIGGER group_actions_action_revision")
+        for column in ("action_revision", "decision", "decided_by_json", "decision_note", "risk", "risk_source"):
+            connection.execute(f"ALTER TABLE group_actions DROP COLUMN {column}")
         connection.execute("PRAGMA user_version=4")
     store = PlatformMessageStore(database, "legacy", retention_days=7)
     assert _platform_message_maintenance_item(store, scope, "3")["text"] == "原文"
@@ -568,6 +574,7 @@ async def test_backend_stop_cancels_owned_maintenance_task() -> None:
     backend._reminder_scheduler = None
     backend._adapter_mgr = None
     backend._platform_runtimes = {}
+    backend._telemetry_writer = None
     entered, closed = asyncio.Event(), asyncio.Event()
 
     async def maintain() -> None:
@@ -766,7 +773,7 @@ async def test_misskey_actual_clipped_text_and_sent_files(tmp_path: Path, sessio
     result = await adapter.send_message(session, MessageChain.from_text("abcdefgh"))
     await adapter.drain_message_archive()
     item = _platform_message_outgoing_item(adapter, MessageScope("mk", "bot", kind, chat_id), message_id)
-    assert isinstance(result, dict) and item["text"].endswith("abcd...")
+    assert result.status == "success" and result.message_ids == (message_id,) and item["text"].endswith("abcd...")
     assert item["media"] == [{"type": "File", "native_id": "file-1"},
                               *([{"type": "File", "native_id": "file-2"}] if kind == "discussion" else [])]
     assert item["time_source"] == "local" and item["direction"] == "outbound"
@@ -777,7 +784,8 @@ async def test_misskey_actual_clipped_text_and_sent_files(tmp_path: Path, sessio
 async def test_misskey_unconfirmed_or_mismatched_receipt_not_archived(tmp_path: Path, result: Any) -> None:
     adapter = _misskey(tmp_path)
     cast(Any, adapter._client).send_room_message = AsyncMock(return_value=result)
-    assert await adapter.send_message("room%r", MessageChain.from_text("消息")) == result
+    receipt = await adapter.send_message("room%r", MessageChain.from_text("消息"))
+    assert receipt.status == "unknown" and not receipt.message_ids
     await adapter.drain_message_archive()
     assert not _platform_message_outgoing_store(adapter).database.exists()
 
@@ -790,7 +798,8 @@ async def test_misskey_frozen_account_and_native_timestamp(tmp_path: Path) -> No
         return {"id": "confirmed", "fromUserId": "bot", "createdAt": "2026-10-03T12:00:00+08:00"}
 
     cast(Any, adapter._client).send_room_message = AsyncMock(side_effect=send)
-    await adapter.send_message("room%r", MessageChain.from_text("原账号"))
+    receipt = await adapter.send_message("room%r", MessageChain.from_text("原账号"))
+    assert receipt.status == "success" and receipt.message_ids == ("confirmed",)
     await adapter.drain_message_archive()
     item = _platform_message_outgoing_item(adapter, MessageScope("mk", "bot", "group", "r"), "confirmed")
     assert item["sender_id"] == "bot" and item["time_source"] == "platform"

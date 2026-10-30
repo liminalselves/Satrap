@@ -29,6 +29,98 @@ async def _await(value):
     return await value if inspect.isawaitable(value) else value
 
 
+@pytest.mark.asyncio
+async def test_debug_command_group_grant_cannot_change_global_default_or_escape_source(tmp_path, monkeypatch):
+    """真实宿主管理组仅授权本群, 私聊和其它群拒绝, 个人授权才允许修改整体默认"""
+    from types import SimpleNamespace
+    from satrap.core.call_context import CallOrigin, bind_call_origin
+    from satrap.core.config.administrator_groups import AdministratorService
+    from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
+    from satrap.edictum import simple_session as ss_mod
+    from satrap.core.log.debug.policy import policy_store
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugins"))
+    configured = {"id": "group-admins", "name": "本群管理员", "enabled": True, "members": [],
+                  "chats": [{"platform_id": "qq", "chat_id": "room"}],
+                  "plugin_scope": {"mode": "selected", "included": ["debug_logger"], "excluded": []}}
+    administrators = AdministratorService(lambda: [{"id": "qq", "type": "onebot", "instance_id": "instance-1"}], [configured])
+    previous = current_adapter_manager()
+    set_current_adapter_manager(SimpleNamespace(administrator_service=administrators))
+    session = AsyncSimpleSession("scoped", MagicMock(spec=AsyncLLM), db_path=str(tmp_path / "platform.db"))
+    origin = CallOrigin("qq", "bot", "GroupMessage", "room", "member", "message", "request", conversation_kind="group")
+    try:
+        await session.install_plugin(str(PRESETS / "debug_logger"))
+        with bind_call_origin(origin):
+            text, matched = await session.command_handler.process_message("/debug on")
+            assert matched and "已开启" in str(text)
+            text, _ = await session.command_handler.process_message("/debug default on")
+            assert "不能修改" in str(text)
+        assert not policy_store().read().default_enabled
+        for other in (replace(origin, chat_id="elsewhere"), replace(origin, chat_type="FriendMessage", conversation_kind="private")):
+            with bind_call_origin(other):
+                text, _ = await session.command_handler.process_message("/debug on")
+                assert "已开启" not in str(text)
+        personal = {**configured, "id": "personal", "chats": [], "members": [{"platform_id": "qq", "platform_instance_id": "instance-1", "user_id": "member"}]}
+        administrators.apply([personal])
+        with bind_call_origin(origin):
+            text, _ = await session.command_handler.process_message("/debug default on")
+            assert "整体 Debug 默认: 开启" in str(text)
+        assert policy_store().read().default_enabled
+    finally:
+        for plugin in list(session.list_plugins()):
+            await session.uninstall_plugin(plugin.name)
+        set_current_adapter_manager(previous)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_debug_commands_share_persistent_object_policy_and_reject_model_forwarding(tmp_path, monkeypatch, asynchronous):
+    """原生 Debug 命令共享宿主设置, 换上下文不丢覆盖, 模型转发与卸载旧入口均不能修改"""
+    from satrap.edictum import simple_session as ss_mod
+    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.log.debug.policy import policy_store
+
+    monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
+    monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugins"))
+    cls, llm = (AsyncSimpleSession, MagicMock(spec=AsyncLLM)) if asynchronous else (SimpleSession, MagicMock(spec=LLM))
+    session = cls("debug-first", llm, db_path=":memory:")
+    obj = DebugObject("chat", "local", "chat", "stable-chat")
+    session._debug_object = obj
+    registry = session.command_handler if asynchronous else session.cmd_handler
+
+    async def command(value):
+        result, matched = await _await(registry.process_message(value))
+        assert matched
+        return str(result)
+
+    try:
+        await _await(session.install_plugin(str(PRESETS / "debug_logger")))
+        assert not session.list_tools()
+        assert "inherit" in await command("/debug status")
+        assert "/new 后继续生效" in await command("/debug on")
+        assert policy_store().read().resolve(obj).enabled
+        with bind_tool_workflow(object()):
+            assert "已设置" not in await command("/debug off")
+        assert policy_store().read().resolve(obj).enabled
+        assert "整体 Debug 默认: 开启" in await command("/debug default on")
+        assert "inherit" in await command("/debug reset")
+        assert policy_store().read().resolve(obj).enabled
+        await _await(session.uninstall_plugin("debug_logger"))
+        assert policy_store().read().resolve(obj).enabled
+        replacement = cls("debug-new-context", llm, db_path=":memory:")
+        replacement._debug_object = obj
+        try:
+            await _await(replacement.install_plugin(str(PRESETS / "debug_logger")))
+            other_registry = replacement.command_handler if asynchronous else replacement.cmd_handler
+            text, matched = await _await(other_registry.process_message("/debug status"))
+            assert matched and "开启" in str(text)
+        finally:
+            for plugin in list(replacement.list_plugins()):
+                await _await(replacement.uninstall_plugin(plugin.name))
+    finally:
+        for plugin in list(session.list_plugins()):
+            await _await(session.uninstall_plugin(plugin.name))
+
+
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_permission_plugin_lifetime_and_real_coding_execution(tmp_path, monkeypatch, asynchronous):
     """权限插件可独立切换, coding 装卸不丢模式, 计划模式继续约束真实文件操作"""

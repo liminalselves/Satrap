@@ -45,7 +45,7 @@ tools:
 skills:
   account_requests: "处理机器人账号的入群邀请"
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 applicability:
   session_types: [platform]
   platforms: [onebot, aiocqhttp]

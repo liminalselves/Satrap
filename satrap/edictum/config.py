@@ -15,6 +15,8 @@ from copy import deepcopy
 import json
 import os
 import traceback
+import math
+import time
 
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_spec import parse_plugin_specs
@@ -136,14 +138,21 @@ class EdictumConfigManager:
         if type_name in {"simple", "async_simple"}:
             params = normalize_session_settings(params)
         model_name = str(raw.get("model_name", "")).strip()
+        updated = raw.get("_updated_at")
+        if updated is not None and (not isinstance(updated, (int, float)) or isinstance(updated, bool) or not math.isfinite(updated) or updated < 0):
+            raise ValueError("命名配置更新时间无效")
+        plugins: object = raw.get("plugins", [])
+        if type_name in {"simple", "async_simple"} and "plugins" not in raw and (catalog or self.plugin_catalog).get("debug_logger") is not None:
+            plugins = ["debug_logger"]   # 只填补未配置的新入口, 显式列表和卸载结果不追加插件
         return {
+            "_updated_at": updated,
             "provider": EDICTUM_PROVIDER,
             "edictum_type": type_name,
             "enabled": bool(raw.get("enabled", True)),
             "description": str(raw.get("description", "")),
             "model_name": model_name,
             "params": dict(cast(dict[str, Any], params)),
-            "plugins": self._normalize_plugins(raw.get("plugins", []), catalog),
+            "plugins": self._normalize_plugins(plugins, catalog),
         }
 
     def _save_locked(self) -> None:
@@ -215,7 +224,22 @@ class EdictumConfigManager:
         - dict[str, dict[str, Any]]: 配置副本
         """
         with self._lock:
-            return deepcopy(self._configs)
+            return {name: {key: deepcopy(value) for key, value in config.items() if key != "_updated_at"}
+                    for name, config in self._configs.items()}
+
+    def config_updated_at(self, name: str) -> float | None:
+        """
+        读取实际保存时记录的更新时间, 旧记录保持未知
+
+        参数:
+        - name: 已规范化的命名配置名称
+
+        返回:
+        - UTC 秒或 None, 不使用文件 mtime 推断单项时间
+        """
+        with self._lock:
+            value = self._configs.get(name, {}).get("_updated_at")
+            return float(value) if isinstance(value, (int, float)) else None
 
     def get_config(self, name: str) -> dict[str, Any] | None:
         """
@@ -229,7 +253,7 @@ class EdictumConfigManager:
         """
         with self._lock:
             entry = self._configs.get(self._normalize_name(name))
-            return deepcopy(entry) if entry is not None else None
+            return {key: deepcopy(value) for key, value in entry.items() if key != "_updated_at"} if entry is not None else None
 
     def create(self, name: str, entry: object) -> dict[str, Any]:
         """
@@ -244,13 +268,14 @@ class EdictumConfigManager:
         """
         key = self._normalize_name(name)
         normalized = self._normalize_entry(entry)
+        normalized["_updated_at"] = time.time()
         with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
             self.reload()
             if key in self._configs:
                 raise ValueError(f"Edictum 配置名称已存在: {key}")
             self._configs[key] = normalized
             self._save_locked()
-            return deepcopy(normalized)
+            return {key: deepcopy(value) for key, value in normalized.items() if key != "_updated_at"}
 
     def update(
         self,
@@ -283,18 +308,20 @@ class EdictumConfigManager:
             current = self._configs.get(key)
             if current is None:
                 raise ValueError(f"Edictum 配置不存在: {key}")
-            if expected_revision is not None and config_document_revision(current) != expected_revision:
+            public = {field: value for field, value in current.items() if field != "_updated_at"}
+            if expected_revision is not None and config_document_revision(public) != expected_revision:
                 raise ConfigRevisionConflict("Edictum 配置已被修改, 请重新读取后合并")
             if target != key and target in self._configs:
                 raise ValueError(f"Edictum 配置名称已存在: {target}")
             merged = dict(current)
             merged.update(cast(dict[str, Any], changes))
             normalized = self._normalize_entry(merged)
+            normalized["_updated_at"] = time.time()
             if target != key:
                 del self._configs[key]
             self._configs[target] = normalized
             self._save_locked()
-            return target, deepcopy(normalized)
+            return target, {key: deepcopy(value) for key, value in normalized.items() if key != "_updated_at"}
 
     def set_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
         """

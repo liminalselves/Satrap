@@ -6,8 +6,29 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, Sequence
+import re
+
+
+def public_delivery_message(value: object) -> str:
+    """
+    保留有界的平台错误原因并移除常见认证资料
+
+    参数:
+    - value: 平台返回的单个原因字段, 不接受完整请求正文
+
+    返回:
+    - 脱敏后的单行原因, 非文本返回空字符串
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value[:4096]
+    text = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [redacted]", text)
+    text = re.sub(r"(?i)([\"']?(?:api[_-]?key|access[_-]?token|token|password|authorization)[\"']?\s*[:=]\s*[\"']?)[^\s,;\"']+", r"\1[redacted]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[redacted]", text)
+    text = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?[redacted]", text)
+    return " ".join(text.split())[:512]
 
 
 @dataclass(frozen=True)
@@ -18,6 +39,19 @@ class SendReceipt:
     message_ids: tuple[str, ...] = ()
     failed_index: int | None = None
     reason: str = ""
+    error_code: str = ""
+    error_message: str = ""
+    stage: str = ""
+
+    def public_error(self) -> dict[str, object]:
+        """
+        导出与日志共用的错误资料, 不带原始平台回包
+
+        返回:
+        - 稳定原因, 脱敏消息, 平台码及失败阶段, 不授权自动重发
+        """
+        return {"code": self.reason or "send_failed", "message": public_delivery_message(self.error_message) or "发送未成功, 请查看回执状态",
+                "platform_code": self.error_code, "stage": self.stage, "retryable": False}
 
     @property
     def suppress_fallback(self) -> bool:
@@ -46,13 +80,13 @@ def combine_receipts(receipts: list[SendReceipt]) -> SendReceipt:
         if only.status == "success":
             return SendReceipt("success", only.message_ids)
         status = "unknown" if only.status == "unknown" else "partial" if only.message_ids else "failed"
-        return SendReceipt(status, only.message_ids, only.failed_index, only.reason)
+        return replace(only, status=status)
     ids = tuple(message_id for receipt in receipts for message_id in receipt.message_ids)
     index = 0
     for receipt in receipts:
         if receipt.status != "success":
             status = "unknown" if receipt.status == "unknown" else "partial" if ids else "failed"
-            return SendReceipt(status, ids, index + (receipt.failed_index or 0), receipt.reason)
+            return replace(receipt, status=status, message_ids=ids, failed_index=index + (receipt.failed_index or 0))
         index += max(1, len(receipt.message_ids))
     return SendReceipt("success", ids) if receipts else SendReceipt("failed", reason="empty_message")
 

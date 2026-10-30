@@ -3,38 +3,33 @@ import { useApprovalMode, type ApprovalControl } from './useApprovalMode';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { conversationBoundaryReached, restoreConversation, sidebarConversationVisible, type Conversation as ConversationState } from './conversations';
-import { RunRecovery } from "./RunRecovery";
+import { conversationBoundaryReached, restoreConversation, sidebarConversationVisible } from './conversations';
 import { LLMConfigModal } from '@/components/common/LLMConfigModal';
 import { RagManager } from '@/components/common/RagManager';
 import { MediaAttachment } from './MediaAttachment';
-import { OutputFiles } from './OutputFiles';
 import { useChatScroll } from './useChatScroll';
 import { ragApi } from '@/api/rag';
 import type { ConfigOption } from '@/components/common/PluginConfigFields';
 import { PluginConfigFields, type ModelOptions } from '@/components/common/PluginConfigFields';
 import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { PluginCapabilities } from '@/components/common/PluginCapabilities';
 import { controlApi } from '@/api/control';
 import type { GlobalPluginConfig, PluginRuntimeResult } from '@/api/types';
 import { PluginRuntimeStatus } from '@/pages/Plugins/GlobalPluginSettings';
 import { pluginError } from '@/pages/Plugins/InstallPluginModal';
-import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
-import { Select } from '@/components/ui/Select';
+import { Select } from './Select';
 import { Toggle } from '@/components/ui/Toggle';
 import { toast } from '@/components/ui/Toast';
-import { CopyButton } from '@/components/ui/CopyButton';
 import { cn } from '@/utils/cn';
 import {
   getThinkingOptions,
 } from '@/utils/constants';
-import { formatRelativeTime } from '@/utils/format';
 import { createAnimationFrameLimiter, MAX_UI_FRAME_RATE } from '@/utils/frameLimiter';
-import { useGlassReflect } from '@/hooks/useGlassReflect';
+import { ThinkDial } from './ThinkDial';
 import { useTheme } from '@/hooks/useTheme';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -42,16 +37,15 @@ import {
   chatApi,
   subscribeChat,
   type Attachment,
-  type OutputFile,
   type ApprovalMode,
   type CapabilityKind,
   type ChatEvent,
+  type ChatDefaults,
   type ChatPreloadSettings,
   type ChatPlugin,
   type ChatTurnVariant,
   type ChatTurn,
   type ConversationItem as ChatConversationItem,
-  type ContextTurnStats,
   type DirEntry,
   type MemoryRecord,
   type ModelConfigItem,
@@ -66,40 +60,26 @@ import {
   type LocalMessageSegment,
   type StreamingDelta,
 } from './streaming';
+import { ChatHeader } from './ChatHeader';
+import { ChatSidebar } from './ChatSidebar';
+import { EmptyWelcome, MessageBubble } from './MessageView';
+import type { ChatMessage, Conversation, LocalResponseVariant } from './types';
 import {
   Plus,
-  Send,
   Square,
   MessageSquare,
   Trash2,
-  Sparkles,
-  User,
   Bot,
-  Search,
   Settings2,
   Paperclip,
-  ArrowLeft,
   ArrowUp,
-  Sun,
-  Moon,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Brain,
   Puzzle,
-  Wrench,
-  CheckCircle2,
-  XCircle,
-  Loader2,
-  RotateCcw,
-  GitFork,
   Pencil,
   Folder,
   FolderOpen,
-  FolderPlus,
-  FolderInput,
   HardDrive,
-  Gauge,
   BookOpen,
   Cpu,
   Database,
@@ -107,13 +87,13 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 
-const LazyMarkdownContent = lazy(() => import('./MarkdownContent'));
 
 // 聊天设置
 interface ChatSettings {
   model: string;   // 模型配置名
-  think: string;   // 思考强度 (off/low/medium/high)
-  temperature: number;   // 采样温度
+  think: string;   // 思考强度, default 不发送思考参数
+  temperature: number | null;   // 会话温度覆盖, null 跟随模型配置
+  requestTemperature?: number | null;   // 后端解析的下一轮拟发送温度, null 表示不发送
   commandHistoryEnabled: boolean;   // 是否将已执行命令及回复写入模型上下文
   defaultAgentPromptEnabled: boolean;   // 是否在本会话补充内置 Agent 提示
   maxIterations?: number;   // 最大工具迭代次数, undefined 沿用会话定义默认
@@ -122,8 +102,9 @@ interface ChatSettings {
 
 const DEFAULT_SETTINGS: ChatSettings = {
   model: 'default',
-  think: 'off',
-  temperature: 0.7,
+  think: 'default',
+  temperature: null,
+  requestTemperature: undefined,
   commandHistoryEnabled: false,
   defaultAgentPromptEnabled: false,
   maxIterations: undefined,
@@ -140,76 +121,6 @@ function loadPersistedThink(): string {
   }
 }
 
-// 会话列表多色循环(参考侧栏导航多色方案)
-type GlassColor = 'accent' | 'purple' | 'teal' | 'pink' | 'orange' | 'green';
-const CONVERSATION_COLORS: GlassColor[] = ['accent', 'purple', 'teal', 'pink', 'orange', 'green'];
-
-// 颜色对应的玻璃卡片变体类
-const COLOR_CARD_CLASS: Record<GlassColor, string> = {
-  accent: 'glass-card-accent',
-  purple: 'glass-card-purple',
-  teal: 'glass-card-teal',
-  pink: 'glass-card-pink',
-  orange: 'glass-card-orange',
-  green: 'glass-card-green',
-};
-
-// 颜色对应的文字色类
-const COLOR_TEXT_CLASS: Record<GlassColor, string> = {
-  accent: 'text-accent',
-  purple: 'text-purple',
-  teal: 'text-teal',
-  pink: 'text-pink',
-  orange: 'text-orange',
-  green: 'text-green',
-};
-
-// 消息角色
-type MessageRole = 'user' | 'assistant';
-
-interface LocalResponseVariant {
-  outputFiles?: OutputFile[];
-  variantIndex: number;
-  content: string;
-  thinking?: string;
-  toolCalls: ToolCall[];
-  segments?: LocalMessageSegment[];
-  contextStats?: ContextTurnStats | null;
-}
-
-// 单条消息
-interface ChatMessage {
-  outputFiles?: OutputFile[];
-  id: string;
-  role: MessageRole;
-  content: string;
-  timestamp: number;
-  // 思考流内容 (聚合, 兼容旧数据)
-  thinking?: string;
-  // 工具调用明细 (聚合, 兼容旧数据)
-  toolCalls?: ToolCall[];
-  // 附件列表
-  attachments?: Attachment[];
-  // 流式输出中标记
-  streaming?: boolean;
-  // 对应后端 turn_index (用于 fork)
-  turnIndex?: number;
-  // 同一用户输入对应的多个助手回复
-  variants?: LocalResponseVariant[];
-  // 当前激活的回复版本
-  activeVariant?: number;
-  // 已持久化的回复版本总数
-  variantCount?: number;
-  variantIndices?: number[];
-  // 分段内容 (按时间顺序, 用于流式渲染)
-  segments?: LocalMessageSegment[];
-  // 本回复版本对应的上下文准备和 API token 统计
-  contextStats?: ContextTurnStats | null;
-}
-
-// 一个会话
-type Conversation = ConversationState<ChatMessage>;
-
 // 生成唯一 id (本地消息用)
 const genId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
@@ -220,8 +131,10 @@ const deriveTitle = (content: string) => {
 };
 
 function convertSegments(variant: ChatTurnVariant): LocalMessageSegment[] | undefined {
+  const errorText = variant.response_metadata?.error_text;
+  const errorSegments: LocalMessageSegment[] = errorText ? [{ type: 'content', content: `\n\n[错误] ${errorText}` }] : [];
   if (variant.segments && variant.segments.length > 0) {
-    return variant.segments.map((segment) => {
+    return [...variant.segments.map((segment) => {
       if (segment.type === 'thinking') {
         return { type: 'thinking' as const, content: segment.content ?? '' };
       }
@@ -229,25 +142,43 @@ function convertSegments(variant: ChatTurnVariant): LocalMessageSegment[] | unde
         return { type: 'tool' as const, tool: segment.tool };
       }
       return { type: 'content' as const, content: segment.content ?? '' };
-    });
+    }), ...errorSegments];
   }
   const fallback: LocalMessageSegment[] = [];
   if (variant.thinking) fallback.push({ type: 'thinking', content: variant.thinking });
   for (const tool of variant.tool_calls ?? []) fallback.push({ type: 'tool', tool });
   if (variant.answer) fallback.push({ type: 'content', content: variant.answer });
-  return fallback;
+  return [...fallback, ...errorSegments];
+}
+
+function variantAnswer(variant: ChatTurnVariant): string {
+  const error = variant.response_metadata?.error_text;
+  return variant.answer + (error ? `\n\n[错误] ${error}` : '');
 }
 
 function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
   return {
     variantIndex: variant.variant_index,
-    content: variant.answer,
+    content: variantAnswer(variant),
     thinking: variant.thinking ?? undefined,
     toolCalls: variant.tool_calls ?? [],
     segments: convertSegments(variant),
     contextStats: variant.context_stats,
     outputFiles: variant.output_files,
+    responseMetadata: variant.response_metadata,
   };
+}
+
+/** 服务端消息替换同一轮次的本地消息时沿用原渲染键, 气泡原地更新而不是卸载重建 */
+function keepRenderKeys(previous: ChatMessage[], next: ChatMessage[]): ChatMessage[] {
+  const keys = new Map<string, string>();
+  for (const message of previous) {
+    if (message.turnIndex !== undefined) keys.set(`${message.turnIndex}:${message.role}`, message.renderKey ?? message.id);
+  }
+  return next.map((message) => {
+    const key = message.turnIndex === undefined ? undefined : keys.get(`${message.turnIndex}:${message.role}`);
+    return key && key !== message.id ? { ...message, renderKey: key } : message;
+  });
 }
 
 function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
@@ -262,6 +193,7 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
       turnIndex: turn.turn_index,
     });
     const currentVariant: ChatTurnVariant = {
+      response_metadata: turn.response_metadata,
       variant_index: turn.active_variant ?? 0,
       thinking: turn.thinking,
       answer: turn.answer,
@@ -274,9 +206,10 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
     const segments = convertSegments(currentVariant);
     messages.push({
       id: `${turn.id}-a`,
+      responseMetadata: turn.response_metadata,
       role: 'assistant',
       streaming: turn.generating ?? false,
-      content: turn.interrupted ? (turn.answer || '[生成已中断]') : turn.answer,
+      content: turn.interrupted ? (turn.answer || '[生成已中断]') : variantAnswer(currentVariant),
       thinking: turn.thinking ?? undefined,
       toolCalls: turn.tool_calls,
       timestamp: turn.created_at * 1000,
@@ -295,6 +228,8 @@ function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
 
 export function Chat() {
   const confirm = useConfirm();
+  const [listOpen, setListOpen] = useState(true);
+  const [mobileList, setMobileList] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>('');
   const [input, setInput] = useState('');
@@ -309,12 +244,17 @@ export function Chat() {
     think: loadPersistedThink(),
   }));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [defaults, setDefaults] = useState<ChatDefaults | null>(null);
+  const [defaultSaving, setDefaultSaving] = useState(false);
+  const [bindingPending, setBindingPending] = useState<Set<string>>(() => new Set());
+  const [bindingProblem, setBindingProblem] = useState<string | null>(null);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [draftApprovalMode, setDraftApprovalMode] = useState<ApprovalMode>('user');
   // 后端连接状态
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
   // 可选模型列表(来自聊天服务)
   const [models, setModels] = useState<string[]>([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   // 插件列表(来自聊天服务)
   const [plugins, setPlugins] = useState<ChatPlugin[]>([]);
   // 插件配置保存后递增, 用于主动刷新空的预加载会话
@@ -341,7 +281,9 @@ export function Chat() {
   const directoryFilters = useRef({ search: search.trim(), project_id: sidebarProject });
   directoryFilters.current = { search: search.trim(), project_id: sidebarProject };
   const [pagingError, setPagingError] = useState('');
+  const [historyError, setHistoryError] = useState<{ conversationId: string; epoch: number; message: string } | null>(null);
   const pageBusy = useRef(false);
+  const initialHistoryBusy = useRef(new Set<string>());
   const olderBusy = useRef(new Set<string>());
   // 项目组折叠状态 (project_id -> 是否折叠)
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
@@ -349,8 +291,6 @@ export function Chat() {
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   // 正在改绑项目的会话 id (null = 关闭对话框)
   const [movingConvId, setMovingConvId] = useState<string | null>(null);
-  // 入口选择: 有历史会话时展示 "继续最近/开始新对话"
-  const [showEntryChoice, setShowEntryChoice] = useState(false);
   // 待发送附件
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   useConfigWatch(['llm']);
@@ -389,7 +329,14 @@ export function Chat() {
   const generatingRef = useRef(false);
   const mutationPendingRef = useRef(false);
   const snapshotEpochRef = useRef<Record<string, number>>({});
+  const currentHistoryError = historyError?.conversationId === activeId
+    && historyError.epoch === (snapshotEpochRef.current[activeId] ?? 0) ? historyError.message : '';
+  const visiblePagingError = pagingError || currentHistoryError;
+  // 历史错误只属于发起请求的会话与快照, 不与目录错误共用失效条件
   const settingsThinkRef = useRef(DEFAULT_SETTINGS.think);
+  const bindingEpoch = useRef<Record<string, number>>({});
+  const bindingMutations = useRef(new Set<string>());
+  const preloadKeyRef = useRef<(projectId: string | null | undefined, model?: string) => string>(() => '');
   // 单帧内积累的流式增量和对应消息目标
   const streamingDeltasRef = useRef<StreamingDelta[]>([]);
   const streamingDeltaTargetRef = useRef<{ conversationId: string; messageId: string } | null>(null);
@@ -397,15 +344,20 @@ export function Chat() {
     () => createAnimationFrameLimiter({ maxFps: MAX_UI_FRAME_RATE }),
     [],
   );
-  // 输入卡片独立反光
-  const inputCardRef = useGlassReflect<HTMLDivElement>({
-    reflectRange: 120,
-  });
 
   const active = useMemo(
     () => conversations.find((c) => c.id === activeId),
     [conversations, activeId]
   );
+  const modelBusy = bindingPending.has(activeId);
+  // 绑定确认通常在一次往返内完成, 只有确实较慢时才提示, 避免发送后提示闪现挤动输入区
+  const [modelBusyVisible, setModelBusyVisible] = useState(false);
+  useEffect(() => {
+    if (!modelBusy) { setModelBusyVisible(false); return; }
+    const timer = window.setTimeout(() => setModelBusyVisible(true), 400);
+    return () => window.clearTimeout(timer);
+  }, [modelBusy]);
+  const modelReady = Boolean(defaults) && !modelBusy && !bindingProblem && models.includes(settings.model);
   const approval = useApprovalMode(
     backendOk && active && active.id !== '__draft__' && !active.preloaded ? active.id : '',
     !active || active.id === '__draft__' || active.preloaded ? {
@@ -420,7 +372,7 @@ export function Chat() {
     if ((optionsOpen || settingsOpen) && !generating) void refreshApproval();
   }, [optionsOpen, settingsOpen, generating, active?.messages.length, plugins, pluginConfigRevision, refreshApproval]);
   // 打开面板, 完成命令或更新插件后重新读实际模式, 两个入口共用同一状态
-  const messageScroll = useChatScroll(`${backendOk}:${activeId}:${showEntryChoice}`, active?.messages, Boolean(active?.loaded));
+  const messageScroll = useChatScroll(`${backendOk}:${activeId}`, active?.messages, Boolean(active?.loaded));
   const activePendingUserInput = pendingUserInputs[activeId]?.[0];
   const activePendingUserAnswer = activePendingUserInput
     ? pendingUserAnswers[activePendingUserInput.requestId] ?? ''
@@ -511,7 +463,6 @@ export function Chat() {
         directoryBoundary.current = page.conversations[page.conversations.length - 1] ?? null;
         setNextConversations(page.next_cursor);
         setPagingError('');
-        if (!activeIdRef.current && !search.trim() && !sidebarProject && page.conversations.length) setShowEntryChoice(true);
       }).catch((error: unknown) => {
         if (isCurrent()) setPagingError(error instanceof Error ? error.message : '对话加载失败');
       }).finally(() => {
@@ -525,6 +476,11 @@ export function Chat() {
   const updateConversation = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
     setConversations((prev) => prev.map((c) => (c.id === id ? updater(c) : c)));
   }, []);
+
+  const applyModelBinding = useCallback((id: string, model: string) => {
+    updateConversation(id, (conversation) => ({ ...conversation, model }));
+    if (activeIdRef.current === id) setSettings((previous) => ({ ...previous, model }));
+  }, [updateConversation]);
 
   // 更新当前流式消息
   const updateStreamingMessage = useCallback(
@@ -590,12 +546,18 @@ export function Chat() {
   const handleEvent = useCallback(
     (conversationId: string, event: ChatEvent) => {
       switch (event.type) {
+        case 'model_changed':
+          bindingEpoch.current[conversationId] = (bindingEpoch.current[conversationId] ?? 0) + 1;
+          applyModelBinding(conversationId, event.model);
+          if (!bindingMutations.current.has(conversationId)) setBindingPending((current) => { const next = new Set(current); next.delete(conversationId); return next; });
+          break;
         case 'snapshot': {
+          if (event.model) applyModelBinding(conversationId, event.model);
           flushStreamingDeltas();
           snapshotEpochRef.current[conversationId] = (snapshotEpochRef.current[conversationId] ?? 0) + 1;
           const preservePending = mutationPendingRef.current && event.state === 'idle';
           updateConversation(conversationId, (conversation) => {
-            let messages = turnsToMessages(event.turns);
+            let messages = keepRenderKeys(conversation.messages, turnsToMessages(event.turns));
             if (preservePending) {
               const pending = conversation.messages.find((message) => message.streaming);
               if (pending) {
@@ -633,12 +595,12 @@ export function Chat() {
             updateConversation(conversationId, (conversation) => {
               const previous = conversation.messages.find((message) => message.role === 'assistant' && message.turnIndex === event.turn_index);
               const messages = conversation.messages.filter((message) => message.turnIndex !== event.turn_index);
-              return { ...conversation, messages: [...messages, {
+              return { ...conversation, messages: [...messages, ...keepRenderKeys(conversation.messages, [{
                 id: `${event.turn_id}-u`, role: 'user', content: event.user_input, timestamp: Date.now(), turnIndex: event.turn_index,
               }, {
                 id: `${event.turn_id}-a`, role: 'assistant', content: '', timestamp: Date.now(), turnIndex: event.turn_index,
                 activeVariant: event.variant_index, streaming: true, variants: previous?.variants,
-              }] };
+              }])] };
             });
           }
           generatingRef.current = true;
@@ -747,6 +709,7 @@ export function Chat() {
               segments: message.segments,
               contextStats: event.context_stats,
               outputFiles: event.output_files,
+              responseMetadata: event.response_metadata,
             };
             const variants = [
               ...(message.variants ?? []).filter(
@@ -763,6 +726,7 @@ export function Chat() {
               variantCount: event.variant_count,
               variants,
               outputFiles: event.output_files,
+              responseMetadata: event.response_metadata,
               contextStats: event.context_stats,
             };
           }, conversationId);
@@ -774,9 +738,12 @@ export function Chat() {
         }
         case 'error': {
           flushStreamingDeltas();
+          const errorText = `\n\n[错误] ${event.error ?? event.message ?? '未知错误'}`;
           updateStreamingMessage((m) => ({
             ...m,
-            content: m.content + `\n\n[错误] ${event.error ?? event.message ?? '未知错误'}`,
+            content: m.content + errorText,
+            segments: m.segments?.length ? [...m.segments, { type: 'content', content: errorText }] : undefined,
+            responseMetadata: event.response_metadata,
             streaming: false,
             turnIndex: event.turn_index ?? m.turnIndex,
             activeVariant: event.variant_index ?? m.activeVariant,
@@ -794,23 +761,27 @@ export function Chat() {
           break;
       }
     },
-    [flushStreamingDeltas, queueStreamingDelta, updateConversation, updateStreamingMessage]
+    [flushStreamingDeltas, queueStreamingDelta, updateConversation, updateStreamingMessage, applyModelBinding]
   );
 
   // 加载会话历史消息
   const loadTurns = useCallback(
     async (conversationId: string) => {
+      if (initialHistoryBusy.current.has(conversationId)) return;
       const epoch = snapshotEpochRef.current[conversationId] ?? 0;
+      initialHistoryBusy.current.add(conversationId);
       try {
         const { turns, has_more, next_before } = await chatApi.listTurnPage(conversationId);
         if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch) return;
         const messages = turnsToMessages(turns);
         updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true, hasOlder: has_more, olderBefore: next_before }));
       } catch (err) {
-        if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch) return;
+        if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch || activeIdRef.current !== conversationId) return;
         console.error('[Chat] 加载历史失败:', err);
-        setPagingError(err instanceof Error ? err.message : '历史加载失败');
+        setHistoryError({ conversationId, epoch, message: err instanceof Error ? err.message : '历史加载失败' });
         updateConversation(conversationId, (c) => ({ ...c, loaded: true }));
+      } finally {
+        initialHistoryBusy.current.delete(conversationId);
       }
     },
     [updateConversation]
@@ -829,10 +800,10 @@ export function Chat() {
         ...current, messages: [...messages.filter((message) => !current.messages.some((item) => item.id === message.id)), ...current.messages],
         hasOlder: page.has_more, olderBefore: page.next_before,
       });
-      setPagingError('');
+      setHistoryError((current) => current?.conversationId === conversation.id && current.epoch === epoch ? null : current);
     } catch (error) {
-      if ((snapshotEpochRef.current[conversation.id] ?? 0) !== epoch) return;
-      setPagingError(error instanceof Error ? error.message : '历史加载失败');
+      if ((snapshotEpochRef.current[conversation.id] ?? 0) !== epoch || activeIdRef.current !== conversation.id) return;
+      setHistoryError({ conversationId: conversation.id, epoch, message: error instanceof Error ? error.message : '历史加载失败' });
     }
     finally { olderBusy.current.delete(conversation.id); }
   }, [updateConversation]);
@@ -874,9 +845,9 @@ export function Chat() {
       if (signal?.aborted || version !== modelReadVersion.current) return;
       const names = Object.keys(detail);
       setModels(names);
+      setModelsLoaded(true);
       setModelsDetail(detail);
       modelDetailsSnapshot.current = detail;
-      if (names.length) setSettings((previous) => names.includes(previous.model) ? previous : { ...previous, model: names[0] });
     } catch (error) {
       if (!signal?.aborted) console.error('[Chat] 刷新模型列表失败:', error);
     }
@@ -894,6 +865,13 @@ export function Chat() {
         void chatApi.listPlugins().then(({ plugins }) => { if (!cancelled) setPlugins(plugins); }).catch((error) => console.error('[Chat] 插件读取失败:', error));
         void chatApi.listProjects().then(({ projects }) => { if (!cancelled) setProjects(projects); }).catch((error) => console.error('[Chat] 项目读取失败:', error));
         initialModelRead.current = handleModelSaved();
+        void chatApi.getSettings().then((value) => {
+          if (!value || typeof value.default_model !== 'string' || typeof value.revision !== 'string') throw new Error('Chat 默认设置响应无效');
+          if (!cancelled) {
+            setDefaults(value);
+            if (!activeIdRef.current) setSettings((previous) => ({ ...previous, model: value.default_model }));
+          }
+        }).catch((error: unknown) => { if (!cancelled) toast('error', `读取 Chat 默认模型失败: ${String(error)}`); });
 
       } catch (err) {
         console.error('[Chat] 后端连接失败:', err);
@@ -922,18 +900,20 @@ export function Chat() {
   }, [publishedModels, settingsOpen, handleModelSaved]);
   // 等待首次详情后比较实际配置, 初始化期间来源变化仍会刷新, 不盲目忽略首次发布
 
-  // 切换会话时按需加载历史
+  const activeHistoryId = active?.id;
+  const activeHistoryLoaded = active?.loaded;
   useEffect(() => {
-    if (active && !active.loaded) {
-      void loadTurns(active.id);
+    if (activeHistoryId && !activeHistoryLoaded) {
+      void loadTurns(activeHistoryId);
     }
-  }, [active, loadTurns]);
+  }, [activeHistoryId, activeHistoryLoaded, loadTurns]);
+  // 仅会话身份或加载状态变化时读取历史, 模型与目录元数据回填不重新触发
 
   // 模型下拉选项(保证当前选中项总在选项中)
   const modelOptions = useMemo(() => {
     const list = models.length > 0 ? models : [DEFAULT_SETTINGS.model];
     const all = list.includes(settings.model) ? list : [settings.model, ...list];
-    return all.map((name) => ({ value: name, label: name }));
+    return all.map((name) => ({ value: name, label: models.includes(name) ? name : `${name} (不可用, 请重选)` }));
   }, [models, settings.model]);
 
   const thinkingOptions = useMemo(
@@ -944,7 +924,7 @@ export function Chat() {
   useEffect(() => {
     if (!Object.prototype.hasOwnProperty.call(modelsDetail, settings.model)) return;
     if (thinkingOptions.some((option) => option.value === settings.think)) return;
-    setSettings((current) => ({ ...current, think: 'off' }));
+    setSettings((current) => ({ ...current, think: 'default' }));
   }, [modelsDetail, settings.model, settings.think, thinkingOptions]);
 
   useEffect(() => {
@@ -969,6 +949,39 @@ export function Chat() {
 
   // 更新单项设置
   const updateSettings = useCallback(<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
+    if (key === 'model') {
+      const model = String(value);
+      const id = activeId;
+      if (generatingRef.current || bindingMutations.current.has(id)) return;
+      if (!id || id === '__draft__') {
+        preloadVersionRef.current += 1;
+        if (id) applyModelBinding(id, model);
+        else {
+          setConversations((previous) => [{ id: '__draft__', title: '新对话', model, messages: [], updatedAt: Math.round(Date.now() / 1000), loaded: true }, ...previous]);
+          setActiveId('__draft__');
+          setSettings((previous) => ({ ...previous, model }));
+        }
+        return;
+      }
+      bindingEpoch.current[id] = (bindingEpoch.current[id] ?? 0) + 1;
+      bindingMutations.current.add(id);
+      setBindingPending((current) => new Set(current).add(id));
+      const expected = conversationsRef.current.find((conversation) => conversation.id === id)?.model;
+      void chatApi.setModel(id, model, expected).then((result) => {
+        if (!result.ok) throw new Error(result.error || '模型切换失败');
+        applyModelBinding(id, result.model);
+        updateConversation(id, (conversation) => ({ ...conversation,
+          preloadKey: conversation.preloaded ? preloadKeyRef.current(conversation.projectId, result.model) : conversation.preloadKey }));
+        if (activeIdRef.current === id) setBindingProblem(null);
+      }).catch(async (error: unknown) => {
+        await chatApi.getModel(id).then((result) => applyModelBinding(id, result.model)).catch(() => undefined);
+        toast('error', `模型切换失败: ${String(error)}`);
+      }).finally(() => {
+        bindingMutations.current.delete(id);
+        setBindingPending((current) => { const next = new Set(current); next.delete(id); return next; });
+      });
+      return;
+    }
     if (key === 'defaultAgentPromptEnabled' && activeId && activeId !== '__draft__') {
       void chatApi.setDefaultAgentPrompt(activeId, value === true).then((result) => {
         if (!result.ok) throw new Error(result.error || '保存失败');
@@ -983,6 +996,21 @@ export function Chat() {
       }).catch((error: unknown) => toast('error', String(error)));
       return;
     }
+    if (key === 'temperature' && activeId && activeId !== '__draft__') {
+      const id = activeId;
+      let previous: Pick<ChatSettings, 'temperature' | 'requestTemperature'> | null = null;
+      setSettings((prev) => {
+        previous = { temperature: prev.temperature, requestTemperature: prev.requestTemperature };
+        return { ...prev, temperature: value as number | null };
+      });
+      void chatApi.setGenerationSettings(id, { temperature: value as number | null }).then((result) => {
+        if (activeIdRef.current === id) setSettings((prev) => ({ ...prev, temperature: result.temperature, requestTemperature: result.request_temperature }));
+      }).catch((error: unknown) => {
+        if (activeIdRef.current === id && previous) setSettings((prev) => ({ ...prev, ...previous }));
+        toast('error', `温度保存失败: ${String(error)}`);
+      });
+      return;
+    }
     if (key === 'maxIterations' && activeId && activeId !== '__draft__') {
       void chatApi.setMaxIterations(activeId, typeof value === 'number' ? value : null).then((result) => {
         if (!result.ok) throw new Error(result.error || '保存失败');
@@ -991,9 +1019,53 @@ export function Chat() {
       return;
     }
     setSettings((prev) => ({ ...prev, [key]: value }));
-  }, [activeId]);
+  }, [activeId, applyModelBinding, updateConversation]);
 
   useEffect(() => {
+    setBindingProblem(null);
+    const cached = conversationsRef.current.find((conversation) => conversation.id === activeId);
+    if (cached?.model) setSettings((previous) => ({ ...previous, model: cached.model! }));
+    if (!activeId || activeId === '__draft__') return;
+    const id = activeId;
+    const epoch = (bindingEpoch.current[id] ?? 0) + 1;
+    bindingEpoch.current[id] = epoch;
+    setBindingPending((current) => new Set(current).add(id));
+    let cancelled = false;
+    void chatApi.getModel(id).then((result) => {
+      if (!result.ok || typeof result.model !== 'string') throw new Error('会话模型响应无效');
+      if (!cancelled && bindingEpoch.current[id] === epoch) applyModelBinding(id, result.model);
+    }).catch((error: unknown) => {
+      if (!cancelled && bindingEpoch.current[id] === epoch) setBindingProblem(`读取会话模型失败: ${String(error)}`);
+    }).finally(() => {
+      if (bindingEpoch.current[id] === epoch) setBindingPending((current) => { const next = new Set(current); next.delete(id); return next; });
+    });
+    return () => { cancelled = true; };
+  }, [activeId, applyModelBinding]);
+
+  const saveDefaultModel = useCallback(async (model: string) => {
+    if (!defaults || defaultSaving) return;
+    setDefaultSaving(true);
+    try {
+      const result = await chatApi.saveSettings(model, defaults.revision);
+      setDefaults(result);
+      if (!activeIdRef.current) setSettings((previous) => ({ ...previous, model: result.default_model }));
+      toast('success', '整体默认模型已保存, 仅影响之后创建的会话');
+    } catch (error) { toast('error', `保存整体默认模型失败: ${String(error)}`); }
+    finally { setDefaultSaving(false); }
+  }, [defaults, defaultSaving]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    let cancelled = false;
+    void chatApi.getSettings().then((value) => {
+      if (typeof value.default_model !== 'string' || typeof value.revision !== 'string') throw new Error('Chat 默认设置响应无效');
+      if (!cancelled) setDefaults(value);
+    }).catch((error: unknown) => { if (!cancelled) toast('error', `读取整体默认失败: ${String(error)}`); });
+    return () => { cancelled = true; };
+  }, [settingsOpen]);
+
+  useEffect(() => {
+    if (activeId === '__draft__') setSettings((prev) => ({ ...prev, temperature: null, requestTemperature: undefined }));
     if (!activeId || activeId === '__draft__') return;
     let cancelled = false;
     void chatApi.getDefaultAgentPrompt(activeId).then((result) => {
@@ -1005,30 +1077,32 @@ export function Chat() {
     void chatApi.getMaxIterations(activeId).then((result) => {
       if (!cancelled) setSettings((prev) => ({ ...prev, maxIterations: result.max_iterations }));
     }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
+    void chatApi.getGenerationSettings(activeId).then((result) => {
+      if (!cancelled) setSettings((prev) => ({ ...prev, temperature: result.temperature, requestTemperature: result.request_temperature }));
+    }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     return () => { cancelled = true; };
   }, [activeId]);
 
   // 生成会影响 Session, 模型或插件安装结果的前端设置键
   const preloadBaseKey = useMemo(() => JSON.stringify({
-    model: settings.model,
     temperature: settings.temperature,
     commandHistoryEnabled: settings.commandHistoryEnabled,
     defaultAgentPromptEnabled: settings.defaultAgentPromptEnabled,
     maxIterations: settings.maxIterations,
     systemPrompt: settings.systemPrompt,
-    modelConfig: modelsDetail[settings.model] ?? null,
     plugins,
     pluginConfigRevision,
-  }), [settings.model, settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.defaultAgentPromptEnabled, settings.maxIterations, modelsDetail, plugins, pluginConfigRevision]);
+  }), [settings.temperature, settings.systemPrompt, settings.commandHistoryEnabled, settings.defaultAgentPromptEnabled, settings.maxIterations, plugins, pluginConfigRevision]);
 
   const preloadKeyFor = useCallback(
-    (projectId: string | null | undefined) => `${preloadBaseKey}:${projectId ?? ''}`,
-    [preloadBaseKey]
+    (projectId: string | null | undefined, model = settings.model) => `${preloadBaseKey}:${JSON.stringify({ model, config: modelsDetail[model] ?? null })}:${projectId ?? ''}`,
+    [preloadBaseKey, settings.model, modelsDetail]
   );
+  preloadKeyRef.current = preloadKeyFor;
 
   const preloadSettingsFor = useCallback(
-    (projectId: string | null | undefined): ChatPreloadSettings => ({
-      model: settings.model,
+    (projectId: string | null | undefined, model = settings.model): ChatPreloadSettings => ({
+      model,
       think: settings.think,
       temperature: settings.temperature,
       commandHistoryEnabled: settings.commandHistoryEnabled,
@@ -1056,7 +1130,7 @@ export function Chat() {
     preloadVersionRef.current = version;
     const sourceId = target.id;
     const oldPreloadedId = target.preloaded ? target.id : null;
-    const request = chatApi.preloadConversation(preloadSettingsFor(target.projectId))
+    const request = chatApi.preloadConversation(preloadSettingsFor(target.projectId, target.model))
       .then(async ({ conversation_id: conversationId }) => {
         if (preloadVersionRef.current !== version) {
           await chatApi.deleteConversation(conversationId).catch(() => undefined);
@@ -1133,9 +1207,12 @@ export function Chat() {
 
   // 创建本地草稿会话 (不切换选中, 供自动创建场景复用); projectId = 在项目下新建
   const createDraft = useCallback((projectId?: string): Conversation => {
+    const existing = conversationsRef.current.find((conversation) => conversation.id === '__draft__' && (conversation.projectId ?? null) === (projectId ?? null));
+    if (existing) return existing;
     const draft: Conversation = {
       id: '__draft__',
       title: '新对话',
+      model: defaults?.default_model ?? DEFAULT_SETTINGS.model,
       messages: [],
       updatedAt: Math.round(Date.now() / 1000),
       loaded: true,
@@ -1148,10 +1225,11 @@ export function Chat() {
       return [draft, ...prev.filter((c) => c.id !== '__draft__')];
     });
     return draft;
-  }, []);
+  }, [defaults]);
 
   // 新建会话并触发后端预加载; projectId = 在项目下新建
   const handleNew = useCallback((projectId?: string) => {
+    if (!defaults) { toast('error', '整体默认模型尚未读取完成'); return; }
     const existing = conversations.find((conv) => (
       conv.preloaded
       && conv.messages.length === 0
@@ -1159,7 +1237,6 @@ export function Chat() {
     ));
     if (existing) {
       setActiveId(existing.id);
-      setShowEntryChoice(false);
       setInput('');
       textareaRef.current?.focus();
       return;
@@ -1179,16 +1256,15 @@ export function Chat() {
     setDraftApprovalMode('user');
     const draft = createDraft(projectId);
     setActiveId(draft.id);
-    setShowEntryChoice(false);
     setInput('');
     textareaRef.current?.focus();
-  }, [conversations, createDraft]);
+  }, [conversations, createDraft, defaults]);
 
   // 草稿立即预加载; 未发送前变更构建设置时防抖刷新
   useEffect(() => {
     if (!active || active.messages.length > 0) return;
     if (active.id !== '__draft__' && !active.preloaded) return;
-    const key = preloadKeyFor(active.projectId);
+    const key = preloadKeyFor(active.projectId, active.model);
     if (active.preloaded && active.preloadKey === key) return;
     // 已上传附件时保留同一 ID 和文件, 首次发送由后端按指纹原地重建
     if (active.preloaded && pendingAttachments.length > 0) return;
@@ -1282,7 +1358,7 @@ export function Chat() {
   // 发送消息
   const handleSend = useCallback(async () => {
     const content = input.trim();
-    if ((!content && pendingAttachments.length === 0) || generating) return;
+    if ((!content && pendingAttachments.length === 0) || generating || !modelReady || bindingMutations.current.has(activeIdRef.current)) return;
     if (pendingAttachments.some((attachment) => ((attachment.type ?? '').startsWith('image/') && !modelsDetail[settings.model]?.supports_visual_input) || ((attachment.type ?? '').startsWith('video/') && !modelsDetail[settings.model]?.supports_visual_input && !modelsDetail[settings.model]?.supports_native_video_input))) {
       alert('当前模型未启用图像与视频输入, 请切换模型或移除媒体附件');
       return;
@@ -1293,7 +1369,6 @@ export function Chat() {
     if (!targetConv) {
       targetConv = createDraft();
       setActiveId(targetConv.id);
-      setShowEntryChoice(false);
     }
 
     const atts = pendingAttachments.length > 0 ? [...pendingAttachments] : undefined;
@@ -1339,7 +1414,7 @@ export function Chat() {
 
     // 草稿或设置已变化的空会话: 等待对应预加载完成
     let realConvId = convId;
-    const preloadKey = preloadKeyFor(targetConv.projectId);
+    const preloadKey = preloadKeyFor(targetConv.projectId, targetConv.model);
     const shouldRefreshPreload = isDraft || (
       targetConv.preloaded
       && targetConv.preloadKey !== preloadKey
@@ -1375,11 +1450,13 @@ export function Chat() {
         settings.think,
         atts,
         {
-          ...preloadSettingsFor(targetConv.projectId),
+          ...preloadSettingsFor(targetConv.projectId, targetConv.model),
+          ...(isDraft || targetConv.preloaded ? {} : { temperature: undefined }),
           ...((isDraft || targetConv.preloaded)
             && (draftApprovalMode !== 'user' || plugins.some((plugin) => plugin.name === 'permissions' && plugin.enabled))
             ? { approvalMode: draftApprovalMode } : {}),
         },
+        targetConv.model ?? settings.model,
       );
       updateConversation(realConvId, (conversation) => ({
         ...conversation,
@@ -1395,6 +1472,7 @@ export function Chat() {
       // 流式内容经 WS 推送, 此处仅等待发送确认
     } catch (err) {
       console.error('[Chat] 发送失败:', err);
+      void chatApi.getModel(realConvId).then((binding) => applyModelBinding(realConvId, binding.model)).catch(() => undefined);
       updateConversation(realConvId, (c) => ({
         ...c,
         messages: c.messages.map((m) =>
@@ -1409,10 +1487,11 @@ export function Chat() {
     } finally {
       mutationPendingRef.current = false;
     }
-  }, [input, active, generating, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload, draftApprovalMode, plugins]);
+  }, [input, active, generating, modelReady, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload, draftApprovalMode, plugins, applyModelBinding]);
 
   // 选择文件
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!modelReady || bindingMutations.current.has(activeIdRef.current)) return;
     const files = e.target.files;
     if (!files) return;
 
@@ -1421,9 +1500,8 @@ export function Chat() {
     if (!targetConv) {
       targetConv = createDraft();
       setActiveId(targetConv.id);
-      setShowEntryChoice(false);
     }
-    const preloadKey = preloadKeyFor(targetConv.projectId);
+    const preloadKey = preloadKeyFor(targetConv.projectId, targetConv.model);
     const needsPreload = targetConv.id === '__draft__' || (
       targetConv.preloaded
       && targetConv.preloadKey !== preloadKey
@@ -1481,7 +1559,7 @@ export function Chat() {
     }
     // 清空 input 以便重复选择同一文件
     e.target.value = '';
-  }, [active, pendingAttachments.length, createDraft, preloadKeyFor, startPreload, modelsDetail, settings.model]);
+  }, [active, pendingAttachments.length, createDraft, preloadKeyFor, startPreload, modelsDetail, settings.model, modelReady]);
 
   // 移除待发送附件
   const removeAttachment = useCallback((index: number) => {
@@ -1491,7 +1569,7 @@ export function Chat() {
   // Retry: 重试最后一轮
   const handleRetry = useCallback(async () => {
     const currentActive = activeRef.current;
-    if (!currentActive || currentActive.id === '__draft__' || currentActive.preloaded || generatingRef.current) return;
+    if (!currentActive || currentActive.id === '__draft__' || currentActive.preloaded || generatingRef.current || bindingMutations.current.has(currentActive.id) || bindingPending.has(currentActive.id) || bindingProblem) return;
     const previousAssistant = currentActive.messages[currentActive.messages.length - 1];
     if (!previousAssistant || previousAssistant.role !== 'assistant') return;
     flushStreamingDeltas();
@@ -1505,6 +1583,7 @@ export function Chat() {
         segments: previousAssistant.segments,
         contextStats: previousAssistant.contextStats,
         outputFiles: previousAssistant.outputFiles,
+        responseMetadata: previousAssistant.responseMetadata,
       }];
     const assistantId = genId();
     const assistantMsg: ChatMessage = {
@@ -1528,7 +1607,7 @@ export function Chat() {
     setGenerating(true);
     mutationPendingRef.current = true;
     try {
-      const result = await chatApi.retry(currentActive.id, settingsThinkRef.current);
+      const result = await chatApi.retry(currentActive.id, settingsThinkRef.current, currentActive.model);
       if (result.ok) {
         updateStreamingMessage((message) => ({
           ...message,
@@ -1540,6 +1619,7 @@ export function Chat() {
       }
     } catch (err) {
       console.error('[Chat] 重试失败:', err);
+      void chatApi.getModel(currentActive.id).then((binding) => applyModelBinding(currentActive.id, binding.model)).catch(() => undefined);
       updateConversation(currentActive.id, (conversation) => ({
         ...conversation,
         messages: [...conversation.messages.slice(0, -1), previousAssistant],
@@ -1551,7 +1631,7 @@ export function Chat() {
     } finally {
       mutationPendingRef.current = false;
     }
-  }, [flushStreamingDeltas, updateConversation, updateStreamingMessage]);
+  }, [flushStreamingDeltas, updateConversation, updateStreamingMessage, applyModelBinding, bindingPending, bindingProblem]);
 
   const handleSelectVariant = useCallback(async (turnIndex: number, variantIndex: number) => {
     const currentActive = activeRef.current;
@@ -1569,7 +1649,7 @@ export function Chat() {
           message.role === 'assistant' && message.turnIndex === turnIndex
             ? {
               ...message,
-              content: selected.answer,
+              content: variantAnswer(selected),
               thinking: selected.thinking ?? undefined,
               toolCalls: selected.tool_calls,
               segments: convertSegments(selected),
@@ -1579,6 +1659,7 @@ export function Chat() {
               variants: turn.variants.map(convertVariant),
               contextStats: selected.context_stats,
               outputFiles: selected.output_files,
+              responseMetadata: selected.response_metadata,
             }
             : message
         )),
@@ -1749,37 +1830,45 @@ export function Chat() {
   // 后端未连接提示
   if (backendOk === false) {
     return (
-      <div className="flex flex-col h-screen p-4 gap-4">
-        <ChatHeader theme={theme} onToggleTheme={toggleTheme} onBack={() => navigate('/')} />
-        <Card className="flex-1 flex flex-col items-center justify-center gap-3">
-          <Bot className="h-10 w-10 text-text-tertiary" />
-          <p className="text-text-primary font-medium">聊天服务未连接</p>
-          <p className="text-sm text-text-tertiary">
-            请先启动聊天服务: python -m satrap.display.server
-          </p>
-          <Button variant="default" onClick={() => setSettingsOpen(true)}>
+      <div className="flex h-screen flex-col gap-2 overflow-hidden p-2">
+        <ChatHeader
+          theme={theme}
+          title="Satrap 对话"
+          subtitle="聊天服务未连接"
+          listOpen={false}
+          onToggleList={() => undefined}
+          onToggleTheme={toggleTheme}
+          onBack={() => navigate('/')}
+          onSettings={() => setSettingsOpen(true)}
+        />
+        <div className="surface flex min-h-0 flex-1 flex-col items-center justify-center gap-3 !rounded-[20px] p-6 text-center">
+          <div className="tint-orange grid h-14 w-14 place-items-center rounded-2xl bg-[rgb(var(--rgb-orange)/0.12)] text-orange">
+            <Bot className="h-7 w-7" />
+          </div>
+          <p className="text-base font-semibold text-fg">聊天服务未连接</p>
+          <p className="text-sm text-fg-3">请先启动聊天服务: python -m satrap.display.server</p>
+          <Button variant="default" title="对话设置" onClick={() => setSettingsOpen(true)}>
             <Settings2 className="mr-2 h-4 w-4" />对话设置
           </Button>
-        </Card>
+        </div>
         <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)} title="对话设置" size="md">
           <button
             onClick={() => setHistoryOpen(true)}
-            className="glass-card w-full rounded-lg px-3 py-3 text-left transition-colors hover:bg-glass-active"
+            className="tile tint-accent w-full rounded-xl px-4 py-3 text-left"
           >
             <div className="flex items-center gap-2">
               <HardDrive className="h-4 w-4 shrink-0 text-accent" />
-              <span className="text-sm text-text-primary">管理会话历史</span>
+              <span className="text-sm font-medium text-fg">管理会话历史</span>
             </div>
-            <p className="mt-1 text-xs text-text-tertiary">Chat 服务停止时使用冷管理读取历史和回收站</p>
+            <p className="mt-1 text-xs text-fg-3">Chat 服务停止时使用冷管理读取历史和回收站</p>
           </button>
         </Modal>
         <SessionPluginSettingsModal
-        context={sessionConfigPlugin && activeId ? { platformId: 'chat', sessionId: activeId } : null}
-        plugins={sessionConfigPlugin ? [sessionConfigPlugin] : []}
-        onClose={() => setSessionConfigPlugin(null)}
-      />
-
-      <ChatHistoryManager
+          context={sessionConfigPlugin && activeId ? { platformId: 'chat', sessionId: activeId } : null}
+          plugins={sessionConfigPlugin ? [sessionConfigPlugin] : []}
+          onClose={() => setSessionConfigPlugin(null)}
+        />
+        <ChatHistoryManager
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
           projects={projects}
@@ -1793,189 +1882,148 @@ export function Chat() {
     );
   }
 
-  return (
-    <div className="flex flex-col h-screen p-4 gap-4">
-      {/* 聊天页独立顶栏 */}
-      <ChatHeader theme={theme} onToggleTheme={toggleTheme} onBack={() => navigate('/')} />
+  const showWelcome = !active || active.messages.length === 0;
+  const rounds = active ? Math.ceil(active.messages.length / 2) : 0;
+  const activeProject = projects.find((project) => project.project_id === active?.projectId);
+  const headerTitle = !active
+    ? 'Satrap 对话'
+    : active.messages.length === 0
+      ? (active.id === '__draft__' ? '新对话' : active.title)
+      : active.title;
+  const headerSubtitle = active
+    ? `${activeProject?.name ?? '最近'} · ${settings.model}`
+    : 'Satrap';
+  const toggleSidebar = () => {
+    const mobile = typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
+    if (mobile) setMobileList((value) => !value);
+    else setListOpen((value) => !value);
+  };
+  const selectConversation = (id: string) => {
+    setActiveId(id);
+    setMobileList(false);
+  };
+  const startNewConversation = (projectId?: string) => {
+    handleNew(projectId);
+    setMobileList(false);
+  };
 
-      <div className="flex gap-4 flex-1 min-h-0">
-      {/* 会话列表侧栏 */}
-      <Card className="glass-card-static w-72 shrink-0 flex flex-col p-0 overflow-hidden">
-        <div className="p-3 border-b border-glass-border space-y-2">
-          <div className="flex gap-2">
-            <Button variant="primary" className="flex-1" onClick={() => handleNew()}>
-              <Plus className="h-4 w-4 mr-2" />
-              新建对话
-            </Button>
-            <Button variant="ghost" title="新建项目 (绑定工作区文件夹)" onClick={() => setProjectDialogOpen(true)}>
-              <FolderPlus className="h-4 w-4" />
-            </Button>
-          </div>
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-tertiary" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索对话"
-              className="glass-input w-full pl-9 pr-3 py-2 text-sm rounded-md"
+  return (
+    <div className="flex h-screen flex-col gap-2 overflow-hidden p-2">
+      <ChatHeader
+        theme={theme}
+        title={headerTitle}
+        subtitle={headerSubtitle}
+        rounds={rounds}
+        listOpen={typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches ? mobileList : listOpen}
+        onToggleList={toggleSidebar}
+        onToggleTheme={toggleTheme}
+        onBack={() => navigate('/')}
+        onSettings={() => setSettingsOpen(true)}
+      />
+
+      <div className="flex min-h-0 flex-1 gap-2">
+        {mobileList && (
+          <div
+            className="fixed inset-0 z-30 bg-black/35 backdrop-blur-sm md:hidden"
+            aria-hidden
+            onClick={() => setMobileList(false)}
+          />
+        )}
+        {/* 会话列表侧栏 */}
+        <aside
+          aria-label="会话列表"
+          className={cn(
+            'surface flex min-h-0 flex-none flex-col overflow-hidden !rounded-[20px] transition-all duration-500 [transition-timing-function:var(--ease-out)]',
+            'fixed inset-y-2 left-2 z-40 w-[min(268px,calc(100vw-24px))] md:static md:inset-auto md:z-auto md:w-[268px]',
+            mobileList ? 'flex opacity-100' : 'hidden md:flex',
+            listOpen ? 'md:opacity-100' : 'md:w-0 md:border-0 md:opacity-0',
+          )}
+        >
+          <div className="h-full min-h-0 w-[268px] max-w-full">
+            <ChatSidebar
+              search={search}
+              onSearch={setSearch}
+              projectFilter={sidebarProject}
+              onProjectFilter={setSidebarProject}
+              projects={projects}
+              grouped={grouped}
+              activeId={active?.id ?? ''}
+              directoryLoading={directoryLoading}
+              pagingError={visiblePagingError}
+              conversationsCount={conversations.length}
+              nextConversations={nextConversations}
+              onLoadMore={() => void loadConversationPage()}
+              collapsedProjects={collapsedProjects}
+              onToggleProject={(projectId) => setCollapsedProjects((prev) => ({ ...prev, [projectId]: !prev[projectId] }))}
+              onCreateProject={() => setProjectDialogOpen(true)}
+              onNew={() => startNewConversation()}
+              onNewInProject={(projectId) => startNewConversation(projectId)}
+              onDeleteProject={(projectId) => void handleDeleteProject(projectId)}
+              onSelect={selectConversation}
+              onDelete={(id) => void handleDelete(id)}
+              onMove={(id) => setMovingConvId(id)}
             />
           </div>
-        </div>
+        </aside>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-              <select aria-label="筛选对话项目" className="glass-input w-full" value={sidebarProject} onChange={(event) => setSidebarProject(event.target.value)}>
-                <option value="">全部项目</option>
-                {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}
-              </select>
-              {directoryLoading && <p className="px-2 text-sm text-text-tertiary">正在查询对话…</p>}
-
-          {!directoryLoading && grouped.total === 0 && grouped.groups.length === 0 ? (
-            <div className="text-center text-text-tertiary text-sm py-8">
-              {pagingError ? '对话查询未完成, 请重试' : conversations.length === 0 && projects.length === 0 ? '暂无对话, 点击上方新建' : '无匹配对话'}
+        {/* 聊天主区 */}
+        <main className="surface relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden !rounded-[20px]">
+          {visiblePagingError && (
+            <div role="alert" className="mx-3 mt-3 rounded-xl border border-[rgb(var(--rgb-red)/0.3)] bg-[rgb(var(--rgb-red)/0.1)] px-3 py-2 text-sm text-red">
+              {visiblePagingError}
             </div>
-          ) : (
-            <>
-              {/* 项目区: 可折叠分组, 组内渲染该项目会话 */}
-              {grouped.groups.length > 0 && (
-                <div className="space-y-1">
-                  <div className="px-2 pt-1 pb-0.5 text-xs text-text-tertiary">项目</div>
-                  {grouped.groups.map((g) => (
-                    <ProjectGroup
-                      key={g.project.project_id}
-                      project={g.project}
-                      conversations={g.conversations}
-                      collapsed={!!collapsedProjects[g.project.project_id]}
-                      activeId={active?.id ?? ''}
-                      colorIndex={grouped.colorIndex}
-                      onToggle={() =>
-                        setCollapsedProjects((prev) => ({
-                          ...prev,
-                          [g.project.project_id]: !prev[g.project.project_id],
-                        }))
-                      }
-                      onNewConversation={() => handleNew(g.project.project_id)}
-                      onDeleteProject={() => handleDeleteProject(g.project.project_id)}
-                      onSelect={(id) => {
-                        setActiveId(id);
-                        setShowEntryChoice(false);
-                      }}
-                      onDelete={handleDelete}
-                      onMove={(id) => setMovingConvId(id)}
-                    />
-                  ))}
-                </div>
-              )}
-              {/* 最近区: 无项目会话 (平铺, 保持原有形态) */}
-              {nextConversations && !directoryLoading && <Button className="w-full" onClick={() => void loadConversationPage()}>加载更多对话</Button>}
-              {grouped.recent.length > 0 && (
-                <div className="space-y-1">
-                  {grouped.groups.length > 0 && (
-                    <div className="px-2 pt-2 pb-0.5 text-xs text-text-tertiary">最近</div>
-                  )}
-                  {grouped.recent.map((conv) => (
-                    <ConversationItem
-                      key={conv.id}
-                      conversation={conv}
-                      color={CONVERSATION_COLORS[(grouped.colorIndex.get(conv.id) ?? 0) % CONVERSATION_COLORS.length]}
-                      active={conv.id === active?.id}
-                      onSelect={() => {
-                        setActiveId(conv.id);
-                        setShowEntryChoice(false);
-                      }}
-                      onDelete={() => handleDelete(conv.id)}
-                      onMove={conv.id === '__draft__' || conv.preloaded ? undefined : () => setMovingConvId(conv.id)}
-                    />
-                  ))}
-                </div>
-              )}
-            </>
           )}
-        </div>
-      </Card>
 
-      {pagingError && <p role="alert" className="text-error">{pagingError}</p>}
-      {/* 聊天主区 */}
-      <Card className="glass-card-static flex-1 flex flex-col p-0 overflow-hidden min-w-0">
-        {/* 头部 */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-glass-border">
-          <div className="flex items-center gap-2 min-w-0">
-            <Sparkles className="h-4 w-4 text-accent shrink-0" />
-            <h3 className="font-semibold text-text-primary truncate">
-              {active?.title ?? '对话'}
-            </h3>
-          </div>
-          <Button variant="ghost" size="sm" title="对话设置" onClick={() => setSettingsOpen(true)}>
-            <Settings2 className="h-4 w-4" />
-          </Button>
-        </div>
-
-        {active && active.id !== "__draft__" && !active.preloaded && (
-          <RunRecovery conversation={active.id} generating={generating} />
-        )}
-
-        {/* 消息流 (输入区内嵌于底部, sticky 固定, 滚动不消失) */}
-        <div ref={messageScroll.containerRef} onScroll={() => { messageScroll.onScroll(); if ((messageScroll.containerRef.current?.scrollTop ?? 100) < 80 && active) void loadOlder(active); }} style={{ overflowAnchor: 'none' }} className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">
-          {/* 内容区 */}
-          <div ref={messageScroll.contentRef} className="flex-1 flex flex-col pb-4">
-            {showEntryChoice ? (
-              <div className="flex-1 flex items-center justify-center">
-                <div className="max-w-sm w-full space-y-3">
-                  <button
-                    onClick={() => {
-                      setShowEntryChoice(false);
-                      if (conversations.length > 0) setActiveId(conversations[0].id);
-                    }}
-                    className="glass-card glass-card-accent rounded-xl px-4 py-3.5 w-full text-left hover:bg-glass-active transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <MessageSquare className="h-4 w-4 text-accent shrink-0" />
-                      <span className="text-sm font-medium text-text-primary">继续最近对话</span>
+          {/* 消息流 */}
+          <div
+            ref={messageScroll.containerRef}
+            onScroll={() => {
+              messageScroll.onScroll();
+              if ((messageScroll.containerRef.current?.scrollTop ?? 100) < 80 && active) void loadOlder(active);
+            }}
+            style={{ overflowAnchor: 'none' }}
+            className="scroll relative z-10 min-h-0 flex-1 overflow-y-auto custom-scrollbar"
+          >
+            <div ref={messageScroll.contentRef} className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-3 py-5 md:px-6 md:py-7">
+              {showWelcome ? (
+                <EmptyWelcome onPromptClick={(text) => setInput(text)} />
+              ) : (
+                <div className="flex flex-col gap-6 md:gap-7">
+                  {active.hasOlder && (
+                    <div className="flex justify-center">
+                      <Button variant="ghost" size="sm" onClick={() => void loadOlder(active)}>加载更早消息</Button>
                     </div>
-                    <p className="text-xs text-text-tertiary mt-1 truncate">
-                      {conversations[0]?.title ?? ''}
-                    </p>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowEntryChoice(false);
-                      handleNew();
-                    }}
-                    className="glass-card rounded-xl px-4 py-3.5 w-full text-left hover:bg-glass-active transition-colors"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Plus className="h-4 w-4 text-accent shrink-0" />
-                      <span className="text-sm font-medium text-text-primary">开始新对话</span>
-                    </div>
-                  </button>
+                  )}
+                  {active.messages.map((msg, idx) => (
+                    <MessageBubble
+                      key={msg.renderKey ?? msg.id}
+                      message={msg}
+                      conversationId={active.id}
+                      isLast={idx === active.messages.length - 1}
+                      onRetry={handleRetry}
+                      onFork={handleFork}
+                      onSelectVariant={handleSelectVariant}
+                    />
+                  ))}
                 </div>
-              </div>
-            ) : !active || active.messages.length === 0 ? (
-              <EmptyWelcome onPromptClick={(text) => setInput(text)} />
-            ) : (
-              <div className="space-y-6">
-                {active.hasOlder && <Button onClick={() => void loadOlder(active)}>加载更早消息</Button>}
-                {active.messages.map((msg, idx) => (
-                  <MessageBubble
-                    key={msg.id}
-                    message={msg}
-                    conversationId={active.id}
-                    isLast={idx === active.messages.length - 1}
-                    onRetry={handleRetry}
-                    onFork={handleFork}
-                    onSelectVariant={handleSelectVariant}
-                  />
-                ))}
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
-          {/* 输入区(sticky 固定在消息流底部, 不随滚动消失; 底部渐变让滚过的内容淡出) */}
-          <div className="sticky bottom-0 z-10 shrink-0 -mx-5 px-5 pt-3 pb-4 bg-gradient-to-t from-[var(--glass-bg)] to-transparent">
-            <div className="max-w-3xl mx-auto">
-              {/* 折叠选项面板: 思考, 模型和执行审批 */}
+          {/* 输入区 */}
+          <div className="relative z-20 flex-none bg-gradient-to-t from-[var(--glass-bg-strong)] via-[var(--glass-bg-strong)] to-transparent px-3 pb-3 pt-2 md:px-6">
+            <div className="mx-auto w-full max-w-3xl">
+              {modelBusyVisible && <p className="mb-2 px-1 text-xs text-fg-2">正在确认会话模型…</p>}
+              {bindingProblem && <p role="alert" className="mb-2 px-1 text-xs text-red">{bindingProblem}</p>}
+              {modelsLoaded && !modelBusy && !models.includes(settings.model) && (
+                <p role="alert" className="mb-2 px-1 text-xs text-red">
+                  模型 {settings.model} 不可用, 请展开选项手动选择
+                </p>
+              )}
               {optionsOpen && (
-                <div className="mb-2 w-fit max-w-full ml-auto">
+                <div className="mb-2 flex justify-end">
                   <OptionsPanel
+                    modelDisabled={generating || modelBusy}
                     approval={approval}
                     think={settings.think}
                     model={settings.model}
@@ -1987,9 +2035,8 @@ export function Chat() {
                 </div>
               )}
 
-              {/* 附件预览条 */}
               {pendingAttachments.length > 0 && (
-                <div className="flex flex-wrap gap-2 mb-2">
+                <div className="mb-2 flex flex-wrap gap-2">
                   {pendingAttachments.map((att, i) => (
                     <MediaAttachment key={att.url} attachment={att} conversationId={active?.id ?? ''}
                       onRemove={() => removeAttachment(i)} />
@@ -2011,8 +2058,7 @@ export function Chat() {
                 />
               )}
 
-              <div ref={inputCardRef} className="glass-card glass-card-accent rounded-xl p-3 flex items-end gap-2">
-                {/* 隐藏文件选择器 */}
+              <div className="surface surface-strong !rounded-[22px] p-2 transition-shadow duration-300 focus-within:!shadow-[var(--shadow-2),0_0_0_4px_rgb(var(--rgb-accent)/0.12)]">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -2021,16 +2067,6 @@ export function Chat() {
                   onChange={handleFileSelect}
                   className="hidden"
                 />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  title="附件"
-                  className="shrink-0 mb-0.5"
-                  disabled={Boolean(activePendingUserInput)}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <Paperclip className="h-4 w-4" />
-                </Button>
                 <textarea
                   ref={textareaRef}
                   value={input}
@@ -2041,47 +2077,85 @@ export function Chat() {
                     : '输入消息, Enter 发送, Shift+Enter 换行'}
                   disabled={Boolean(activePendingUserInput)}
                   rows={1}
-                  className="flex-1 min-w-0 bg-transparent border-0 outline-none resize-none text-sm text-text-primary placeholder:text-text-tertiary py-2 max-h-[200px]"
+                  className="scroll block max-h-[200px] w-full resize-none bg-transparent px-3 pb-1 pt-2.5 text-[14.5px] leading-7 text-fg outline-none placeholder:text-fg-4 disabled:opacity-50"
                 />
-                {/* 折叠面板开关(替换原麦克风) */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setOptionsOpen((v) => !v)}
-                  className={cn('shrink-0 mb-0.5', optionsOpen && 'text-accent')}
-                  title={optionsOpen ? '收起选项' : '展开选项'}
-                  disabled={Boolean(activePendingUserInput)}
-                >
-                  <ChevronDown className={cn('h-4 w-4 transition-transform', optionsOpen && 'rotate-180')} />
-                </Button>
-                {generating ? (
-                  <Button variant="danger" size="sm" onClick={handleStop} className="shrink-0 mb-0.5">
-                    <Square className="h-4 w-4" />
-                  </Button>
-                ) : (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={handleSend}
-                    disabled={!input.trim() && pendingAttachments.length === 0}
-                    className="shrink-0 mb-0.5"
-                    title="发送"
+                <div className="flex flex-wrap items-center gap-1.5 px-1 pt-1">
+                  <button
+                    type="button"
+                    title="附件"
+                    aria-label="附件"
+                    disabled={Boolean(activePendingUserInput)}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="ctl ctl-ghost ctl-icon ctl-sm"
                   >
-                    <Send className="h-4 w-4" />
-                  </Button>
-                )}
+                    <Paperclip className="h-4 w-4" />
+                  </button>
+                  <ThinkDial
+                    value={settings.think}
+                    options={thinkingOptions}
+                    disabled={Boolean(activePendingUserInput)}
+                    onChange={(value) => updateSettings('think', value)}
+                  />
+                  <span className="chip tint-accent hidden max-w-[160px] items-center gap-1.5 sm:inline-flex">
+                    <Cpu className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{settings.model}</span>
+                  </span>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setOptionsOpen((v) => !v)}
+                      className={cn('ctl ctl-ghost ctl-icon ctl-sm', optionsOpen && 'text-accent')}
+                      title={optionsOpen ? '收起选项' : '展开选项'}
+                      aria-label={optionsOpen ? '收起选项' : '展开选项'}
+                      disabled={Boolean(activePendingUserInput)}
+                    >
+                      <ChevronDown className={cn('h-4 w-4 transition-transform duration-300', optionsOpen && 'rotate-180')} />
+                    </button>
+                    {generating ? (
+                      <button
+                        type="button"
+                        title="停止生成"
+                        aria-label="停止生成"
+                        onClick={() => void handleStop()}
+                        className="grid h-9 w-9 place-items-center rounded-full border border-[var(--glass-border-strong)] bg-glass-hover text-fg transition hover:scale-105 active:scale-95"
+                      >
+                        <Square className="h-3.5 w-3.5 fill-current" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        title="发送"
+                        aria-label="发送"
+                        onClick={() => void handleSend()}
+                        disabled={!modelReady || (!input.trim() && pendingAttachments.length === 0)}
+                        className={cn(
+                          'grid h-9 w-9 place-items-center rounded-full transition-all duration-300 [transition-timing-function:var(--ease-spring)]',
+                          input.trim() || pendingAttachments.length > 0
+                            ? 'bg-[rgb(var(--rgb-accent))] text-white shadow-[0_6px_20px_-4px_rgb(var(--rgb-accent)/0.8)] hover:scale-110 active:scale-95'
+                            : 'bg-glass-hover text-fg-4',
+                          (!modelReady || (!input.trim() && pendingAttachments.length === 0)) && 'opacity-50',
+                        )}
+                      >
+                        <ArrowUp className="h-4 w-4" strokeWidth={2.5} />
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
-              <p className="text-center text-xs text-text-tertiary mt-2">
+              <p className="mt-2 text-center text-[11px] text-fg-4">
                 内容由模型生成, 请注意甄别
               </p>
             </div>
           </div>
-        </div>
-      </Card>
+        </main>
       </div>
 
       {/* 聊天设置弹窗 */}
       <ChatSettingsModal
+        defaults={defaults}
+        defaultSaving={defaultSaving}
+        onDefaultModel={(model) => void saveDefaultModel(model)}
+        modelDisabled={generating || modelBusy}
         approval={approval}
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -2145,7 +2219,6 @@ export function Chat() {
           }
           updateConversation(conversationId, (item) => ({ ...item, locallyOpened: true }));
           setActiveId(conversationId);
-          setShowEntryChoice(false);
           setHistoryOpen(false);
           setSettingsOpen(false);
         }}
@@ -2178,31 +2251,31 @@ export function Chat() {
         size="sm"
       >
         <div className="space-y-2">
-          <p className="text-xs text-text-tertiary">仅影响之后的工具调用可见范围, 历史消息不变</p>
+          <p className="text-xs text-fg-3">仅影响之后的工具调用可见范围, 历史消息不变</p>
           <button
             onClick={() => void handleMoveConversation(null)}
-            className="glass-card w-full rounded-lg px-3 py-2.5 text-left hover:bg-glass-active transition-colors"
+            className="tile w-full rounded-xl px-3 py-2.5 text-left"
           >
             <div className="flex items-center gap-2">
-              <MessageSquare className="h-4 w-4 text-text-tertiary shrink-0" />
-              <span className="text-sm text-text-primary">最近 (无项目)</span>
+              <MessageSquare className="h-4 w-4 shrink-0 text-fg-3" />
+              <span className="text-sm text-fg">最近 (无项目)</span>
             </div>
           </button>
           {projects.map((p) => (
             <button
               key={p.project_id}
               onClick={() => void handleMoveConversation(p.project_id)}
-              className="glass-card w-full rounded-lg px-3 py-2.5 text-left hover:bg-glass-active transition-colors"
+              className="tile tint-accent w-full rounded-xl px-3 py-2.5 text-left"
             >
               <div className="flex items-center gap-2">
-                <Folder className="h-4 w-4 text-accent shrink-0" />
-                <span className="text-sm text-text-primary truncate">{p.name}</span>
+                <Folder className="h-4 w-4 shrink-0 text-accent" />
+                <span className="truncate text-[13px] text-fg">{p.name}</span>
               </div>
-              <p className="text-xs text-text-tertiary mt-0.5 truncate">{p.root_path}</p>
+              <p className="mt-0.5 truncate text-xs text-fg-3">{p.root_path}</p>
             </button>
           ))}
           {projects.length === 0 && (
-            <p className="text-xs text-text-tertiary">暂无项目, 可先在侧边栏新建</p>
+            <p className="text-xs text-fg-3">暂无项目, 可先在侧边栏新建</p>
           )}
         </div>
       </Modal>
@@ -2261,16 +2334,17 @@ function ProjectDialog({
   return (
     <Modal open={open} onClose={onClose} title="新建项目" size="sm">
       <div className="space-y-3">
-        <p className="text-xs text-text-tertiary">
+        <p className="text-[13px] leading-5 text-fg-3">
           项目绑定一个工作区文件夹, 项目下的对话可读写该文件夹, 并拥有独立的项目记忆层
         </p>
-        {error && <p className="text-sm text-error">{error}</p>}
+        {error && <p role="alert" className="rounded-lg border border-[rgb(var(--rgb-red)/0.3)] bg-[rgb(var(--rgb-red)/0.1)] px-3 py-2 text-sm text-red">{error}</p>}
         <input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="项目名称"
-          className="glass-input w-full text-sm"
+          aria-label="项目名称"
+          className="field"
         />
         <div className="flex gap-2">
           <input
@@ -2278,13 +2352,20 @@ function ProjectDialog({
             value={rootPath}
             onChange={(e) => setRootPath(e.target.value)}
             placeholder="工作区文件夹绝对路径, 如 F:\work\my-project"
-            className="glass-input flex-1 text-sm"
+            aria-label="工作区文件夹路径"
+            className="field min-w-0 flex-1"
           />
-          <Button variant="ghost" title="浏览服务器目录" onClick={() => setPickerOpen(true)}>
+          <button
+            type="button"
+            title="浏览服务器目录"
+            aria-label="浏览服务器目录"
+            onClick={() => setPickerOpen(true)}
+            className="ctl ctl-ghost ctl-icon flex-none"
+          >
             <FolderOpen className="h-4 w-4" />
-          </Button>
+          </button>
         </div>
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>取消</Button>
           <Button
             variant="primary"
@@ -2355,18 +2436,19 @@ function DirectoryPicker({
     <Modal open={open} onClose={onClose} title="选择工作区目录" size="md">
       <div className="space-y-3">
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
+          <button
+            type="button"
             title="上一级"
+            aria-label="上一级"
             disabled={parent === null || loading}
             onClick={() => parent !== null && void load(parent)}
+            className="ctl ctl-ghost ctl-icon ctl-sm flex-none"
           >
             <ArrowUp className="h-4 w-4" />
-          </Button>
+          </button>
           <input
             aria-label="目录路径"
-            className="glass-input flex-1 min-w-0 text-sm"
+            className="field min-w-0 flex-1"
             value={location}
             onChange={(event) => setLocation(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void load(location.trim()); } }}
@@ -2374,30 +2456,30 @@ function DirectoryPicker({
           />
           <Button variant="ghost" size="sm" disabled={loading} onClick={() => void load(location.trim())}>前往</Button>
         </div>
-        {error && <p className="text-sm text-error">{error}</p>}
-        <div className="max-h-72 overflow-y-auto custom-scrollbar space-y-1">
+        {error && <p role="alert" className="rounded-lg border border-[rgb(var(--rgb-red)/0.3)] bg-[rgb(var(--rgb-red)/0.1)] px-3 py-2 text-sm text-red">{error}</p>}
+        <div className="scroll max-h-72 space-y-0.5 rounded-xl border border-line p-1">
           {loading ? (
-            <p className="text-sm text-text-tertiary px-1 py-2">加载中...</p>
+            <p className="px-2 py-2 text-sm text-fg-3">加载中...</p>
           ) : dirs.length === 0 ? (
-            <p className="text-sm text-text-tertiary px-1 py-2">无子目录</p>
+            <p className="px-2 py-2 text-sm text-fg-3">无子目录</p>
           ) : (
             dirs.map((d) => (
               <button
                 key={d.path}
                 onClick={() => void load(d.path)}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-glass-active transition-colors text-left"
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-glass-hover"
               >
                 {current === '' ? (
-                  <HardDrive className="h-4 w-4 text-accent shrink-0" />
+                  <HardDrive className="h-4 w-4 flex-none text-accent" />
                 ) : (
-                  <Folder className="h-4 w-4 text-accent shrink-0" />
+                  <Folder className="h-4 w-4 flex-none text-accent" />
                 )}
-                <span className="text-sm text-text-primary truncate">{d.name}</span>
+                <span className="truncate text-[13px] text-fg">{d.name}</span>
               </button>
             ))
           )}
         </div>
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>取消</Button>
           <Button variant="primary" disabled={!canSelect} onClick={() => { onSelect(current); onClose(); }}>
             选择此目录
@@ -2408,8 +2490,9 @@ function DirectoryPicker({
   );
 }
 
-// 折叠选项面板(紧凑自适应宽度 + 独立反光)
+// 折叠选项面板 (思考 / 模型 / 执行审批)
 function OptionsPanel({
+  modelDisabled,
   approval,
   think,
   model,
@@ -2418,6 +2501,7 @@ function OptionsPanel({
   onToggleThink,
   onModelChange,
 }: {
+  modelDisabled: boolean;
   approval: ApprovalControl;
   think: string;
   model: string;
@@ -2426,41 +2510,36 @@ function OptionsPanel({
   onToggleThink: (v: string) => void;
   onModelChange: (v: string) => void;
 }) {
-  const reflectRef = useGlassReflect<HTMLDivElement>({
-    reflectRange: 100,
-  });
-
   return (
-    <div
-      ref={reflectRef}
-      className="glass-card glass-card-accent rounded-xl px-3 py-2 flex flex-wrap items-center gap-3 animate-fade-in w-fit max-w-full"
-    >
+    <div className="surface surface-strong tint-accent flex w-fit max-w-full flex-wrap items-center gap-3 !rounded-2xl px-3 py-2 animate-pop">
       {/* think 选择 */}
       <div className="flex items-center gap-2">
-        <Brain className={cn('h-4 w-4', think !== 'off' ? 'text-accent' : 'text-text-tertiary')} />
-        <span className="text-sm text-text-secondary">思考</span>
-        <Select
-          value={think}
-          onChange={(e) => onToggleThink(e.target.value)}
-          options={thinkingOptions}
-        />
+        <Brain className={cn('h-4 w-4', think !== 'off' && think !== 'default' ? 'text-accent' : 'text-fg-4')} />
+        <span className="text-sm text-fg-2">思考</span>
+        <div className="w-28">
+          <Select
+            value={think}
+            onChange={(e) => onToggleThink(e.target.value)}
+            options={thinkingOptions}
+          />
+        </div>
       </div>
 
-      {/* 分隔线 */}
-      <div className="w-px h-5 bg-glass-border" />
+      <div className="hidden h-5 w-px bg-[var(--glass-border-strong)] sm:block" />
 
       {/* model 选择 */}
       <div className="flex items-center gap-2">
-        <span className="text-sm text-text-secondary">模型</span>
-        <div className="w-36">
+        <span className="text-sm text-fg-2">模型</span>
+        <div className="w-40">
           <Select
             value={model}
+            disabled={modelDisabled}
             onChange={(e) => onModelChange(e.target.value)}
             options={modelOptions}
           />
         </div>
       </div>
-      <div className="w-px h-5 bg-glass-border" />
+      <div className="hidden h-5 w-px bg-[var(--glass-border-strong)] sm:block" />
       <ApprovalSettings approval={approval} compact />
     </div>
   );
@@ -2478,6 +2557,10 @@ const CHAT_SETTINGS_CATEGORIES: { key: ChatSettingsCategory; label: string; icon
 
 // 聊天设置弹窗: 左侧分类导航 + 右侧分类内容
 function ChatSettingsModal({
+  defaults,
+  defaultSaving,
+  onDefaultModel,
+  modelDisabled,
   approval,
   open,
   onClose,
@@ -2497,6 +2580,10 @@ function ChatSettingsModal({
   onEditModel,
   onDeleteModel,
 }: {
+  defaults: ChatDefaults | null;
+  defaultSaving: boolean;
+  onDefaultModel: (model: string) => void;
+  modelDisabled: boolean;
   approval: ApprovalControl;
   open: boolean;
   onClose: () => void;
@@ -2524,76 +2611,112 @@ function ChatSettingsModal({
   }, [open]);
 
   return (
-    <Modal open={open} onClose={onClose} title="对话设置" size="3xl">
-      <div className="flex gap-4 h-[60vh] min-h-[420px]">
+    <Modal open={open} onClose={onClose} title="对话设置" size="3xl"
+      footer={<Button variant="primary" onClick={onClose}>完成</Button>}>
+      <div className="flex h-[62vh] min-h-[420px] flex-col gap-3 sm:flex-row sm:gap-4">
         {/* 左侧分类导航 */}
-        <nav className="w-44 shrink-0">
+        <nav className="grid flex-none grid-cols-2 gap-1 border-b border-line pb-2 sm:flex sm:w-44 sm:flex-col sm:border-b-0 sm:border-r sm:pb-0 sm:pr-3">
           {CHAT_SETTINGS_CATEGORIES.map((item) => (
             <button
               key={item.key}
+              type="button"
               onClick={() => setCategory(item.key)}
-              className={cn('glass-nav-item nav-accent nav-fill', category === item.key && 'active')}
+              className={cn(
+                'flex min-w-0 items-center gap-2 rounded-[10px] px-3 py-2 text-left text-[13px] transition-colors sm:w-full sm:text-sm',
+                category === item.key
+                  ? 'bg-[rgb(var(--rgb-accent)/0.14)] font-medium text-accent'
+                  : 'text-fg-2 hover:bg-glass-hover hover:text-fg',
+              )}
             >
-              <item.icon className="h-4 w-4" />
-              {item.label}
+              <item.icon className="h-4 w-4 flex-none" />
+              <span className="truncate">{item.label}</span>
             </button>
           ))}
         </nav>
 
-        {/* 右侧分类内容 */}
-        <div className="min-w-0 flex-1 overflow-y-auto custom-scrollbar border-l border-glass-border pl-4 pr-1">
+        {/* 右侧分类内容: 负边距与等量内边距留出卡片悬停阴影, 布局位置不变 */}
+        <div className="scroll -my-3 -mr-5 min-h-0 min-w-0 flex-1 py-3 pr-5 sm:-ml-3 sm:pl-4">
           <div className="space-y-5">
             {category === 'chat' && (
               <>
                 <ApprovalSettings approval={approval} />
                 {/* 模型 */}
-                <div>
-                  <label className="block text-sm font-medium text-text-primary mb-2">模型</label>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-fg">当前会话模型</label>
                   <Select
+                    disabled={modelDisabled}
                     value={settings.model}
                     onChange={(e) => onChange('model', e.target.value)}
                     options={modelOptions}
                   />
-                  <p className="text-xs text-text-tertiary mt-1.5">模型配置的新增与编辑见「模型管理」页</p>
+                  <p className="text-xs text-fg-3">模型配置的新增与编辑见「模型管理」页</p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-fg">整体默认模型</label>
+                  <Select value={defaults?.default_model ?? 'default'} disabled={!defaults || defaultSaving}
+                    onChange={(event) => onDefaultModel(event.target.value)}
+                    options={defaults && !modelOptions.some((option) => option.value === defaults.default_model)
+                      ? [{ value: defaults.default_model, label: `${defaults.default_model} (不可用, 请重选)` }, ...modelOptions] : modelOptions} />
+                  <p className="text-xs text-fg-3">{defaultSaving ? '正在保存…' : '仅影响之后创建的会话, 已有会话和草稿保持自己的选择'}</p>
                 </div>
 
                 {/* 思考强度 */}
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-4">
                   <div>
-                    <div className="text-sm font-medium text-text-primary">思考强度</div>
-                    <div className="text-xs text-text-tertiary mt-0.5">控制模型推理深度(需模型支持)</div>
+                    <div className="text-sm font-medium text-fg">思考强度</div>
+                    <div className="mt-0.5 text-xs text-fg-3">控制模型推理深度(需模型支持)</div>
                   </div>
-                  <Select
-                    value={settings.think}
-                    onChange={(e) => onChange('think', e.target.value)}
-                    options={thinkingOptions}
-                  />
+                  <div className="w-28 flex-none">
+                    <Select
+                      value={settings.think}
+                      onChange={(e) => onChange('think', e.target.value)}
+                      options={thinkingOptions}
+                    />
+                  </div>
                 </div>
 
                 <label className="flex items-center justify-between gap-4">
                   <div>
-                    <div className="text-sm font-medium text-text-primary">使用内置 Agent 提示</div>
-                    <div className="text-xs text-text-tertiary">补充工具调用与结果核实的通用规则, 可与自定义提示同时使用</div>
+                    <div className="text-sm font-medium text-fg">使用内置 Agent 提示</div>
+                    <div className="text-xs text-fg-3">补充工具调用与结果核实的通用规则, 可与自定义提示同时使用</div>
                   </div>
-                  <input type="checkbox" checked={settings.defaultAgentPromptEnabled}
-                    onChange={(e) => onChange('defaultAgentPromptEnabled', e.target.checked)} />
+                  <span className="relative inline-flex h-6 w-11 flex-none items-center">
+                    <input
+                      type="checkbox"
+                      className="peer absolute inset-0 z-10 m-0 cursor-pointer opacity-0"
+                      checked={settings.defaultAgentPromptEnabled}
+                      onChange={(e) => onChange('defaultAgentPromptEnabled', e.target.checked)}
+                    />
+                    <span className="absolute inset-0 rounded-full border border-[var(--glass-border-strong)] bg-glass-hover transition-colors duration-300 peer-checked:border-[rgb(var(--rgb-accent))] peer-checked:bg-[rgb(var(--rgb-accent))]" />
+                    <span className="pointer-events-none absolute left-1 h-4 w-4 rounded-full bg-fg-3 shadow-sm transition-all duration-300 [transition-timing-function:var(--ease-spring)] peer-checked:translate-x-5 peer-checked:bg-white" />
+                  </span>
                 </label>
 
                 <label className="flex items-center justify-between gap-4">
                   <div>
-                    <div className="text-sm font-medium text-text-primary">命令写入上下文</div>
-                    <div className="text-xs text-text-tertiary">让 AI 在后续对话中看到已执行的命令及回复, 不会额外调用模型</div>
+                    <div className="text-sm font-medium text-fg">命令写入上下文</div>
+                    <div className="text-xs text-fg-3">让 AI 在后续对话中看到已执行的命令及回复, 不会额外调用模型</div>
                   </div>
-                  <input type="checkbox" checked={settings.commandHistoryEnabled}
-                    onChange={(e) => onChange('commandHistoryEnabled', e.target.checked)} />
+                  <span className="relative inline-flex h-6 w-11 flex-none items-center">
+                    <input
+                      type="checkbox"
+                      className="peer absolute inset-0 z-10 m-0 cursor-pointer opacity-0"
+                      checked={settings.commandHistoryEnabled}
+                      onChange={(e) => onChange('commandHistoryEnabled', e.target.checked)}
+                    />
+                    <span className="absolute inset-0 rounded-full border border-[var(--glass-border-strong)] bg-glass-hover transition-colors duration-300 peer-checked:border-[rgb(var(--rgb-accent))] peer-checked:bg-[rgb(var(--rgb-accent))]" />
+                    <span className="pointer-events-none absolute left-1 h-4 w-4 rounded-full bg-fg-3 shadow-sm transition-all duration-300 [transition-timing-function:var(--ease-spring)] peer-checked:translate-x-5 peer-checked:bg-white" />
+                  </span>
                 </label>
 
                 <div className="flex items-center justify-between gap-4">
                   <div>
-                    <div className="text-sm font-medium text-text-primary">最大工具迭代</div>
-                    <div className="text-xs text-text-tertiary">单轮对话中模型最多调用工具的次数, 留空沿用会话配置默认</div>
+                    <div className="text-sm font-medium text-fg">最大工具迭代</div>
+                    <div className="text-xs text-fg-3">单轮对话中模型最多调用工具的次数, 留空沿用会话配置默认</div>
                   </div>
                   <input type="number" min={1} step={1} placeholder="默认"
+                    aria-label="最大工具迭代"
                     value={settings.maxIterations ?? ''}
                     onChange={(e) => {
                       const raw = e.target.value.trim();
@@ -2601,25 +2724,36 @@ function ChatSettingsModal({
                       if (parsed !== undefined && (!Number.isInteger(parsed) || parsed < 1)) return;
                       onChange('maxIterations', parsed);
                     }}
-                    className="w-20 rounded-md border border-border bg-transparent px-2 py-1 text-right text-sm" />
+                    className="field !h-8 w-20 flex-none text-right" />
                 </div>
 
                 {/* 温度 */}
                 <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-medium text-text-primary">温度</label>
-                    <span className="text-sm text-accent font-medium">{settings.temperature.toFixed(2)}</span>
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <label htmlFor="chat-temperature" className="text-sm font-medium text-fg">温度</label>
+                    <div className="flex items-center gap-2">
+                      {settings.temperature !== null && (
+                        <button type="button" className="text-xs text-fg-3 hover:text-accent" onClick={() => onChange('temperature', null)}>
+                          恢复跟随
+                        </button>
+                      )}
+                      <span className="num text-sm font-medium text-accent">
+                        {settings.temperature !== null ? settings.temperature.toFixed(2)
+                          : settings.requestTemperature == null ? '跟随模型' : `跟随模型 (${settings.requestTemperature.toFixed(2)})`}
+                      </span>
+                    </div>
                   </div>
                   <input
+                    id="chat-temperature"
                     type="range"
                     min={0}
                     max={2}
                     step={0.05}
-                    value={settings.temperature}
+                    value={settings.temperature ?? settings.requestTemperature ?? 1}
                     onChange={(e) => onChange('temperature', Number(e.target.value))}
-                    className="w-full accent-accent"
+                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[var(--glass-border-strong)] accent-[rgb(var(--rgb-accent))]"
                   />
-                  <div className="flex justify-between text-xs text-text-tertiary mt-1">
+                  <div className="mt-1 flex justify-between text-xs text-fg-3">
                     <span>严谨 0</span>
                     <span>平衡 1</span>
                     <span>发散 2</span>
@@ -2627,14 +2761,14 @@ function ChatSettingsModal({
                 </div>
 
                 {/* 系统提示词 */}
-                <div>
-                  <label className="block text-sm font-medium text-text-primary mb-2">系统提示词</label>
+                <div className="space-y-1.5">
+                  <label className="block text-sm font-medium text-fg">系统提示词</label>
                   <textarea
                     value={settings.systemPrompt}
                     onChange={(e) => onChange('systemPrompt', e.target.value)}
                     placeholder="为当前对话设置系统级指令, 留空使用默认"
                     rows={4}
-                    className="glass-input w-full resize-none text-sm"
+                    className="field w-full resize-y"
                   />
                 </div>
               </>
@@ -2642,44 +2776,44 @@ function ChatSettingsModal({
 
             {category === 'models' && (
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium text-text-primary">模型配置</label>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="text-sm font-medium text-fg">模型配置</label>
                   <button
+                    type="button"
                     onClick={onAddModel}
-                    className="text-xs text-accent hover:underline inline-flex items-center gap-1"
+                    className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
                   >
                     <Plus className="h-3 w-3" /> 新增模型
                   </button>
                 </div>
                 {Object.keys(modelsDetail).length === 0 ? (
-                  <p className="text-xs text-text-tertiary">暂无模型配置</p>
+                  <p className="text-xs text-fg-3">暂无模型配置</p>
                 ) : (
                   <div className="mt-2 space-y-1.5">
                     {Object.entries(modelsDetail).map(([name, cfg]) => (
-                      <div
-                        key={name}
-                        className="glass-card rounded-md px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs"
-                      >
+                      <div key={name} className="glass-card tile flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs">
                         <div className="min-w-0 flex-1">
-                          <span className="text-text-primary font-medium">{name}</span>
-                          {cfg.model && (
-                            <span className="text-text-tertiary ml-2">{cfg.model}</span>
-                          )}
+                          <span className="font-medium text-fg">{name}</span>
+                          {cfg.model && <span className="ml-2 truncate text-fg-3">{cfg.model}</span>}
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex flex-none items-center gap-1">
                           <button
+                            type="button"
                             onClick={() => onEditModel(name)}
-                            className="p-0.5 rounded text-text-tertiary hover:text-accent transition-colors"
+                            className="rounded-md p-1 text-fg-3 transition-colors hover:bg-glass-hover hover:text-accent"
                             title="编辑"
+                            aria-label={`编辑模型 ${name}`}
                           >
-                            <Pencil className="h-3 w-3" />
+                            <Pencil className="h-3.5 w-3.5" />
                           </button>
                           <button
+                            type="button"
                             onClick={() => onDeleteModel(name)}
-                            className="p-0.5 rounded text-text-tertiary hover:text-error transition-colors"
+                            className="rounded-md p-1 text-fg-3 transition-colors hover:bg-glass-hover hover:text-red"
                             title="删除"
+                            aria-label={`删除模型 ${name}`}
                           >
-                            <Trash2 className="h-3 w-3" />
+                            <Trash2 className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
@@ -2691,38 +2825,37 @@ function ChatSettingsModal({
 
             {category === 'plugins' && (
               <div>
-                <label className="block text-sm font-medium text-text-primary mb-2">插件</label>
+                <label className="mb-2 block text-sm font-medium text-fg">插件</label>
                 {plugins.length === 0 ? (
-                  <p className="text-xs text-text-tertiary">暂无可用插件</p>
+                  <p className="text-xs text-fg-3">暂无可用插件</p>
                 ) : (
                   <div className="space-y-2">
                     {plugins.map((p) => {
                       const capCount = Object.values(p.capabilities).reduce((n, list) => n + list.length, 0);
                       return (
-                        <div
-                          key={p.name}
-                          className="glass-card rounded-lg px-3 py-2.5 flex items-center justify-between gap-3"
-                        >
+                        <div key={p.name} className="tile flex items-center justify-between gap-3 rounded-xl px-3 py-2.5">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
-                              <Puzzle className="h-4 w-4 text-accent shrink-0" />
-                              <span className="text-sm font-medium text-text-primary truncate">{p.name}</span>
-                              <span className="text-xs text-text-tertiary shrink-0">v{p.version}</span>
+                              <Puzzle className="h-4 w-4 flex-none text-accent" />
+                              <span className="truncate text-[13px] font-medium text-fg">{p.name}</span>
+                              <span className="flex-none text-xs text-fg-4">v{p.version}</span>
                             </div>
-                            <p className="text-xs text-text-tertiary mt-1 line-clamp-2">{p.description}</p>
+                            <p className="mt-1 line-clamp-2 text-xs text-fg-3">{p.description}</p>
                             {p.availability?.allowed === false && (
-                              <p className="text-xs text-warning mt-1">{p.availability.message}</p>
+                              <p className="mt-1 text-xs text-orange">{p.availability.message}</p>
                             )}
-                            <div className="flex items-center gap-2 mt-1.5">
+                            <div className="mt-1.5 flex items-center gap-2">
                               <button
+                                type="button"
                                 onClick={() => onViewCapabilities(p.name)}
-                                className="text-xs text-accent hover:underline inline-flex items-center gap-1"
+                                className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
                               >
                                 查看全部能力 ({capCount})
                               </button>
                               <button
+                                type="button"
                                 onClick={() => onViewConfig(p.name)}
-                                className="text-xs text-accent hover:underline inline-flex items-center gap-1"
+                                className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
                               >
                                 配置
                               </button>
@@ -2739,64 +2872,48 @@ function ChatSettingsModal({
                     })}
                   </div>
                 )}
-                <p className="text-xs text-text-tertiary mt-1.5">启用后对新会话生效, 能力来自插件 meta.yaml 声明</p>
+                <p className="mt-1.5 text-xs text-fg-3">启用后对新会话生效, 能力来自插件 meta.yaml 声明</p>
               </div>
             )}
 
             {category === 'data' && (
               <>
-                {/* RAG 知识库 */}
                 <div>
-                  <label className="block text-sm font-medium text-text-primary mb-2">RAG 知识库</label>
-                  <button
-                    onClick={onOpenRag}
-                    className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
-                  >
+                  <label className="mb-2 block text-sm font-medium text-fg">RAG 知识库</label>
+                  <button type="button" onClick={onOpenRag} className="tile tint-teal w-full rounded-xl px-3 py-2.5 text-left">
                     <div className="flex items-center gap-2">
-                      <BookOpen className="h-4 w-4 text-accent shrink-0" />
-                      <span className="text-sm text-text-primary">管理知识库</span>
+                      <BookOpen className="h-4 w-4 flex-none text-teal" />
+                      <span className="text-sm font-medium text-fg">管理知识库</span>
                     </div>
-                    <p className="text-xs text-text-tertiary mt-1">知识库创建、文档导入与检索测试</p>
+                    <p className="mt-1 text-xs text-fg-3">知识库创建、文档导入与检索测试</p>
                   </button>
                 </div>
 
-                {/* 记忆管理 */}
                 <div>
-                  <label className="block text-sm font-medium text-text-primary mb-2">长期记忆</label>
-                  <button
-                    onClick={onOpenMemory}
-                    className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
-                  >
+                  <label className="mb-2 block text-sm font-medium text-fg">长期记忆</label>
+                  <button type="button" onClick={onOpenMemory} className="tile tint-purple w-full rounded-xl px-3 py-2.5 text-left">
                     <div className="flex items-center gap-2">
-                      <Brain className="h-4 w-4 text-accent shrink-0" />
-                      <span className="text-sm text-text-primary">管理记忆</span>
+                      <Brain className="h-4 w-4 flex-none text-purple" />
+                      <span className="text-sm font-medium text-fg">管理记忆</span>
                     </div>
-                    <p className="text-xs text-text-tertiary mt-1">查看 / 添加 / 删除长期记忆条目</p>
+                    <p className="mt-1 text-xs text-fg-3">查看 / 添加 / 删除长期记忆条目</p>
                   </button>
                 </div>
 
-                {/* 会话历史管理 */}
                 <div>
-                  <label className="block text-sm font-medium text-text-primary mb-2">会话历史</label>
-                  <button
-                    onClick={onOpenHistory}
-                    className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
-                  >
+                  <label className="mb-2 block text-sm font-medium text-fg">会话历史</label>
+                  <button type="button" onClick={onOpenHistory} className="tile tint-accent w-full rounded-xl px-3 py-2.5 text-left">
                     <div className="flex items-center gap-2">
-                      <HardDrive className="h-4 w-4 text-accent shrink-0" />
-                      <span className="text-sm text-text-primary">管理历史与回收站</span>
+                      <HardDrive className="h-4 w-4 flex-none text-accent" />
+                      <span className="text-sm font-medium text-fg">管理历史与回收站</span>
                     </div>
-                    <p className="text-xs text-text-tertiary mt-1">搜索、批量清理、恢复或永久删除 Chat 会话</p>
+                    <p className="mt-1 text-xs text-fg-3">搜索、批量清理、恢复或永久删除 Chat 会话</p>
                   </button>
                 </div>
               </>
             )}
           </div>
         </div>
-      </div>
-
-      <div className="flex justify-end pt-3">
-        <Button variant="primary" onClick={onClose}>完成</Button>
       </div>
     </Modal>
   );
@@ -2817,24 +2934,21 @@ function PluginCapabilitiesModal({
   const values = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.requested_enabled ?? item.enabled]))]));
 
   return (
-    <Modal open={plugin !== null} onClose={onClose} title={`${plugin.name} 能力`} size="md">
+    <Modal open={plugin !== null} onClose={onClose} title={`${plugin.name} 能力`} size="md"
+      footer={<Button variant="primary" onClick={onClose}>完成</Button>}>
       <div className="space-y-5">
         {/* 插件概要 */}
-        <div className="flex items-center gap-2 text-xs text-text-tertiary">
-          <span>v{plugin.version}</span>
+        <div className="flex items-center gap-2 text-xs text-fg-3">
+          <span className="num">v{plugin.version}</span>
           <span>·</span>
-          <span className={plugin.enabled ? 'text-success' : 'text-text-tertiary'}>
+          <span className={plugin.enabled ? 'text-green' : 'text-fg-3'}>
             {plugin.enabled ? '插件已启用' : '插件已停用 (能力不生效)'}
           </span>
         </div>
 
-        <Link className="text-sm text-accent" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(plugin.name)}`}>打开插件详情</Link>
+        <Link className="text-sm text-accent hover:underline" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(plugin.name)}`}>打开插件详情</Link>
         <PluginCapabilities capabilities={descriptions} values={values} active={plugin.enabled} effective={plugin.capabilities}
           onChange={(kind, name, enabled) => onToggleCapability(plugin.name, kind as CapabilityKind, name, enabled)} />
-
-        <div className="flex justify-end pt-1">
-          <Button variant="primary" onClick={onClose}>完成</Button>
-        </div>
       </div>
     </Modal>
   );
@@ -2912,11 +3026,11 @@ function PluginConfigModal({
   return (
     <Modal open={pluginName !== null} onClose={onClose} title={`${pluginName} 配置`} size="md">
       <div className="space-y-4">
-        {error && <p className="text-sm text-error">{error}</p>}
-        {keys.length === 0 && !data && <p className="text-sm text-text-tertiary">加载中...</p>}
-        {keys.length === 0 && data && <p className="text-sm text-text-tertiary">该插件无可配置项</p>}
+        {error && <p role="alert" className="rounded-lg border border-[rgb(var(--rgb-red)/0.3)] bg-[rgb(var(--rgb-red)/0.1)] px-3 py-2 text-sm text-red">{error}</p>}
+        {keys.length === 0 && !data && <p className="text-sm text-fg-3">加载中...</p>}
+        {keys.length === 0 && data && <p className="text-sm text-fg-3">该插件无可配置项</p>}
         {onSessionConfig && <Button variant="subtle" onClick={onSessionConfig}>配置当前会话参数</Button>}
-        <Link className="block text-sm text-accent" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(pluginName)}?tab=config`}>打开全局参数管理</Link>
+        <Link className="block text-sm text-accent hover:underline" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(pluginName)}?tab=config`}>打开全局参数管理</Link>
         <PluginConfigFields schema={schema} values={form} modelOptions={modelOptions} knowledgeBases={knowledgeBases} disabled={saving}
           onChange={(key, value) => setForm((prev) => ({ ...prev, [key]: value }))} />
         {runtime.length > 0 && <PluginRuntimeStatus results={runtime} busy={saving} onRetry={() => {
@@ -2924,7 +3038,7 @@ function PluginConfigModal({
           controlApi.reconcilePlugins({ plugin_name: pluginName }).then((result) => { setRuntime(result.runtime); setError(result.runtime.some((item) => item.status === 'error') ? '部分运行实例应用失败' : ''); })
             .catch((err) => setError(pluginError(err))).finally(() => setSaving(false));
         }} />}
-        <div className="flex justify-end gap-2 pt-1">
+        <div className="flex justify-end gap-2 border-t border-line pt-3">
           <Button variant="ghost" onClick={onClose}>取消</Button>
           <Button variant="primary" onClick={handleSave} disabled={saving || !data}>
             {saving ? '保存中...' : '保存'}
@@ -3015,41 +3129,47 @@ function MemoryPanel({
   }, [memories]);
 
   return (
-    <Modal open={open} onClose={onClose} title="长期记忆管理" size="lg">
+    <Modal open={open} onClose={onClose} title="长期记忆管理" size="lg"
+      footer={<Button variant="primary" onClick={onClose}>完成</Button>}>
       <div className="space-y-4">
-        {error && <p className="text-sm text-error">{error}</p>}
+        {error && <p role="alert" className="rounded-lg border border-[rgb(var(--rgb-red)/0.3)] bg-[rgb(var(--rgb-red)/0.1)] px-3 py-2 text-sm text-red">{error}</p>}
 
         {/* 新增记忆 */}
-        <div className="glass-card rounded-lg p-3 space-y-2">
-          <div className="text-sm font-medium text-text-primary">添加记忆</div>
+        <div className="surface space-y-2 p-3">
+          <div className="text-sm font-medium text-fg">添加记忆</div>
           <input
             type="text"
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             placeholder="标题"
-            className="glass-input w-full text-sm"
+            aria-label="记忆标题"
+            className="field"
           />
           <textarea
             value={newContent}
             onChange={(e) => setNewContent(e.target.value)}
             placeholder="内容"
+            aria-label="记忆内容"
             rows={3}
-            className="glass-input w-full resize-none text-sm"
+            className="field w-full resize-y"
           />
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <input
               type="text"
               value={newTags}
               onChange={(e) => setNewTags(e.target.value)}
               placeholder="标签 (逗号分隔)"
-              className="glass-input flex-1 text-sm"
+              aria-label="记忆标签"
+              className="field min-w-0 flex-1"
             />
-            <Select
-              value={String(newImportance)}
-              onChange={(e) => setNewImportance(Number(e.target.value))}
-              options={[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: `权重 ${n}` }))}
-            />
-            <span className="glass-input text-sm text-text-secondary">当前会话</span>
+            <div className="w-28 flex-none">
+              <Select
+                value={String(newImportance)}
+                onChange={(e) => setNewImportance(Number(e.target.value))}
+                options={[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: `权重 ${n}` }))}
+              />
+            </div>
+            <span className="chip self-center">当前会话</span>
           </div>
           <div className="flex justify-end">
             <Button variant="primary" onClick={handleAdd} disabled={adding || !memoryScope || !newTitle.trim() || !newContent.trim()}>
@@ -3060,30 +3180,30 @@ function MemoryPanel({
 
         {/* 记忆列表 (按层分组: 全局 / 各项目) */}
         {loading ? (
-          <p className="text-sm text-text-tertiary">加载中...</p>
+          <p className="text-sm text-fg-3">加载中...</p>
         ) : memories.length === 0 ? (
-          <p className="text-sm text-text-tertiary">暂无记忆</p>
+          <p className="text-sm text-fg-3">暂无记忆</p>
         ) : (
-          <div className="space-y-3 max-h-80 overflow-y-auto">
+          <div className="scroll max-h-80 space-y-3 pr-1">
             {layeredGroups.map((g) => (
               <div key={g.scope} className="space-y-2">
-                <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
+                <div className="flex items-center gap-1.5 text-xs text-fg-3">
                   <Brain className="h-3.5 w-3.5" />
                   <span>当前会话 · {g.memories.length} 条</span>
                 </div>
                 {g.memories.map((m) => (
-                  <div key={m.id} className="glass-card rounded-lg px-3 py-2.5">
+                  <div key={m.id} className="tile tint-purple rounded-xl px-3 py-2.5">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-text-primary">{m.title}</span>
-                          <span className="text-xs text-text-tertiary">权重 {m.importance}</span>
+                          <span className="text-sm font-medium text-fg">{m.title}</span>
+                          <span className="text-xs text-fg-4">权重 {m.importance}</span>
                         </div>
-                        <p className="text-xs text-text-secondary mt-1 line-clamp-3">{m.content}</p>
+                        <p className="mt-1 line-clamp-3 text-xs text-fg-2">{m.content}</p>
                         {m.tags.length > 0 && (
-                          <div className="flex gap-1 mt-1.5">
+                          <div className="mt-1.5 flex flex-wrap gap-1">
                             {m.tags.map((t) => (
-                              <span key={t} className="text-xs px-1.5 py-0.5 rounded bg-glass-active text-text-tertiary">
+                              <span key={t} className="chip !h-5 !px-1.5 !text-[11px]">
                                 {t}
                               </span>
                             ))}
@@ -3091,9 +3211,11 @@ function MemoryPanel({
                         )}
                       </div>
                       <button
+                        type="button"
                         onClick={() => handleDelete(m)}
-                        className="text-text-tertiary hover:text-error shrink-0 mt-0.5"
+                        className="mt-0.5 flex-none rounded-md p-1 text-fg-3 transition-colors hover:bg-glass-hover hover:text-red"
                         title="删除记忆"
+                        aria-label="删除记忆"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -3104,556 +3226,11 @@ function MemoryPanel({
             ))}
           </div>
         )}
-
-        <div className="flex justify-end pt-1">
-          <Button variant="primary" onClick={onClose}>完成</Button>
-        </div>
       </div>
     </Modal>
   );
 }
 
-// 聊天页独立顶栏
-type ChatTheme = 'dark' | 'light';
-
-function ChatHeader({
-  theme,
-  onToggleTheme,
-  onBack,
-}: {
-  theme: ChatTheme;
-  onToggleTheme: () => void;
-  onBack: () => void;
-}) {
-  const headerRef = useGlassReflect<HTMLElement>({
-    reflectRange: 150,
-  });
-
-  return (
-    <header ref={headerRef} className="glass-header m-0 flex items-center justify-between px-4 py-2.5 shrink-0">
-      <div className="flex items-center gap-3">
-        <button onClick={onBack} className="theme-toggle" title="返回管理面板">
-          <ArrowLeft className="h-4 w-4 text-text-secondary" />
-        </button>
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-md bg-accent flex items-center justify-center shadow-glow-accent">
-            <Sparkles className="h-4 w-4 text-white" />
-          </div>
-          <h1 className="text-base font-semibold text-text-primary">Satrap 对话</h1>
-        </div>
-      </div>
-
-      <button
-        onClick={onToggleTheme}
-        className="theme-toggle"
-        title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
-      >
-        {theme === 'dark' ? (
-          <Sun className="h-4 w-4 text-warning" />
-        ) : (
-          <Moon className="h-4 w-4 text-accent" />
-        )}
-      </button>
-    </header>
-  );
-}
-
-// 会话列表项
-function ConversationItem({
-  conversation,
-  color,
-  active,
-  onSelect,
-  onDelete,
-  onMove,
-}: {
-  conversation: Conversation;
-  color: GlassColor;
-  active: boolean;
-  onSelect: () => void;
-  onDelete: () => void;
-  // 移入/移出项目 (草稿会话无此入口)
-  onMove?: () => void;
-}) {
-  const reflectRef = useGlassReflect<HTMLDivElement>({
-    reflectRange: 80,
-  });
-
-  return (
-    <div
-      ref={reflectRef}
-      onClick={onSelect}
-      className={cn(
-        'glass-card group flex items-center gap-2 px-3 py-2.5 rounded-md cursor-pointer transition-colors',
-        COLOR_CARD_CLASS[color],
-        active ? 'border-glass-border-hover' : 'opacity-80 hover:opacity-100'
-      )}
-    >
-      <MessageSquare className={cn('h-4 w-4 shrink-0', active ? COLOR_TEXT_CLASS[color] : 'text-text-tertiary')} />
-      <div className="flex-1 min-w-0">
-        <div className={cn('text-sm truncate', active ? 'text-text-primary font-medium' : 'text-text-secondary')}>
-          {conversation.title}
-        </div>
-        <div className="text-xs text-text-tertiary">{formatRelativeTime(conversation.updatedAt)}</div>
-      </div>
-      {onMove && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onMove();
-          }}
-          className="opacity-0 group-hover:opacity-100 transition-opacity text-text-tertiary hover:text-accent shrink-0"
-          title="移入/移出项目"
-        >
-          <FolderInput className="h-3.5 w-3.5" />
-        </button>
-      )}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-        className="opacity-0 group-hover:opacity-100 transition-opacity text-text-tertiary hover:text-error shrink-0"
-        title="删除对话"
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  );
-}
-
-// 项目组 (侧边栏可折叠分组: 项目头 + 组内会话)
-function ProjectGroup({
-  project,
-  conversations,
-  collapsed,
-  activeId,
-  colorIndex,
-  onToggle,
-  onNewConversation,
-  onDeleteProject,
-  onSelect,
-  onDelete,
-  onMove,
-}: {
-  project: ProjectItem;
-  conversations: Conversation[];
-  collapsed: boolean;
-  activeId: string;
-  colorIndex: Map<string, number>;
-  onToggle: () => void;
-  onNewConversation: () => void;
-  onDeleteProject: () => void;
-  onSelect: (id: string) => void;
-  onDelete: (id: string) => void;
-  onMove: (id: string) => void;
-}) {
-  return (
-    <div>
-      <div
-        onClick={onToggle}
-        className="group flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer hover:bg-glass-active transition-colors"
-      >
-        {collapsed ? (
-          <ChevronRight className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
-        ) : (
-          <ChevronDown className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
-        )}
-        <Folder className="h-4 w-4 text-accent shrink-0" />
-        <span className="flex-1 min-w-0 text-sm font-medium text-text-primary truncate" title={project.root_path}>
-          {project.name}
-        </span>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onNewConversation();
-          }}
-          className="opacity-0 group-hover:opacity-100 transition-opacity text-text-tertiary hover:text-accent shrink-0"
-          title="在此项目下新建对话"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDeleteProject();
-          }}
-          className="opacity-0 group-hover:opacity-100 transition-opacity text-text-tertiary hover:text-error shrink-0"
-          title="删除项目 (仅解绑会话, 磁盘文件不动)"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      {!collapsed && (
-        <div className="ml-4 mt-1 space-y-1">
-          {conversations.length === 0 ? (
-            <div className="px-2 py-1 text-xs text-text-tertiary">当前列表暂无对话</div>
-          ) : (
-            conversations.map((conv) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                color={CONVERSATION_COLORS[(colorIndex.get(conv.id) ?? 0) % CONVERSATION_COLORS.length]}
-                active={conv.id === activeId}
-                onSelect={() => onSelect(conv.id)}
-                onDelete={() => onDelete(conv.id)}
-                onMove={conv.id === '__draft__' || conv.preloaded ? undefined : () => onMove(conv.id)}
-              />
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// 空会话欢迎页
-function EmptyWelcome({ onPromptClick }: { onPromptClick: (text: string) => void }) {
-  const suggestions: { icon: typeof Sparkles; label: string; color: GlassColor }[] = [
-    { icon: Sparkles, label: '帮我写一段 Python 快速排序', color: 'accent' },
-    { icon: MessageSquare, label: '解释一下什么是上下文窗口', color: 'purple' },
-    { icon: Bot, label: '如何设计一个 Agent 工作流', color: 'teal' },
-  ];
-
-  return (
-    <div className="h-full flex flex-col items-center justify-center text-center px-6">
-      <div className="w-14 h-14 rounded-xl bg-accent flex items-center justify-center shadow-glow-accent mb-4">
-        <Sparkles className="h-7 w-7 text-white" />
-      </div>
-      <h2 className="text-xl font-semibold text-text-primary mb-1">开始新的对话</h2>
-      <p className="text-sm text-text-tertiary mb-8">输入你的问题, 或从下方建议开始</p>
-      <div className="grid grid-cols-1 gap-3 w-full max-w-md">
-        {suggestions.map((s) => (
-          <SuggestionCard key={s.label} suggestion={s} onClick={() => onPromptClick(s.label)} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// 建议卡片(多色玻璃 + 独立反光)
-function SuggestionCard({
-  suggestion,
-  onClick,
-}: {
-  suggestion: { icon: typeof Sparkles; label: string; color: GlassColor };
-  onClick: () => void;
-}) {
-  const reflectRef = useGlassReflect<HTMLButtonElement>({
-    reflectRange: 100,
-  });
-  const Icon = suggestion.icon;
-
-  return (
-    <button
-      ref={reflectRef}
-      onClick={onClick}
-      className={cn(
-        'glass-card rounded-lg p-4 flex items-center gap-3 text-left transition-transform hover:scale-[1.02]',
-        COLOR_CARD_CLASS[suggestion.color]
-      )}
-    >
-      <Icon className={cn('h-5 w-5 shrink-0', COLOR_TEXT_CLASS[suggestion.color])} />
-      <div className="text-sm text-text-secondary">{suggestion.label}</div>
-    </button>
-  );
-}
-
-// 工具调用状态图标
-function ToolStatusIcon({ success }: { success: boolean | null }) {
-  if (success === null) return <Loader2 className="h-3 w-3 text-warning animate-spin" />;
-  if (success) return <CheckCircle2 className="h-3 w-3 text-success" />;
-  return <XCircle className="h-3 w-3 text-error" />;
-}
-
-const CONTEXT_STRATEGY_LABELS: Record<string, string> = {
-  sliding: '滑动窗口',
-  mid_truncate: '中间截取',
-  summarize: '总结压缩',
-};
-
-const TOKEN_SOURCE_LABELS: Record<string, string> = {
-  tokenizer: '本地 tokenizer',
-  experience: '本地经验估算',
-  api_calibrated: 'API 校准估算',
-};
-
-function formatTokenCount(value: number | null | undefined): string {
-  return typeof value === 'number' ? value.toLocaleString() : '未知';
-}
-
-function formatTokenCountWithUnit(value: number | null | undefined): string {
-  return typeof value === 'number' ? `${value.toLocaleString()} Token` : '未知';
-}
-
-function ContextStatsPanel({ stats }: { stats: ContextTurnStats }) {
-  const last = stats.last_request;
-  const displayInput = last.api_input_tokens ?? last.effective_input_tokens;
-  return (
-    <details className="glass-card rounded-md px-3 py-2 text-xs max-w-xl">
-      <summary className="cursor-pointer select-none flex items-center gap-1.5 text-text-tertiary">
-        <Gauge className="h-3.5 w-3.5" />
-        <span>上下文 {formatTokenCount(displayInput)} Token</span>
-        <span>·</span>
-        <span>{CONTEXT_STRATEGY_LABELS[last.strategy] ?? last.strategy}</span>
-        {last.compressed && <span className="text-warning">· 已压缩</span>}
-      </summary>
-      <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5 text-text-secondary">
-        <span>API 输入: {formatTokenCount(last.api_input_tokens)}</span>
-        <span>API 输出: {formatTokenCount(last.api_output_tokens)}</span>
-        <span>本轮总量: {formatTokenCount(stats.total_api_tokens)}</span>
-        <span>末次缓存命中: {formatTokenCountWithUnit(last.api_cached_tokens)}</span>
-        <span>本轮累计缓存命中: {formatTokenCountWithUnit(stats.total_api_cached_tokens)}</span>
-        <span>模型请求: {stats.request_count}</span>
-        <span>完整历史: {last.original_turns} 轮</span>
-        <span>实际发送: {last.prepared_turns} 轮</span>
-        <span>发送前计数: {TOKEN_SOURCE_LABELS[last.preflight_token_source] ?? last.preflight_token_source}</span>
-        <span>发送前估算: {formatTokenCount(last.effective_input_tokens)}</span>
-        <span>历史预算: {formatTokenCount(last.history_budget)}</span>
-      </div>
-    </details>
-  );
-}
-
-const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
-  return (
-    <Suspense fallback={<div className="markdown-body whitespace-pre-wrap">{content}</div>}>
-      <LazyMarkdownContent content={content} />
-    </Suspense>
-  );
-});
-
-// 消息气泡(用户紫色 / 助手蓝色, 独立反光)
-const MessageBubble = memo(function MessageBubble({
-  message,
-  conversationId,
-  isLast,
-  onRetry,
-  onFork,
-  onSelectVariant,
-}: {
-  message: ChatMessage;
-  conversationId: string;
-  isLast?: boolean;
-  onRetry?: () => void;
-  onFork?: (turnIndex: number) => void;
-  onSelectVariant?: (turnIndex: number, variantIndex: number) => void;
-}) {
-  const isUser = message.role === 'user';
-  const reflectRef = useGlassReflect<HTMLDivElement>({
-    reflectRange: 90,
-  });
-  const variants = useMemo(
-    () => [...(message.variants ?? [])].sort(
-      (left, right) => left.variantIndex - right.variantIndex,
-    ),
-    [message.variants],
-  );
-  const variantOrder = message.variantIndices ?? variants.map((variant) => variant.variantIndex);
-  const activeVariantPosition = Math.max(
-    0,
-    variantOrder.indexOf(message.activeVariant ?? 0),
-  );
-
-  return (
-    <div data-message-id={message.id} className="chat-message-item flex gap-3 group">
-      {/* 头像: 用户消息 order-2 在右, AI 消息 order-1 在左 */}
-      <div
-        className={cn(
-          'w-8 h-8 rounded-md flex items-center justify-center shrink-0',
-          isUser ? 'order-2 bg-purple shadow-glow-purple' : 'order-1 bg-accent shadow-glow-accent'
-        )}
-      >
-        {isUser ? (
-          <User className="h-4 w-4 text-white" />
-        ) : (
-          <Bot className="h-4 w-4 text-white" />
-        )}
-      </div>
-
-      {/* 内容: 用户消息 order-1 靠右, AI 消息 order-2 靠左 */}
-      <div className={cn('flex-1 min-w-0 flex', isUser ? 'order-1 justify-end' : 'order-2 justify-start')}>
-        <div className={cn('space-y-2', isUser ? 'max-w-full' : 'w-full')}>
-          {/* 附件 (用户消息或 AI 消息都可能携带) */}
-          {message.attachments && message.attachments.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {message.attachments.map((att) => (
-                <MediaAttachment key={att.url} attachment={att} conversationId={conversationId} />
-              ))}
-            </div>
-          )}
-
-          {/* AI 消息: 按 segments 时间顺序渲染; 用户消息或旧数据: 聚合渲染 */}
-          {!isUser && message.segments && message.segments.length > 0 ? (
-            <>
-              {message.segments.map((seg, idx) => {
-                switch (seg.type) {
-                  case 'thinking':
-                    return <ThinkingBlock key={`thinking-${idx}`} thinking={seg.content} />;
-                  case 'tool':
-                    return (
-                      <div
-                        key={seg.tool.call_id || `tool-${idx}`}
-                        className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs"
-                      >
-                        <Wrench className="h-3 w-3 text-text-tertiary shrink-0" />
-                        <span className="text-text-primary font-medium">{seg.tool.name}</span>
-                        <ToolStatusIcon success={seg.tool.success} />
-                      </div>
-                    );
-                  case 'content':
-                    return (
-                      <div
-                        key={`content-${idx}`}
-                        ref={idx === message.segments!.length - 1 ? reflectRef : undefined}
-                        className={cn(
-                          'glass-card inline-block max-w-full rounded-lg px-4 py-2.5 text-sm leading-relaxed break-words',
-                          'glass-card-accent'
-                        )}
-                      >
-                        <MarkdownContent content={seg.content} />
-                        {message.streaming && idx === message.segments!.length - 1 && (
-                          <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
-                        )}
-                      </div>
-                    );
-                  default:
-                    return null;
-                }
-              })}
-            </>
-          ) : (
-            <>
-              {/* 兼容旧数据或用户消息: 聚合渲染 */}
-              {message.thinking && (
-                <ThinkingBlock thinking={message.thinking} />
-              )}
-              {message.toolCalls && message.toolCalls.length > 0 && (
-                <div className="space-y-1">
-                  {message.toolCalls.map((tool) => (
-                    <div
-                      key={tool.call_id || tool.seq}
-                      className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs"
-                    >
-                      <Wrench className="h-3 w-3 text-text-tertiary shrink-0" />
-                      <span className="text-text-primary font-medium">{tool.name}</span>
-                      <ToolStatusIcon success={tool.success} />
-                    </div>
-                  ))}
-                </div>
-              )}
-              {(message.content || message.streaming) && (
-                <div
-                  ref={reflectRef}
-                  className={cn(
-                    'glass-card inline-block max-w-full rounded-lg px-4 py-2.5 text-sm leading-relaxed break-words',
-                    isUser ? 'glass-card-purple whitespace-pre-wrap' : 'glass-card-accent'
-                  )}
-                >
-                  {isUser ? (
-                    message.content
-                  ) : (
-                    <MarkdownContent content={message.content} />
-                  )}
-                  {message.streaming && (
-                    <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
-                  )}
-                </div>
-              )}
-            </>
-          )}
-
-          {!isUser && Boolean(message.outputFiles?.length) && <OutputFiles conversationId={conversationId} files={message.outputFiles ?? []} />}
-
-          {!isUser && message.contextStats && (
-            <ContextStatsPanel stats={message.contextStats} />
-          )}
-
-          {/* 操作按钮 (hover 显示) */}
-          {!message.streaming && (
-            <div className={cn(
-              'chat-message-actions flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity',
-              isUser && 'justify-end'
-            )}>
-              {message.content && (
-                <CopyButton
-                  text={message.content}
-                  title="复制消息"
-                  className="p-1 transition-colors"
-                />
-              )}
-              {onFork && message.turnIndex !== undefined && (
-                <button
-                  onClick={() => onFork(message.turnIndex!)}
-                  className="p-1 rounded text-text-tertiary hover:text-accent transition-colors"
-                  title="从这里分支"
-                >
-                  <GitFork className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {!isUser && isLast && onRetry && (
-                <button
-                  onClick={onRetry}
-                  className="p-1 rounded text-text-tertiary hover:text-accent transition-colors"
-                  title="重试"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {!isUser && isLast && onSelectVariant && message.turnIndex !== undefined && variantOrder.length > 1 && (
-                <div className="flex items-center gap-0.5 px-1 text-xs text-text-tertiary">
-                  <button
-                    onClick={() => onSelectVariant(
-                      message.turnIndex!,
-                      variantOrder[Math.max(0, activeVariantPosition - 1)],
-                    )}
-                    disabled={activeVariantPosition <= 0}
-                    className="rounded p-0.5 hover:text-accent disabled:opacity-30"
-                    title="上一个回复"
-                  >
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                  </button>
-                  <span>{activeVariantPosition + 1} / {variantOrder.length}</span>
-                  <button
-                    onClick={() => onSelectVariant(
-                      message.turnIndex!,
-                      variantOrder[Math.min(variantOrder.length - 1, activeVariantPosition + 1)],
-                    )}
-                    disabled={activeVariantPosition >= variantOrder.length - 1}
-                    className="rounded p-0.5 hover:text-accent disabled:opacity-30"
-                    title="下一个回复"
-                  >
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// 思考流折叠块 (独立反光, 避免与气泡容器光效不对齐)
-const ThinkingBlock = memo(function ThinkingBlock({ thinking }: { thinking: string }) {
-  const reflectRef = useGlassReflect<HTMLDetailsElement>({
-    reflectRange: 60,
-  });
-  return (
-    <details ref={reflectRef} className="glass-card glass-card-teal rounded-lg px-3 py-2 text-xs">
-      <summary className="cursor-pointer text-teal flex items-center gap-1.5 select-none">
-        <Brain className="h-3.5 w-3.5" />
-        思考过程
-      </summary>
-      <div className="mt-2 text-text-secondary whitespace-pre-wrap break-words leading-relaxed">
-        {thinking}
-      </div>
-    </details>
-  );
-});
-
-// Chat 保留保存接口与运行时刷新, 字段和校验由两端共用的组件负责
 function ModelEditModal({ modelName, modelsDetail, onClose, onSaved }: {
   modelName: string | null;
   modelsDetail: Record<string, ModelConfigItem>;

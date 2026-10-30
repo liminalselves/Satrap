@@ -390,11 +390,14 @@ async def test_control_query_bearing_paths(
 
     status = await _request("/status?verbose=1")
     assert b"200 OK" in status
-    assert _json_body(status) == {
+    status_body = _json_body(status)
+    assert {key: status_body[key] for key in ("running", "managed", "health")} == {
         "running": False,
         "managed": False,
         "health": {"running": False},
     }
+    assert status_body["probe"]["state"] == "offline"
+    assert status_body["probe"]["latency_ms"] is None
 
     models = await _request("/config/models?type=llm")
     assert b"200 OK" in models
@@ -809,6 +812,10 @@ async def test_dynamic_conversation_platform_types_aggregate_same_ids_and_isolat
     try:
         platforms = _json_body(await _request("/config/conversations/platforms"))
         assert {row["type"] for row in platforms["items"]} >= {"custom-a", "custom-b"}
+        result = _json_body(await _request("/config/conversations?scope=all&include=aggregates&limit=1"))
+        assert result["aggregates"] == {"platforms": 2, "conversations": 2, "contexts": 2, "display_turns": 0}
+        assert result["aggregates_complete"] is True
+        assert len(result["items"]) == 1
         result = _json_body(await _request("/config/conversations?scope=all"))
         assert {row["platform_id"] for row in result["items"]} == {"instance-a", "instance-b"}
         assert result["total"] == 2
@@ -827,3 +834,120 @@ async def test_dynamic_conversation_platform_types_aggregate_same_ids_and_isolat
         for context in contexts:
             context.close()
 from support.http import _json_body, _request, _use_config
+
+
+async def test_stored_messages_yaml_and_maintenance_real_http(monkeypatch, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from satrap.core.config.maintenance_settings import MaintenanceSettingsStore
+    from satrap.core.server_auth import ServerAuth
+    from satrap.core.storage import StorageLayout
+    from satrap.core.utils.context import ContextManager
+    from satrap.core.utils.minihttp import MiniHTTPServer
+    from satrap.display.server import ChatHTTPServer
+
+    _use_config(monkeypatch, tmp_path)
+    layout = StorageLayout(tmp_path / "data")
+    layout.ensure_platform("chat")
+    context = ContextManager("saved", db_path=str(layout.platform_db("chat")))
+    context.add_user_message("保存的消息")
+    context.save_context()
+    auth = ServerAuth.create("127.0.0.1", 0, token="backend-contract-http-32-character-token")
+    monkeypatch.setattr(control_server, "_CONTROL_AUTH", auth)
+    policy = MaintenanceSettingsStore(tmp_path / "maintenance.json")
+    monkeypatch.setattr(control_server, "MaintenanceSettingsStore", lambda: policy)
+    control = await asyncio.start_server(control_server._handle_request, "127.0.0.1", 0)
+    chat = ChatHTTPServer.__new__(ChatHTTPServer)
+    MiniHTTPServer.__init__(chat, host="127.0.0.1", port=0, auth=auth)
+    chat.service = SimpleNamespace(_storage=layout, _platform_id="chat")
+    await MiniHTTPServer.start(chat)
+
+    async def request(server, path, method="GET", payload=None, authorized=True):
+        port = server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        body = b"" if payload is None else json.dumps(payload).encode("utf-8")
+        token = auth.token if authorized else "invalid"
+        writer.write((f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body)
+        await writer.drain()
+        response = await asyncio.wait_for(reader.read(), 10)
+        writer.close()
+        await writer.wait_closed()
+        return int(response.split(b" ")[1]), _json_body(response)
+
+    before = control_server.CONFIG_PATH.read_bytes()
+    try:
+        for server, path in ((control, "/config/conversations/messages?platform_id=chat&conversation_id=saved"),
+                             (chat._server, "/api/chat/conversations/saved/messages")):
+            status, page = await request(server, path)
+            assert status == 200 and page["items"][0]["content"] == "保存的消息"
+            assert page["consistency"] == "live" and page["source"] == "storage"
+            assert (await request(server, path, authorized=False))[0] == 401
+            assert (await request(server, path + "&unknown=true" if "?" in path else path + "?unknown=true"))[0] == 400
+        status, initial = await request(control, "/config/storage-maintenance")
+        assert status == 200 and initial["auto_purge_enabled"] is False
+        payload = {"trash_retention_days": 10, "auto_purge_enabled": False, "expected_revision": initial["revision"]}
+        assert (await request(control, "/config/storage-maintenance", "PUT", payload))[0] == 200
+        assert (await request(control, "/config/storage-maintenance", "PUT", payload))[0] == 409
+        status, yaml = await request(control, "/config/validate-yaml", "POST", {"yaml": "platforms: [\n"})
+        assert status == 200 and not yaml["valid"] and yaml["errors"][0]["line"] == 2
+        assert (await request(control, "/config/validate-yaml", "POST", {"yaml": "platforms: []"}, authorized=False))[0] == 401
+        assert control_server.CONFIG_PATH.read_bytes() == before
+    finally:
+        context.close()
+        control.close()
+        await control.wait_closed()
+        await MiniHTTPServer.stop(chat)
+
+
+async def test_platform_toggle_persists_cas_and_reports_real_application(monkeypatch, tmp_path):
+    from satrap.core.config.document import config_document_revision, load_config_document
+    from satrap.core.telemetry.api import SourceUnavailable
+    from satrap.core.utils.application_progress import ApplicationOperations
+
+    _use_config(monkeypatch, tmp_path)
+    document = load_config_document(control_server.CONFIG_PATH)
+    document["platforms"] = [{"id": "bot", "type": "onebot", "enable": True, "settings": {}}]
+    control_server.CONFIG_PATH.write_text(json.dumps(document), encoding="utf-8")
+    revision = config_document_revision(document)
+    monkeypatch.setattr(control_server, "_PLUGIN_APPLICATIONS", ApplicationOperations())
+    calls = []
+
+    async def backend(path, payload=None):
+        method = "GET" if payload is None else "POST"
+        calls.append((method, path, payload))
+        return (200, {"ok": True}) if method == "GET" else (200, {"platforms": [{"id": "bot", "status": "applied"}]})
+
+    monkeypatch.setattr(control_server, "_action_backend_request", backend)
+    request = {"expected_revision": revision, "operation_id": "platform-toggle-one"}
+    response = await _request("/api/platforms/bot/disable", "POST", json.dumps(request).encode())
+    assert response.startswith(b"HTTP/1.1 202")
+    accepted = _json_body(response)
+    assert accepted["saved"] and not accepted["desired_enabled"] and accepted["runtime"]["status"] == "pending"
+    assert not load_config_document(control_server.CONFIG_PATH)["platforms"][0]["enable"]
+    for _ in range(100):
+        completed = control_server._PLUGIN_APPLICATIONS.get(request["operation_id"])
+        if completed["status"] != "running":
+            break
+        await asyncio.sleep(.01)
+    assert completed["result"]["runtime"]["status"] == "applied"
+    assert calls[-1][2] == {"expected_config_revision": accepted["revision"]}
+    assert len(calls) == 2
+    assert (await _request("/api/platforms/bot/enable", "POST", json.dumps(request).encode())).startswith(b"HTTP/1.1 409")
+    assert (await _request("/config/operations/platform-toggle-one")).startswith(b"HTTP/1.1 200")
+
+    async def offline(path, payload=None):
+        assert payload is None   # 连接前已确认离线时不提交写入, 不假报执行成功
+        raise SourceUnavailable("offline", "service_unreachable")
+
+    monkeypatch.setattr(control_server, "_action_backend_request", offline)
+    request = {"expected_revision": accepted["revision"], "operation_id": "platform-toggle-two"}
+    response = await _request("/api/platforms/bot/enable", "POST", json.dumps(request).encode())
+    assert response.startswith(b"HTTP/1.1 202")
+    for _ in range(100):
+        completed = control_server._PLUGIN_APPLICATIONS.get(request["operation_id"])
+        if completed["status"] != "running":
+            break
+        await asyncio.sleep(.01)
+    assert completed["result"]["saved"] and completed["result"]["runtime"]["status"] == "pending"
+    counts = await control_server._agent_instance_counts({"demo": {}}, "edictum")
+    assert counts["demo"]["active_instances"] is None and not counts["demo"]["runtime_source"]["complete"]

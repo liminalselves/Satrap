@@ -13,6 +13,7 @@ import asyncio
 from time import monotonic, time
 import inspect
 import traceback
+from uuid import uuid4
 from typing import (
     Any,
     Awaitable,
@@ -59,6 +60,7 @@ from satrap.core.platform import PlatformAdapter
 from satrap.core.group_chat.reply import bind_reply_turn
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
+from satrap.core.APICall.LLMCall.errors import model_error_info
 from satrap.core.log import logger
 from satrap.core.utils.validation import positive_timeout
 
@@ -72,6 +74,22 @@ _SETTLEMENT_POLL_SECONDS = 0.05
 """发送收尾等待轮询间隔"""
 
 from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+
+def _record_command_metric(event: MessageEvent, command_text: str | None) -> None:
+    """
+    补记已经识别的真实平台命令, 与入站消息共用去重身份
+
+    参数:
+    - event: 当前真实消息事件
+    - command_text: 已冻结命令, 合成消息或非命令为 None
+    """
+    if command_text is not None:
+        from satrap.core.telemetry.capture import bind_scope, record_message, scope_from_origin
+
+        with bind_scope(service="backend"):
+            record_message(scope_from_origin(event.call_origin), event.call_origin.source_message_id,
+                           received_at=event.platform_message.received_at, command=True)
 
 
 class PipelineScheduler:
@@ -160,6 +178,10 @@ class PipelineScheduler:
         """
         try:
             origin = event.call_origin
+            from satrap.core.log.debug.capture import record_debug
+
+            record_debug(stage, "end", status=status, metadata={"reason_code": reason_code, "reason": reason,
+                         "attachments": attachments, "notes": notes, "turn_id": turn_id, "send_status": send_status})
             self.request_diagnostics.record(RequestDiagnostic(
                 adapter_id=origin.adapter_id, session_id=event.session_id, actor_id=event.get_sender_id(),
                 stage=stage, decision=decision or status, reason=reason, recorded_at=time(), status=status,
@@ -439,6 +461,34 @@ class PipelineScheduler:
 
     async def execute(self, event: MessageEvent) -> None:
         """
+        按可信对象冻结诊断设置后执行完整管线
+
+        参数:
+        - event: 当前实际平台消息
+        """
+        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.log.debug.capture import debug_request
+
+        try:
+            obj = DebugObject.from_origin(event.call_origin)
+        except ValueError:
+            await self._execute(event)
+            return
+        source_request_id = event.call_origin.request_id
+        repeated_wake = self.wake_timers.tickets.get(event) is not None
+        trace_id = f"{source_request_id}:wake:{uuid4().hex}" if repeated_wake else source_request_id
+        with debug_request(obj, trace_id, parent_request_id=source_request_id if repeated_wake else "", input_data={
+            "text": event.get_message_str(), "actor_id": event.call_origin.actor_id,
+            "message_id": event.call_origin.source_message_id, "source_request_id": source_request_id,
+        }) as trace:
+            if trace is not None:
+                trace.status = "skipped"
+                trace.emit("queue", "end", metadata={"waiting_seconds": max(0, monotonic() - event.queued_at),
+                           "received_at": event.platform_message.received_at})
+            await self._execute(event)
+
+    async def _execute(self, event: MessageEvent) -> None:
+        """
         执行完整管线
 
         参数:
@@ -462,9 +512,14 @@ class PipelineScheduler:
             for processor in self.preprocessors:
                 if event.is_stopped() or not event.call_llm:
                     return
+                from satrap.core.log.debug.capture import record_debug
+
+                processor_name = getattr(processor, "__name__", type(processor).__name__)
+                record_debug("preprocessor", "start", metadata={"name": processor_name})
                 verdict = processor(event)
                 if inspect.isawaitable(verdict):
                     verdict = await cast(Awaitable[bool], verdict)
+                record_debug("preprocessor", "end", status="accepted" if verdict else "dropped", metadata={"name": processor_name})
                 if not verdict:
                     logger.debug(f"[PipelineScheduler] preprocessor 丢弃事件: {event.session_id}")
                     return
@@ -515,6 +570,7 @@ class PipelineScheduler:
                 if manual_ticket is None and deadline_ticket is None
                 else None
             )
+            _record_command_metric(event, command_text)
             pending = manual_ticket.snapshot if manual_ticket is not None else ()
             automatic_eligible = (
                 not event.is_private_chat()
@@ -608,6 +664,7 @@ class PipelineScheduler:
             if event.agent_route_generation:
                 scope = event.agent_context_scope
             generation = event.group_route_generation if not event.is_private_chat() else 0
+            extra_params: dict[str, str] | None = None
             if (scope != "legacy_user" or generation > 0 or event.agent_route_generation) and (not user_manager or not event.session_type):
                 raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
             if user_manager and event.session_type:
@@ -713,6 +770,10 @@ class PipelineScheduler:
                     received_at=event.queued_at,
                     received_wall_at=event.platform_message.received_at,
                 )
+                from satrap.core.log.debug.capture import record_debug
+
+                record_debug("projection_input", "end", bodies={"input": {"text": message, "images": images, "videos": videos}},
+                             metadata={"command": command_text is not None, "requested_session": session_id})
                 # Step.6 执行会话并限制等待时间
                 if manual_ticket is not None:
                     # 已受理请求要求发送证据: 记录不可用时工具与回复不得冒充可恢复
@@ -726,23 +787,40 @@ class PipelineScheduler:
                     except asyncio.TimeoutError:
                         if not session_deadline.expired():
                             raise   # 网络或工具自身抛出的超时不是会话限时到期
-                        logger.error(f"[PipelineScheduler] 会话执行超时: {event.session_id}, 限时={self.session_timeout}s")
+                        from satrap.core.log.debug.capture import current_trace
+
+                        debug = current_trace()
+                        if debug is not None:
+                            debug.status = "timeout"
+                        logger.warning(f"[PipelineScheduler] code=session_timeout 会话执行超时: {event.session_id}, 限时={self.session_timeout}s")
                         self._record_diagnostic(
                             event, "model", "unknown", reason_code="session_timeout", reason="会话执行超时",
                             turn_id=self._request_turn_ids(event),
                         )
                         if self.error_feedback:
-                            await self._send_feedback(event, "本轮会话执行超时, 请缩小任务范围或调整会话限时")
+                            await self._send_feedback(event, "请求失败 [session_timeout]: 本轮会话执行超时, 请缩小任务范围或调整会话限时")
                         manual_detail = "session_timeout"
                         return
                     if reply_turn.failed:
+                        from satrap.core.log.debug.capture import current_trace
+
+                        debug = current_trace()
+                        if debug is not None:
+                            debug.status = "failed"
                         if command_text is None:
                             self._record_diagnostic(event, "model", "failed", reason_code="session_execution_failed",
-                                                    reason="会话执行失败, 已撤销本轮回复草稿", turn_id=self._request_turn_ids(event))
+                                                    reason="会话执行失败, 已禁止本轮后续回复", turn_id=self._request_turn_ids(event))
                         manual_detail = "session_execution_failed"
                         return
                     if user_call.context_reset_at is not None:
                         self._reset_context_window(event, user_call.context_reset_at)
+                        record_debug("context_reset", "end", metadata={"reset_at": user_call.context_reset_at, "session_id": user_call.session_id})
+                    from satrap.core.log.debug.capture import current_trace
+
+                    debug = current_trace()
+                    if debug is not None:
+                        debug.status = event.last_business_receipt.status if event.last_business_receipt is not None else "success"
+                    record_debug("session_result", "end", status="returned", bodies={"output": response})
                     if command_text is None:
                         self._record_diagnostic(
                             event, "model", "ok", reason_code="completed",
@@ -751,8 +829,7 @@ class PipelineScheduler:
                         )
                     # 命令未调用模型: 不为它写 model 阶段记录, 其结论由 projection 阶段的原因码与发送阶段给出
 
-                    handled = await reply_turn.commit(response)
-                    if not handled and response and not event.has_send_operation():
+                    if response and not event.has_send_operation():
                         await event.send(MessageChain.from_text(response))
                     # ---------- 后处理: 兜底发送回复 ----------
                     # 如果 Session 内部已通过 content_callback 发送过消息
@@ -763,14 +840,26 @@ class PipelineScheduler:
             manual_detail = "cancelled"
             raise
         except (ValueError, TypeError, KeyError) as e:
+            from satrap.core.log.debug.capture import current_trace
+
+            debug = current_trace()
+            if debug is not None:
+                debug.status = "failed"
             # 配置或输入结构问题属于运维可见的日志, 不向每条消息的发送者刷反馈
             logger.error(f"[PipelineScheduler] 管线配置或输入错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
             manual_detail = f"pipeline_input:{type(e).__name__}"
         except Exception as e:
-            logger.error(f"[PipelineScheduler] 管线执行错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
+            info = model_error_info(e)
+            from satrap.core.log.debug.capture import current_trace
+
+            debug = current_trace()
+            if debug is not None:
+                debug.status = "timeout" if info.code.endswith("timeout") else "failed"
+            log = logger.error if info.code == "internal_error" else logger.warning
+            log(f"[PipelineScheduler] session={event.session_id} request={event.call_origin.request_id}: {info.text}")
             manual_detail = f"pipeline_error:{type(e).__name__}"
             if self.error_feedback:
-                await self._send_feedback(event, "处理失败, 请稍后重试")
+                await self._send_feedback(event, info.text)
         finally:
             self._record_send_diagnostic(event, manual_detail)
             ticket = self.manual_wakes.tickets.get(event)

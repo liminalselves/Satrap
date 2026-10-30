@@ -133,12 +133,17 @@ def _request(session: SimpleSession | AsyncSimpleSession, engine: PermissionEngi
     if isinstance(state, SessionApproval) and state.engine is engine:
         session_approval(session)   # 请求只读取已成功发布的插件配置
     turn_id, actor_id = _turn_identity(session)
-    return ApprovalRequest.create(
+    request = ApprovalRequest.create(
         session_id=str(getattr(session, "session_id", "")),
         turn_id=turn_id,
         actor_id=actor_id,
         tool=tool_name, operation=operation, risk=int(risk), description=description,
         mode=engine.mode, revision=engine.revision, action={**action, "source": asdict(origin) if origin else {"turn_id": turn_id}}, evidence=_evidence(session) if engine.mode != "full-access" else [])
+    from satrap.core.log.debug.capture import record_debug
+
+    record_debug("approval", "start", span_id=request.request_id, metadata={"mode": engine.mode, "operation": operation,
+                 "tool": tool_name, "risk": int(risk), "revision": engine.revision}, bodies={"action": action})
+    return request
 
 
 def _review_messages(request: ApprovalRequest) -> list[dict[str, str]]:
@@ -226,6 +231,10 @@ def _finish(session: SimpleSession | AsyncSimpleSession, engine: PermissionEngin
             or str(getattr(session, "session_id", "")) != request.session_id):
         result = ApprovalResult.for_request(request, "error", "执行已取消: 审批期间权限, 来源或有效期发生变化", "policy")
     engine.record(request, result)
+    from satrap.core.log.debug.capture import record_debug
+
+    record_debug("approval", "end", span_id=request.request_id, status=result.decision,
+                 metadata={"reviewer": result.reviewer, "reason": result.reason, "revision": engine.revision})
     if result.decision == "allow":
         return True, ""
     code = "approval_denied" if result.decision == "deny" else "approval_required"
@@ -265,14 +274,19 @@ def _sync_review(call: Callable[..., object], messages: list[dict[str, str]]) ->
     - 模型响应; 调用异常或超时抛给审批边界转人工
     """
     responses: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+    from contextvars import copy_context
+    from satrap.core.telemetry.capture import bind_scope
+
+    inherited = copy_context()
     def run() -> None:
         """隔离网络调用异常并交回等待方"""
         try:
-            responses.put((True, call(messages=messages)))
+            with bind_scope(purpose="approval"):
+                responses.put((True, call(messages=messages)))
         except Exception as error:
             responses.put((False, error))
     deadline = monotonic() + _REVIEW_TIMEOUT
-    threading.Thread(target=run, daemon=True, name="approval-review").start()
+    threading.Thread(target=inherited.run, args=(run,), daemon=True, name="approval-review").start()
     try:
         success, value = responses.get(timeout=max(0.0, deadline - monotonic()))
     except queue.Empty as error:
@@ -366,9 +380,12 @@ async def approve_async(session: AsyncSimpleSession, engine: PermissionEngine, o
                 if call is None:
                     raise ValueError("审批模型不支持 chat")
                 messages = _review_messages(request)
-                value = call(messages=messages) if inspect.iscoroutinefunction(call) else await asyncio.to_thread(_sync_review, call, messages)
-                if inspect.isawaitable(value):
-                    value = await asyncio.wait_for(cast(Awaitable[object], value), _REVIEW_TIMEOUT)
+                from satrap.core.telemetry.capture import bind_scope
+
+                with bind_scope(purpose="approval"):
+                    value = call(messages=messages) if inspect.iscoroutinefunction(call) else await asyncio.to_thread(_sync_review, call, messages)
+                    if inspect.isawaitable(value):
+                        value = await asyncio.wait_for(cast(Awaitable[object], value), _REVIEW_TIMEOUT)
                 result = _review_result(request, value)
             except Exception as error:
                 reason = "模型审批超时, 需要人工批准" if isinstance(error, TimeoutError) else str(error) or type(error).__name__

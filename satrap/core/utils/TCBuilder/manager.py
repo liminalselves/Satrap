@@ -126,6 +126,11 @@ class ToolsManager(_ToolsRegistry[Tool]):
         tool_message = self.create_call_message(call_info)
         call_error = self.validate_call_info(call_info)
         if call_error is not None:
+            from satrap.core.log.debug.hooks import record_debug
+            from satrap.core.log.debug.diagnostics import tool_diagnostic
+
+            record_debug("tool", "end", status="rejected", metadata=tool_diagnostic(call_error, str(call_error.get("tool_name", ""))),
+                         bodies={"call": call_info, "result": call_error})
             return tool_message, call_error
 
         tool_name, arguments = self.get_call_info(call_info)
@@ -136,7 +141,15 @@ class ToolsManager(_ToolsRegistry[Tool]):
             "call_id": call_id,
         }
         self._notify_tool_observer(self.tool_call_start, dict(base_event))
-        tool_result = self.execute_tool(tool_name, arguments)
+        from satrap.core.log.debug.hooks import debug_span, record_debug
+        from satrap.core.log.debug.diagnostics import tool_diagnostic
+
+        owner = self.tools.get(tool_name)
+        details: Dict[str, object] = {"name": tool_name, "plugin": owner.owner_plugin if owner else None}
+        with debug_span("tool", span_id=call_id, metadata=details, bodies={"arguments": arguments}) as span:
+            tool_result = self.execute_tool(tool_name, arguments)
+            details.update(tool_diagnostic(tool_result, tool_name, missing_tool=owner is None))
+            record_debug("tool_result", "end", span_id=span, status="returned", metadata=details, bodies={"result": tool_result})
         success = not (
             isinstance(tool_result, dict)
             and cast(Dict[str, Any], tool_result).get("ok") is False

@@ -1,5 +1,5 @@
 import { conversationPageResponse } from './config-fixtures.mjs';
-import { emptyConfigResponse } from './runtime.mjs';
+import { emptyConfigResponse, comboOptions } from './runtime.mjs';
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -368,7 +368,7 @@ async function plugin_loading(runtime) {
     await page.goto(origin + '/plugins/model_probe?tab=config');
     const note = page.getByLabel('note', { exact: true });
     await note.fill('慢选项期间的草稿');
-    await page.waitForFunction(() => document.querySelector('select')?.disabled);
+    await page.waitForFunction(() => document.querySelector('[role=combobox]')?.disabled);
     assert.equal(modelReads, 1);
     assert.equal(knowledgeReads, 0);
     assert.equal(await page.getByText(/引用失效/).count(), 0);
@@ -538,7 +538,7 @@ async function edictum_settings(runtime) {
     assert.equal(configs.assistant.params.default_agent_prompt_enabled, false);
     await page.getByTitle('编辑配置', { exact: true }).click();
     await dialog.getByLabel('默认思考强度', { exact: true }).selectOption('high');
-    assert.equal(await dialog.getByLabel('默认思考强度', { exact: true }).getByRole('option', { name: '中', exact: true }).count(), 0);
+    assert.equal((await comboOptions(dialog.getByLabel('默认思考强度', { exact: true }))).some((option) => option.label === '中'), false);
     await dialog.getByLabel('温度', { exact: true }).fill('0');
     await dialog.getByLabel('top_p', { exact: true }).fill('0.8');
     await dialog.getByLabel('最大输出 token 数', { exact: true }).fill('2048');
@@ -751,7 +751,7 @@ async function main_merge(runtime) {
     assert.equal(await page.getByRole('button', { name: '批准', exact: true }).count(), 1);
     await page.getByRole('button', { name: '批准', exact: true }).click();
     await page.getByText('共 0 条', { exact: true }).waitFor();
-    await page.locator('select').filter({ has: page.locator('option[value="pending"]') }).selectOption('all');
+    await page.getByLabel('动作状态', { exact: true }).selectOption('all');
     await page.getByText('ID: model-approval-1', { exact: true }).waitFor();
     assert.ok((await page.locator('main').innerText()).includes('已成功'));
     assert.equal(decisions.length, 1);

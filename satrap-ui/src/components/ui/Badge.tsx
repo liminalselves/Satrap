@@ -7,16 +7,17 @@ export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
 
 const Badge = forwardRef<HTMLSpanElement, BadgeProps>(
   ({ className, variant = 'default', children, ...props }, ref) => {
+    // 统一为染色胶囊: 背景/边框/文字都由 tint 派生
     const variantClasses = {
-      default: 'glass-badge bg-glass border border-glass-border text-text-secondary',
-      success: 'glass-badge glass-badge-success',
-      warning: 'glass-badge glass-badge-warning',
-      error: 'glass-badge glass-badge-error',
-      info: 'glass-badge glass-badge-info',
-      accent: 'glass-badge bg-glass-accent border border-glass-accent-border text-accent-light',
-      purple: 'glass-badge bg-glass-purple border border-glass-purple-border text-purple-light',
-      teal: 'glass-badge bg-glass-teal border border-glass-teal-border text-teal-light',
-      pink: 'glass-badge bg-glass-pink border border-glass-pink-border text-pink-light',
+      default: 'chip',
+      success: 'chip tint-green',
+      warning: 'chip tint-orange',
+      error: 'chip tint-red',
+      info: 'chip tint-accent',
+      accent: 'chip tint-accent',
+      purple: 'chip tint-purple',
+      teal: 'chip tint-teal',
+      pink: 'chip tint-pink',
     };
 
     return (

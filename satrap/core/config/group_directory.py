@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, TypedDict, cast
 import json
 import time
 
@@ -17,6 +17,14 @@ from satrap.core.config.group_store import GroupConfigStore, _identity
 
 from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
 from satrap.core.type import GroupDirectoryRecord, GroupSyncState, ScopedSessionSummary
+
+
+class GroupDirectoryBinding(TypedDict):
+    """解析后的命名 Agent 身份, 与 Python 会话类型分开"""
+
+    agent: str
+    provider: str
+    source: Literal["group", "platform", "default"]
 
 
 class GroupDirectoryStore(GroupConfigStore):
@@ -348,6 +356,7 @@ class GroupDirectoryStore(GroupConfigStore):
         self, self_id: str, *, query: str = "", membership: str = "joined",
         response: str = "all", page: int = 1, page_size: int = 25,
         response_gate: bool = True,
+        platform_snapshot: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         在服务端对同账号的目录和仅配置群筛选分页
@@ -359,6 +368,8 @@ class GroupDirectoryStore(GroupConfigStore):
         - response: enabled, disabled 或 all
         - page: 从 1 开始的页号
         - page_size: 25, 50 或 100
+        - response_gate: 当前平台响应总闸
+        - platform_snapshot: 宿主已解析默认绑定的平台快照, 未提供时绑定未知
 
         返回:
         - items, total, page, page_size 和同账号整体 counts
@@ -394,6 +405,7 @@ class GroupDirectoryStore(GroupConfigStore):
             for row in directory
         }
         exceptions: dict[str, bool] = {}
+        sessions: dict[str, Mapping[str, object]] = {}
         for row in configs:
             group_id = str(row["group_id"])
             by_group.setdefault(group_id, {
@@ -403,13 +415,18 @@ class GroupDirectoryStore(GroupConfigStore):
             explicit = json.loads(row["config_json"])
             if not isinstance(explicit, dict) or not isinstance(explicit.get("policy", {}), dict):
                 raise RuntimeError("群配置数据损坏")
-            enabled = explicit.get("policy", {}).get("enabled")
+            explicit = cast(dict[str, object], explicit)
+            session = explicit.get("session", {})
+            if not isinstance(session, dict):
+                raise RuntimeError("群会话配置数据损坏")
+            sessions[group_id] = cast(dict[str, object], session)
+            enabled = cast(dict[str, object], explicit.get("policy", {})).get("enabled")
             if enabled is not None:
                 if not isinstance(enabled, dict) or enabled.get("mode") != "value" or type(enabled.get("value")) is not bool:
                     raise RuntimeError("群配置数据损坏: enabled 无效")
                 exceptions[group_id] = enabled["value"]
         mode = str(account["mode"])
-        all_items = []
+        all_items: list[dict[str, Any]] = []
         for item in by_group.values():
             enabled = exceptions.get(item["group_id"], mode == "all")
             item["response_enabled"] = response_gate and enabled
@@ -432,5 +449,55 @@ class GroupDirectoryStore(GroupConfigStore):
         ]
         filtered.sort(key=lambda item: (item["membership"] != "joined", item["group_id"]))
         offset = (page - 1) * page_size
-        return {"items": filtered[offset:offset + page_size], "total": len(filtered),
+        selected = filtered[offset:offset + page_size]
+        self._page_summaries(self_id, selected, sessions, platform_snapshot or {})
+        return {"items": selected, "total": len(filtered),
                 "page": page, "page_size": page_size, "counts": counts}
+
+    def _page_summaries(self, self_id: str, items: list[dict[str, Any]], sessions: Mapping[str, Mapping[str, object]],
+                        platform: Mapping[str, Any]) -> None:
+        """
+        当前页批量补齐绑定, 待审与活动摘要, 不逐群读取消息正文
+
+        参数:
+        - self_id: 当前账号
+        - items: 已分页的目录项
+        - sessions: 同一配置快照中的群会话覆盖
+        - platform: 宿主提供的有效平台默认绑定
+        """
+        from satrap.core.config.group_session import resolve_group_session
+        from satrap.core.config.platform_messages import MessageScope
+
+        if not items:
+            return
+        ids = [str(item["group_id"]) for item in items]
+        placeholders = ",".join("?" for _ in ids)
+        pending: dict[str, int] = {}
+        captured: dict[str, tuple[float | None, float | None]] = {}
+        platform_id = str(platform.get("id") or "")
+        scopes = {MessageScope(platform_id, self_id, "group", group).key: group for group in ids} if platform_id else {}
+        with closing(self._connect()) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "group_actions" in tables:
+                pending = {row[0]: row[1] for row in connection.execute(
+                    f"SELECT group_id,COUNT(*) FROM group_actions WHERE self_id=? AND group_id IN ({placeholders}) "
+                    "AND state='pending' AND expires_at>? GROUP BY group_id", (self_id, *ids, time.time()))}
+            if scopes and "memory_proposals" in tables:
+                for row in connection.execute(f"SELECT scope_key,COUNT(*) FROM memory_proposals WHERE scope_key IN ({placeholders}) "
+                                               "AND state='pending' AND expires_at>? GROUP BY scope_key", (*scopes, time.time())):
+                    group = scopes[row[0]]
+                    pending[group] = pending.get(group, 0) + row[1]
+            if scopes and "platform_message_chats" in tables:
+                captured = {scopes[row[0]]: (row[1], row[2]) for row in connection.execute(
+                    f"SELECT scope_key,captured_from,captured_to FROM platform_message_chats WHERE scope_key IN ({placeholders})", tuple(scopes))}
+        for item in items:
+            group = item["group_id"]
+            effective, sources = resolve_group_session(platform, sessions.get(group, {}))
+            binding = cast(Mapping[str, str], effective["binding"])
+            source: Literal["group", "platform", "default"] = "group" if sources["binding"] == "group" else "platform" if binding["config_name"] else "default"
+            item["binding"] = GroupDirectoryBinding(agent=binding["config_name"], provider=binding["provider"], source=source)
+            item["pending_actions"] = pending.get(group, 0)
+            bounds = captured.get(group)
+            item["last_activity_at"] = bounds[1] if bounds else None
+            item["activity_coverage"] = {"source": "platform_archive", "complete": False,
+                                         "observed_from": bounds[0] if bounds else None, "observed_to": bounds[1] if bounds else None}

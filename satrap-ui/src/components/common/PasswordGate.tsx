@@ -14,7 +14,7 @@ export function PasswordGate() {
   const activeServices = requiredApiServices(pathname).map((url) => url.replace(/\/$/, ''));
   const currentService = activeServices[0];
   const required = activeServices.filter((url) => sessions[url]?.state === 'password_required');
-  const unsettled = sessions[currentService]?.state === 'checking' || !sessions[currentService];
+  const unsettled = Boolean(currentService && (sessions[currentService]?.state === 'checking' || !sessions[currentService]));
   // 当前页面所需服务未完成认证时盖住页面, 其它离线服务不延迟进入
   if (!required.length && !unsettled) return null;
 
@@ -49,7 +49,7 @@ export function PasswordGate() {
           </label>
           {error && <p role="alert" className="text-sm text-error">{error}</p>}
           <button type="submit" disabled={busy || !password}
-            className="w-full rounded-md bg-accent px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+            className="w-full rounded-md bg-[rgb(var(--rgb-accent))] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
             {busy ? '验证中…' : '进入'}
           </button>
         </form>

@@ -40,7 +40,7 @@ tools:
   send_file: 交付本地普通文件给当前会话, Chat 提供下载, 平台等待真实上传或发布回执
 
 compatibility:
-  satrap: ">=0.1,<0.2"
+  satrap: ">=0.2,<0.3"
 
 applicability:
   session_types: [chat, platform, embedded]

@@ -11,6 +11,51 @@ from satrap.core.storage.context_catalog import bind_context
 from satrap.core.utils.context import ContextManager
 
 
+def test_stored_message_pages_are_bounded_filter_bound_and_readonly(tmp_path, monkeypatch):
+    import satrap.core.config.conversation_data as module
+    from satrap.core.config.conversation_data import MessagePageTooLarge
+
+    database = tmp_path / "messages.db"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("CREATE TABLE chat_history(id INTEGER PRIMARY KEY, conversation_id TEXT, role TEXT, content TEXT, content_json TEXT, tool_calls TEXT)")
+        connection.execute("CREATE INDEX messages_page ON chat_history(conversation_id,id)")
+        connection.executemany("INSERT INTO chat_history VALUES(?, 'one', ?, ?, ?, NULL)",
+                               ((i, "user" if i % 2 else "assistant", f"消息{i}", json.dumps(f"消息{i}")) for i in range(1, 10001)))
+        connection.execute("INSERT INTO chat_history VALUES(10001,'other','user','别的会话',NULL,NULL)")
+    service = ConversationDataService(database)
+    original, decoded = module._load_message_content, []
+    def decode(*args):
+        decoded.append(args[0])
+        return original(*args)
+    monkeypatch.setattr(module, "_load_message_content", decode)
+    before = database.read_bytes()
+    first = service.messages("one", {"limit": "50"})
+    second = service.messages("one", {"limit": "50", "cursor": first["next_cursor"]})
+    assert [item["id"] for item in first["items"]] == list(range(1, 51))
+    assert [item["id"] for item in second["items"]] == list(range(51, 101))
+    assert len(decoded) == 100 and first["has_more"] and second["has_more"]
+    assert first["consistency"] == "live" and first["source"] == "storage" and "revision" not in first
+    for query in ({"order": "desc"}, {"role": "user"}, {"q": "消息"}):
+        with pytest.raises(ValueError, match="游标"):
+            service.messages("one", {**query, "cursor": first["next_cursor"]})
+    with pytest.raises(ValueError, match="游标"):
+        service.messages("other", {"cursor": first["next_cursor"]})
+    descending = service.messages("one", {"order": "desc", "limit": "2"})
+    assert [item["id"] for item in descending["items"]] == [10000, 9999]
+    assert [item["id"] for item in service.messages("one", {"role": "user", "q": "消息9999"})["items"]] == [9999]
+    assert database.read_bytes() == before
+    missing = tmp_path / "missing.db"
+    with pytest.raises(KeyError):
+        ConversationDataService(missing).messages("one", {})
+    assert not missing.exists()
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("UPDATE chat_history SET content=? WHERE id=1", ("x" * (8 * 1024 * 1024 + 1),))
+    count = len(decoded)
+    with pytest.raises(MessagePageTooLarge):
+        service.messages("one", {})
+    assert len(decoded) == count
+
+
 def test_managed_media_archive_restore_and_shared_blob_reclamation(tmp_path):
     """回收包携带原媒体, 释放会话不破坏其它持有者, 恢复后引用可读"""
     from satrap.core.storage.maintenance import StorageMaintenanceService
@@ -249,6 +294,17 @@ def test_read_only_catalog_groups_workflow_and_preserves_content(saved, tmp_path
         assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='conversation_data_backups'").fetchone()
     with pytest.raises(KeyError):
         service.read("missing", "context")
+
+def test_stored_display_page_keeps_only_current_turn_children(saved):
+    _, _, _, service = saved
+    page = service.messages("conversation", {"layer": "history", "limit": "1"})
+    assert len(page["items"]) == 1 and not page["has_more"]
+    turn = page["items"][0]
+    assert turn["record_id"].startswith("history:")
+    assert [item["answer"] for item in turn["variants"]] == ["版本0", "版本1"]
+    assert all("context_messages" not in item for item in turn["variants"])
+    assert turn["tool_call_records"][0]["name"] == "probe"
+
 
 def test_context_edit_preserves_tools_multimodal_and_history_and_rejects_stale(saved):
     database, _, messages, service = saved

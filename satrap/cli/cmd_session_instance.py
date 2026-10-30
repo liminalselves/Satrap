@@ -40,7 +40,7 @@ def _configured_platform_ids(config: BackendConfig) -> list[str]:
     return result
 
 
-def _offline_service(args: argparse.Namespace, config: BackendConfig, platform_id: str) -> SessionInstanceConfigService:
+def _offline_service(args: argparse.Namespace, config: BackendConfig, platform_id: str, *, readonly: bool = False) -> SessionInstanceConfigService:
     """
     构造指定平台的会话实例冷管理服务 (与控制服务同一套接线)
 
@@ -48,6 +48,7 @@ def _offline_service(args: argparse.Namespace, config: BackendConfig, platform_i
     - args: 命令参数
     - config: 配置信息
     - platform_id: 平台实例 ID
+    - readonly: 列表查询不初始化数据库
 
     返回:
     - SessionInstanceConfigService: 冷管理服务
@@ -63,12 +64,13 @@ def _offline_service(args: argparse.Namespace, config: BackendConfig, platform_i
         storage_path=config.edictum_config_path,
     )
     return SessionInstanceConfigService(
-        SessionConfigStore(database),
-        UserInfoStore(database),
+        SessionConfigStore(database, readonly=readonly),
+        UserInfoStore(database, readonly=readonly),
         session_class_manager,
         edictum_manager,
         platform_id,
         layout,
+        platform=next((item for item in config.platforms if item.get("id") == platform_id), None),
     )
 
 
@@ -132,7 +134,7 @@ def cmd_instance_list(args: argparse.Namespace):
         platform_ids = [platform_filter] if platform_filter else _configured_platform_ids(config)
         sessions = []
         for platform_id in platform_ids:
-            sessions.extend(_offline_service(args, config, platform_id).list_instances())
+            sessions.extend(_offline_service(args, config, platform_id, readonly=True).list_instances())
         sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
 
     def _human() -> None:

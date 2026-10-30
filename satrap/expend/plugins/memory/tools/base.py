@@ -183,7 +183,7 @@ class _UpdateMemoryToolCore(_MemoryBinding):
 
     def _execute(self, memory_id: str, content: str = "", title: str = "", **group_values: Any) -> str | dict[str, Any]:
         """
-        更新一条记忆, 群聊只能改本人偏好
+        更新一条记忆, 群聊复用来源, 所有者和修订校验
 
         参数:
         - memory_id: 要更新的记忆 ID
@@ -236,7 +236,7 @@ class _DeleteMemoryToolCore(_MemoryBinding):
 
     def _execute(self, memory_id: str, **group_values: Any) -> str | dict[str, Any]:
         """
-        删除一条记忆, 群聊只能删本人偏好
+        删除一条记忆, 群聊复用来源, 所有者和修订校验
 
         参数:
         - memory_id: 要删除的记忆 ID
@@ -339,20 +339,20 @@ _ID = {**_TEXT, "description": "记忆查询结果中的完整 ID"}
 _SOURCES = {"type": "array", "minItems": 1, "maxItems": 10, "items": _TEXT, "description": "支持这条信息的来源消息 ID; 群内本人偏好必须包含本轮本人发言"}
 _REVISION = {"type": "integer", "minimum": 1, "description": "查询结果中的 revision; 内容已变化时需要重新查询"}
 DEFINITIONS = {
-    "add_memory": ("用户明确要求记住时保存长期信息；群内只能保存本人偏好或提交群记忆，pending 不代表已生效", {
+    "add_memory": ("用户明确要求记住时保存长期信息; 群内可保存本人偏好或群共享记忆, 按插件设置直接生效或等待审批, 以实际返回状态为准", {
         "title": {**_TEXT, "maxLength": 120, "description": "方便查找的简短标题"},
         "content": {**_TEXT, "maxLength": 2000, "description": "用户明确要求保存的信息, 不推测未表达的偏好"},
-        "kind": {"type": "string", "enum": ["member_preference", "group_rule"], "description": "群聊必填: 本人的偏好, 或群记忆提案"},
+        "kind": {"type": "string", "enum": ["member_preference", "group_rule"], "description": "群聊必填: 本人的偏好, 或群共享记忆"},
         "key": {**_TEXT, "maxLength": 64, "description": "稳定的用途键, 例如 preferred_name 或 response_style"},
         "source_message_ids": _SOURCES,
         "tags": {"type": "array", "maxItems": 20, "items": _TEXT, "description": "普通会话记忆的分类标签"},
         "importance": {"type": "integer", "minimum": 1, "maximum": 5, "description": "普通会话记忆的重要程度, 默认 1"},
     }, ["title", "content"]),
-    "update_memory": ("用户明确更正已保存的信息时使用；先查询记忆和 revision，群内只能修改本人偏好", {
+    "update_memory": ("用户明确更正已保存的信息时使用; 先查询记忆和 revision, 群内只能修改本人偏好或群共享记忆, 群共享记忆按插件审批设置处理", {
         "memory_id": _ID, "content": {**_TEXT, "maxLength": 2000, "description": "更正后的信息"},
         "title": {**_TEXT, "maxLength": 120, "description": "需要更名时填写"}, "source_message_ids": _SOURCES, "expected_revision": _REVISION,
     }, ["memory_id"]),
-    "delete_memory": ("用户在本轮明确要求忘记时删除记忆; 群内只能删除本人偏好, 群记忆删除需要审批, 不删除聊天原文", {
+    "delete_memory": ("用户在本轮明确要求忘记时删除记忆; 群内只能删除本人偏好或群共享记忆, 群共享记忆按插件审批设置处理, 不删除聊天原文", {
         "memory_id": _ID, "expected_revision": _REVISION,
         "request_message_id": {**_TEXT, "description": "本轮明确要求忘记的消息 ID, 不能使用旧聊天中的删除请求"},
     }, ["memory_id"]),

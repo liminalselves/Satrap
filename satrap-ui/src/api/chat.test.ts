@@ -20,6 +20,21 @@ function mockFetch(payload: object = { ok: true, conversation_id: 'conv-1' }) {
 }
 
 describe('chatApi conversation preload', () => {
+  it('整体默认采用独立修订, 会话切换和重试携带已确认绑定', async () => {
+    const fetchSpy = mockFetch({ default_model: 'fast', revision: 'r2', ok: true, model: 'fast', available: true });
+    await chatApi.saveSettings('fast', 'r1');
+    expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toEqual({ default_model: 'fast', expected_revision: 'r1' });
+    fetchSpy.mockClear();
+    await chatApi.setModel('conv & a', 'fast', 'default');
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('conversation=conv%20%26%20a');
+    expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toEqual({ model: 'fast', expected_model: 'default' });
+    fetchSpy.mockClear();
+    await chatApi.send('conv & a', '问题', 'off', undefined, undefined, 'fast');
+    expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body)).expected_model).toBe('fast');
+    fetchSpy.mockClear();
+    await chatApi.retry('conv & a', 'off', 'fast');
+    expect(JSON.parse(String(fetchSpy.mock.calls[0][1]?.body))).toEqual({ conversation: 'conv & a', think: 'off', expected_model: 'fast' });
+  });
   afterEach(() => {
     vi.restoreAllMocks();
   });

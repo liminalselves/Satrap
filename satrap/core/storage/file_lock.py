@@ -10,6 +10,22 @@ import os
 
 if os.name == "nt":
     import msvcrt
+    import ctypes
+    from ctypes import wintypes
+
+    class _Overlapped(ctypes.Structure):
+        """同步文件句柄的 Win32 锁范围, 偏移固定为零"""
+
+        _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD), ("hEvent", wintypes.HANDLE)]
+
+    _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(_Overlapped)]
+    _kernel.LockFileEx.restype = wintypes.BOOL
+    _kernel.UnlockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.DWORD, ctypes.POINTER(_Overlapped)]
+    _kernel.UnlockFileEx.restype = wintypes.BOOL
 else:
     import fcntl
 # 操作系统专用模块只在对应平台加载
@@ -25,41 +41,45 @@ class _HeldLock:
 _HELD_LOCKS = threading.local()
 _LEASE_LOCK = threading.RLock()
 _FILE_LEASES: dict[Path, tuple[BinaryIO, int]] = {}
+_SHARED_LEASES: dict[Path, tuple[BinaryIO, int]] = {}
 
 
 class FileLease:
     """使用同一维护锁保护在途文件, 允许跨线程释放和同进程并行下载"""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, shared: bool = False) -> None:
         """
         取得非阻塞租约, 维护已占用时明确拒绝
 
         参数:
         - path: 与 FileLock 共用的稳定锁文件路径
+        - shared: 是否允许其他进程同时读取, 默认保持原独占租约语义
         """
         self.path = path.resolve()
         self.released = False
+        self.shared = shared
+        self._leases = _SHARED_LEASES if shared else _FILE_LEASES
         with _LEASE_LOCK:
-            previous = _FILE_LEASES.get(self.path)
+            previous = self._leases.get(self.path)
             if previous is not None:
-                _FILE_LEASES[self.path] = (previous[0], previous[1] + 1)
+                self._leases[self.path] = (previous[0], previous[1] + 1)
                 return
             self.path.parent.mkdir(parents=True, exist_ok=True)
             stream = self.path.open("a+b")
             try:
-                stream.seek(0, 2)
-                if stream.tell() == 0:
-                    stream.write(b"\0")
-                    stream.flush()
                 stream.seek(0)
                 if os.name == "nt":
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    if shared:
+                        if not _kernel.LockFileEx(msvcrt.get_osfhandle(stream.fileno()), 1, 0, 1, 0, ctypes.byref(_Overlapped())):
+                            raise ctypes.WinError(ctypes.get_last_error())
+                    else:
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
                 else:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(stream.fileno(), (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
             except BaseException:
                 stream.close()
                 raise
-            _FILE_LEASES[self.path] = (stream, 1)
+            self._leases[self.path] = (stream, 1)
 
     def close(self) -> None:
         """幂等释放租约, 最后一个持有者结束后允许维护移动或删除会话"""
@@ -67,12 +87,17 @@ class FileLease:
             if self.released:
                 return
             self.released = True
-            stream, count = _FILE_LEASES[self.path]
+            stream, count = self._leases[self.path]
             if count > 1:
-                _FILE_LEASES[self.path] = (stream, count - 1)
+                self._leases[self.path] = (stream, count - 1)
             else:
-                del _FILE_LEASES[self.path]
-                stream.close()
+                del self._leases[self.path]
+                try:
+                    if os.name == "nt" and self.shared:
+                        if not _kernel.UnlockFileEx(msvcrt.get_osfhandle(stream.fileno()), 0, 1, 0, ctypes.byref(_Overlapped())):
+                            raise ctypes.WinError(ctypes.get_last_error())
+                finally:
+                    stream.close()
 
     def __enter__(self) -> FileLease:
         """返回已取得的租约"""

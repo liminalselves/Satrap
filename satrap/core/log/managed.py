@@ -1,7 +1,7 @@
 """
-按进程和日期隔离的日志文件管理
+按服务和日期共享追加的日志文件管理
 
-文件切换和清理共用跨进程锁, 活动文件由操作系统租约保护,
+文件切换和清理共用维护锁, 单条追加使用服务写锁, 活动文件由各进程租约共同保护,
 失败通过独立诊断通道报告, 不反向调用文件日志
 """
 from __future__ import annotations
@@ -31,6 +31,7 @@ else:
     import fcntl
 
 _MANAGED = re.compile(r"^SATRAP-([a-z0-9_-]+)-(\d{8})-(\d+-[a-f0-9]{16})\.log$")
+_SHARED = re.compile(r"^SATRAP-([a-z0-9_-]+)-(\d{8})\.log$")
 _LEGACY = re.compile(r"^SATRAP-(\d{8})\.log$")
 _RUNTIME = re.compile(r"^runtime-(\d+-[a-f0-9]{16})\.lock$")
 
@@ -80,15 +81,18 @@ def report_failure(message: str) -> None:
 class LogFileLock:
     """独立的操作系统锁, 不导入依赖 logger 的存储模块"""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, retain_handle: bool = False) -> None:
         """
         初始化锁路径
 
         参数:
         - path: 日志管理目录内的锁文件
+        - retain_handle: 是否在解锁后保留句柄供下一条追加复用, 默认关闭
         """
         self.path = path
         self.file: BinaryIO | None = None
+        self._idle: BinaryIO | None = None
+        self._retain_handle = retain_handle
 
     def acquire(self, timeout: float = 0) -> bool:
         """
@@ -100,10 +104,12 @@ class LogFileLock:
         返回:
         - 已获取时返回 True, 有其它持有者时返回 False; 文件系统错误由调用边界处理
         """
-        if self.path.is_symlink() or self.path.resolve() != self.path.absolute():
-            raise ValueError("日志锁路径不能被链接重定向")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a+b")
+        handle, self._idle = self._idle, None
+        if handle is None:
+            if self.path.is_symlink() or self.path.resolve() != self.path.absolute():
+                raise ValueError("日志锁路径不能被链接重定向")
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            handle = self.path.open("a+b")
         try:
             deadline = time.monotonic() + timeout
             while True:
@@ -127,7 +133,10 @@ class LogFileLock:
                     time.sleep(0.01)
         finally:
             if self.file is not handle:
-                handle.close()   # 初始化, 等锁和控制信号失败也不能泄漏句柄
+                if self._retain_handle:
+                    self._idle = handle
+                else:
+                    handle.close()
 
     def release(self) -> None:
         """释放锁和句柄, 进程异常退出时操作系统也会释放"""
@@ -141,7 +150,19 @@ class LogFileLock:
             else:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
-            handle.close()
+            if self._retain_handle:
+                self._idle = handle
+            else:
+                handle.close()
+
+    def close(self) -> None:
+        """释放持有的锁与复用句柄, 不删除其它写入者共用的锁文件"""
+        try:
+            self.release()
+        finally:
+            if self._idle is not None:
+                self._idle.close()
+                self._idle = None
 
 
 @contextmanager
@@ -239,8 +260,11 @@ def active_runtimes(root: Path, *, prune: bool = False) -> list[dict[str, Any]]:
             if current_file is not None and (not isinstance(current_file, str) or Path(current_file).name != current_file):
                 raise ValueError("活动文件名无效")
             current_match = _MANAGED.fullmatch(current_file) if isinstance(current_file, str) else None
+            shared_match = _SHARED.fullmatch(current_file) if isinstance(current_file, str) else None
             if current_match and current_match[3] != identity:
                 raise ValueError("活动文件不属于登记进程")
+            if shared_match and shared_match[1] != state.get("service"):
+                raise ValueError("活动文件不属于登记服务")
             result.append(state)
         except (OSError, ValueError, TypeError) as error:
             report_failure(f"进程状态读取失败: {identity}, {error}")
@@ -315,18 +339,19 @@ def cleanup_logs(root: Path, retention_days: int, *, today: date | None = None, 
         unknown = {item["id"] for item in runtimes if item.get("unknown")}
         for path in root.glob("*.log"):
             managed, legacy = _MANAGED.fullmatch(path.name), _LEGACY.fullmatch(path.name)
-            if not managed and not legacy:
+            shared = _SHARED.fullmatch(path.name)
+            if not managed and not legacy and not shared:
                 continue
             try:
                 if path.is_symlink() or not path.is_file() or path.resolve().parent != root.resolve():
                     result["skipped"].append({"file": path.name, "reason": "路径或文件类型不属于受管日志"})
                     continue
-                matched = managed or legacy
+                matched = shared or managed or legacy
                 assert matched is not None
-                day = datetime.strptime(matched[2] if managed else matched[1], "%Y%m%d").date()
+                day = datetime.strptime(matched[2] if managed or shared else matched[1], "%Y%m%d").date()
                 if day >= cutoff:
                     continue
-                if path.name in protected or (managed and managed[3] in unknown):
+                if path.name in protected or (managed and managed[3] in unknown) or (shared and unknown):
                     result["skipped"].append({"file": path.name, "reason": "进程仍在使用或无法确认活动状态"})
                     continue
                 if legacy:
@@ -345,7 +370,7 @@ def cleanup_logs(root: Path, retention_days: int, *, today: date | None = None, 
 
 
 class ManagedDailyHandler(logging.Handler):
-    """按日期及进程实例独立写入日志, 空闲时也可关闭旧日期文件"""
+    """按服务及日期共享追加日志, 各进程租约独立保护活动文件"""
 
     def __init__(self, root: Path, service: str = "process", *, clock: Callable[[], date] = date.today, file_path: Path | None = None) -> None:
         """
@@ -355,12 +380,13 @@ class ManagedDailyHandler(logging.Handler):
         - root: 日志目录
         - service: 可扩展的服务标签
         - clock: 日期来源, 默认本地日期
-        - file_path: 显式指定的兼容文件路径, 默认使用独立的每日文件
+        - file_path: 显式指定的兼容文件路径, 默认使用同服务共享的每日文件
         """
         super().__init__()
         self.root = root.resolve()
         self.identity = f"{os.getpid()}-{secrets.token_hex(8)}"
         self.service = re.sub(r"[^a-z0-9_-]", "-", service.lower())[:40] or "process"
+        self._write_lock = LogFileLock(managed_subdirectory(self.root, ".locks") / f"write-{self.service}.lock", retain_handle=True)
         self.clock = clock
         self.stream: TextIO | None = None
         self.file_path = file_path.resolve() if file_path else None
@@ -421,7 +447,7 @@ class ManagedDailyHandler(logging.Handler):
                 self.current_file = None
                 self.current_day = current
                 if open_file:
-                    self.current_file = self.file_path or self.root / f"SATRAP-{self.service}-{current:%Y%m%d}-{self.identity}.log"
+                    self.current_file = self.file_path or self.root / f"SATRAP-{self.service}-{current:%Y%m%d}.log"
                 try:
                     self._publish_state()
                     if self.current_file:
@@ -444,8 +470,13 @@ class ManagedDailyHandler(logging.Handler):
             with self._io_lock:
                 self.tick(open_file=True)
                 if self.stream is not None:
-                    self.stream.write(self.format(record) + "\n")
-                    self.stream.flush()
+                    if not self._write_lock.acquire(timeout=1):
+                        raise TimeoutError("同服务日志追加暂时繁忙")
+                    try:
+                        self.stream.write(self.format(record) + "\n")
+                        self.stream.flush()
+                    finally:
+                        self._write_lock.release()
         except Exception as error:
             self._failure(f"写入或轮转失败: {error}\n{traceback.format_exc()}")
             with self._io_lock:
@@ -467,6 +498,8 @@ class ManagedDailyHandler(logging.Handler):
         with self._io_lock:
             sanitized = re.sub(r"[^a-z0-9_-]", "-", service.lower())[:40] or "process"
             if sanitized != self.service:
+                self._write_lock.close()
+                self._write_lock = LogFileLock(managed_subdirectory(self.root, ".locks") / f"write-{sanitized}.lock", retain_handle=True)
                 self.service = sanitized
                 self.state["service"] = sanitized
                 self.current_day = None
@@ -484,8 +517,9 @@ class ManagedDailyHandler(logging.Handler):
                 self._failure(f"关闭文件失败: {error}")
             finally:
                 self.stream = None
-                try:
-                    self.lease.release()
-                except Exception as error:
-                    self._failure(f"关闭租约失败: {error}\n{traceback.format_exc()}")
+                for close in (self._write_lock.close, self.lease.release):
+                    try:
+                        close()
+                    except Exception as error:
+                        self._failure(f"关闭日志锁失败: {error}\n{traceback.format_exc()}")
                 super().close()

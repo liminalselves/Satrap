@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from pathlib import Path
 from typing import Any, cast
 import json
+import base64
+from satrap.core.utils.async_worker import BoundedAsyncWorker
 
 from satrap.core.utils.paths import normalize_media_source
 from satrap.core.components import (
@@ -19,6 +21,8 @@ from satrap.core.components import (
     Json,
     Node,
     Plain,
+    Node,
+    Nodes,
     Record,
     Reply,
     Unknown,
@@ -35,6 +39,9 @@ FORWARD_NODE_LIMIT = 20
 """单条合并转发进入组件层的最大节点数"""
 FORWARD_DEPTH_LIMIT = 2
 """内联转发内容的最大展开层数, 超出后保留占位不再解析"""
+IMAGE_BYTES_LIMIT = 32 * 1024 * 1024
+"""单次消息的本地或内嵌图片原始字节预算, 编码后的体积约为其 4/3"""
+_IMAGE_WORKERS = BoundedAsyncWorker("satrap-onebot-image", workers=2, capacity=8)
 
 
 def private_session_id(user_id: Any) -> str:
@@ -250,16 +257,31 @@ def parse_forward_nodes(items: list[Any], limit: int = FORWARD_NODE_LIMIT, depth
     return nodes
 
 
-async def component_to_onebot_segment(component: BaseMessageComponent) -> dict[str, Any]:
+async def component_to_onebot_segment(component: BaseMessageComponent, *, _depth: int = 0) -> dict[str, Any]:
     """
     将 Satrap 消息组件转换为 OneBot 消息段
 
     参数:
     - component: 消息组件
+    - _depth: 内部转发嵌套深度, 默认 0
 
     返回:
     - dict[str, Any]: 将 Satrap 消息组件转换为 OneBot 消息段
     """
+    if _depth > FORWARD_DEPTH_LIMIT:
+        raise ValueError("转发嵌套超过限制")
+    if isinstance(component, Node):
+        if component.id:
+            return {"type": "node", "data": {"id": str(component.id)}}
+        content = []
+        for item in component.content:
+            for child in item.nodes if isinstance(item, Nodes) else [item]:
+                if isinstance(child, Record):
+                    content.append({"type": "record", "data": {"file": "base64://" + await child.convert_to_base64()}})
+                    # 转发语音保持原内嵌格式, 图片留给共用预算处理
+                else:
+                    content.append(await component_to_onebot_segment(child, _depth=_depth + 1))
+        return {"type": "node", "data": {"user_id": str(component.uin), "nickname": component.name, "content": content}}
     if isinstance(component, Plain):
         return {"type": "text", "data": {"text": component.text}}
     if isinstance(component, At):
@@ -293,7 +315,81 @@ async def message_chain_to_onebot_segments(components: list[BaseMessageComponent
     返回:
     - list[dict[str, Any]]: 将消息链转换为 OneBot segment 列表
     """
-    return [await component_to_onebot_segment(comp) for comp in components]
+    return await prepare_media_segments([await component_to_onebot_segment(comp) for comp in components])
+
+
+def _encode_local_image(path: str, remaining: int) -> tuple[str, int]:
+    """
+    有界读取并编码已通过媒体白名单的图片, 不创建磁盘中转副本
+
+    参数:
+    - path: 当前线程中再次校验的来源路径
+    - remaining: 当前消息剩余的原始字节预算
+
+    返回:
+    - 可传输的 base64 来源与实际读取字节数, 超限时抛出 ValueError
+    """
+    normalized = normalize_media_source(path)
+    with open(normalized, "rb") as stream:
+        if Path(normalized).stat().st_size > remaining:
+            raise ValueError("图片超过单次发送的 32 MiB 原始字节预算")
+        data = stream.read(remaining + 1)
+    if not data or len(data) > remaining:
+        raise ValueError("图片为空或超过单次发送预算")
+    return "base64://" + base64.b64encode(data).decode("ascii"), len(data)
+
+
+async def prepare_media_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    将普通消息和转发节点中的本地图片转换为字节传输来源
+
+    参数:
+    - segments: 新构建的 OneBot 消息段, 仅修改其中的图片来源
+
+    返回:
+    - 图片不依赖实现端共享目录的消息段, 超限或编码失败时抛出异常
+    """
+    remaining = IMAGE_BYTES_LIMIT
+
+    async def convert(items: list[dict[str, Any]], depth: int = 0) -> None:
+        """
+        遍历已构造的消息段, 所有节点共用同一预算
+
+        参数:
+        - items: 当前层消息段
+        - depth: 转发嵌套深度, 默认从根消息开始
+        """
+        nonlocal remaining
+        if depth > FORWARD_DEPTH_LIMIT:
+            raise ValueError("转发图片嵌套超过限制")
+        for segment in items:
+            data = segment.get("data")
+            if not isinstance(data, dict):
+                continue
+            if segment.get("type") == "image":
+                source = data.get("file")
+                if not isinstance(source, str) or not source:
+                    continue
+                source = normalize_media_source(source)
+                if source.startswith(("http://", "https://")):
+                    continue
+                if source.startswith(("base64://", "data:")):
+                    payload = source[9:] if source.startswith("base64://") else source.partition(",")[2]
+                    if (not payload or len(payload) % 4 or not re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", payload)
+                            or source.startswith("data:") and ";base64" not in source.partition(",")[0].lower()):
+                        raise ValueError("图片内嵌来源不是有效的 Base64")
+                    size = len(payload) // 4 * 3 - (len(payload) - len(payload.rstrip("=")))
+                    if size > remaining:
+                        raise ValueError("内嵌图片超过单次发送预算")
+                    remaining -= size
+                else:
+                    data["file"], size = await _IMAGE_WORKERS.run(_encode_local_image, source, remaining)
+                    remaining -= size
+            elif segment.get("type") == "node" and isinstance(data.get("content"), list):
+                await convert(data["content"], depth + 1)
+
+    await convert(segments)
+    return segments
 
 
 def create_platform_message(raw_event: dict[str, Any], self_id: str) -> PlatformMessage:

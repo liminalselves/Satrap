@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { backendApi } from '@/api/backend';
 import type { RequestDiagnosticDetail, RequestDiagnosticRecord, RequestDiagnosticSummary } from '@/api/backend';
+import { Select as KitSelect } from '@/components/kit/Select';
 
 // 阶段与原因码的中文展示: 只做翻译, 不改变服务端给出的结论
 const STAGE_LABELS: Record<string, string> = {
@@ -301,15 +302,15 @@ export function RequestDiagnosticsPanel({
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="font-medium text-text-primary">请求阶段诊断</span>
         {onAdapterChange && filters.length > 0 && (
-          <select
+          <KitSelect
             aria-label="诊断平台筛选"
-            className="glass-input w-36 text-xs"
+            className="field w-36 text-xs"
             value={adapterId}
-            onChange={(event) => onAdapterChange(event.target.value)}
+            onChange={(value) => onAdapterChange(value)}
           >
             <option value="">全部平台</option>
             {filters.map((id) => <option key={id} value={id}>{id}</option>)}
-          </select>
+          </KitSelect>
         )}
         {!onAdapterChange && adapterId && <Badge variant="info">{adapterId}</Badge>}
         {requestId && <Badge variant="info">仅此请求 {requestId}</Badge>}

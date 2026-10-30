@@ -1,9 +1,4 @@
-"""
-群聊轮次的结构化回复草稿与单次提交宿主
-
-草稿只存在于可撤销的请求作用域, 不挂在可复用会话上;
-主工作流成功结束后通过原发送队列提交, prepared 不代表平台送达
-"""
+"""群聊工具的轮次身份与直接发送宿主, 等待平台回执后返回模型"""
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterator, Mapping
@@ -13,33 +8,29 @@ from typing import Any, TYPE_CHECKING
 import asyncio
 import uuid
 
-import traceback
-
-from satrap.core.call_context import current_call_origin, current_tool_workflow, bind_call_origin
+from satrap.core.call_context import current_call_origin, current_tool_workflow
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.platform import current_adapter_manager
 from satrap.core.group_chat.types import GroupChatError
-
 from satrap.core.log import logger
+from satrap.core.platform.event import MessageChain
+from satrap.core.framework.Base import AsyncSession
 
 if TYPE_CHECKING:
     from satrap.core.platform.event import MessageEvent
     from satrap.core.utils.TCBuilder.async_manager import AsyncToolsManager
     from satrap.core.utils.TCBuilder.manager import ToolsManager
 
-from satrap.core.platform.event import MessageChain
-from satrap.core.framework.Base import AsyncSession
-
 
 class ReplyTurn:
-    """一次平台请求的输出权, 结束后连同复制上下文中的草稿一并撤销"""
+    """只持有当前主工作流身份与不确定发送状态, 不保存回复草稿"""
 
     def __init__(self, event: MessageEvent) -> None:
         """
-        创建尚未启用的轮次草稿
+        建立本轮直接发送的权限与串行化边界
 
         参数:
-        - event: 当前管线事件, 仅在本轮作用域保留
+        - event: 当前可信平台事件
         """
         self._event: MessageEvent | None = event
         self.origin = event.call_origin
@@ -47,47 +38,32 @@ class ReplyTurn:
         self.active = True
         self.enabled = False
         self.failed = False
-        self.submitted = False
         self.workflow: object | None = None
         self.workflow_manager: AsyncToolsManager | ToolsManager | None = None
         self.operation_owner = self.origin.request_id + ":" + uuid.uuid4().hex
-        self.draft: MessageChain | None = None
-        self._verify: Callable[[], Awaitable[MessageChain]] | None = None
         self._enabled: Callable[[], bool] = lambda: False
         self._lock = asyncio.Lock()
-        self._output_size = 0
-        self._media_leases: list[Any] = []
-
-    def replace_media_leases(self, message: MessageChain) -> None:
-        """
-        接管完整草稿的媒体引用, 再释放之前的草稿
-
-        参数:
-        - message: 全部组件已通过验证的新草稿
-        """
-        for lease in self._media_leases:
-            lease.release()
-        self._media_leases = [getattr(component, "asset_lease") for component in message.components
-                              if getattr(component, "asset_lease", None) is not None]
+        self._unresolved: SendReceipt | None = None
+        self._partial_results: dict[str, SendReceipt] = {}
 
     @property
     def event(self) -> MessageEvent:
         """
-        获取仍由本轮持有的平台事件
+        读取仍由本轮持有的平台事件
 
         返回:
-        - 当前事件, 作用域撤销后抛出 stale_call
+        - 当前事件, 已结束时抛出 stale_call
         """
         if self._event is None:
-            raise GroupChatError("stale_call", "回复轮次已经撤销")
+            raise GroupChatError("stale_call", "回复轮次已经结束")
         return self._event
 
     def require_owner(self) -> None:
-        """拒绝已结束轮次, 未启用模式以及共享工具的子 Agent"""
+        """核验当前主工作流及回复工具仍有效"""
         if not self.active or self.failed or not self.enabled or current_call_origin() is not self.origin or not self._enabled():
             raise GroupChatError("stale_call", "当前没有有效的群聊回复轮次")
         if current_tool_workflow() is not self.workflow or self.workflow is None:
-            raise GroupChatError("wrong_executor", "只有当前主 Agent 可以准备最终回复")
+            raise GroupChatError("wrong_executor", "只有当前主 Agent 可以发送回复")
 
     def require_main_tool(self, name: str) -> None:
         """
@@ -105,107 +81,80 @@ class ReplyTurn:
         if manager is None or not manager.is_tool_enabled(name) or (guard is not None and not guard(name)):
             raise GroupChatError("stale_call", "本轮群聊工具已停用")
 
-    async def prepare(self, validate: Callable[[], Awaitable[MessageChain]]) -> dict[str, object]:
+    def abort(self) -> None:
+        """禁止结束或失败后的复制上下文继续发起发送"""
+        self.failed = True
+
+    async def send(self, validate: Callable[[], Awaitable[MessageChain]], *, fingerprint: str) -> dict[str, object]:
         """
-        一次性核验全部组件后暂存, 并发调用只有一个草稿可成功
+        校验组件并等待实际平台回执, 不在工具返回后追加发送
 
         参数:
-        - validate: 从当前群重新核验全部组件的回调
+        - validate: 在当前群重新核验组件并取得媒体租约的回调
+        - fingerprint: 已冻结组件的摘要, 用于阻止部分成功后原样重发整条内容
 
         返回:
-        - prepared 状态, 验证失败或已有草稿时抛出明确错误
+        - sent, failed, partial 或 unknown; 部分送达禁止原样重发, 未知结果禁止同轮再次发送
         """
         async with self._lock:
+            # Step.1 核验本轮执行者和不能重复提交的发送结果
             self.require_owner()
-            if self.draft is not None or self.submitted:
-                raise GroupChatError("already_prepared", "本轮已经有最终回复草稿")
-            draft = await validate()
-            self.replace_media_leases(draft)
-            self.require_owner()
-            self.draft, self._verify = draft, validate
-            return {"ok": True, "status": "prepared", "sent": False, "request_id": self.origin.request_id}
+            if self._unresolved is not None:
+                return self._result(self._unresolved)
+            if fingerprint in self._partial_results:
+                return self._result(self._partial_results[fingerprint])
+            message: MessageChain | None = None
+            submitted = False
+            connection = self.event.adapter.group_chat_connection_token()
+            try:
+                # Step.2 整体验证组件, 等待后复核来源与平台连接
+                message = await validate()
+                self.require_owner()
+                manager = current_adapter_manager()
+                if (manager is None or manager.get_adapter(self.origin.adapter_id) is not self.event.adapter
+                        or connection != self.event.adapter.group_chat_connection_token() or not self.event.agent_route_is_current()):
+                    raise GroupChatError("stale_call", "发送前平台实例或 Agent 路由已经变化")
+                submitted = True
+                # Step.3 等待本次真实回执, 再向模型返回执行结果
+                receipt = await self.event.send(message, explicit_reply=True)
+                if receipt is None:
+                    receipt = SendReceipt("unknown", reason="missing_confirmation")
+                if receipt.status == "unknown":
+                    self._unresolved = receipt
+                elif receipt.status == "partial":
+                    self._partial_results[fingerprint] = receipt
+                log = logger.info if receipt.status == "success" else logger.warning
+                log(f"[群聊回复] 发送结束, 轮次={self.origin.request_id}, 状态={receipt.status}, 分段={len(receipt.message_ids)}")
+                return self._result(receipt)
+            except asyncio.CancelledError:
+                if submitted:
+                    self._unresolved = SendReceipt("unknown", reason="cancelled_after_submit", error_message="发送期间取消, 结果未确认", stage="publish")
+                    self.event._record_send_result(self._unresolved)
+                raise
+            finally:
+                for component in message.components if message is not None else ():
+                    lease = getattr(component, "asset_lease", None)
+                    if lease is not None:
+                        lease.release()
 
-    def capture(self, content: str) -> None:
+    @staticmethod
+    def _result(receipt: SendReceipt) -> dict[str, object]:
         """
-        缓冲主会话的正文, 不调用外部回调, 结束或取消后的回调直接丢弃
+        将平台证据映射为工具结果, 不把调用完成当成发送成功
 
         参数:
-        - content: 模型回调正文
-        """
-        if not self.active or self.failed or not content:
-            return
-        if self._output_size + len(content) > 100000:
-            self.abort()
-            logger.error(f"[群聊回复] 本轮缓冲超过上限, 轮次={self.origin.request_id}")
-            raise ValueError("群聊回复正文超过 100000 字符")
-        self._output_size += len(content)
-
-    def abort(self) -> None:
-        """撤销未提交的草稿和正文, 失败轮次不得发送已准备的回复"""
-        self.failed = True
-        self.draft = None
-        self._verify = None
-        for lease in self._media_leases:
-            lease.release()
-        self._media_leases.clear()
-
-    async def commit(self, response: str) -> bool:
-        """
-        主会话成功返回后单次提交, 草稿优先于最终文本, 未知结果不重发
-
-        参数:
-        - response: 主会话的最终文本, 无草稿时沿用原回复装饰策略
+        - receipt: 本次实际回执或此前尚未解决的回执
 
         返回:
-        - True 表示本轮由宿主处理, False 表示未启用并交回原发送逻辑
+        - 包含确认 ID, 失败位置与具体原因的模型可读结果
         """
-        if not self.enabled:
-            return False
-        if not self.active or self.failed or self.submitted:
-            return True
-
-        try:
-            with bind_call_origin(self.origin):
-                if not self._enabled():
-                    raise GroupChatError("stale_call", "回复工具已停用或从主会话移除")
-                manager = current_adapter_manager()
-                if manager is None or manager.get_adapter(self.origin.adapter_id) is not self.event.adapter:
-                    raise GroupChatError("stale_call", "提交前来源平台实例已替换")
-                await self.event.adapter.group_chat_scope(self.origin)
-                if current_adapter_manager() is not manager or manager.get_adapter(self.origin.adapter_id) is not self.event.adapter:
-                    raise GroupChatError("stale_call", "来源核验期间平台实例已替换")
-                if self._verify is not None:
-                    message = await self._verify()
-                    self.replace_media_leases(message)
-                else:
-                    if not response:
-                        return True
-                    message = MessageChain.from_text(response)
-                if not self.active or self.failed or not self.event.agent_route_is_current():
-                    raise GroupChatError("stale_call", "提交前来源路由已经失效")
-                if not message.components or self.event.has_send_operation():
-                    return True
-                self.submitted = True
-                await self.event.send(message, explicit_reply=self.draft is not None)
-            receipt = self.event.last_business_receipt
-            log = logger.info if receipt and receipt.status == "success" else logger.warning
-            log(f"[群聊回复] 提交结束, 轮次={self.origin.request_id}, "
-                f"状态={receipt.status if receipt else 'unknown'}, 分段={len(receipt.message_ids) if receipt else 0}")
-        except asyncio.CancelledError:
-            if self.submitted and self.event.last_business_receipt is None:
-                self.event._record_send_result(SendReceipt("unknown", reason="cancelled_after_submit"))
-                logger.warning(f"[群聊回复] 提交取消, 送达未知且不重发, 轮次={self.origin.request_id}")
-            self.abort()
-            raise
-        except GroupChatError as exc:
-            self.abort()
-            self.event._record_send_result(SendReceipt("failed", reason=exc.code))
-            logger.warning(f"[群聊回复] 提交拒绝, 轮次={self.origin.request_id}, 错误={exc.code}")
-        except Exception:
-            self.abort()
-            self.event._record_send_result(SendReceipt("unknown" if self.submitted else "failed", reason="reply_commit_error"))
-            logger.error(f"[群聊回复] 提交异常, 轮次={self.origin.request_id}: {traceback.format_exc()}")
-        return True
+        success = receipt.status == "success"
+        result: dict[str, object] = {"ok": success, "status": "sent" if success else receipt.status,
+                                    "sent": success, "message_ids": list(receipt.message_ids)}
+        if not success:
+            result["failed_index"] = receipt.failed_index
+            result["error"] = receipt.public_error()
+        return result
 
 
 _REPLY_TURN: ContextVar[ReplyTurn | None] = ContextVar("satrap_reply_turn", default=None)
@@ -213,7 +162,7 @@ _REPLY_TURN: ContextVar[ReplyTurn | None] = ContextVar("satrap_reply_turn", defa
 
 def current_reply_turn() -> ReplyTurn | None:
     """
-    读取本轮仍有效的输出宿主
+    读取当前有效的发送宿主
 
     返回:
     - 轮次对象, 无请求或作用域结束时为 None
@@ -223,7 +172,7 @@ def current_reply_turn() -> ReplyTurn | None:
 
 
 def abort_reply_turn() -> None:
-    """在会话失败被转为兼容空字符串前显式撤销本轮草稿"""
+    """会话失败时撤销后续发送权限, 已发送的消息保留真实结果"""
     turn = current_reply_turn()
     if turn is not None:
         turn.abort()
@@ -232,13 +181,13 @@ def abort_reply_turn() -> None:
 @contextmanager
 def bind_reply_turn(event: MessageEvent) -> Iterator[ReplyTurn]:
     """
-    为平台模型调用及最终提交建立可撤销作用域
+    为平台请求建立可撤销的发送身份
 
     参数:
-    - event: 当前事件
+    - event: 当前平台事件
 
     返回:
-    - 本轮回复对象, 退出时清除事件引用与草稿
+    - 本轮宿主, 退出后复制的工具上下文也不可继续发送
     """
     turn = ReplyTurn(event)
     token = _REPLY_TURN.set(turn)
@@ -254,15 +203,15 @@ def bind_reply_turn(event: MessageEvent) -> Iterator[ReplyTurn]:
 
 
 @contextmanager
-def buffer_session_reply(session: object) -> Iterator[None]:
+def bind_session_reply(session: object) -> Iterator[None]:
     """
-    按本轮实际启用的回复工具缓冲回调, 不在会话属性上保存平台事件
+    绑定主工作流并关闭逐块外发, 显式工具发送与最终文字回复负责交付
 
     参数:
-    - session: 已完成插件协调的主会话, 动态扩展仅在此边界读取
+    - session: 已完成插件协调的主会话
 
     返回:
-    - 会话执行上下文, 完成后恢复原回调
+    - 临时回调作用域, 退出时恢复原回调
     """
     turn = current_reply_turn()
     workflow: object | None = getattr(session, "_wf", None)
@@ -270,57 +219,42 @@ def buffer_session_reply(session: object) -> Iterator[None]:
     tools: Mapping[str, Any] = getattr(manager, "tools", {})
     if turn is not None and not turn.event.is_private_chat():
         turn.workflow, turn.workflow_manager = workflow, manager
-        # 持久工具的主执行者身份独立于结构化回复开关
     reply = tools.get("group_chat_reply")
-    if (turn is None or turn.origin.conversation_kind not in {"", "group"}
-            or turn.event.is_private_chat() or reply is None
-            or not getattr(reply, "deferred_platform_reply", False)
-            or manager is None or not manager.is_tool_enabled("group_chat_reply")):
+    if (turn is None or turn.origin.conversation_kind not in {"", "group"} or turn.event.is_private_chat()
+            or reply is None or not getattr(reply, "direct_platform_reply", False) or manager is None):
         yield
         return
-    turn.enabled, turn.workflow = True, workflow
+
     def enabled() -> bool:
         """
-        提交前复核本轮所属工具仍在同一主会话启用
+        核验回复工具的当前注册状态
 
         返回:
-        - 工具实例, 独立开关及插件状态均有效时为 True
+        - 回复工具实例, 独立开关和插件权限均有效时为 True
         """
         guard = getattr(manager, "effectiveness_guard", None)
         return manager.tools.get("group_chat_reply") is reply and manager.is_tool_enabled("group_chat_reply") and (guard is None or guard("group_chat_reply"))
 
     if not enabled():
-        turn.enabled = False
         yield
         return
-    turn._enabled = enabled
-
-    asynchronous = isinstance(session, AsyncSession)
+    turn.enabled, turn._enabled = True, enabled
     saved: list[tuple[Any, str, Any]] = []
-
-    async def capture_async(content: str) -> None:
-        """
-        异步缓冲正文
-
-        参数:
-        - content: 主工作流输出的正文
-        """
-        turn.capture(content)
 
     def discard(content: str) -> None:
         """
-        暂存模式不将思考回调作为回复正文
+        禁止正文增量在工具执行前提前外发
 
         参数:
-        - content: 主工作流输出的思考内容
+        - content: 已由工作流收集的正文或思考增量, 不在工具执行前提前发到平台
         """
 
     async def discard_async(content: str) -> None:
         """
-        异步暂存模式不将思考回调作为回复正文
+        异步禁止正文增量在工具执行前提前外发
 
         参数:
-        - content: 主工作流输出的思考内容
+        - content: 已由工作流收集的正文或思考增量, 不在工具执行前提前发到平台
         """
 
     try:
@@ -328,8 +262,7 @@ def buffer_session_reply(session: object) -> Iterator[None]:
             for name in ("content_callback", "thinking_callback"):
                 if hasattr(target, name):
                     saved.append((target, name, getattr(target, name)))
-                    callback = (capture_async if asynchronous else turn.capture) if name == "content_callback" else (discard_async if asynchronous else discard)
-                    setattr(target, name, callback)
+                    setattr(target, name, discard_async if isinstance(session, AsyncSession) else discard)
         yield
     except BaseException:
         turn.abort()

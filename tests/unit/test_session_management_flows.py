@@ -160,6 +160,9 @@ def test_register_session_from_class_config(tmp_path: Path):
     assert cfg.session_type_name == "dummy"
     assert cfg.session_config["model"] == "m1"
     assert cfg.session_config["k"] == "override"
+    assert mgr.config_updated_at("dummy") is not None
+    loaded = SessionClassConfigManager(storage_path=tmp_path / "classes.json")
+    assert loaded.config_updated_at("dummy") == mgr.config_updated_at("dummy")
 
 def _register_active_session(sm: _session_manager_config_SessionManager, session_id: str) -> None:
     """注册一个会话并放入活跃池"""
@@ -172,6 +175,10 @@ def test_remove_session_keeps_config_by_default(tmp_path: Path):
     sm = _make_sm(tmp_path)
     _register_active_session(sm, "s-1")
     assert len(sm.list_sessions()) == 1
+    summary = sm.agent_instance_summary()
+    assert summary[0]["agent"] == "echo" and summary[0]["active_instances"] == 1 and summary[0]["running_instances"] == 0
+    runtime = sm.get_session_runtime_metadata("s-1")
+    assert runtime["started_at"] == sm.pool.get("s-1").created_at
     sm.remove_session("s-1")
     assert len(sm.list_sessions()) == 0
     assert sm.get_session_config("s-1") is not None   # 配置保留
@@ -576,6 +583,9 @@ async def test_edictum_provider_manages_plugin_lifecycle(tmp_path: Path, asynchr
     else:
         provider.prepare_session(created)
     metadata = provider.get_runtime_metadata(created)
+    assert metadata["config"]["config_applied_at"] is not None
+    assert metadata["config"]["applied_revision"]
+    assert config_manager.config_updated_at("assistant") is not None
 
     assert created.installed == ["session_commands"]
     if asynchronous:
