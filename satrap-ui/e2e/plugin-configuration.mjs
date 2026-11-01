@@ -338,6 +338,17 @@ async function plugin_loading(runtime) {
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
       if (url.pathname === '/ui-config.json') return reply({ backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' });
       if (url.pathname === '/api/auth/session' || url.pathname === '/auth/session') return reply({ ok: true });
+      if (url.pathname === '/config/snapshot') {
+        const resource = url.searchParams.get('resource');
+        const snapshot = emptyConfigResponse(url.href);
+        if (resource === 'plugin_catalog') snapshot.data = plugins;
+        if (resource === 'edictum_configs') snapshot.data = configs;
+        if (resource === 'models') snapshot.data = { saved_model: { model: 'test' } };
+        for (const [name, version] of Object.entries(snapshot.versions)) {
+          version.change_token = name === 'plugin_catalog' ? JSON.stringify(plugins) : name === 'edictum_configs' ? JSON.stringify(configs) : 'v1';
+        }
+        return reply(snapshot);
+      }
       if (url.pathname === '/config/versions') return reply({ ok: true, resources: Object.fromEntries((url.searchParams.get('resources') || '').split(',').map((name) => [name, {
         state: 'available', change_token: name === 'plugin_catalog' ? JSON.stringify(plugins) : name === 'edictum_configs' ? JSON.stringify(configs) : 'v1',
       }])) });
@@ -360,6 +371,8 @@ async function plugin_loading(runtime) {
       if (url.pathname === '/config/models') return reply({ saved_model: { model: 'test' } });
       if (url.pathname === '/config/session-classes') return reply({});
       if (url.pathname === '/config/platforms') return reply({ platforms: [] });
+      if (url.pathname === '/api/platform-actions/summary') return reply({ pending_count: 0 });
+      if (url.pathname === '/api/chat/health') return reply({ ok: true, conversations: 0 });
       if (url.pathname === '/api/health' || url.pathname === '/status') return reply({ running: false, managed: false, adapters: {} });
       throw new Error(`未匹配插件加载夹具: ${request.method()} ${url.pathname}`);
     });
