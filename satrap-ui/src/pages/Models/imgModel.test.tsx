@@ -69,6 +69,20 @@ describe('图片模型管理契约', () => {
     expect(writeImgParams(state, 'novelai')).toBeNull();
   });
 
+  it('NAI 默认提示词注入开关独立保存, 关闭值保留且不改写自定义负向词', () => {
+    const params = { inject_default_positive_prompt: true, inject_default_negative_prompt: false, negative_prompt: 'custom negative' };
+    const state = readImgParams(params);
+    expect(state.extraText).toBe('');
+    expect(writeImgParams(state, 'novelai')).toEqual(params);
+    expect(params.negative_prompt).toBe('custom negative');
+    expect(() => writeImgParams(state, 'openai_images')).toThrow('不支持');
+    state.values.inject_default_positive_prompt = false;
+    state.values.inject_default_negative_prompt = true;
+    expect(writeImgParams(state, 'novelai')).toMatchObject({ inject_default_positive_prompt: false, inject_default_negative_prompt: true });
+    state.values.inject_default_positive_prompt = 'true';
+    expect(() => writeImgParams(state, 'novelai')).toThrow('布尔值');
+  });
+
   it.each(['', '0', '-1', '12.5'])('像素值 %s 非法时阻止保存', (width) => {
     const state = readImgParams();
     state.resolution = { ...state.resolution, mode: 'pixels', width, height: '768', changed: true };
@@ -127,6 +141,8 @@ describe('图片模型管理契约', () => {
     expect(markup).toContain('固定随机种子');
     expect(markup).toContain('角色 1 提示词');
     expect(markup).toContain('blue hair');
+    expect(markup).toContain('在提示词末尾注入默认正向提示词');
+    expect(markup).toContain('在负向提示词开头注入默认负向提示词');
     expect(markup).not.toContain('默认绘图参数 (JSON)');
   });
 });

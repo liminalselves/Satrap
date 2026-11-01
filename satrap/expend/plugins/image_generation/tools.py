@@ -52,7 +52,10 @@ class _ImageCore:
         size = self.policy.size_fixed if self.policy.size_mode == "fixed" else self.policy.size_default
         count = self.policy.count_fixed if self.policy.count_mode == "fixed" else self.policy.count_default
         description = f"根据提示词生成图片并交付当前会话; 尺寸{('固定为' if self.policy.size_mode == 'fixed' else '默认为')} {size}, 数量{('固定为' if self.policy.count_mode == 'fixed' else '默认为')} {count}; 每次调用只请求一次, 数量不足不自动补生成; 生成成功但发送失败时使用 send_generated_image"
-        return create_tool_defined(self.tool_name, description, self.policy.properties(), ["prompt"])
+        description += "; " + self.policy.prompt_instructions
+        if self.policy.keywords_only:
+            description += "; 当前仅允许关键词, 必须先将用户描述整理为 keywords 数组, 不接受自由文本 prompt"
+        return create_tool_defined(self.tool_name, description, self.policy.properties(), [self.policy.prompt_field])
 
     def _context(self) -> tuple[EnvironmentSnapshot, Callable[[], None]]:
         """冻结宿主与入口, 阻止计划模式和失效安装触发计费请求"""
@@ -83,12 +86,7 @@ class _ImageCore:
             if set(arguments) != {"file_id"} or not isinstance(arguments["file_id"], str):
                 raise ValueError("重发图片只接受 file_id")
             return arguments["file_id"], {}
-        values = dict(arguments)
-        prompt = values.pop("prompt", None)
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
-            raise ValueError("prompt 必须为 1 到 16000 字符的非空字符串")
-        self.policy.resolve(values)
-        return prompt, values
+        return self.policy.prepare_prompt(arguments)
 
     @staticmethod
     def _result(records: list[dict[str, Any]], deliveries: list[dict[str, Any]], requested: int, *, generated: bool) -> dict[str, Any]:

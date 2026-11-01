@@ -10,6 +10,11 @@ from satrap.core.APICall.ImageCall.media import MAX_IMAGES, MAX_IMAGE_PIXELS
 from satrap.core.APICall.ImageCall.request import build_request, merge_params, validate_params
 
 
+_KEYWORD_LIMIT = 128
+_KEYWORD_LENGTH = 120
+_KEYWORD_PATTERN = r"^[^,，;；\x00-\x1f\x7f]+$"
+
+
 @dataclass(frozen=True)
 class ImagePolicy:
     """冻结一次安装的提示词, 尺寸和数量策略"""
@@ -33,6 +38,87 @@ class ImagePolicy:
     count_min: int = 1
     count_max: int = 4
     allow_negative_prompt: bool = False
+
+    @property
+    def keywords_only(self) -> bool:
+        """仅关键词模式使用数组契约, 不接收自由文本 prompt"""
+        return self.accept_keywords and not self.accept_natural_language
+
+    @property
+    def prompt_field(self) -> str:
+        """返回当前模式必填的正向提示词字段"""
+        return "keywords" if self.keywords_only else "prompt"
+
+    @property
+    def prompt_instructions(self) -> str:
+        """集中生成允许, 禁止与转换要求, 附加指导不能覆盖格式开关"""
+        if self.keywords_only:
+            instructions = (
+                "提示词格式要求: 仅允许关键词或简短标签, 禁止自然语言句子, 段落及混合自然语言; "
+                "用户用自然语言提出需求时, 必须先提取主体, 特征, 动作, 场景和风格等关键词, "
+                "保留用户意图后再调用, 禁止原样复制完整描述; 每项只放一个关键词或简短标签, 禁止把整句话塞进单个数组项"
+            )
+        elif not self.accept_keywords:
+            instructions = (
+                "提示词格式要求: 仅允许完整, 连贯的自然语言描述, 禁止关键词或标签列表, 禁止用逗号堆砌标签或混合标签串; "
+                "用户提供关键词时, 必须先将关键词组织成描述主体, 特征, 动作, 场景和风格的自然语言句子, "
+                "保留用户意图后再调用, 禁止直接照搬关键词列表"
+            )
+        else:
+            instructions = "支持自然语言描述与关键词或标签, 可以任选一种或混合使用, 保留用户要求的主体, 动作, 场景和风格"
+        if self.prompt_guidance:
+            instructions += "; 补充编写要求: " + self.prompt_guidance + "; 补充要求仅在上述允许的格式内生效, 不得覆盖上述禁止规则"
+        return instructions
+
+    def _keyword_schema(self, *, negative: bool = False) -> dict[str, Any]:
+        """声明逐项关键词结构, 允许包含空格的标签和厂商权重语法"""
+        description = '正向关键词数组; 示例: ["orange cat", "window", "daylight"]'
+        if negative:
+            description = "负向关键词列表, 每项一个关键词或简短标签; 省略继承模型默认值, 空数组表示本次清空"
+        description += "; " + self.prompt_instructions
+        return {"type": "array", "minItems": 0 if negative else 1, "maxItems": _KEYWORD_LIMIT,
+                "items": {"type": "string", "minLength": 1, "maxLength": _KEYWORD_LENGTH,
+                          "pattern": _KEYWORD_PATTERN, "description": "单个关键词或简短标签, 禁止完整自然语言句子, 不含逗号, 分号或换行"},
+                "description": description}
+
+    @staticmethod
+    def _keywords(value: Any, *, negative: bool = False) -> str:
+        """校验关键词列表并拼接, 不通过语言词表或空格数量猜测标签含义"""
+        name = "negative_keywords" if negative else "keywords"
+        error = f"{name} 必须是 {0 if negative else 1} 到 {_KEYWORD_LIMIT} 项的关键词数组, 每项一个关键词或简短标签"
+        if not isinstance(value, list):
+            raise ValueError(error)
+        items = cast(list[object], value)
+        if not (0 if negative else 1) <= len(items) <= _KEYWORD_LIMIT:
+            raise ValueError(error)
+        keywords: list[str] = []
+        for item in items:
+            if not isinstance(item, str) or not item.strip() or len(item) > _KEYWORD_LENGTH or not re.fullmatch(_KEYWORD_PATTERN, item):
+                raise ValueError(f"{name} 每项必须是 1 到 {_KEYWORD_LENGTH} 字符的非空标签, 不含逗号, 分号或换行; 请拆分成多个关键词")
+            keywords.append(item.strip())
+        return ", ".join(keywords)
+
+    def prepare_prompt(self, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """
+        按当前提示词契约提取正向文本, 在网络调用前拒绝错误结构
+
+        参数:
+        - arguments: 完整工具参数
+
+        返回:
+        - 传给图片接口的提示词和剩余绘图参数
+        """
+        values = dict(arguments)
+        if self.keywords_only:
+            if "prompt" in values:
+                raise ValueError('当前仅允许关键词, 不接受 prompt; 请改用 keywords 数组, 例如 {"keywords":["orange cat","window"]}')
+            prompt = self._keywords(values.pop("keywords", None))
+        else:
+            prompt = values.pop("prompt", None)
+            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
+                raise ValueError("prompt 必须为 1 到 16000 字符的非空字符串")
+        self.resolve(values)
+        return prompt, values
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> ImagePolicy:
@@ -99,15 +185,8 @@ class ImagePolicy:
 
     def properties(self) -> dict[str, Any]:
         """按当前策略生成参数 schema, 固定参数不交给模型填写"""
-        styles: list[str] = []
-        if self.accept_natural_language:
-            styles.append("自然语言描述")
-        if self.accept_keywords:
-            styles.append("关键词或标签")
-        prompt = "支持" + "与".join(styles) + (", 可以混合使用" if len(styles) == 2 else "")
-        if self.prompt_guidance:
-            prompt += "; " + self.prompt_guidance
-        properties: dict[str, Any] = {"prompt": {"type": "string", "minLength": 1, "maxLength": 16000, "description": prompt}}
+        properties: dict[str, Any] = {self.prompt_field: self._keyword_schema() if self.keywords_only else
+                                     {"type": "string", "minLength": 1, "maxLength": 16000, "description": self.prompt_instructions}}
         if self.size_mode == "choices":
             properties["size"] = {"type": "string", "enum": list(self.size_choices), "default": self.size_default,
                                   "description": "输出尺寸, 省略时使用默认尺寸"}
@@ -122,8 +201,11 @@ class ImagePolicy:
             properties["n"] = {"type": "integer", "minimum": self.count_min, "maximum": self.count_max,
                                "default": self.count_default, "description": "请求图片数量, 省略使用默认值"}
         if self.allow_negative_prompt:
-            properties["negative_prompt"] = {"type": "string", "maxLength": 16000,
-                                              "description": "负向提示词, 省略继承模型默认值, 空串表示本次清空"}
+            if self.keywords_only:
+                properties["negative_keywords"] = self._keyword_schema(negative=True)
+            else:
+                properties["negative_prompt"] = {"type": "string", "maxLength": 16000,
+                                                  "description": "负向提示词, 省略继承模型默认值, 空串表示本次清空; " + self.prompt_instructions}
         return properties
 
     def resolve(self, arguments: dict[str, Any]) -> ImageGenParams:
@@ -164,6 +246,8 @@ class ImagePolicy:
         negative = arguments.get("negative_prompt")
         if "negative_prompt" in arguments and (not isinstance(negative, str) or len(negative) > 16000):
             raise ValueError("negative_prompt 必须是最多 16000 字符的字符串")
+        if "negative_keywords" in arguments:
+            negative = self._keywords(arguments["negative_keywords"], negative=True)
         return ImageGenParams(size=self._size(size), n=count, negative_prompt=negative)
 
     def allowed_fields(self) -> set[str]:
@@ -172,7 +256,7 @@ class ImagePolicy:
         if self.count_mode == "range":
             names.add("n")
         if self.allow_negative_prompt:
-            names.add("negative_prompt")
+            names.add("negative_keywords" if self.keywords_only else "negative_prompt")
         return names
 
     def params(self, client: ImageGen | AsyncImageGen, arguments: dict[str, Any]) -> ImageGenParams:

@@ -66,7 +66,7 @@ remote = ImageInput.from_url("https://example.com/input.png")
 
 - 字段默认 `None`, 表示继承实例配置
 - 本次非 `None` 字段覆盖默认值, `0` 和 `False` 不会被误判为缺失
-- 空字符串清除默认负向提示词, 空列表清除默认角色或参考图
+- 空字符串清除模型配置中的自定义负向提示词, 空列表清除默认角色或参考图
 - 列表整体替换, 不自动追加
 - `native` 为上游原生 JSON 对象, 默认值和本次值递归合并, 本次值优先
 - 类型化参数构造完请求后补充 `native`, 与已构造字段冲突时抛出 `ValueError`
@@ -88,12 +88,22 @@ NovelAIParams(native={"parameters": {"future_parameter": True}})
 `NovelAIParams` 继承公共参数, 另外包含:
 
 - 采样: `sampler`, `steps`, `scale`, `cfg_rescale`, `noise_schedule`
+- 默认提示词注入: `inject_default_positive_prompt`, `inject_default_negative_prompt`
 - 图生图: `strength`, `noise`, `extra_noise_seed`, `color_correct`, `add_original_image`
 - 其他: `sm`, `sm_dyn`, `dynamic_thresholding`, `skip_cfg_above_sigma`, `params_version`
 - 角色: `characters`, `use_coords`, `use_order`
 - 参考: `precise_references`, `vibes`
 
 NovelAI 请求在未配置时采用 `832x1216`, 单图, 28 步, `scale=5`, `k_euler_ancestral`, 参数版本 3, 随机 32 位 seed; 调用者可用类型化字段覆盖
+
+默认提示词注入是两个独立开关, 未设置时关闭; 类型化调用用 `None` 继承默认配置, 显式 `False` 可以关闭模型默认开启的注入
+
+- 正向默认词为 `very aesthetic, masterpiece, no text`, 追加在本次主提示词末尾
+- 负向默认词为 `lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page`, 放在自定义负向提示词开头
+
+在请求构造时用逗号分隔拼接, 仅在拼接处整理分隔符; 开关本身不发送给上游, 不修改保存的配置或原始提示词; 普通 `input` / `negative_prompt` 与 v4 的 `base_caption` 保持一致; 不向各个角色提示词重复注入; 生成, 编辑, 同步, 异步与插件调用均使用同一逻辑
+
+负向注入开启时, 即使本次清空自定义负向词, 请求中仍保留内置默认词; 要完全清空负向词, 需要同时关闭负向注入
 
 ```python
 from satrap import CharacterPrompt, NovelAIParams, PreciseReference
@@ -171,6 +181,7 @@ if encoding is not None:
 - 分辨率: 使用模型默认值, 常用尺寸预设, 自定义宽高像素, 或协议支持的分辨率档位
 - 生成数量, 随机或固定种子, 输出格式, 按协议显示可用字段
 - NovelAI: 采样步数, 引导强度, 可自定义的采样器, 负向提示词
+- NovelAI 默认词开关: 默认正向词追加到末尾, 默认负向词放在开头, 两项独立且默认关闭
 - NAI 高级区: CFG 重缩放, 噪声调度, SMEA 等三态开关, 图生图修改强度和噪声, 颜色校正
 - 多角色区: 添加和移除角色, 编辑角色正负提示词与多个归一化位置
 
@@ -254,7 +265,17 @@ count_default: 1
 allow_negative_prompt: true
 ```
 
-两个提示词开关互相独立, 至少开启一个; 它们和 `prompt_guidance` 共同生成 `prompt` 的参数描述, 不额外要求模型选择格式, 不强制翻译或自动判断标签写法
+两个提示词开关互相独立, 至少开启一个; 仅开启关键词时, 工具改为必填 `keywords` 数组, 不再接受 `prompt`; 每项为一个非空关键词或简短标签, 最多 128 项, 每项最多 120 字符, 不含逗号, 分号或换行; 运行时通过后才用逗号拼接给图片接口
+
+仅关键词模式示例为 `generate_image({"keywords": ["orange cat", "window", "daylight"]})`; 允许自然语言时继续使用 `prompt` 字符串, 两项都开启可以混合自然语言和标签; `prompt_guidance` 追加到对应字段说明
+
+单独开启一种写法时, 工具说明和正负提示词参数说明均明确禁止另一种写法, 并要求 LLM 先转换用户原始描述: 仅关键词时提取简短标签且禁止整句塞入数组项, 仅自然语言时将标签组织成连贯句子且禁止照搬标签列表; 两项同时开启不添加上述互斥限制; 附加 `prompt_guidance` 只能在开关允许的格式内生效
+
+负向提示词随同切换: 仅关键词且开启 `allow_negative_prompt` 时提供 `negative_keywords`, 空数组表示本次清空, 省略继承模型默认值; 允许自然语言时仍提供 `negative_prompt`
+
+数组和逐项格式属于执行前的硬校验, 错误调用会返回可修正的参数错误且不请求图片接口; 这不等于识别每个短语的语言学含义, 不使用词表或空格数量猜测标签语义, 不自动翻译或额外调用模型转换
+
+升级后需要重新应用插件配置或重启相关会话以更新工具定义; 仅关键词模式下旧的 `prompt` 调用会被拒绝, LLM 应按返回错误修正为关键词数组后再调用
 
 尺寸策略:
 

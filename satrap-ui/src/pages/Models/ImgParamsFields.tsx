@@ -98,6 +98,19 @@ export function ImgParamsFields({ apiType, value, onChange }: Props) {
     {nai && field('negative_prompt', '负向提示词', <textarea id={`${id}-negative_prompt`} className="glass-input w-full" rows={3}
       value={typeof values.negative_prompt === 'string' ? values.negative_prompt : ''}
       onChange={(event) => set('negative_prompt', event.target.value || undefined)} />)}
+    {nai && <div className="space-y-3 rounded-xl border border-line p-3">
+      {([
+        ['inject_default_positive_prompt', '在提示词末尾注入默认正向提示词', '将内置质量标签追加到主提示词末尾'],
+        ['inject_default_negative_prompt', '在负向提示词开头注入默认负向提示词', '将内置低质量与水印等排除词放在自定义负向词前'],
+      ] as const).map(([key, label, hint]) => <div key={key}>
+        <label className="flex cursor-pointer items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4 accent-teal" checked={values[key] === true}
+            onChange={(event) => set(key, event.target.checked)} />
+          <span>{label}</span>
+        </label>
+        <p className="ml-6 mt-1 text-xs text-text-tertiary">{hint}，默认关闭。</p>
+      </div>)}
+    </div>}
     {nai && <details className="rounded-xl border border-line p-3">
       <summary className="cursor-pointer text-sm font-medium">NAI 高级参数</summary>
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">

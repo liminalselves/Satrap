@@ -4,6 +4,7 @@ export const IMG_PARAM_FIELDS = [
   'size', 'n', 'seed', 'output_format', 'negative_prompt', 'steps', 'scale', 'sampler',
   'cfg_rescale', 'noise_schedule', 'sm', 'sm_dyn', 'dynamic_thresholding', 'strength', 'noise',
   'color_correct', 'add_original_image', 'characters', 'use_coords', 'use_order',
+  'inject_default_positive_prompt', 'inject_default_negative_prompt',
 ] as const;
 
 const NAI_FIELDS = new Set<string>([...IMG_PARAM_FIELDS.filter((key) => !['size', 'n', 'seed', 'output_format'].includes(key)),
@@ -93,6 +94,9 @@ export function writeImgParams(draft: ImgParamsDraft, apiType: ImgConfig['api_ty
   if (typeof params.seed === 'number' && params.seed >= 2 ** 32) throw new Error('随机种子不能超过 32 位无符号整数范围');
   for (const key of ['scale', 'cfg_rescale', 'strength', 'noise']) {
     if (params[key] != null && (typeof params[key] !== 'number' || !Number.isFinite(params[key]))) throw new Error(`${key} 必须是有限数值`);
+  }
+  for (const key of ['inject_default_positive_prompt', 'inject_default_negative_prompt']) {
+    if (params[key] != null && typeof params[key] !== 'boolean') throw new Error(`${key} 必须是布尔值`);
   }
   if (apiType === 'novelai' && params.output_format === 'jpeg') throw new Error('NovelAI 输出格式请选择 PNG 或 WebP');
   if (Array.isArray(params.characters)) {

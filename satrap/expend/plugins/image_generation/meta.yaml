@@ -14,12 +14,12 @@ config_schema:
     type: bool
     default: true
     strict: true
-    description: "提示词接受自然语言描述, 可与关键词同时开启"
+    description: "允许自由文本 prompt; 关闭并仅启用关键词时, 工具改为必填 keywords 数组"
   accept_keywords:
     type: bool
     default: true
     strict: true
-    description: "提示词接受关键词或标签, 可与自然语言同时开启"
+    description: "接受关键词或标签; 仅开启此项时强制使用关键词数组, 两项同时开启允许混合文本"
   prompt_guidance:
     type: textarea
     default: ""

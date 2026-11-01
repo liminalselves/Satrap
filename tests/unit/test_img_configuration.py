@@ -33,6 +33,19 @@ def payload() -> dict:
                                "characters": [{"prompt": "woman", "centers": [[0.2, 0.5]]}], "native": {"parameters": {"future": True}}}}
 
 
+def test_novelai_prompt_injection_flags_roundtrip_without_changing_negative_input(tmp_path):
+    manager = ModelConfigManager(tmp_path / "models.json")
+    config = {**payload(), "default_params": {"negative_prompt": "custom negative", "inject_default_positive_prompt": True,
+                                               "inject_default_negative_prompt": False}}
+    ModelConfigService(manager).create("img", "paint", config)
+    saved = ModelConfigManager(manager.storage_path).get_img_config("paint")
+    assert saved.default_params == config["default_params"]
+    with build_imagegen_from_config(saved) as client:
+        assert client.default_params.inject_default_positive_prompt is True
+        assert client.default_params.inject_default_negative_prompt is False
+        assert client.default_params.negative_prompt == "custom negative"
+
+
 def test_img_roundtrip_masking_rename_clear_and_preserve_other_model_edits(tmp_path: Path) -> None:
     path = tmp_path / "models.json"
     first = ModelConfigManager(path)
@@ -100,6 +113,8 @@ async def test_img_plugin_resources_selector_and_close(tmp_path: Path) -> None:
     {"default_params": {"native": {"parameters": {"image": "base64"}}}},
     {"default_params": {"vibes": []}}, {"default_params": {"precise_references": []}},
     {"default_params": {"steps": float("nan")}}, {"default_params": {"unknown": 1}},
+    {"default_params": {"inject_default_positive_prompt": "true"}},
+    {"default_params": {"inject_default_negative_prompt": 1}},
 ])
 def test_invalid_img_configuration_is_rejected_before_file_changes(tmp_path: Path, change: dict) -> None:
     manager = ModelConfigManager(tmp_path / "models.json")

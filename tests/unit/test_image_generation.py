@@ -17,7 +17,7 @@ from satrap import (
     ImageInput, NovelAIParams, PreciseReference, VibeEncoding, VibeReference,
 )
 from satrap.core.APICall.ImageCall.media import decode_image
-from satrap.core.APICall.ImageCall.request import merge_params
+from satrap.core.APICall.ImageCall.request import NAI_DEFAULT_NEGATIVE_PROMPT, NAI_DEFAULT_POSITIVE_PROMPT, build_request, merge_params
 from satrap.core.APICall.ImageCall.response import parse_response
 
 
@@ -43,6 +43,80 @@ def make_client(handler, *, async_=False, **kwargs):
         return client, old
     old.close()
     return client
+
+
+@pytest.mark.parametrize("positive,negative", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("model", ["nai-diffusion-3", "nai-diffusion-4-5-full", "nai-diffusion-5-curated"])
+def test_novelai_default_prompt_injection_order_and_v4_consistency(positive, negative, model):
+    expected_positive = "very aesthetic, masterpiece, no text"
+    expected_negative = ("lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, "
+                         "very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, "
+                         "too many watermarks, negative space, blank page")
+    assert NAI_DEFAULT_POSITIVE_PROMPT == expected_positive and NAI_DEFAULT_NEGATIVE_PROMPT == expected_negative
+    params = NovelAIParams(negative_prompt="custom negative", inject_default_positive_prompt=positive,
+                          inject_default_negative_prompt=negative)
+    body = build_request("novelai", model, "custom positive", params, (), None, {})["json"]
+    assert body["input"] == ("custom positive, " + expected_positive if positive else "custom positive")
+    assert body["parameters"]["negative_prompt"] == (expected_negative + ", custom negative" if negative else "custom negative")
+    assert "inject_default_positive_prompt" not in body["parameters"] and "inject_default_negative_prompt" not in body["parameters"]
+    if model != "nai-diffusion-3":
+        assert body["parameters"]["v4_prompt"]["caption"]["base_caption"] == body["input"]
+        assert body["parameters"]["v4_negative_prompt"]["caption"]["base_caption"] == body["parameters"]["negative_prompt"]
+    assert params.negative_prompt == "custom negative"
+
+
+@pytest.mark.parametrize("negative", [None, "", "  , custom negative"])
+def test_novelai_injection_handles_empty_negative_and_boundary_separators(negative):
+    params = NovelAIParams(negative_prompt=negative, inject_default_positive_prompt=True, inject_default_negative_prompt=True)
+    body = build_request("novelai", "nai-diffusion-4-5-full", "cat,  ", params, (), None, {})["json"]
+    assert body["input"] == "cat, " + NAI_DEFAULT_POSITIVE_PROMPT
+    assert body["parameters"]["negative_prompt"] == NAI_DEFAULT_NEGATIVE_PROMPT + (", custom negative" if negative else "")
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_novelai_injection_generate_edit_override_and_no_accumulation(asynchronous):
+    bodies = []
+    data = png()
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, content=data, headers={"content-type": "image/png"})
+    defaults = NovelAIParams(inject_default_positive_prompt=True, inject_default_negative_prompt=True, negative_prompt="blur",
+                             characters=[CharacterPrompt(prompt="blue hair", negative_prompt="hat")])
+    client = make_client(handler, async_=asynchronous, default_params=defaults)
+    if asynchronous:
+        client, old = client
+        await old.aclose()
+    try:
+        for _ in range(2):
+            result = client.generate("cat")
+            assert await result if asynchronous else result
+        result = client.edit("edit cat", [ImageInput.from_bytes(data)])
+        assert await result if asynchronous else result
+        result = client.generate("plain cat", params=NovelAIParams(inject_default_positive_prompt=False,
+                                 inject_default_negative_prompt=False, negative_prompt=""))
+        assert await result if asynchronous else result
+        for body in bodies[:3]:
+            assert body["input"].endswith(", " + NAI_DEFAULT_POSITIVE_PROMPT)
+            assert body["input"].count(NAI_DEFAULT_POSITIVE_PROMPT) == 1
+            assert body["parameters"]["negative_prompt"] == NAI_DEFAULT_NEGATIVE_PROMPT + ", blur"
+            assert body["parameters"]["v4_prompt"]["caption"]["char_captions"][0]["char_caption"] == "blue hair"
+            assert body["parameters"]["v4_negative_prompt"]["caption"]["char_captions"][0]["char_caption"] == "hat"
+        assert bodies[2]["action"] == "img2img"
+        assert bodies[-1]["input"] == "plain cat" and bodies[-1]["parameters"]["negative_prompt"] == ""
+        assert client.default_params == defaults
+    finally:
+        if asynchronous:
+            await client.aclose()
+        else:
+            client.close()
+
+
+@pytest.mark.parametrize("name", ["inject_default_positive_prompt", "inject_default_negative_prompt"])
+@pytest.mark.parametrize("value", ["true", 1, []])
+def test_novelai_injection_requires_boolean_before_http(name, value):
+    with make_client(lambda request: pytest.fail("不应发起请求")) as client:
+        with pytest.raises(ValueError, match="布尔值"):
+            client.generate("cat", params=NovelAIParams(**{name: value}))
 
 
 @pytest.mark.parametrize("api_type", ["novelai", "openai_images", "seedream"])

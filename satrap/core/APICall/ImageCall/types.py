@@ -90,6 +90,8 @@ class NovelAIParams(ImageGenParams):
     scale: float | None = None
     cfg_rescale: float | None = None
     noise_schedule: str | None = None
+    inject_default_positive_prompt: bool | None = None
+    inject_default_negative_prompt: bool | None = None
     strength: float | None = None
     noise: float | None = None
     extra_noise_seed: int | None = None

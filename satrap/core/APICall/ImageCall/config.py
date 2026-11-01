@@ -75,7 +75,8 @@ def image_params_from_json(payload: object, api_type: str, model: str | None = N
             parsed.append(CharacterPrompt(prompt=item["prompt"], negative_prompt=item.get("negative_prompt", ""),
                                           centers=[tuple(center) for center in centers] if centers is not None else None))
         values["characters"] = parsed
-    for name in ("sm", "sm_dyn", "dynamic_thresholding", "color_correct", "add_original_image", "use_coords", "use_order"):
+    for name in ("sm", "sm_dyn", "dynamic_thresholding", "color_correct", "add_original_image", "use_coords", "use_order",
+                 "inject_default_positive_prompt", "inject_default_negative_prompt"):
         if values.get(name) is not None and not isinstance(values[name], bool):
             raise ValueError(f"{name} 必须是布尔值或 null")
     for name in ("params_version", "extra_noise_seed"):

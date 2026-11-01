@@ -621,6 +621,13 @@ async function img_models(runtime) {
     await dialog.getByLabel('采样步数', { exact: true }).fill('20');
     await dialog.getByLabel('提示词引导强度', { exact: true }).fill('5');
     await dialog.getByLabel('生成数量', { exact: true }).fill('2');
+    const positiveInjection = dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true });
+    const negativeInjection = dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true });
+    assert.equal(await positiveInjection.isChecked(), false);
+    assert.equal(await negativeInjection.isChecked(), false);
+    await positiveInjection.check();
+    await negativeInjection.check();
+    await page.screenshot({ path: path.join(root, 'test-results', 'img-nai-default-prompts.png'), animations: 'disabled' });
     const sampler = dialog.getByLabel('采样器', { exact: true });
     assert.equal(await sampler.getAttribute('role'), 'combobox');
     assert.equal(await dialog.locator('datalist').count(), 0);
@@ -673,6 +680,8 @@ async function img_models(runtime) {
     assert.deepEqual(writes[0].body.default_params.size, [512, 768]);
     assert.equal(writes[0].body.default_params.n, 2);
     assert.equal(writes[0].body.default_params.steps, 20);
+    assert.equal(writes[0].body.default_params.inject_default_positive_prompt, true);
+    assert.equal(writes[0].body.default_params.inject_default_negative_prompt, true);
     assert.equal(writes[0].body.default_params.sampler, 'custom_sampler_v2');
     assert.equal(writes[0].body.default_params.noise_schedule, 'custom_noise_v2');
     assert.equal(writes[0].body.default_params.use_coords, true);
@@ -695,7 +704,11 @@ async function img_models(runtime) {
     assert.equal(await dialog.getByLabel('API Key').inputValue(), '');
     await dialog.getByLabel('配置名称').fill('drawing');
     await dialog.getByLabel('编辑请求地址').fill('');
+    assert.equal(await dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true }).isChecked(), true);
+    assert.equal(await dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true }).isChecked(), true);
     await dialog.getByRole('button', { name: '清空绘图默认值', exact: true }).click();
+    assert.equal(await dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true }).isChecked(), false);
+    assert.equal(await dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true }).isChecked(), false);
     await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
     assert.equal(writes[1].method, 'PATCH');
@@ -711,6 +724,7 @@ async function img_models(runtime) {
     await page.getByRole('heading', { name: 'drawing', exact: true }).waitFor({ state: 'hidden' });
     assert.equal(writes.at(-1).method, 'DELETE');
     const legacyParams = { size: '832x1216', seed: 0, steps: 23, sm: false, use_coords: true,
+      inject_default_positive_prompt: false, inject_default_negative_prompt: true,
       sampler: 'legacy_custom_sampler', noise_schedule: 'legacy_custom_noise',
       characters: [{ prompt: 'woman', negative_prompt: 'hat', centers: [[0.2, 0.5], [0.8, 0.5]] }],
       native: { parameters: { future: false } } };
@@ -728,6 +742,8 @@ async function img_models(runtime) {
     await dialog.getByText(/已有参数与当前协议不兼容/).waitFor();
     await dialog.getByLabel('请求协议').selectOption('novelai');
     assert.equal(await dialog.getByLabel('采样步数').inputValue(), '23');
+    assert.equal(await dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true }).isChecked(), false);
+    assert.equal(await dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true }).isChecked(), true);
     assert.equal(await dialog.getByLabel('采样器', { exact: true }).inputValue(), 'legacy_custom_sampler');
     await dialog.locator('summary').filter({ hasText: 'NAI 高级参数' }).click();
     assert.equal(await dialog.getByLabel('SMEA', { exact: true }).getAttribute('data-value'), 'false');
@@ -756,6 +772,8 @@ async function img_models(runtime) {
       await dialog.getByLabel('API Key').fill('test-key');
       assert.equal(await dialog.getByLabel('采样步数', { exact: true }).count(), 0);
       assert.equal(await dialog.getByLabel('负向提示词', { exact: true }).count(), 0);
+      assert.equal(await dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true }).count(), 0);
+      assert.equal(await dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true }).count(), 0);
       if (apiType === 'seedream') {
         assert.equal(await dialog.getByLabel('生成数量', { exact: true }).count(), 0);
         assert.equal(await dialog.getByLabel('输出格式', { exact: true }).count(), 0);

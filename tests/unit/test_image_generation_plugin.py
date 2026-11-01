@@ -109,9 +109,64 @@ def test_meta_defaults_match_policy_and_img_resource_type():
 @pytest.mark.parametrize("natural,keywords,expected", [(True, False, ["自然语言"]), (False, True, ["关键词"]), (True, True, ["自然语言", "关键词", "混合"])])
 def test_prompt_styles_are_independent_and_guidance_is_in_schema(natural, keywords, expected):
     policy = ImagePolicy.from_config({"accept_natural_language": natural, "accept_keywords": keywords, "prompt_guidance": "使用英文"})
-    description = policy.properties()["prompt"]["description"]
+    description = policy.properties()[policy.prompt_field]["description"]
     assert all(value in description for value in [*expected, "使用英文"])
     assert "prompt_type" not in policy.properties()
+
+
+@pytest.mark.parametrize("natural,keywords,required,forbidden", [
+    (True, False, ["仅允许完整", "禁止关键词或标签列表", "禁止用逗号堆砌标签", "必须先将关键词组织成"], ["禁止自然语言句子"]),
+    (False, True, ["仅允许关键词", "禁止自然语言句子", "必须先提取主体", "禁止把整句话塞进单个数组项"], ["禁止关键词或标签列表"]),
+    (True, True, ["可以任选一种或混合使用"], ["禁止关键词或标签列表", "禁止自然语言句子"]),
+])
+async def test_tool_and_positive_negative_schemas_explicitly_enforce_selected_style(image_host, natural, keywords, required, forbidden):
+    session, install, _, requests, _, _, _ = image_host
+    await install({"accept_natural_language": natural, "accept_keywords": keywords,
+                   "allow_negative_prompt": True, "prompt_guidance": "使用英文"})
+    tool = session.tools_manager.tools["generate_image"].get_tool_defined()["function"]
+    properties = tool["parameters"]["properties"]
+    positive = "prompt" if natural else "keywords"
+    negative = "negative_prompt" if natural else "negative_keywords"
+    for description in (tool["description"], properties[positive]["description"], properties[negative]["description"]):
+        assert all(fragment in description for fragment in [*required, "使用英文", "不得覆盖上述禁止规则"])
+        assert all(fragment not in description for fragment in forbidden)
+    assert not requests
+
+
+def test_keywords_only_uses_array_contract_and_preserves_valid_tag_syntax():
+    policy = ImagePolicy.from_config({"accept_natural_language": False, "allow_negative_prompt": True})
+    schema = policy.properties()
+    assert policy.prompt_field == "keywords" and "prompt" not in schema and "negative_prompt" not in schema
+    assert schema["keywords"]["type"] == "array" and schema["keywords"]["minItems"] == 1
+    assert schema["keywords"]["maxItems"] == 128 and schema["keywords"]["items"]["maxLength"] == 120
+    prompt, values = policy.prepare_prompt({"keywords": [" orange cat ", "窗台", "1.2::blue hair::", "artist_name (artist)"],
+                                            "negative_keywords": ["bad anatomy", "blurry"]})
+    assert prompt == "orange cat, 窗台, 1.2::blue hair::, artist_name (artist)"
+    assert policy.resolve(values).negative_prompt == "bad anatomy, blurry"
+    assert policy.resolve({}).negative_prompt is None
+    assert policy.resolve({"negative_keywords": []}).negative_prompt == ""
+
+
+@pytest.mark.parametrize("arguments", [
+    {}, {"prompt": "A cat is sitting beside a window."},
+    {"prompt": "cat", "keywords": ["cat"]}, {"keywords": "cat, window"}, {"keywords": []},
+    {"keywords": None}, {"keywords": [1]}, {"keywords": [""]}, {"keywords": ["   "]},
+    {"keywords": ["cat, window"]}, {"keywords": ["cat，window"]}, {"keywords": ["cat; window"]},
+    {"keywords": ["cat\nwindow"]}, {"keywords": ["cat\twindow"]}, {"keywords": ["a" * 121]},
+    {"keywords": ["cat"] * 129}, {"keywords": ["cat"], "negative_prompt": "blurry"},
+    {"keywords": ["cat"], "negative_keywords": "blurry"}, {"keywords": ["cat"], "negative_keywords": ["bad, blurry"]},
+])
+def test_keywords_only_rejects_free_text_and_malformed_arrays(arguments):
+    policy = ImagePolicy.from_config({"accept_natural_language": False, "allow_negative_prompt": True})
+    with pytest.raises(ValueError):
+        policy.prepare_prompt(arguments)
+
+
+@pytest.mark.parametrize("keywords", [False, True])
+def test_natural_language_modes_keep_existing_prompt_contract(keywords):
+    policy = ImagePolicy.from_config({"accept_keywords": keywords})
+    assert policy.prompt_field == "prompt" and "keywords" not in policy.properties()
+    assert policy.prepare_prompt({"prompt": "An orange cat by the window."}) == ("An orange cat by the window.", {})
 
 
 @pytest.mark.parametrize("config", [
@@ -176,6 +231,48 @@ async def test_generate_uses_model_defaults_policy_overrides_and_current_receive
     root = environment_snapshot(session).artifacts_root
     artifact, record = load_image(root, result["images"][0]["file"]["file_id"])
     assert artifact.sha256 == received[0].sha256 and record["width"] == 8 and record["height"] == 12
+
+
+async def test_keywords_only_blocks_old_prompt_before_http_and_serializes_arrays(image_host):
+    session, install, execute, requests, _, _, _ = image_host
+    await install({"accept_natural_language": False, "allow_negative_prompt": True})
+    tool = session.tools_manager.tools["generate_image"]
+    definition = tool.get_tool_defined()["function"]
+    assert definition["parameters"]["required"] == ["keywords"]
+    assert "prompt" not in definition["parameters"]["properties"]
+    assert "仅允许关键词" in definition["description"]
+    for arguments in ({"prompt": "An orange cat is sitting beside a window."}, {"keywords": "cat, window"},
+                      {"keywords": ["cat\nwindow"]}, {"keywords": ["cat"], "negative_prompt": "bad quality"}):
+        result = await execute(**arguments)
+        assert not result["ok"] and result["error_type"] == "invalid_arguments"
+    assert not requests
+    result = await execute(keywords=["orange cat", "window", "1.2::daylight::"], negative_keywords=["blurry", "bad anatomy"])
+    assert result["ok"] and len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert body["input"] == "orange cat, window, 1.2::daylight::"
+    assert body["parameters"]["negative_prompt"] == "blurry, bad anatomy"
+    assert body["parameters"]["steps"] == 20 and body["parameters"]["seed"] == 0
+    assert (await execute(keywords=["cat"], negative_keywords=[]))["ok"]
+    assert json.loads(requests[-1].content)["parameters"]["negative_prompt"] == ""
+    assert (await execute(keywords=["cat"]))["ok"]
+    assert json.loads(requests[-1].content)["parameters"]["negative_prompt"] == "bad quality"
+
+
+async def test_keywords_plugin_inherits_nai_injection_once_after_preflight(image_host):
+    session, install, execute, requests, _, _, _ = image_host
+    manager = session.plugin_model_manager
+    defaults = manager.get_img_config("nai").default_params
+    manager.update_img_config("nai", default_params={**defaults, "inject_default_positive_prompt": True,
+                                                     "inject_default_negative_prompt": True})
+    await install({"accept_natural_language": False, "allow_negative_prompt": True})
+    result = await execute(keywords=["orange cat", "window"], negative_keywords=["blur"])
+    assert result["ok"] and len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert body["input"] == "orange cat, window, very aesthetic, masterpiece, no text"
+    assert body["input"].count("very aesthetic") == 1
+    assert body["parameters"]["negative_prompt"].startswith("lowres, artistic error,")
+    assert body["parameters"]["negative_prompt"].endswith("blank page, blur")
+    assert manager.get_img_config("nai").default_params["negative_prompt"] == "bad quality"
 
 
 async def test_fixed_values_are_hidden_and_rejected(image_host):

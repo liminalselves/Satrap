@@ -12,6 +12,14 @@ from .media import MAX_IMAGES, b64, data_url, decode_image, mask_png, precise_im
 from .types import ImageGenParams, ImageInput, NovelAIParams
 
 
+NAI_DEFAULT_POSITIVE_PROMPT = "very aesthetic, masterpiece, no text"
+NAI_DEFAULT_NEGATIVE_PROMPT = (
+    "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, "
+    "very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, "
+    "too many watermarks, negative space, blank page"
+)
+
+
 def merge_native(target: dict[str, Any], extra: Mapping[str, Any], *, conflict: bool = True) -> None:
     """递归合并原生字段, 生成后的请求不允许被原生字段覆盖"""
     for key, value in extra.items():
@@ -80,6 +88,9 @@ def validate_params(params: ImageGenParams, api_type: str, model: str) -> None:
     if api_type == "seedream" and params.negative_prompt is not None:
         raise ValueError("Seedream 协议不支持 negative_prompt")
     if isinstance(params, NovelAIParams):
+        for name in ("inject_default_positive_prompt", "inject_default_negative_prompt"):
+            if getattr(params, name) is not None and type(getattr(params, name)) is not bool:
+                raise ValueError(f"{name} 必须是布尔值或 None")
         for name in ("scale", "cfg_rescale", "strength", "noise", "skip_cfg_above_sigma"):
             value = getattr(params, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value)):
@@ -189,6 +200,10 @@ def build_request(
         if params.output_format is not None:
             parameters["image_format"] = params.output_format
         negative = params.negative_prompt or ""
+        if params.inject_default_positive_prompt:
+            prompt = ", ".join(part for part in (prompt.rstrip(" ,，\t\r\n"), NAI_DEFAULT_POSITIVE_PROMPT) if part)
+        if params.inject_default_negative_prompt:
+            negative = ", ".join(part for part in (NAI_DEFAULT_NEGATIVE_PROMPT, negative.lstrip(" ,，\t\r\n")) if part)
         parameters["negative_prompt"] = negative
         if model.startswith(("nai-diffusion-4", "nai-diffusion-5")) or params.characters:
             positive_chars, negative_chars = [], []
