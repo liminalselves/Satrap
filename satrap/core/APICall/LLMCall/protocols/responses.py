@@ -7,11 +7,13 @@ import json
 import re
 from typing import cast
 
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, ModelProtocolPayload
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, ModelProtocolPayload, validate_runtime_thinking
 from satrap.core.utils import parse_tool_arguments
 from satrap.core.utils.model_history import replay_items
 from ..responses import _extract_token_usage
 from .base import ModelProtocolError, StreamDecoder
+
+from satrap.core.log import logger
 
 
 def field(value: object, name: str, default: object = None) -> object:
@@ -191,7 +193,12 @@ class ResponsesProtocol:
                        include=["reasoning.encrypted_content"])
         if parameters.get("max_tokens") is not None:
             request["max_output_tokens"] = parameters["max_tokens"]
-        if thinking == "off":
+        try:
+            thinking = validate_runtime_thinking(thinking)
+        except ValueError as error:
+            logger.error(f"[LLM] 非法思考强度: {thinking!r}, {error}")
+            raise
+        if thinking in {"off", "none"}:
             request["reasoning"] = {"effort": "none"}
         elif thinking != "default":
             request["reasoning"] = {"effort": thinking, "summary": "auto"}

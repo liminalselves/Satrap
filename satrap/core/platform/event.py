@@ -925,11 +925,9 @@ class MessageEvent:
                 self._record_send_result(result, purpose=purpose)
                 return result if isinstance(result, SendReceipt) else SendReceipt("unknown", reason="legacy_no_receipt")
             except Exception as e:
-                record_debug("delivery", "end", status="unknown" if submitted else "failed",
-                             metadata={"purpose": purpose, "error_type": type(e).__name__})
                 receipt = SendReceipt("unknown" if submitted else "failed", reason="explicit_reply_send_error" if explicit_reply else "send_error",
                                       error_message="发送结果未确认" if submitted else "发送前路由校验失败", stage="publish" if submitted else "validation")
-                self._record_send_result(receipt, purpose=purpose)
+                self._record_send_result(receipt, purpose=purpose, error_type=type(e).__name__)
                 logger.error(
                     f"[MessageEvent.send] 发送消息失败: session_id={self.session_id}, "
                     f"错误={e}, 堆栈={traceback.format_exc()}",
@@ -1019,13 +1017,14 @@ class MessageEvent:
                 yield self.decorate_reply(chain)
         # 空块不进入适配器, 避免降级路径把空消息当作明确失败而中断后续块
 
-    def _record_send_result(self, result: object, *, purpose: str = "business") -> None:
+    def _record_send_result(self, result: object, *, purpose: str = "business", error_type: str = "") -> None:
         """
         保存明确回执并维护逻辑回复的去重标记
 
         参数:
         - result: 新适配器的 SendReceipt 或旧适配器的兼容返回值
         - purpose: business 业务输出或 error_feedback 错误反馈, 后者不进入请求送达证据
+        - error_type: 发送异常的类型名, 成功路径为空, 统一写入唯一的 delivery.end
 
         旧适配器返回 None 时仍表示调用已完成, 不伪造平台确认回执
         """
@@ -1035,7 +1034,7 @@ class MessageEvent:
         record_debug("delivery", "end", status=receipt.status if receipt else "unknown", metadata={"purpose": purpose,
                      "message_ids": list(receipt.message_ids) if receipt else [], "reason": receipt.reason if receipt else "legacy_no_receipt",
                      "error_code": receipt.error_code if receipt else "", "error_message": receipt.error_message if receipt else "",
-                     "stage": receipt.stage if receipt else ""})
+                     "error_type": error_type, "stage": receipt.stage if receipt else ""})
         trace = current_trace()
         if trace is not None and purpose == "business" and trace.status not in {"timeout", "cancelled"}:
             trace.status = receipt.status if receipt else "unknown"

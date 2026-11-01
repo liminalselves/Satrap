@@ -39,14 +39,15 @@ export async function mockConfigVersions(page, origin, version) {
       edictum_configs: '/config/edictum/sessions', plugin_catalog: '/config/plugins' };
     assert.ok(paths[resource], `未声明的快照资源: ${resource}`);
     const token = version();
+    const target = url.origin + paths[resource];
     const response = await page.evaluate(async (target) => {
       const response = await fetch(target, { credentials: 'include' });
       return { status: response.status, body: await response.json() };
-    }, url.origin + paths[resource]);
+    }, target);
     assert.equal(response.status, 200, `快照正文夹具请求失败: ${resource}`);
     const data = resource === 'plugin_catalog' ? response.body.plugins : response.body;
     assert.ok(data && typeof data === 'object' && (resource === 'plugin_catalog' ? Array.isArray(data)
-      : !Array.isArray(data) && Object.values(data).every((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))), `无效快照正文夹具: ${resource}`);
+      : !Array.isArray(data) && Object.values(data).every((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))), `无效快照正文夹具: ${resource}: ${target}: ${JSON.stringify(response.body)}`);
     const resources = resource === 'plugin_catalog' ? ['plugin_catalog', 'edictum_configs', 'chat_plugins']
       : resource === 'edictum_configs' ? ['edictum_configs', 'plugin_catalog'] : [resource];
     return route.fulfill({ status: response.status, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' },

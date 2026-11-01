@@ -90,6 +90,34 @@ E2E_RULES = (
       "satrap-ui/src/components/common/LogoutButton", "satrap/core/server_auth.py", "satrap/core/utils/minihttp.py"),
      ("backend-password-recovery", "runtime-cleanup", "attached-service-password-recovery")),
 )
+# 过短或过于通用的 fixture 名称不能证明真实依赖, 避免把无关测试和前端源码全部纳入
+FIXTURE_MIN_TOKEN_LENGTH = 5
+GENERIC_FIXTURE_TOKENS = frozenset({
+    "fixture", "fixtures", "test", "tests", "unit", "integration", "support", "manual",
+    "meta", "meta.yaml", "tools", "tools.py", "worker", "workers", "helper", "helpers",
+    "data", "data.json", "config", "config.json", "config.yaml", "config.yml",
+    "index", "index.js", "index.ts", "index.tsx", "init", "__init__.py",
+    "readme", "readme.md", "sample", "samples", "example", "examples", "case", "cases",
+    "demo", "demo.py", "json", "yaml", "yml",
+})
+TEST_CONSUMER_ROOTS = ("tests/unit", "tests/integration")
+FRONTEND_CONSUMER_ROOT = "satrap-ui/src"
+FRONTEND_SOURCE_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx"})
+
+
+def declared_scenarios(source: str) -> list[str]:
+    """
+    读取场景文件中声明的全部场景名
+
+    参数:
+    - source: 浏览器场景脚本源码
+
+    返回:
+    - 按声明顺序排列的场景名, 不含场景表的辅助脚本返回空列表
+    """
+    if "export const scenarios =" not in source:
+        return []
+    return re.findall(r"^\s*\[['\"]([\w-]+)['\"]\s*,", source.split("export const scenarios =", 1)[1], re.MULTILINE)
 
 
 def browser_scenarios() -> dict[str, str]:
@@ -101,13 +129,72 @@ def browser_scenarios() -> dict[str, str]:
     """
     result: dict[str, str] = {}
     for path in sorted((ROOT / "satrap-ui/e2e").glob("*.mjs")):
-        source = path.read_text(encoding="utf-8")
-        if "export const scenarios =" in source:
-            for name in re.findall(r"^\s*\[['\"]([\w-]+)['\"]\s*,", source.split("export const scenarios =", 1)[1], re.MULTILINE):
-                if name in result:
-                    raise ValueError(f"浏览器场景名重复: {name}")
-                result[name] = path.relative_to(ROOT / "satrap-ui").as_posix()
+        for name in declared_scenarios(path.read_text(encoding="utf-8")):
+            if name in result:
+                raise ValueError(f"浏览器场景名重复: {name}")
+            result[name] = path.relative_to(ROOT / "satrap-ui").as_posix()
     return result
+
+
+def fixture_consumer_tokens(path: str) -> set[str]:
+    """
+    按相对路径, 文件名, 文件名主干和目录生成消费者查找 token
+
+    参数:
+    - path: 仓库相对的 fixture 路径
+
+    返回:
+    - 过滤过短和通用名称后的 token, 避免公共元数据文件名导致误命中
+    """
+    relative = Path(path)
+    try:
+        fixture_relative = relative.relative_to("tests/fixtures")
+    except ValueError:
+        fixture_relative = relative
+    tokens = {relative.as_posix(), fixture_relative.as_posix(), fixture_relative.name, fixture_relative.stem}
+    tokens.update(fixture_relative.parts[:-1])
+    return {token for token in tokens if len(token) >= FIXTURE_MIN_TOKEN_LENGTH and token.lower() not in GENERIC_FIXTURE_TOKENS}
+
+
+def fixture_consumers(path: str) -> tuple[set[str], bool]:
+    """
+    查找 tests/fixtures 的单元, 集成与前端消费者
+
+    参数:
+    - path: 仓库相对的 fixture 路径
+
+    返回:
+    - 需要执行的测试文件集合, 以及是否命中 satrap-ui/src 消费者
+    """
+    tokens = fixture_consumer_tokens(path)
+    targets: set[str] = set()
+    frontend = False
+    if not tokens:
+        return targets, frontend
+    fixture = (ROOT / path).resolve()
+    for root_name in (*TEST_CONSUMER_ROOTS, FRONTEND_CONSUMER_ROOT):
+        root = ROOT / root_name
+        if not root.is_dir():
+            continue
+        for consumer in root.rglob("*"):
+            if not consumer.is_file() or consumer.resolve() == fixture:
+                continue
+            if root_name == FRONTEND_CONSUMER_ROOT:
+                if consumer.suffix not in FRONTEND_SOURCE_SUFFIXES:
+                    continue
+            elif consumer.suffix != ".py" or not consumer.name.startswith("test_"):
+                continue
+            try:
+                source = consumer.read_text(encoding="utf-8-sig")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if not any(token in source for token in tokens):
+                continue
+            if root_name == FRONTEND_CONSUMER_ROOT:
+                frontend = True
+            else:
+                targets.add(consumer.relative_to(ROOT).as_posix())
+    return targets, frontend
 
 
 def git(*args: str) -> str:
@@ -205,6 +292,10 @@ def build_plan(changed: list[str], base: str, full: bool = False) -> TestPlan:
                 module = path.removesuffix(".py").replace("/", ".")
                 targets.update(test.relative_to(ROOT).as_posix() for test in (ROOT / "tests/unit").glob("test_*.py")
                                if module in test.read_text(encoding="utf-8-sig"))
+            if path.startswith("tests/fixtures/"):
+                consumers, fixture_frontend = fixture_consumers(path)
+                targets.update(consumers)
+                frontend = frontend or fixture_frontend
             for prefixes, modules in PYTHON_RULES:
                 if path.startswith(prefixes):
                     targets.update(f"tests/unit/test_{module}.py" for module in modules)
@@ -214,14 +305,8 @@ def build_plan(changed: list[str], base: str, full: bool = False) -> TestPlan:
             if path.startswith(prefixes):
                 e2e.update(cases)
         if path.startswith("satrap-ui/e2e/") and (ROOT / path).is_file():
-            source = (ROOT / path).read_text(encoding="utf-8")
-            if "export const scenarios =" in source:
-                names = set(re.findall(r"^\s*\[['\"]([\w-]+)['\"]\s*,", source.split("export const scenarios =", 1)[1], re.MULTILINE))
-                old = previous_source(base, path)
-                old_names = set(re.findall(r"^\s*\[['\"]([\w-]+)['\"]\s*,", old.split("export const scenarios =", 1)[1], re.MULTILINE)) if "export const scenarios =" in old else set()
-                e2e.update((names - old_names) | (names & set(DEFAULT_E2E)))
-            else:
-                e2e.update(DEFAULT_E2E)
+            names = declared_scenarios((ROOT / path).read_text(encoding="utf-8"))
+            e2e.update(names or DEFAULT_E2E)
     if any(path.startswith(("satrap-ui/src/api/", "satrap-ui/src/components/", "satrap-ui/src/styles/")) or path in {
         "satrap-ui/src/App.tsx", "satrap-ui/src/router.tsx", "satrap-ui/package.json", "satrap-ui/package-lock.json",
         "satrap/core/backend/control_server.py", ".github/workflows/code-sandbox.yml",

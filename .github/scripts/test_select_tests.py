@@ -64,6 +64,41 @@ class TestSelection(unittest.TestCase):
         self.assertNotIn("tests/unit/test_deleted.py", plan["python_tests"])
         self.assertEqual(plan["e2e_scripts"]["chat-reconnect"], "e2e/chat-recovery-flows.mjs")
 
+    def test_modified_browser_file_runs_all_declared_scenarios(self) -> None:
+        """既有场景文件被修改时运行该文件当前声明的全部场景, 不只新增或默认场景"""
+        plan = selection.build_plan(["satrap-ui/e2e/group-configuration.mjs"], "HEAD")
+        self.assertEqual(plan["e2e"], ["group-chat-plugin", "groups"])
+        self.assertEqual(plan["e2e_scripts"], {"group-chat-plugin": "e2e/group-configuration.mjs",
+                                               "groups": "e2e/group-configuration.mjs"})
+        self.assertTrue(plan["frontend"])
+
+    def test_fixture_consumers_cover_unit_integration_and_frontend(self) -> None:
+        """共享 fixture 按路径和目录 token 找到单元, 集成与前端消费者"""
+        plan = selection.build_plan(["tests/fixtures/wake_policy_cases.json"], "HEAD")
+        self.assertIn("tests/unit/test_wake_policy_flows.py", plan["python_tests"])
+        self.assertTrue(plan["frontend"])
+        plugin = selection.build_plan(["tests/fixtures/plugin_application_worker.py"], "HEAD")
+        self.assertIn("tests/integration/test_plugin_application_processes.py", plugin["python_tests"])
+        recovery = selection.build_plan(["tests/fixtures/chat_recovery_worker.py"], "HEAD")
+        self.assertIn("tests/integration/test_chat_recovery_process.py", recovery["python_tests"])
+        probe = selection.build_plan(["tests/fixtures/recovery_probe/meta.yaml"], "HEAD")
+        self.assertIn("tests/integration/test_chat_recovery_process.py", probe["python_tests"])
+
+    def test_fixture_without_consumers_keeps_plan_minimal(self) -> None:
+        """没有消费者的 fixture 不误选无关测试, 也不打开前端任务"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests/fixtures").mkdir(parents=True)
+            (root / "tests/fixtures/orphan_asset.bin").write_bytes(b"\x00")
+            (root / "tests/unit").mkdir(parents=True)
+            (root / "tests/unit/test_unrelated.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+            (root / "satrap-ui/src").mkdir(parents=True)
+            (root / "satrap-ui/src/unrelated.ts").write_text("export const value = 1;\n", encoding="utf-8")
+            with patch.object(selection, "ROOT", root):
+                plan = selection.build_plan(["tests/fixtures/orphan_asset.bin"], "HEAD")
+        self.assertFalse(plan["frontend"])
+        self.assertEqual(plan["python_tests"], [f"tests/unit/test_{module}.py" for module in selection.CORE_TESTS])
+
     def test_shared_test_helper_selects_its_consumers(self) -> None:
         """公共测试辅助变化时回归实际导入它的业务模块"""
         with tempfile.TemporaryDirectory() as directory:

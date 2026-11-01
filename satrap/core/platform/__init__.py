@@ -95,6 +95,14 @@ class PlatformEvent:
     extras: Dict[str, Any] = field(default_factory=dict[str, Any])
 
 
+@dataclass(frozen=True)
+class ApprovalAdapterState:
+    """审批目录使用的已确认账号与连接状态"""
+
+    account: str
+    online: bool
+
+
 class PlatformAdapter(ABC):
     """
     平台适配器基类
@@ -678,6 +686,15 @@ class PlatformAdapter(ABC):
         capabilities["archive_search"] = {"state": "supported" if self.message_archive is not None else "unavailable",
                                           "reason": "local_archive" if self.message_archive is not None else "archive_not_configured"}
         return capabilities
+
+    def approval_state(self) -> ApprovalAdapterState:
+        """
+        返回审批目录使用的已确认账号和在线状态
+
+        返回:
+        - 未实现时视为未确认账号且离线, 避免用配置值代替协议确认
+        """
+        return ApprovalAdapterState("", False)
 
     def friend_account(self) -> str:
         """返回好友关系所属的已确认账号, 未实现时为空"""

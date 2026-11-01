@@ -187,7 +187,7 @@ async def test_empty_input_does_not_send_request(monkeypatch, method, return_fal
     assert await _invoke(llm, method, []) == await _invoke(async_llm, method, [])
     assert calls == [[], []]
 
-@pytest.mark.parametrize("method", ["chat", "stream_chat"])
+@pytest.mark.parametrize("method", ["chat", "structured_output", "stream_chat"])
 @pytest.mark.parametrize("error_kind", ["api", "unknown"])
 @pytest.mark.parametrize(
     "suppress_error,return_false", [(True, False), (True, True), (False, False)]
@@ -215,9 +215,19 @@ async def test_error_contract(
                 await _invoke(client, method, messages)
             assert raised.value is error
     else:
-        assert await _invoke(llm, method, messages) == await _invoke(
-            async_llm, method, messages
+        expected = (
+            [""]
+            if method.startswith("stream_") and not return_false
+            else [False]
+            if method.startswith("stream_")
+            else ""
+            if not return_false
+            else False
         )
+        result = await _invoke(llm, method, messages)
+        async_result = await _invoke(async_llm, method, messages)
+        assert result == async_result == expected
+        assert "失败" not in str(result)
     assert calls[0] == calls[1]
 
 def _build_completion(
@@ -754,6 +764,44 @@ def test_extended_levels_are_forwarded_unchanged():
 def test_default_thinking_sends_no_fields():
     """default 不发送任何思考字段, 由模型服务决定"""
     assert _build_thinking_extra_body("default", ["thinking.type", "reasoning_effort", "enable_thinking"]) is None
+
+
+def test_none_alias_disables_switches_and_keeps_effort_none():
+    """none 与 off 一样关闭开关字段, 强度字段保留供应商合法 none"""
+    body = _build_thinking_extra_body(
+        "none",
+        ["thinking.type", "reasoning_effort", "enable_thinking"],
+    )
+
+    assert body == {
+        "thinking": {"type": "disabled"},
+        "reasoning_effort": "none",
+        "enable_thinking": False,
+    }
+
+
+def test_none_alias_omits_none_fields_like_off():
+    """omit_none_thinking_fields 对 off 与 none 行为一致"""
+    fields = ["thinking.type", "reasoning_effort", "enable_thinking"]
+    assert _build_thinking_extra_body("none", fields, omit_none_thinking_fields=True) == _build_thinking_extra_body(
+        "off", fields, omit_none_thinking_fields=True
+    ) == {
+        "thinking": {"type": "disabled"},
+        "enable_thinking": False,
+    }
+
+
+@pytest.mark.parametrize("value", ["extreme", "", None, 1])
+def test_invalid_runtime_thinking_is_rejected_and_logged(monkeypatch, value):
+    """非法运行时思考强度明确拒绝并记录日志"""
+    from satrap.core.APICall.LLMCall import utils as llm_utils
+
+    logged: list[str] = []
+    monkeypatch.setattr(llm_utils.logger, "error", lambda message: logged.append(message))
+    with pytest.raises(ValueError, match="不支持的思考强度"):
+        _build_thinking_extra_body(cast(Any, value), ["reasoning_effort"])
+    assert logged and "非法思考强度" in logged[0]
+
 
 def test_empty_effective_field_set_returns_none():
     """全部字段被忽略或省略时不发送 extra_body"""

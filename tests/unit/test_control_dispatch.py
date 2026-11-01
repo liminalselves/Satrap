@@ -931,12 +931,13 @@ async def test_platform_toggle_persists_cas_and_reports_real_application(monkeyp
         await asyncio.sleep(.01)
     assert completed["result"]["runtime"]["status"] == "applied"
     assert calls[-1][2] == {"expected_config_revision": accepted["revision"]}
-    assert len(calls) == 2
+    # 启停 apply 不再发送结果被丢弃的 health 预请求, 只以 reload 回执为准
+    assert len(calls) == 1
     assert (await _request("/api/platforms/bot/enable", "POST", json.dumps(request).encode())).startswith(b"HTTP/1.1 409")
     assert (await _request("/config/operations/platform-toggle-one")).startswith(b"HTTP/1.1 200")
 
     async def offline(path, payload=None):
-        assert payload is None   # 连接前已确认离线时不提交写入, 不假报执行成功
+        assert payload is not None   # 离线由 reload 回执确认, 不再预请求 health
         raise SourceUnavailable("offline", "service_unreachable")
 
     monkeypatch.setattr(control_server, "_action_backend_request", offline)
@@ -949,5 +950,78 @@ async def test_platform_toggle_persists_cas_and_reports_real_application(monkeyp
             break
         await asyncio.sleep(.01)
     assert completed["result"]["saved"] and completed["result"]["runtime"]["status"] == "pending"
+    revision = config_document_revision(load_config_document(control_server.CONFIG_PATH))
+
+    async def unconfirmed(path, payload=None):
+        return 200, {"platforms": [{"id": "bot", "status": "pending_restart"}]}
+
+    monkeypatch.setattr(control_server, "_action_backend_request", unconfirmed)
+    request = {"expected_revision": revision, "operation_id": "platform-toggle-three"}
+    response = await _request("/api/platforms/bot/disable", "POST", json.dumps(request).encode())
+    assert response.startswith(b"HTTP/1.1 202")
+    for _ in range(100):
+        completed = control_server._PLUGIN_APPLICATIONS.get(request["operation_id"])
+        if completed["status"] != "running":
+            break
+        await asyncio.sleep(.01)
+    assert completed["result"]["runtime"] == {"status": "pending", "reason_code": "pending_restart"}
     counts = await control_server._agent_instance_counts({"demo": {}}, "edictum")
     assert counts["demo"]["active_instances"] is None and not counts["demo"]["runtime_source"]["complete"]
+
+
+async def test_control_rag_sqlite_startup_failure_is_degraded(monkeypatch, tmp_path):
+    """RAG 启动数据库故障不应阻断 Control 监听与后续清理"""
+    from satrap.core.storage import StorageLayout
+    from satrap.core.telemetry import capture
+
+    class FakeServer:
+        served = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def serve_forever(self):
+            self.served = True
+
+    class FakeMaintenanceRunner:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def start(self):
+            return False
+
+        async def close(self):
+            pass
+
+    server = FakeServer()
+
+    async def fake_start_server(*args, **kwargs):
+        return server
+
+    async def fail_rag_start(self, platforms):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    async def no_telemetry(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(control_server, "_CONTROL_AUTH", control_server._CONTROL_AUTH)
+    monkeypatch.setattr(control_server, "_CONTROL_RUNTIME", control_server._CONTROL_RUNTIME)
+    monkeypatch.setattr(control_server, "_PLUGIN_APPLICATIONS", control_server._PLUGIN_APPLICATIONS)
+    monkeypatch.setattr(control_server, "_RAG_JOBS", control_server._RAG_JOBS)
+    monkeypatch.setattr(control_server, "_check_single_instance", lambda: True)
+    monkeypatch.setattr(control_server, "_write_pid_file", lambda *args: None)
+    monkeypatch.setattr(control_server.ServerAuth, "create", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(control_server.atexit, "register", lambda *args: None)
+    monkeypatch.setattr(control_server.asyncio, "start_server", fake_start_server)
+    monkeypatch.setattr(control_server, "_configured_storage_layout", lambda: StorageLayout(tmp_path / "data"))
+    monkeypatch.setattr(control_server, "_configured_platform_ids", lambda: ["chat"])
+    monkeypatch.setattr(control_server.RagJobManager, "start", fail_rag_start)
+    monkeypatch.setattr(control_server, "MaintenanceRunner", FakeMaintenanceRunner)
+    monkeypatch.setattr(capture, "start_service_capture", no_telemetry)
+
+    await control_server.run_server("127.0.0.1", 0)
+    assert server.served
+    assert control_server._RAG_JOBS is None

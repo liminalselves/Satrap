@@ -185,6 +185,27 @@ class StorageMaintenanceService:
             for key, item in cast(dict[object, Any], value).items()
         }
 
+    def _trash_sessions_root(self, platform_id: str) -> Path:
+        """
+        返回已核验非符号链接的平台回收会话根
+
+        参数:
+        - platform_id: 平台实例 ID
+
+        返回:
+        - Path: 回收会话根的真实路径
+        """
+        platform_root = self.layout.platform_root(platform_id)
+        if platform_root.is_symlink():
+            raise ValueError("拒绝使用符号链接平台目录")
+        trash_root = platform_root / "trash"
+        if trash_root.is_symlink():
+            raise ValueError("拒绝使用符号链接回收目录")
+        sessions = trash_root / "sessions"
+        if sessions.is_symlink():
+            raise ValueError("拒绝使用符号链接回收目录")
+        return sessions.resolve()
+
     def _resolve_archive_path(self, platform_id: str, archive_id: str) -> Path:
         """
         解析并校验单个会话回收包路径
@@ -206,7 +227,7 @@ class StorageMaintenanceService:
             or "\\" in normalized_id
         ):
             raise ValueError("非法回收包路径")
-        trash_root = (self.layout.trash_root(platform_id) / "sessions").resolve()
+        trash_root = self._trash_sessions_root(platform_id)
         candidate = trash_root / normalized_id
         if candidate.is_symlink():
             raise ValueError("拒绝使用符号链接回收包")
@@ -492,19 +513,44 @@ class StorageMaintenanceService:
                     auto_safe=True,
                     details={"tables": tables},
                 ))
-            trash_sessions = platform_root / "trash" / "sessions"
-            if trash_sessions.exists():
+            trash_root = platform_root / "trash"
+            trash_sessions = trash_root / "sessions"
+            if trash_root.is_symlink() or trash_sessions.is_symlink():
+                results.append(self._audit_item(
+                    category="unsafe_entry",
+                    platform_id=platform_id,
+                    path=trash_sessions,
+                    reason="回收目录是符号链接",
+                    recommended_action="manual_review",
+                    auto_safe=False,
+                ))
+            elif trash_sessions.exists():
                 for archive in sorted(trash_sessions.iterdir()):
-                    manifest = self._read_json(archive / "manifest.json")
+                    if archive.is_symlink() or not archive.is_dir():
+                        results.append(self._audit_item(
+                            category="unsafe_entry",
+                            platform_id=platform_id,
+                            path=archive,
+                            reason="回收项是符号链接或非目录",
+                            recommended_action="manual_review",
+                            auto_safe=False,
+                        ))
+                        continue
+                    manifest_path = archive / "manifest.json"
+                    manifest = None if manifest_path.is_symlink() else self._read_json(manifest_path)
+                    missing = manifest is None and not manifest_path.exists() and not manifest_path.is_symlink()
+                    details = {"archive_id": archive.name, "manifest": manifest or {}}
+                    if manifest is None:
+                        details.update({"restorable": False, "restore_error": "manifest_missing" if missing else "manifest_invalid"})
                     results.append(self._audit_item(
                         category="trash_entry",
                         platform_id=platform_id,
                         session_id=str((manifest or {}).get("session_id", "")),
                         path=archive,
-                        reason="会话数据位于回收区",
-                        recommended_action="restore_or_purge",
+                        reason="回收项清单缺失, 只能删除" if missing else "回收项清单无效, 无法恢复" if manifest is None else "会话数据位于回收区",
+                        recommended_action="purge" if manifest is None else "restore_or_purge",
                         auto_safe=False,
-                        details={"archive_id": archive.name, "manifest": manifest or {}},
+                        details=details,
                     ))
         results.sort(key=lambda item: (item.platform_id, item.category, item.path))
         return results
@@ -603,30 +649,36 @@ class StorageMaintenanceService:
         返回:
         - list[dict[str, Any]]: 按删除时间倒序的回收项
         """
-        trash_root = self.layout.trash_root(platform_id) / "sessions"
+        trash_root = self._trash_sessions_root(platform_id)
         if not trash_root.exists():
             return []
         results: list[dict[str, Any]] = []
         for archive in trash_root.iterdir():
             if archive.is_symlink() or not archive.is_dir():
                 continue
-            manifest = self._read_json(archive / "manifest.json")
+            manifest_path = archive / "manifest.json"
+            manifest = None if manifest_path.is_symlink() else self._read_json(manifest_path)
             receipt = self._restore_receipt(self.layout.platform_db(platform_id), archive.name)
             if manifest is None and receipt is not None:
                 manifest = json.loads(receipt["metadata"])
-            if manifest is None or str(manifest.get("platform_id", "")) != platform_id:
-                continue
-            try:
-                records = self._read_json_records(archive / "records.json")
-                self._validate_archive_records(manifest, records, archive / "records.json")
-                if manifest.get("layout_version") != self.layout.layout_version:
-                    raise ValueError("回收包数据布局版本不匹配")
-                metadata = self._archive_display_metadata(records)
-                restore_error = ""
-            except (ValueError, TypeError, OSError) as error:
-                records = {}
+            if manifest is None:
+                manifest = {}
                 metadata = self._archive_display_metadata({})
-                restore_error = str(error)
+                restore_error = ("manifest_missing" if not manifest_path.exists() and not manifest_path.is_symlink()
+                                 else "manifest_invalid")
+            elif str(manifest.get("platform_id", "")) != platform_id:
+                continue
+            else:
+                try:
+                    records = self._read_json_records(archive / "records.json")
+                    self._validate_archive_records(manifest, records, archive / "records.json")
+                    if manifest.get("layout_version") != self.layout.layout_version:
+                        raise ValueError("回收包数据布局版本不匹配")
+                    metadata = self._archive_display_metadata(records)
+                    restore_error = ""
+                except (ValueError, TypeError, OSError) as error:
+                    metadata = self._archive_display_metadata({})
+                    restore_error = str(error)
             if receipt and receipt["completed"]:
                 restore_error = ""   # 已恢复包只需重试清理, records.json 可能已经移除
             deleted_at = manifest.get("deleted_at")
@@ -852,7 +904,7 @@ class StorageMaintenanceService:
         lock = self.layout.platform_root(platform_id) / "locks" / f"archive-{storage_key(archive_id, fallback='archive')}.lock"
         with FileLock(lock, timeout=0):
             target = self._resolve_archive_path(platform_id, archive_id)
-            if not target.exists() and not target.is_symlink():
+            if not target.is_dir() or target.is_symlink():
                 return False
             shutil.rmtree(target)
             return True
@@ -873,8 +925,9 @@ class StorageMaintenanceService:
             platform_id = (manifest or {}).get("platform_id")
             if not isinstance(platform_id, str) or not platform_id or self.layout.platform_root(platform_id).resolve() != platform_root.resolve():
                 continue
-            root = self.layout.trash_root(platform_id) / "sessions"
-            if root.is_symlink() or not root.is_dir():
+            trash_root = self.layout.trash_root(platform_id)
+            root = trash_root / "sessions"
+            if trash_root.is_symlink() or root.is_symlink() or not root.is_dir():
                 continue
             for candidate in root.iterdir():
                 if candidate.is_symlink() or not candidate.is_dir():
@@ -887,6 +940,26 @@ class StorageMaintenanceService:
                     yield platform_id, candidate.name, archive.stat().st_mtime
                 except (OSError, ValueError):
                     logger.warning(f"[回收区] 跳过无法确认身份的回收项: {platform_id}/{candidate.name}")
+
+    def _explicit_trash_candidate(self, platform_id: str, archive_id: str) -> tuple[str, str, float] | None:
+        """
+        核验显式回收项位于可信回收根内, 不要求普通清单可恢复
+
+        参数:
+        - platform_id: 请求指定的平台实例
+        - archive_id: 请求指定的回收包 ID
+
+        返回:
+        - 可安全永久删除的回收项; 路径逃逸或符号链接时返回 None
+        """
+        try:
+            target = self._resolve_archive_path(platform_id, archive_id)
+            if not target.is_dir() or target.is_symlink():
+                return None
+            return platform_id, archive_id, target.lstat().st_mtime
+        except (OSError, ValueError) as error:
+            logger.warning(f"[回收区] 显式回收项不可安全删除: {platform_id}/{archive_id}, {type(error).__name__}")
+            return None
 
     def purge_archives(
         self,
@@ -935,6 +1008,11 @@ class StorageMaintenanceService:
                 and (not platform_id or item_platform == platform_id)
             ):
                 available.add(key)
+        # 显式选择允许清理缺清单目录, 自动保留期清理仍只认 _trash_candidates 的完整身份
+        for item_platform, archive_id in sorted(requested - available):
+            candidate = self._explicit_trash_candidate(item_platform, archive_id)
+            if candidate is not None:
+                available.add((candidate[0], candidate[1]))
         results: list[dict[str, Any]] = []
         missing = requested - set(available)
         results.extend(

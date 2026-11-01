@@ -30,6 +30,10 @@ from satrap.core.log import logger
 from satrap.core.config_paths import get_config_path
 
 
+class SessionClassConfigUnavailable(RuntimeError):
+    """会话类配置文件首次加载失败, 修复并重新加载前拒绝任何写入"""
+
+
 class SessionClassConfigManager:
     """
     会话类配置管理器
@@ -67,6 +71,7 @@ class SessionClassConfigManager:
 
         self._configs: Dict[str, Dict[str, Any]] = {}
         self._class_cache: Dict[str, Type[Session] | Type[AsyncSession]] = {}
+        self._has_valid_snapshot = False
 
         if auto_create:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +279,9 @@ class SessionClassConfigManager:
         return output
 
     def _save_locked(self):
-        """保存配置到 JSON 文件"""
+        """保存配置到 JSON 文件, 首次加载失败时禁止用空状态覆盖原文件"""
+        if not self._has_valid_snapshot:
+            raise SessionClassConfigUnavailable("会话类配置首次加载失败, 已拒绝覆盖原文件; 请修复后重新加载")
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         with self.storage_path.open("w", encoding="utf-8") as f:
             json.dump(self._to_payload_locked(include_metadata=True), f, ensure_ascii=False, indent=2)
@@ -283,28 +290,28 @@ class SessionClassConfigManager:
     def reload(self):
         """从文件重载配置"""
         with self._lock:
-            self._class_cache.clear()
             if not self.storage_path.exists():
                 self._configs = {}
+                self._class_cache.clear()
+                self._has_valid_snapshot = True
                 self._save_locked()
                 return
             try:
                 with self.storage_path.open("r", encoding="utf-8") as f:
                     data = json.load(f)
                 if not isinstance(data, dict):
-                    logger.warning("[SessionClassConfigManager] 配置文件格式错误, 已忽略")
-                    self._configs = {}
+                    logger.warning("[SessionClassConfigManager] 配置文件格式错误, 已保留上一份有效配置")
                     return
-                data = cast(dict[str, Any], data)
-                self._configs = {}
-                for _name, entry in data.items():
+                parsed: Dict[str, Dict[str, Any]] = {}
+                for _name, entry in cast(dict[str, Any], data).items():
                     if not isinstance(entry, dict):
                         continue
                     entry = cast(dict[str, Any], entry)
                     updated = entry.get("_updated_at")
                     if updated is not None and (not isinstance(updated, (int, float)) or isinstance(updated, bool) or not math.isfinite(updated) or updated < 0):
-                        raise ValueError("会话类配置更新时间无效")
-                    self._configs[str(_name)] = {
+                        logger.warning(f"[SessionClassConfigManager] 忽略无效更新时间: {_name}")
+                        updated = None
+                    parsed[str(_name)] = {
                         "class_path": str(entry.get("class_path", "")),
                         "_updated_at": updated,
                         "is_async": bool(entry.get("is_async", False)),
@@ -316,6 +323,11 @@ class SessionClassConfigManager:
                     }
             except Exception as e:
                 logger.error(f"[SessionClassConfigManager] 读取配置失败: {e}")
+                return
+            # 全部条目解析成功后才替换, 异常时保留上一份有效状态
+            self._configs = parsed
+            self._class_cache.clear()
+            self._has_valid_snapshot = True
 
     def config_updated_at(self, name: str) -> float | None:
         """

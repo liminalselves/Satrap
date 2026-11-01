@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 import traceback
 
-from satrap.core.config.agent_routing import validate_session_bindings
+from satrap.core.config.agent_routing import resolve_platform_session_type, validate_session_bindings
 from satrap.core.config.group_references import list_group_references
 from satrap.core.log import logger
 from satrap.core.storage import StorageLayout
@@ -40,13 +40,11 @@ def list_agent_references(
             platform_id = str(platform["id"])
             if platform_id not in ids:
                 ids.append(platform_id)
-            provider = platform.get("session_provider") or "session_class"
-            config_name = str(platform.get("session_type") or "").strip()
-            if not config_name and provider == "session_class":
-                platform_type = str(platform.get("type") or "")
-                config_name = platform_type if session_classes is not None and platform_type in session_classes else default_session_type
-            elif not config_name and provider == "edictum":
-                config_name = default_session_type
+            provider = str(platform.get("session_provider") or "session_class")
+            config_name = resolve_platform_session_type(
+                str(platform.get("type") or ""), str(platform.get("session_type") or ""), provider,
+                default_session_type=default_session_type, session_classes=session_classes,
+            )
             if provider == target and config_name == name:
                 references.append({"summary": f"平台 {platform_id} 的默认 Agent", "kind": "platform_binding",
                                    "platform_id": platform_id})

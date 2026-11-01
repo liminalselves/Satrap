@@ -166,6 +166,27 @@ class GroupConfigStore:
             for row in rows
         ]
 
+    def bind_approval_account(self, self_id: str) -> None:
+        """
+        仅持久化协议确认的审批账号, 不采用或修改任何群配置
+
+        参数:
+        - self_id: 平台确认的非空账号, 允许 Misskey 等非数字标识
+        """
+        if (not isinstance(self_id, str) or not self_id or len(self_id) > 128
+                or self_id != self_id.strip() or any(ord(char) < 32 or ord(char) == 127 for char in self_id)):
+            raise ValueError("审批账号必须是非空且不含控制字符的标识")
+        now = time.time()
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO group_accounts (self_id, mode, approval_defaults_json, revision, "
+                "legacy_source_fingerprint, migrated_at, last_bound_at) "
+                "VALUES (?, 'selected', '{}', 1, NULL, ?, ?) "
+                "ON CONFLICT(self_id) DO UPDATE SET last_bound_at=excluded.last_bound_at",
+                (self_id, now, now),
+            )
+
     def adopt_legacy(self, self_id: str, settings: Mapping[str, object]) -> GroupAccountRecord:
         """
         首次确认账号时原子采用旧群字段, 已采用后检查旧字段未被改写

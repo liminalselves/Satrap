@@ -234,7 +234,8 @@ class PluginCatalog:
         for key in ("display_name", "icon", "license", "homepage", "repository"):
             value = meta.get(key, "")
             if not isinstance(value, str) or len(value) > 2048:
-                raise ValueError(f"插件展示字段 {key} 必须为最多 2048 字符的字符串")
+                logger.warning(f"[插件目录] 忽略无效展示字段, 插件={plugin_dir.name}, 字段={key}")
+                value = ""
             presentation[key] = value
         return PluginCatalogEntry(
             **presentation,

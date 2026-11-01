@@ -327,6 +327,8 @@ class UnifiedActionQuery:
     timezone: str
     after: tuple[object, ...] = ()
     scope_revision: str | None = None
+    today_start: float | None = None
+    today_end: float | None = None
 
     @classmethod
     def parse(cls, values: dict[str, str], *, summary: bool = False, now: float | None = None) -> UnifiedActionQuery:
@@ -381,15 +383,18 @@ class UnifiedActionQuery:
                         params[name] = str(previous)
             except (KeyError, TypeError, ValueError, UnicodeError) as error:
                 raise ValueError('审批游标无效或查询已变化') from error
-        window = None
-        if summary or 'from' in params or 'to' in params:
-            window = MetricWindow.parse({**params, 'bucket': 'day'}, now=now)
         zone = params.get('tz', 'Asia/Shanghai')
         try:
             ZoneInfo(zone)
         except (ValueError, ZoneInfoNotFoundError) as error:
             raise ValueError('审批时区无效') from error
-        return cls(filters, limit, sort, order, window.start if window else None, window.end if window else None, zone, after, scope_revision)
+        window = None
+        if summary or 'from' in params or 'to' in params:
+            window = MetricWindow.parse({**params, 'bucket': 'day'}, now=now)
+        # 今日指标始终使用独立的自然日窗口, 不能被列表自身的 from/to 或全历史范围改写
+        today = MetricWindow.parse({'tz': zone, 'bucket': 'day'}, now=now)
+        return cls(filters, limit, sort, order, window.start if window else None, window.end if window else None, zone, after,
+                   scope_revision, today.start, today.end)
 
     def cursor(self, key: tuple[object, ...]) -> str:
         """
@@ -500,10 +505,11 @@ def _read_unified(scope: ActionScope, query: UnifiedActionQuery, *, summary: boo
     返回:
     - 有界候选行, 总数, 状态计数及决策延迟的可合并分母
     """
-    result: dict[str, JsonValue] = {'items': [], 'total': 0, 'by_state': {}, 'by_source': {}, 'today_decided': 0,
-                                   'latency_sum_ms': 0, 'latency_count': 0, 'automatic_count': 0, 'expired_count': 0,
-                                   'platform_id': scope.platform_id, 'current_account': scope.current_account,
-                                   'online': scope.online, 'accounts': [], 'invalid_count': 0}
+    result: dict[str, JsonValue] = {'items': [], 'total': 0, 'pending_count': 0, 'by_state': {}, 'by_source': {},
+                                   'today_decided': 0, 'latency_sum_ms': 0, 'latency_count': 0, 'automatic_count': 0,
+                                   'expired_count': 0, 'platform_id': scope.platform_id,
+                                   'current_account': scope.current_account, 'online': scope.online,
+                                   'accounts': [], 'invalid_count': 0}
     if not scope.database.is_file():
         return result
     with closing(sqlite3.connect(scope.database.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
@@ -522,13 +528,16 @@ def _read_unified(scope: ActionScope, query: UnifiedActionQuery, *, summary: boo
                    + ' FROM (' + sources + ') actions' + (' LEFT JOIN group_directory d ON d.self_id=actions.self_id AND d.group_id=actions.group_id' if 'group_directory' in tables else ''))
         result['accounts'] = [str(row[0]) for row in db.execute('SELECT DISTINCT self_id FROM (' + grouped + ') ORDER BY self_id', args)]
         conditions = ['1=1']
+        facet_conditions = ['1=1']
         account = query.filters['account']
         if account == 'current':
             if scope.current_account:
                 conditions.append('self_id=:account')
+                facet_conditions.append('self_id=:account')
                 args['account'] = scope.current_account
         elif account != 'all':
             conditions.append('self_id=:account')
+            facet_conditions.append('self_id=:account')
             args['account'] = account
         for field, column in (('source', 'source'), ('state', 'effective_state'), ('action_id', 'action_id')):
             if query.filters[field] not in {'', 'all'}:
@@ -544,15 +553,26 @@ def _read_unified(scope: ActionScope, query: UnifiedActionQuery, *, summary: boo
             conditions.append('(' + ' OR '.join(f"instr(lower(COALESCE(CAST({field} AS TEXT),'')),:q)>0" for field in public_fields) + ')')
             args['q'] = query.filters['q'].lower()
         base = 'SELECT * FROM (' + grouped + ') WHERE ' + ' AND '.join(conditions)
+        # 分面只受操作账号范围约束, 不叠加 source/state 自身筛选和列表时间窗口
+        facet_base = 'SELECT * FROM (' + grouped + ') WHERE ' + ' AND '.join(facet_conditions)
         if query.start is not None:
             args.update(start=query.start, end=query.end)
         selected = base + (' AND created_at>=:start AND created_at<:end' if query.start is not None else '')
         result['total'] = int(db.execute('SELECT count(*) FROM (' + selected + ')', args).fetchone()[0])
-        result['by_state'] = {row[0]: row[1] for row in db.execute('SELECT effective_state,count(*) FROM (' + selected + ') GROUP BY effective_state', args)}
-        result['by_source'] = {row[0]: row[1] for row in db.execute('SELECT source,count(*) FROM (' + selected + ') GROUP BY source', args)}
-        stats = db.execute("SELECT count(*),COALESCE(sum(max(0,decision_at-created_at)*1000),0) FROM (" + base + ") WHERE decision IN ('approved','rejected') AND decided_by_json IS NOT NULL "
-                           + ("AND decision_at>=:start AND decision_at<:end" if query.start is not None else ''), args).fetchone()
-        result.update(today_decided=stats[0], latency_count=stats[0], latency_sum_ms=stats[1])
+        result['by_state'] = {row[0]: row[1] for row in db.execute('SELECT effective_state,count(*) FROM (' + facet_base + ') GROUP BY effective_state', args)}
+        result['by_source'] = {row[0]: row[1] for row in db.execute('SELECT source,count(*) FROM (' + facet_base + ') GROUP BY source', args)}
+        if account == 'current' and not scope.current_account:
+            result['pending_count'] = None
+        else:
+            result['pending_count'] = int(db.execute("SELECT count(*) FROM (" + facet_base + ") WHERE effective_state='pending'", args).fetchone()[0])
+        result['today_decided'], result['latency_sum_ms'] = 0, 0
+        if query.today_start is not None and query.today_end is not None:
+            args.update(today_start=query.today_start, today_end=query.today_end)
+            stats = db.execute("SELECT count(*),COALESCE(sum(max(0,decision_at-created_at)*1000),0) FROM (" + facet_base + ") "
+                               "WHERE decision IN ('approved','rejected') AND decided_by_json IS NOT NULL "
+                               "AND decision_at>=:today_start AND decision_at<:today_end", args).fetchone()
+            result['today_decided'], result['latency_sum_ms'] = stats[0], stats[1]
+            result['latency_count'] = stats[0]
         result['expired_count'] = cast(dict[str, JsonValue], result['by_state']).get('expired', 0)
         result['automatic_count'] = int(db.execute("SELECT count(*) FROM (" + selected + ") WHERE state IN ('ready','executing','succeeded','failed','unknown') AND decision IS NULL", args).fetchone()[0])
         if not summary:
@@ -611,7 +631,8 @@ async def unified_action_catalog(scopes: list[ActionScope], query: UnifiedAction
             warnings.append(f'{scope.platform_id}: action_storage_unavailable')
             complete = False
             platforms.append({'platform_id': scope.platform_id, 'current_account': scope.current_account, 'online': scope.online,
-                              'accounts': [scope.current_account] if scope.current_account else [], 'invalid_count': 0, 'read_state': 'error'})
+                              'accounts': [scope.current_account] if scope.current_account else [], 'invalid_count': 0,
+                              'pending_count': None, 'read_state': 'error'})
             return
         items.extend(cast(list[dict[str, JsonValue]], response['items']))
         total += cast(int, response['total'])
@@ -623,7 +644,7 @@ async def unified_action_catalog(scopes: list[ActionScope], query: UnifiedAction
         for field, target in (('by_state', counts), ('by_source', by_source)):
             for name, count in cast(dict[str, int], response[field]).items():
                 target[name] = target.get(name, 0) + count
-        platforms.append({name: response[name] for name in ('platform_id', 'current_account', 'online', 'accounts', 'invalid_count')})
+        platforms.append({name: response[name] for name in ('platform_id', 'current_account', 'online', 'accounts', 'invalid_count', 'pending_count')})
         if response['invalid_count'] or not scope.current_account:
             complete = False
             warnings.append(f'{scope.platform_id}: ' + ('invalid_action_records' if response['invalid_count'] else 'account_unconfirmed'))
@@ -658,6 +679,7 @@ async def unified_action_catalog(scopes: list[ActionScope], query: UnifiedAction
             'automatic_count': automatic, 'expired_count': expired,
             'decision_latency_ms': latency_sum / latency_count if latency_count else None,
             'window': {'from': query.start, 'to': query.end, 'tz': query.timezone, 'bucket': None},
+            'today_window': {'from': query.today_start, 'to': query.today_end, 'tz': query.timezone, 'bucket': 'day'},
             'has_more': has_more, 'next_cursor': cursor}
 
 

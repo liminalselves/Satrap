@@ -479,6 +479,51 @@ async def test_full_configuration_order_counterfactual_and_update_rollback(tmp_p
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
+async def test_dynamic_skill_refresh_respects_execution_gate_and_uninstall(tmp_path, monkeypatch, asynchronous):
+    """动态来源关闸后不再调用工厂, 恢复后重新刷新, 损坏状态与卸载均 fail-closed"""
+    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "plugin-config")
+    payload = tmp_path / "payload.txt"
+    payload.write_text("one", encoding="utf-8")
+    provider = _plugin(tmp_path, "dynamic_skills", {}, skills=f'''
+        from pathlib import Path
+        from satrap.core.utils.skills import Skill
+
+        def get_skills(session, config, *, plugin_host=None):
+            path = Path({str(payload)!r})
+            def source():
+                return [Skill("dynamic_guide", path.read_text(encoding="utf-8"))]
+            return plugin_host.skills.provide(source)
+    ''')
+    from satrap.edictum.plugin_config import PluginConfigManager
+    host_config = PluginConfigManager()
+    disabled = host_config.save_execution("dynamic_skills", False, 0)
+    llm = AsyncLLM(api_key="test", model="test") if asynchronous else LLM(api_key="test", model="test")
+    session_type = AsyncSimpleSession if asynchronous else SimpleSession
+    session = session_type("dynamic-skill-gate", llm, db_path=str(tmp_path / "skills.db"), enable_checkpoint=False)
+    try:
+        await _await(session.install_plugin(str(provider)))
+        manager = session._skills_manager
+        assert manager.sources["dynamic_skills"]
+        assert manager.skills["dynamic_guide"].instructions == "one"
+        payload.write_text("two", encoding="utf-8")
+        manager.refresh()
+        assert manager.skills["dynamic_guide"].instructions == "one"
+        host_config.save_execution("dynamic_skills", True, disabled["revision"])
+        manager.refresh()
+        assert manager.skills["dynamic_guide"].instructions == "two"
+        (tmp_path / "plugin-config" / ".host-state.json").write_text("{broken", encoding="utf-8")
+        # 整体损坏时依赖关系计算也必须停用, 不能把缺失快照当作默认启用
+        assert not session._plugin_interop._relation_nodes()["dynamic_skills"].enabled
+        await _await(session.uninstall_plugin("dynamic_skills"))
+        assert "dynamic_skills" not in manager.sources
+        manager.refresh()
+    finally:
+        for plugin in session.list_plugins():
+            await _await(session.uninstall_plugin(plugin.name))
+        await _await(llm.client.close())
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
 async def test_skill_replacement_restores_resources_and_preserves_user_switch(tmp_path, monkeypatch, asynchronous):
     """技能替代回收旧指令和自带工具, 替代退出后仅恢复仍被用户启用的技能"""
     tool_base = "AsyncTool" if asynchronous else "Tool"

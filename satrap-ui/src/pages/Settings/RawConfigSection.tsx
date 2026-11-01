@@ -15,12 +15,13 @@ interface Props {
   draft: string;
   saved: string;
   revision: string;
+  revisionRef: RefObject<string | undefined>;
   path: string;
   backendRunning: boolean;
   controlOnline: boolean;
   onChange: (value: string) => void;
   onSave: () => Promise<boolean>;
-  onReload: () => void;
+  onReload: () => Promise<string | undefined>;
   onDirty: (dirty: boolean) => void;
   register: (actions: { save: () => Promise<boolean>; undo: () => void }) => void;
 }
@@ -145,7 +146,7 @@ function DiffRows({ rows }: { rows: DiffRow[] }) {
 }
 
 export function RawConfigSection({
-  i, active, draft, saved, revision, path, backendRunning, controlOnline, onChange, onSave, onReload, onDirty, register,
+  i, active, draft, saved, revision, revisionRef, path, backendRunning, controlOnline, onChange, onSave, onReload, onDirty, register,
 }: Props) {
   const [issues, setIssues] = useState<YamlIssue[]>([]);
   const [validated, setValidated] = useState(false);
@@ -161,6 +162,11 @@ export function RawConfigSection({
 
   const dirty = draft !== saved;
   const conflict = dirty && revision !== baseRevisionRef.current;
+  // 保存全部会在同一渲染周期连续调用分节, 执行时必须读取最新修订而不是旧闭包中的状态
+  const hasConflict = useCallback(
+    () => dirty && (revisionRef.current || '—') !== baseRevisionRef.current,
+    [dirty, revisionRef],
+  );
   const diff = useMemo(() => diffLines(saved, draft), [saved, draft]);
   const counts = useMemo(() => diffSummary(diff), [diff]);
   const previewRows = useMemo(() => compactDiff(diff, 2), [diff]);
@@ -224,7 +230,7 @@ export function RawConfigSection({
       return false;
     }
     if (!dirty) return true;
-    if (conflict) {
+    if (hasConflict()) {
       setComparison(true);
       toast.error('保存失败: 修订冲突', '配置文件已被其它会话修改, 请先读取最新版本');
       return false;
@@ -240,7 +246,7 @@ export function RawConfigSection({
     } finally {
       setSaving(false);
     }
-  }, [controlOnline, validated, issues, dirty, conflict, jumpTo, onSave]);
+  }, [controlOnline, validated, issues, dirty, hasConflict, jumpTo, onSave]);
 
   const undo = useCallback(() => {
     onChange(saved);
@@ -250,20 +256,25 @@ export function RawConfigSection({
 
   useEffect(() => { register({ save: performSave, undo }); }, [register, performSave, undo]);
 
-  const refresh = () => {
+  const refresh = async () => {
     if (refreshing || saving) return;
     setRefreshing(true);
-    onReload();
-    window.setTimeout(() => {
-      setRefreshing(false);
-      if (dirty) {
-        setComparison(true);
-        toast.warning('已重新读取配置文件', '草稿已保留, 请核对差异后再保存');
-      } else {
-        setComparison(false);
-        toast.success('已重新读取配置文件');
+    try {
+      const loadedRevision = await onReload();
+      if (loadedRevision !== undefined) {
+        // 只有用户显式重新读取成功后才推进草稿基准, 外部 revision 变化仍需先确认
+        baseRevisionRef.current = loadedRevision;
+        if (dirty) {
+          setComparison(true);
+          toast.warning('已重新读取配置文件', '草稿已保留, 请核对差异后再保存');
+        } else {
+          setComparison(false);
+          toast.success('已重新读取配置文件');
+        }
       }
-    }, 400);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const discard = () => {
@@ -287,7 +298,7 @@ export function RawConfigSection({
       if (first?.line) jumpTo(first.line);
       return;
     }
-    if (conflict) {
+    if (hasConflict()) {
       setComparison(true);
       toast.error('保存前需要处理修订冲突', '请先读取最新版本或放弃草稿');
       return;

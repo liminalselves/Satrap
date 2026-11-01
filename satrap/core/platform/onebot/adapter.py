@@ -53,7 +53,7 @@ from satrap.core.utils.paths import MediaSourcePermissionError, normalize_media_
 from satrap.core.server_auth import is_loopback_host
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
-from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
+from satrap.core.platform import ApprovalAdapterState, EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
 from satrap.core.type import GroupActionRecord, PlatformMessage, safe_getattr_callable
 
 from satrap.core.log import logger
@@ -283,6 +283,7 @@ class OneBotAdapter(PlatformAdapter):
         self._ready_path = "/_satrap_ready/" + secrets.token_urlsafe(24)
         self._capability_states: dict[str, tuple[int, str]] = {}
         self._connection_generation = 0
+        self._approval_identity_confirmed = False
         self._self_identity = OneBotSelfIdentity(self)
         self._client_connected = False
         self._meta_hooked = False
@@ -631,6 +632,7 @@ class OneBotAdapter(PlatformAdapter):
         self._bot.server_app.add_url_rule(self._ready_path, view_func=ready)
         self._register_handlers()
         self._running = True
+        self._client_connected = False   # 新监听尚未收到协议连接事件
 
         try:
             run_task = safe_getattr_callable(self._bot, "run_task")
@@ -737,6 +739,8 @@ class OneBotAdapter(PlatformAdapter):
         meta_type = str(event.get("meta_event_type") or "")
         if not await self._ensure_group_access(incoming_self, force=meta_type == "lifecycle" and event.get("sub_type") == "connect"):
             return
+        if meta_type in {"lifecycle", "heartbeat"}:
+            self._approval_identity_confirmed = True
         if meta_type == "lifecycle":
             sub_type = str(event.get("sub_type") or "")
             if sub_type == "connect":
@@ -936,6 +940,18 @@ class OneBotAdapter(PlatformAdapter):
         if not key.startswith("face:") or not value.isascii() or not value.isdigit() or len(value) > 5:
             raise GroupChatError("asset_unavailable", "原生表情目录键无效")
         return Face(id=value)
+
+    def approval_state(self) -> ApprovalAdapterState:
+        """
+        按协议事件返回审批目录使用的账号和在线状态
+
+        返回:
+        - 未收到合法 lifecycle 或心跳前不把配置账号当作已确认身份
+        """
+        confirmed = bool(self.bot_self_id and self._approval_identity_confirmed)
+        online = bool(confirmed and self.config.enable and self._running
+                      and self._client_connected and self._bot is not None)
+        return ApprovalAdapterState(self.bot_self_id if confirmed else "", online)
 
     def friend_account(self) -> str:
         """返回协议确认的机器人账号"""
@@ -2325,6 +2341,7 @@ class OneBotAdapter(PlatformAdapter):
     async def terminate(self) -> None:
         """终止 OneBot 适配器并释放资源"""
         self._running = False
+        self._client_connected = False   # 已断开时审批目录必须显示离线
         await self._outbound.close()
         # 回滚复用同一实例时需要可再次发送, 关闭后的队列不可逆, 直接重建
         self._outbound = OutboundTurns()

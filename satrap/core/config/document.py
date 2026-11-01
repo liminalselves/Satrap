@@ -241,7 +241,8 @@ def parse_raw_config(path: str | Path, text: str) -> dict[str, Any]:
         data: object = json.loads(text)
     else:
         data = safe_yaml_load(text)
-    return validate_config_document(data)
+    # 空文件或纯注释 YAML 解析为 None, 与真实加载一致按空对象校验; 其它非对象仍拒绝
+    return validate_config_document({} if data is None else data)
 
 
 def parse_platforms_text(text: str) -> list[dict[str, Any]]:
@@ -386,7 +387,8 @@ def validate_yaml_document(text: str) -> YamlValidationResult:
     if problem is not None:
         return YamlValidationResult(valid=False, errors=[problem])
     try:
-        validate_config_document(parsed)
+        # 空/纯注释 YAML 的 None 归一为空对象, 非对象配置仍由校验拒绝
+        validate_config_document({} if parsed is None else parsed)
     except (ValueError, TypeError, OverflowError) as error:
         return YamlValidationResult(valid=False, errors=[YamlDiagnostic(path=None, line=None, column=None, message=str(error)[:2000], code="invalid_config")])
     return YamlValidationResult(valid=True, errors=[])

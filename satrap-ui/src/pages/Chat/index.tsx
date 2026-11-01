@@ -63,6 +63,15 @@ import {
 import { ChatHeader } from './ChatHeader';
 import { ChatSidebar } from './ChatSidebar';
 import { EmptyWelcome, MessageBubble } from './MessageView';
+import {
+  attachmentCapabilityBlocked,
+  bindingFailureProblem,
+  bindingProblemFromAuthoritative,
+  modelBindingProblem,
+  resolveModelReadiness,
+  type ModelBindingProblem,
+} from './readiness';
+import { TemperatureSync } from './temperature';
 import type { ChatMessage, Conversation, LocalResponseVariant } from './types';
 import {
   Plus,
@@ -247,7 +256,7 @@ export function Chat() {
   const [defaults, setDefaults] = useState<ChatDefaults | null>(null);
   const [defaultSaving, setDefaultSaving] = useState(false);
   const [bindingPending, setBindingPending] = useState<Set<string>>(() => new Set());
-  const [bindingProblem, setBindingProblem] = useState<string | null>(null);
+  const [bindingProblem, setBindingProblem] = useState<ModelBindingProblem | null>(null);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [draftApprovalMode, setDraftApprovalMode] = useState<ApprovalMode>('user');
   // 后端连接状态
@@ -334,6 +343,8 @@ export function Chat() {
   const visiblePagingError = pagingError || currentHistoryError;
   // 历史错误只属于发起请求的会话与快照, 不与目录错误共用失效条件
   const settingsThinkRef = useRef(DEFAULT_SETTINGS.think);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const bindingEpoch = useRef<Record<string, number>>({});
   const bindingMutations = useRef(new Set<string>());
   const preloadKeyRef = useRef<(projectId: string | null | undefined, model?: string) => string>(() => '');
@@ -344,6 +355,30 @@ export function Chat() {
     () => createAnimationFrameLimiter({ maxFps: MAX_UI_FRAME_RATE }),
     [],
   );
+  // 温度 PATCH 按会话串行, 在途时只保留最新待发送值
+  const temperatureSync = useMemo(() => new TemperatureSync({
+    save: (conversationId, value) => chatApi.setGenerationSettings(conversationId, { temperature: value }),
+    onApplied: (conversationId, result) => {
+      if (activeIdRef.current === conversationId) {
+        setSettings((previous) => ({
+          ...previous,
+          temperature: result.temperature,
+          requestTemperature: result.request_temperature,
+        }));
+      }
+    },
+    onRestored: (conversationId, confirmed) => {
+      if (activeIdRef.current !== conversationId) return;
+      setSettings((previous) => ({
+        ...previous,
+        temperature: confirmed?.temperature ?? null,
+        requestTemperature: confirmed?.request_temperature,
+      }));
+    },
+    onError: (conversationId, error) => {
+      if (activeIdRef.current === conversationId) toast('error', `温度保存失败: ${String(error)}`);
+    },
+  }), []);
 
   const active = useMemo(
     () => conversations.find((c) => c.id === activeId),
@@ -357,7 +392,17 @@ export function Chat() {
     const timer = window.setTimeout(() => setModelBusyVisible(true), 400);
     return () => window.clearTimeout(timer);
   }, [modelBusy]);
-  const modelReady = Boolean(defaults) && !modelBusy && !bindingProblem && models.includes(settings.model);
+  const modelReadiness = resolveModelReadiness({
+    isDraft: !active || active.id === '__draft__',
+    hasDefaults: Boolean(defaults),
+    model: settings.model,
+    modelsLoaded,
+    models,
+    bindingPending: modelBusy,
+    bindingProblem,
+  });
+  const modelReady = modelReadiness.ready;
+  const modelProblem = modelReadiness.problem;
   const approval = useApprovalMode(
     backendOk && active && active.id !== '__draft__' && !active.preloaded ? active.id : '',
     !active || active.id === '__draft__' || active.preloaded ? {
@@ -482,6 +527,28 @@ export function Chat() {
     if (activeIdRef.current === id) setSettings((previous) => ({ ...previous, model }));
   }, [updateConversation]);
 
+  // 会话绑定读取可在切换或手动重试时复用, 只有当前代次和当前会话才回写错误
+  const refreshModelBinding = useCallback((id: string) => {
+    const epoch = (bindingEpoch.current[id] ?? 0) + 1;
+    bindingEpoch.current[id] = epoch;
+    setBindingPending((current) => new Set(current).add(id));
+    if (activeIdRef.current === id) setBindingProblem(null);
+    return chatApi.getModel(id).then((result) => {
+      if (bindingEpoch.current[id] !== epoch) return;
+      if (!result.ok || typeof result.model !== 'string') throw new Error(result.error || '会话模型响应无效');
+      applyModelBinding(id, result.model);
+      if (activeIdRef.current === id) setBindingProblem(modelBindingProblem(result));
+    }).catch((error: unknown) => {
+      if (bindingEpoch.current[id] === epoch && activeIdRef.current === id) {
+        setBindingProblem(bindingFailureProblem(error));
+      }
+    }).finally(() => {
+      if (bindingEpoch.current[id] === epoch) {
+        setBindingPending((current) => { const next = new Set(current); next.delete(id); return next; });
+      }
+    });
+  }, [applyModelBinding]);
+
   // 更新当前流式消息
   const updateStreamingMessage = useCallback(
     (updater: (m: ChatMessage) => ChatMessage, conversationId = activeIdRef.current) => {
@@ -549,10 +616,18 @@ export function Chat() {
         case 'model_changed':
           bindingEpoch.current[conversationId] = (bindingEpoch.current[conversationId] ?? 0) + 1;
           applyModelBinding(conversationId, event.model);
+          if (activeIdRef.current === conversationId) {
+            setBindingProblem((current) => bindingProblemFromAuthoritative(event.model, event.available, current));
+          }
           if (!bindingMutations.current.has(conversationId)) setBindingPending((current) => { const next = new Set(current); next.delete(conversationId); return next; });
           break;
         case 'snapshot': {
-          if (event.model) applyModelBinding(conversationId, event.model);
+          if (event.model) {
+            applyModelBinding(conversationId, event.model);
+            if (activeIdRef.current === conversationId) {
+              setBindingProblem((current) => bindingProblemFromAuthoritative(event.model, undefined, current));
+            }
+          }
           flushStreamingDeltas();
           snapshotEpochRef.current[conversationId] = (snapshotEpochRef.current[conversationId] ?? 0) + 1;
           const preservePending = mutationPendingRef.current && event.state === 'idle';
@@ -974,7 +1049,7 @@ export function Chat() {
           preloadKey: conversation.preloaded ? preloadKeyRef.current(conversation.projectId, result.model) : conversation.preloadKey }));
         if (activeIdRef.current === id) setBindingProblem(null);
       }).catch(async (error: unknown) => {
-        await chatApi.getModel(id).then((result) => applyModelBinding(id, result.model)).catch(() => undefined);
+        await refreshModelBinding(id);
         toast('error', `模型切换失败: ${String(error)}`);
       }).finally(() => {
         bindingMutations.current.delete(id);
@@ -997,18 +1072,15 @@ export function Chat() {
       return;
     }
     if (key === 'temperature' && activeId && activeId !== '__draft__') {
-      const id = activeId;
-      let previous: Pick<ChatSettings, 'temperature' | 'requestTemperature'> | null = null;
-      setSettings((prev) => {
-        previous = { temperature: prev.temperature, requestTemperature: prev.requestTemperature };
-        return { ...prev, temperature: value as number | null };
-      });
-      void chatApi.setGenerationSettings(id, { temperature: value as number | null }).then((result) => {
-        if (activeIdRef.current === id) setSettings((prev) => ({ ...prev, temperature: result.temperature, requestTemperature: result.request_temperature }));
-      }).catch((error: unknown) => {
-        if (activeIdRef.current === id && previous) setSettings((prev) => ({ ...prev, ...previous }));
-        toast('error', `温度保存失败: ${String(error)}`);
-      });
+      setSettings((prev) => ({ ...prev, temperature: value as number | null }));
+      temperatureSync.set(
+        activeId,
+        value as number | null,
+        {
+          temperature: settingsRef.current.temperature,
+          request_temperature: settingsRef.current.requestTemperature ?? null,
+        },
+      );
       return;
     }
     if (key === 'maxIterations' && activeId && activeId !== '__draft__') {
@@ -1019,28 +1091,15 @@ export function Chat() {
       return;
     }
     setSettings((prev) => ({ ...prev, [key]: value }));
-  }, [activeId, applyModelBinding, updateConversation]);
+  }, [activeId, applyModelBinding, refreshModelBinding, temperatureSync, updateConversation]);
 
   useEffect(() => {
     setBindingProblem(null);
     const cached = conversationsRef.current.find((conversation) => conversation.id === activeId);
     if (cached?.model) setSettings((previous) => ({ ...previous, model: cached.model! }));
     if (!activeId || activeId === '__draft__') return;
-    const id = activeId;
-    const epoch = (bindingEpoch.current[id] ?? 0) + 1;
-    bindingEpoch.current[id] = epoch;
-    setBindingPending((current) => new Set(current).add(id));
-    let cancelled = false;
-    void chatApi.getModel(id).then((result) => {
-      if (!result.ok || typeof result.model !== 'string') throw new Error('会话模型响应无效');
-      if (!cancelled && bindingEpoch.current[id] === epoch) applyModelBinding(id, result.model);
-    }).catch((error: unknown) => {
-      if (!cancelled && bindingEpoch.current[id] === epoch) setBindingProblem(`读取会话模型失败: ${String(error)}`);
-    }).finally(() => {
-      if (bindingEpoch.current[id] === epoch) setBindingPending((current) => { const next = new Set(current); next.delete(id); return next; });
-    });
-    return () => { cancelled = true; };
-  }, [activeId, applyModelBinding]);
+    void refreshModelBinding(activeId);
+  }, [activeId, refreshModelBinding]);
 
   const saveDefaultModel = useCallback(async (model: string) => {
     if (!defaults || defaultSaving) return;
@@ -1078,10 +1137,14 @@ export function Chat() {
       if (!cancelled) setSettings((prev) => ({ ...prev, maxIterations: result.max_iterations }));
     }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     void chatApi.getGenerationSettings(activeId).then((result) => {
-      if (!cancelled) setSettings((prev) => ({ ...prev, temperature: result.temperature, requestTemperature: result.request_temperature }));
+      // 用户在读取期间已经修改温度时, 不用较旧的读取结果覆盖在途修改
+      if (!cancelled && !temperatureSync.isBusy(activeId)) {
+        temperatureSync.seed(activeId, result);
+        setSettings((prev) => ({ ...prev, temperature: result.temperature, requestTemperature: result.request_temperature }));
+      }
     }).catch((error: unknown) => { if (!cancelled) toast('error', String(error)); });
     return () => { cancelled = true; };
-  }, [activeId]);
+  }, [activeId, temperatureSync]);
 
   // 生成会影响 Session, 模型或插件安装结果的前端设置键
   const preloadBaseKey = useMemo(() => JSON.stringify({
@@ -1359,7 +1422,7 @@ export function Chat() {
   const handleSend = useCallback(async () => {
     const content = input.trim();
     if ((!content && pendingAttachments.length === 0) || generating || !modelReady || bindingMutations.current.has(activeIdRef.current)) return;
-    if (pendingAttachments.some((attachment) => ((attachment.type ?? '').startsWith('image/') && !modelsDetail[settings.model]?.supports_visual_input) || ((attachment.type ?? '').startsWith('video/') && !modelsDetail[settings.model]?.supports_visual_input && !modelsDetail[settings.model]?.supports_native_video_input))) {
+    if (pendingAttachments.some((attachment) => attachmentCapabilityBlocked(attachment.type, modelsDetail[settings.model]))) {
       alert('当前模型未启用图像与视频输入, 请切换模型或移除媒体附件');
       return;
     }
@@ -1526,7 +1589,7 @@ export function Chat() {
     }
 
     for (const file of Array.from(files)) {
-      if ((file.type.startsWith('image/') && !modelsDetail[settings.model]?.supports_visual_input) || (file.type.startsWith('video/') && !modelsDetail[settings.model]?.supports_native_video_input && !modelsDetail[settings.model]?.supports_visual_input)) {
+      if (attachmentCapabilityBlocked(file.type, modelsDetail[settings.model])) {
         alert('当前模型未启用图像与视频输入');
         continue;
       }
@@ -2014,10 +2077,18 @@ export function Chat() {
           <div className="relative z-20 flex-none bg-gradient-to-t from-[var(--glass-bg-strong)] via-[var(--glass-bg-strong)] to-transparent px-3 pb-3 pt-2 md:px-6">
             <div className="mx-auto w-full max-w-3xl">
               {modelBusyVisible && <p className="mb-2 px-1 text-xs text-fg-2">正在确认会话模型…</p>}
-              {bindingProblem && <p role="alert" className="mb-2 px-1 text-xs text-red">{bindingProblem}</p>}
-              {modelsLoaded && !modelBusy && !models.includes(settings.model) && (
+              {modelProblem && (
                 <p role="alert" className="mb-2 px-1 text-xs text-red">
-                  模型 {settings.model} 不可用, 请展开选项手动选择
+                  {modelProblem.message}
+                  {modelProblem.kind === 'temporary' && activeId && activeId !== '__draft__' && (
+                    <button
+                      type="button"
+                      className="ml-2 underline decoration-dotted underline-offset-2 hover:text-accent"
+                      onClick={() => void refreshModelBinding(activeId)}
+                    >
+                      重试
+                    </button>
+                  )}
                 </p>
               )}
               {optionsOpen && (
@@ -2063,7 +2134,9 @@ export function Chat() {
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  accept={(modelsDetail[settings.model]?.supports_visual_input ? 'image/*,video/*,' : modelsDetail[settings.model]?.supports_native_video_input ? 'video/*,' : '') + '.txt,.md,.pdf'}
+                  accept={(modelsDetail[settings.model]?.supports_visual_input !== false
+                    ? 'image/*,video/*,'
+                    : modelsDetail[settings.model]?.supports_native_video_input !== false ? 'video/*,' : '') + '.txt,.md,.pdf'}
                   onChange={handleFileSelect}
                   className="hidden"
                 />

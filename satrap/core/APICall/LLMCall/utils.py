@@ -12,7 +12,9 @@ import copy
 
 from types import SimpleNamespace
 
-from satrap.core.type import safe_getattr
+from satrap.core.type import safe_getattr, validate_runtime_thinking
+
+from satrap.core.log import logger
 
 _THINKING_FIELD_MAP: Dict[str, tuple[Any, Any]] = {
     "reasoning_effort": ("none", None),  # 空值表示沿用 thinking 原值
@@ -126,26 +128,28 @@ def _build_thinking_extra_body(
     根据思考强度构造 extra_body
 
     参数:
-    - thinking: 思考强度, default 表示不发送思考字段, off 表示关闭, 其他值按供应商约定原样传递
+    - thinking: 思考强度, default 表示不发送思考字段, off 与 none 都表示关闭, 其他值按供应商约定原样传递
     - thinking_fields: 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
-    - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
+    - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段, 对 off 与 none 一致
 
     返回:
     - extra_body dict, 或 None (不传 extra_body)
     """
+    try:
+        thinking = validate_runtime_thinking(thinking)
+    except ValueError as error:
+        logger.error(f"[LLM] 非法思考强度: {thinking!r}, {error}")
+        raise
     if not thinking_fields or thinking == "default":
         return None
+    off = thinking in {"off", "none"}
     body: Dict[str, Any] = {}
     for field in thinking_fields:
         if field not in _THINKING_FIELD_MAP:
             continue
         off_val, on_val = _THINKING_FIELD_MAP[field]
-        value = (
-            off_val
-            if thinking == "off"
-            else (on_val if on_val is not None else thinking)
-        )
-        if thinking == "off" and omit_none_thinking_fields and value == "none":
+        value = off_val if off else (on_val if on_val is not None else thinking)
+        if off and omit_none_thinking_fields and value == "none":
             continue
         if "." in field:
             parent, child = field.split(".", 1)

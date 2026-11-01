@@ -62,6 +62,7 @@ from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.config.loader import ConfigLoader
+from satrap.core.type import validate_runtime_thinking
 from satrap.display.recorder import list_conversations, query_conversations
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
@@ -117,9 +118,9 @@ class ChatHTTPServer(MiniHTTPServer):
             self._rag_jobs = RagJobManager(self.service._storage, "chat", self._service_runtime.runtime_id, lambda: ModelConfigSnapshot.read(self.service._model_cfg))
             try:
                 await self._rag_jobs.start([self.service._platform_id])
-            except (OSError, ValueError) as error:
+            except (OSError, ValueError, sqlite3.DatabaseError) as error:
                 self._rag_jobs = None
-                logger.warning(f"[RAG 任务] 启动未就绪: {type(error).__name__}")
+                logger.warning(f"[RAG 任务] 启动未就绪, Chat 继续提供服务: {type(error).__name__}")
         except BaseException:
             if self._telemetry_writer is not None:
                 await asyncio.to_thread(self._telemetry_writer.close)
@@ -348,7 +349,7 @@ class ChatHTTPServer(MiniHTTPServer):
             model = str(values["model"]) if values.get("model") is not None else None
             create = self.service.preload_conversation if clean.endswith("/preload") else self.service.create_conversation
             cid = await create(model=model, temperature=validate_temperature(values.get("temperature")),
-                think=str(values.get("think") or "default"), system_prompt=str(values.get("system_prompt") or "") or None,
+                think=validate_runtime_thinking(values.get("think") or "default"), system_prompt=str(values.get("system_prompt") or "") or None,
                 project_id=str(values.get("project_id") or "") or None, default_agent_prompt_enabled=prompt_enabled)
             return 200, {"ok": True, "conversation_id": cid}
         except (OSError, TypeError, ValueError) as error:
@@ -419,6 +420,26 @@ class ChatHTTPServer(MiniHTTPServer):
             return 500, {"error": "已保存对话数据不可读取", "code": "storage_unavailable"}
         except (TypeError, ValueError) as error:
             return 400, {"error": str(error), "code": "invalid_request"}
+
+    def _route_models(self, method: str, clean: str, body: bytes) -> tuple[int, dict[str, Any]] | None:
+        """路由模型配置管理, 与模型列表和运行时绑定读取保持独立"""
+        svc = self.service
+        if method == "GET" and clean == "/api/chat/models/detail":
+            return 200, svc.list_models_detail()
+        if method == "POST" and clean == "/api/chat/models":
+            payload = json.loads(body or b"{}")
+            return 200, svc.add_model(payload)
+        if clean.startswith("/api/chat/models/"):
+            model_name = unquote(clean[len("/api/chat/models/"):])
+            if method == "PUT":
+                payload = json.loads(body or b"{}")
+                return 200, svc.update_model(model_name, payload)
+            if method == "DELETE":
+                result = svc.delete_model(model_name)
+                status = 409 if result.get("code") in {"config_in_use", "config_reference_scan_failed"} else 200
+                return status, result
+            return 405, {"error": f"method not allowed: {method}"}
+        return None
 
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
@@ -610,22 +631,9 @@ class ChatHTTPServer(MiniHTTPServer):
             except (TypeError, ValueError) as error:
                 return 400, {"error": str(error)}
 
-        if method == "GET" and clean == "/api/chat/models/detail":
-            return 200, svc.list_models_detail()
-        # 模型配置管理
-
-        if method == "POST" and clean == "/api/chat/models":
-            payload = json.loads(body or b"{}")
-            return 200, svc.add_model(payload)
-
-        if clean.startswith("/api/chat/models/"):
-            model_name = unquote(clean[len("/api/chat/models/"):])
-            if method == "PUT":
-                payload = json.loads(body or b"{}")
-                return 200, svc.update_model(model_name, payload)
-            if method == "DELETE":
-                return 200, svc.delete_model(model_name)
-            return 405, {"error": f"method not allowed: {method}"}
+        model_management = self._route_models(method, clean, body)
+        if model_management is not None:
+            return model_management
 
         if method == "GET" and clean == "/api/chat/conversations":
             return 200, {"conversations": await CHAT_READ_WORKERS.run(list_conversations, db_path=svc._display_db_path)}
@@ -788,7 +796,12 @@ class ChatHTTPServer(MiniHTTPServer):
             if not conv:
                 return 400, {"error": "缺少 conversation 参数"}
             # think 缺省 (None) 时由 ChatService 用会话默认
-            think = str(think) if think is not None else None
+            if think is not None:
+                try:
+                    think = validate_runtime_thinking(think)
+                except ValueError as error:
+                    logger.warning(f"[Chat 发送] 非法思考强度: {error}")
+                    return 400, {"error": str(error), "code": "invalid_request"}
             preload_settings = {
                 key: payload[key]
                 for key in ("model", "temperature", "system_prompt", "project_id", "approval_mode", "command_history_enabled", "max_iterations", "default_agent_prompt_enabled")
@@ -868,7 +881,12 @@ class ChatHTTPServer(MiniHTTPServer):
             if not conv:
                 return 400, {"error": "缺少 conversation 参数"}
             think = payload.get("think")
-            think = str(think) if think is not None else None
+            if think is not None:
+                try:
+                    think = validate_runtime_thinking(think)
+                except ValueError as error:
+                    logger.warning(f"[Chat 重试] 非法思考强度: {error}")
+                    return 400, {"error": str(error), "code": "invalid_request"}
             result = await svc.retry(conv, think=think,
                                      expected_model=str(payload["expected_model"]) if payload.get("expected_model") is not None else None)
             return (200 if result.get("ok") else 400), result

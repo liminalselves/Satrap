@@ -38,6 +38,26 @@ from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config.document import save_config_document
 from satrap.core.platform import PlatformAdapterManager
 
+
+def test_platform_default_session_type_uses_shared_hot_resolution() -> None:
+    """热路径与纯解析helper共用显式, 同名会话类和全局默认的回退顺序"""
+    from satrap.core.config.agent_routing import resolve_platform_session_type
+
+    backend = BackendManager()
+    backend.config.default_session_type = "global-default"
+    backend._session_cls_cfg = SimpleNamespace(list_configs=lambda: {"onebot": {"class_path": "example.Session"}})
+    for provider in ("session_class", "edictum"):
+        for explicit in ("", " named "):
+            expected = resolve_platform_session_type(
+                "onebot", explicit, provider, default_session_type="global-default",
+                session_classes={"onebot": {"class_path": "example.Session"}} if provider == "session_class" else None,
+            )
+            assert backend._resolve_platform_session_type("onebot", explicit, provider) == expected
+    assert backend._resolve_platform_session_type("onebot", "", "session_class") == "onebot"
+    assert backend._resolve_platform_session_type("onebot", "", "edictum") == "global-default"
+    assert backend._resolve_platform_session_type("other", "", "session_class") == "global-default"
+
+
 def test_adopt_legacy_modes_and_isolation(tmp_path: Path) -> None:
     """adopt_legacy 按旧白名单解析模式并迁移群策略; 群与账号维度相互隔离"""
     # 新版空平台: 默认 selected 且无群记录
@@ -1012,6 +1032,7 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     path = tmp_path / "config.json"
     save_config_document(path, {
         "data_root": str(tmp_path / "data"),
+        "default_session_type": "global-default",
         "platforms": [{"id": "bot", "type": "onebot",
                        "settings": {"self_id": "100", "group_management_version": 1}}],
     })
@@ -1019,6 +1040,7 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     monkeypatch.setattr(control, "_check_backend_health", lambda: {"running": False})
     store = GroupDirectoryStore(control._configured_storage_layout().platform_db("bot"))
     store.adopt_legacy("100", {"group_management_version": 1})
+    store.confirm_membership("100", "123", True)
     assert control._is_control_api_path("/api/platforms/bot/groups")
     context = control._RouteContext(
         "GET", "/api/platforms/bot/groups/accounts", "/api/platforms/bot/groups/accounts", asyncio.StreamReader(), b"",
@@ -1033,6 +1055,20 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     assert result is not None
     status, listing = result
     assert status == 200 and listing["offline_snapshot"] is True
+
+    async def cold_binding(classes: dict[str, object]) -> str:
+        monkeypatch.setattr(control, "_session_class_config_service", lambda: SimpleNamespace(
+            manager=SimpleNamespace(list_configs=lambda: classes),
+        ))
+        route = "/api/platforms/bot/groups/123/config"
+        context = control._RouteContext("GET", route, route + "?account=100", asyncio.StreamReader(), b"")
+        result = await control._route_group_directory(context)
+        assert result is not None and result[0] == 200
+        return cast(str, result[1]["binding_chain"][0]["config_name"])
+
+    # 冷路径与热路径一样优先平台同名会话类, 未声明时回退全局默认
+    assert await cold_binding({"onebot": {"class_path": "example.Session"}}) == "onebot"
+    assert await cold_binding({}) == "global-default"
     payload = {"expected_self_id": "100", "expected_revision": 1,
                "mode": "all", "approval_defaults": {}}
     body = json.dumps(payload).encode("utf-8")
@@ -1047,7 +1083,7 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     status, saved = result
     assert status == 200 and saved["mode"] == "all" and saved["apply_status"] == "pending"
     assert isinstance(saved["approval_inheriting_counts"], dict)
-    assert saved["approval_inheriting_counts"]["kick_group_member"] == 0
+    assert saved["approval_inheriting_counts"]["kick_group_member"] == 1
     save_config_document(path, {
         "data_root": str(tmp_path / "data"),
         "platforms": [{"id": "bot", "type": "onebot", "settings": {"group_management_version": 1}}],

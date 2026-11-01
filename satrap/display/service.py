@@ -1123,6 +1123,21 @@ class ChatService:
         返回:
         - dict[str, Any]: 删除 LLM 配置
         """
+        from satrap.core.config.chat_references import ChatReferenceScanError, list_chat_model_references
+
+        try:
+            references = list_chat_model_references(
+                name,
+                settings_path=self._settings.path,
+                database_path=self._display_db_path,
+                active_models={conversation_id: conv.model for conversation_id, conv in self._conversations.items()},
+            )
+        except ChatReferenceScanError as error:
+            logger.error(f"[Chat 模型] {name} 引用扫描失败: {error}")
+            return {"ok": False, "code": "config_reference_scan_failed", "error": str(error)}
+        if references:
+            logger.warning(f"[Chat 模型] 拒绝删除仍被引用的 {name}: {references}")
+            return {"ok": False, "code": "config_in_use", "error": "模型仍被 Chat 默认设置或会话引用, 请先改绑", "references": references}
         if not self._model_cfg.remove_llm_config(name):
             return {"ok": False, "error": f"配置不存在: {name}"}
         return {"ok": True}
@@ -2195,7 +2210,10 @@ class ChatService:
         from satrap.core.telemetry.contracts import MetricScope
 
         with bind_scope(service="chat"):
-            record_message(MetricScope(platform_id=self._platform_id, self_id="local", conversation_kind="chat", target_id=conversation_id),
+            # 入站与出站使用同一轮次的会话/上下文/模型归属, 只新增新数据, 不回填历史
+            record_message(MetricScope(platform_id=self._platform_id, self_id="local", conversation_kind="chat",
+                                       target_id=conversation_id, session_id=conversation_id, context_id=conversation_id,
+                                       model_config=conv.model),
                            f"input:{turn['turn_id']}", command=conv.session.command_handler._is_cmd(text))
         context_start = conv.session.ctx.static_message()
         self._broadcast(

@@ -19,7 +19,7 @@ from satrap.core.framework.providers import EdictumProvider
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.type import SessionConfig, UserCall
 from typing import Protocol
-from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager, SessionClassConfigUnavailable
 from satrap.core.config.session_class_service import SessionClassConfigService
 
 class _FutureEdictumSession(Session):
@@ -337,6 +337,92 @@ def test_session_class_config_service_cold_crud_and_reload(tmp_path: Path):
     assert reloaded_cfg["class_path"] == "trusted_sessions.future.ProviderSession"
     assert reloaded.delete("renamed") is True
     assert reloaded.list_configs() == {}
+
+def _write_session_class_config(path: Path, entries: dict[str, Any]) -> None:
+    path.write_text(json.dumps(entries), encoding="utf-8")
+
+def test_session_class_reload_replaces_valid_config(tmp_path: Path):
+    """完整解析成功后才用新文件内容替换旧配置"""
+    storage_path = tmp_path / "session-classes.json"
+    _write_session_class_config(storage_path, {
+        "first": {"class_path": "satrap.core.framework.Base.Session", "description": "旧"},
+    })
+    manager = SessionClassConfigManager(storage_path=storage_path, session_scan_paths=[])
+    assert manager.has_config("first")
+
+    _write_session_class_config(storage_path, {
+        "second": {"class_path": "satrap.core.framework.Base.AsyncSession", "description": "新"},
+    })
+    manager.reload()
+    assert not manager.has_config("first")
+    second = manager.get_config("second")
+    assert second is not None and second["description"] == "新"
+
+def test_session_class_reload_normalizes_invalid_updated_at_and_keeps_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """非法更新时间只降级为 None, 保留当前正文和后续条目"""
+    import satrap.core.framework.SessionClassManager as session_class_manager
+
+    storage_path = tmp_path / "session-classes.json"
+    _write_session_class_config(storage_path, {
+        "first": {"class_path": "satrap.core.framework.Base.Session", "_updated_at": "bad", "description": "正文"},
+        "second": {"class_path": "satrap.core.framework.Base.AsyncSession", "_updated_at": 1.5, "description": "后续"},
+        "third": {"class_path": "satrap.core.framework.Base.Session", "_updated_at": 2.5, "description": "第三条"},
+    })
+    warnings: list[str] = []
+    monkeypatch.setattr(session_class_manager.logger, "warning", lambda message, *args, **kwargs: warnings.append(str(message)))
+    manager = SessionClassConfigManager(storage_path=storage_path, session_scan_paths=[])
+
+    first = manager.get_config("first")
+    second = manager.get_config("second")
+    assert first is not None and first["description"] == "正文"
+    assert second is not None and second["description"] == "后续"
+    assert manager.config_updated_at("first") is None
+    assert manager.config_updated_at("second") == 1.5
+    assert any("更新时间" in message for message in warnings)
+
+    manager.save()
+    manager.reload()
+    assert set(manager.list_configs()) == {"first", "second", "third"}
+    third = manager.get_config("third")
+    assert third is not None and third["description"] == "第三条"
+
+def test_session_class_reload_corrupt_root_json_keeps_previous_state(tmp_path: Path):
+    """根 JSON 损坏或不是对象时保留上一份有效配置"""
+    storage_path = tmp_path / "session-classes.json"
+    _write_session_class_config(storage_path, {
+        "first": {"class_path": "satrap.core.framework.Base.Session", "description": "正文"},
+    })
+    manager = SessionClassConfigManager(storage_path=storage_path, session_scan_paths=[])
+
+    for broken in ("{invalid", json.dumps([1, 2, 3])):
+        storage_path.write_text(broken, encoding="utf-8")
+        manager.reload()
+        first = manager.get_config("first")
+        assert first is not None and first["description"] == "正文"
+        manager.save()
+        assert set(json.loads(storage_path.read_text(encoding="utf-8"))) == {"first"}
+
+@pytest.mark.parametrize("broken", ["{invalid", json.dumps([1, 2, 3])])
+def test_session_class_initial_corrupt_config_rejects_overwrite(tmp_path: Path, broken: str):
+    """首次加载没有有效快照时, 常规保存和注册均不得覆盖损坏文件"""
+    storage_path = tmp_path / "session-classes.json"
+    storage_path.write_text(broken, encoding="utf-8")
+    manager = SessionClassConfigManager(storage_path=storage_path, session_scan_paths=[])
+
+    with pytest.raises(SessionClassConfigUnavailable, match="首次加载失败"):
+        manager.save()
+    assert storage_path.read_text(encoding="utf-8") == broken
+    with pytest.raises(SessionClassConfigUnavailable, match="首次加载失败"):
+        manager.register_config_entry("new", "satrap.core.framework.Base.Session")
+    assert storage_path.read_text(encoding="utf-8") == broken
+
+    _write_session_class_config(storage_path, {})
+    manager.reload()
+    manager.save()
+    assert json.loads(storage_path.read_text(encoding="utf-8")) == {}
+
 
 def test_session_class_config_service_rejects_invalid_and_conflicting_input(tmp_path: Path):
     """共享服务应拒绝非法字段和名称冲突"""

@@ -30,6 +30,14 @@ from .store import SettingsStore, TelemetryStore, json_text
 
 
 TelemetryEvent = ModelCall | MessageMetric | ActivityEvent
+
+
+def _gap_dropped_count(gap: dict[str, JsonValue]) -> int:
+    """读取单个采集缺口的丢弃数, 旧记录或非法字段按零兼容"""
+    value = gap.get("count")
+    return value if type(value) is int and value >= 0 else 0
+
+
 _SCOPE: ContextVar[MetricScope] = ContextVar("telemetry_scope", default=MetricScope())
 _SERVICE: ContextVar[Service | None] = ContextVar("telemetry_service", default=None)
 _WRITERS: dict[tuple[Path, Service], TelemetryWriter] = {}
@@ -175,11 +183,13 @@ class TelemetryWriter:
             self.dropped_events += count
             if self._gaps and self._gaps[-1]["reason_code"] == reason:
                 self._gaps[-1]["to"] = now
+                self._gaps[-1]["count"] = _gap_dropped_count(self._gaps[-1]) + count
             else:
-                self._gaps.append({"from": now, "to": now, "reason_code": reason})
+                self._gaps.append({"from": now, "to": now, "reason_code": reason, "count": count})
                 if len(self._gaps) > 100:
                     first, second = self._gaps[:2]
-                    self._gaps[:2] = [{"from": first["from"], "to": second["to"], "reason_code": "multiple_collection_gaps"}]
+                    self._gaps[:2] = [{"from": first["from"], "to": second["to"], "reason_code": "multiple_collection_gaps",
+                                       "count": _gap_dropped_count(first) + _gap_dropped_count(second)}]
         if first_failure:
             report_failure(f"统计采集出现缺口: {reason}")
 
@@ -226,7 +236,8 @@ class TelemetryWriter:
                                     if not getattr(updated, field):
                                         self._disabled.setdefault(reason, time.time())
                                     elif reason in self._disabled:
-                                        self._gaps.append({"from": self._disabled.pop(reason), "to": time.time(), "reason_code": reason})
+                                        self._gaps.append({"from": self._disabled.pop(reason), "to": time.time(), "reason_code": reason,
+                                                           "count": 0})
                                 self.settings = updated
                         except (OSError, ValueError, TimeoutError) as error:
                             self._gap("settings_unavailable")
@@ -249,9 +260,11 @@ class TelemetryWriter:
                     with self._lock:
                         while len(self._gaps) + len(self._disabled) > 100:
                             first, second = self._gaps[:2]
-                            self._gaps[:2] = [{"from": first["from"], "to": second["to"], "reason_code": "multiple_collection_gaps"}]
+                            self._gaps[:2] = [{"from": first["from"], "to": second["to"], "reason_code": "multiple_collection_gaps",
+                                               "count": _gap_dropped_count(first) + _gap_dropped_count(second)}]
                         gaps = [dict(value) for value in self._gaps]
-                        gaps.extend({"from": start, "to": time.time(), "reason_code": reason} for reason, start in self._disabled.items())
+                        gaps.extend({"from": start, "to": time.time(), "reason_code": reason, "count": 0}
+                                    for reason, start in self._disabled.items())
                         dropped = self.dropped_events
                     self.store.append(self.runtime.runtime_id, pending, dropped=dropped, gaps=gaps)
                     for _ in pending:

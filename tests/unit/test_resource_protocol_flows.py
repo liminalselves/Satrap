@@ -17,6 +17,7 @@ from satrap.core.APICall import ReRankCall as rerank_module
 import asyncio
 import hashlib
 import json
+from unittest.mock import AsyncMock
 from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.expend.tools.mem0 import Mem0Memory
 
@@ -575,3 +576,22 @@ async def test_mem0_summary_tasks_are_coalesced_and_closed(
     assert memory._summary_tasks == {}
     with pytest.raises(RuntimeError, match="已关闭"):
         await memory.add("new", "reply", user_id="u1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", ["", False])
+async def test_mem0_summary_does_not_cache_failed_empty_response(tmp_path: Path, response: Any) -> None:
+    """摘要调用失败返回空串或 False 时不得把占位值写入缓存"""
+    llm = FakeLLM()
+    llm.chat = AsyncMock(return_value=response)
+    memory = Mem0Memory(
+        llm=_as_llm(llm),
+        embedding=_as_embedding(FakeEmbedding()),
+        persist_path=str(tmp_path / "mem0-summary-failure.db"),
+    )
+    memory._histories["u1"] = [{"role": "user", "content": "你好"}, {"role": "assistant", "content": "好的"}]
+
+    await memory._refresh_summary("u1")
+
+    assert "u1" not in memory._summaries
+    await memory.close()

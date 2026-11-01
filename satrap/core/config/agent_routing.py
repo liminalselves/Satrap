@@ -16,6 +16,35 @@ import traceback
 from satrap.core.log import logger
 
 
+def resolve_platform_session_type(
+    platform_type: str,
+    configured_session_type: str,
+    session_provider: str = "session_class",
+    *,
+    default_session_type: str = "default",
+    session_classes: Mapping[str, object] | None = None,
+) -> str:
+    """
+    解析平台默认会话配置, 冷热入口共用同一回退顺序
+
+    参数:
+    - platform_type: 平台适配器类型
+    - configured_session_type: 平台显式绑定的配置名称
+    - session_provider: 会话 Provider 名称
+    - default_session_type: 全局默认会话配置
+    - session_classes: 已声明的会话类, 仅用于 session_class 的同名回退
+
+    返回:
+    - 显式绑定, 平台同名会话类或全局默认配置
+    """
+    explicit = configured_session_type.strip()
+    if explicit:
+        return explicit
+    if session_provider == "session_class" and session_classes is not None and platform_type in session_classes:
+        return platform_type
+    return default_session_type
+
+
 def validate_session_bindings(value: object) -> dict[str, dict[str, str]]:
     """
     校验按对话类型声明的完整绑定或继承配置

@@ -1276,3 +1276,53 @@ def test_files_only_archive_is_valid(tmp_path):
     assert manifest["tables"] == []
     assert service.restore_archive("audit", manifest["archive_id"])["ok"]
     assert (root / "payload").read_text(encoding="utf-8") == "files"
+
+
+def test_missing_manifest_archive_is_listed_non_restorable_and_explicitly_purged(tmp_path: Path):
+    """缺 manifest 的回收目录可列出并显式删除, 自动保留期清理和恢复仍拒绝"""
+    layout = _storage_restore_StorageLayout(tmp_path / "data")
+    layout.ensure_platform("audit")
+    service = _storage_restore_StorageMaintenanceService(layout)
+    sessions = layout.trash_root("audit") / "sessions"
+    archive = sessions / "orphan"
+    (archive / "files").mkdir(parents=True)
+    (archive / "files" / "payload.txt").write_text("orphan", encoding="utf-8")
+
+    [listed] = service.list_archives("audit")
+    assert listed["archive_id"] == "orphan" and listed["session_id"] == ""
+    assert listed["restorable"] is False and listed["restore_error"] == "manifest_missing"
+    [scanned] = [item for item in service.scan() if item.category == "trash_entry"]
+    assert scanned.details["archive_id"] == "orphan"
+    assert scanned.details["restorable"] is False and scanned.details["restore_error"] == "manifest_missing"
+    assert scanned.recommended_action == "purge"
+    with pytest.raises(ValueError):
+        service.restore_archive("audit", "orphan")
+    assert service.purge_archives(older_than_days=0) == []
+    assert archive.exists()
+
+    [result] = service.purge_archives(archive_refs=[{"platform_id": "audit", "archive_id": "orphan"}])
+    assert result["ok"] is True and result["code"] == "purged"
+    assert not archive.exists()
+
+
+def test_missing_manifest_purge_rejects_symlink_outside_trash(tmp_path: Path):
+    """缺清单目录的显式删除仍拒绝符号链接逃逸"""
+    layout = _storage_restore_StorageLayout(tmp_path / "data")
+    layout.ensure_platform("audit")
+    service = _storage_restore_StorageMaintenanceService(layout)
+    sessions = layout.trash_root("audit") / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "marker.txt").write_text("keep", encoding="utf-8")
+    linked = sessions / "linked"
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"当前环境无法创建目录符号链接: {error}")
+
+    [result] = service.purge_archives(archive_refs=[{"platform_id": "audit", "archive_id": "linked"}])
+    assert result["ok"] is False and result["code"] == "not_found"
+    assert (outside / "marker.txt").read_text(encoding="utf-8") == "keep"
+    with pytest.raises(ValueError, match="符号链接"):
+        service.purge_archive("audit", "linked")

@@ -405,22 +405,24 @@ def coverage(store: TelemetryStore, query: MetricQuery | ActivityQuery) -> dict[
             if bound is not None and bound["retained_from"] > query.window.start:
                 gaps.append({"from": query.window.start, "to": min(query.window.end, bound["retained_from"]), "reason_code": bound["reason_code"]})
         covered_to = query.window.start
+        dropped = 0
         for row in runs:
             if row["started_at"] > covered_to:
                 gaps.append({"from": covered_to, "to": min(row["started_at"], query.window.end), "reason_code": "not_collected"})
             covered_to = max(covered_to, row["as_of"])
             if row["as_of"] < query.window.start:
                 continue
-            value["dropped_events"] = cast(int, value["dropped_events"]) + row["dropped_events"]
             for gap in json.loads(row["gaps_json"]):
                 ignored = "usage_disabled" if query.view == "activity" else "activity_disabled"
                 if gap["from"] <= query.window.end and gap["to"] >= query.window.start and gap["reason_code"] != ignored:
                     gaps.append(gap)
+                    # 丢弃计数跟随缺口时间范围, 避免进程累计值污染后续窗口; 旧缺口缺少 count 时按 0 兼容
+                    dropped += int(gap.get("count", 0) or 0)
             if row["ended_at"] and not row["closed"]:
                 gaps.append({"from": row["as_of"], "to": row["ended_at"], "reason_code": "unclean_shutdown"})
         if covered_to < query.window.end:
             gaps.append({"from": max(query.window.start, covered_to), "to": query.window.end, "reason_code": "not_collected"})
-        value.update(gaps=gaps[:100], gaps_truncated=len(gaps) > 100, complete=not gaps and not value["dropped_events"])
+        value.update(gaps=gaps[:100], gaps_truncated=len(gaps) > 100, dropped_events=dropped, complete=not gaps and not dropped)
         return value
 
 

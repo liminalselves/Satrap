@@ -515,6 +515,35 @@ async def test_summary_retries_with_extended_output_budget(tmp_path: Path, async
         else:
             cm.close()
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_summary_failure_keeps_runtime_summary_unwritten(tmp_path: Path, asynchronous: bool):
+    """摘要连续返回空正文时重试后失败, 不把错误文本写入运行时摘要"""
+    if asynchronous:
+        cm: Any = AsyncContextManager("test_summary_failure", db_path=str(tmp_path / "test.db"))
+        await cm.__aenter__()
+    else:
+        cm = ContextManager("test_summary_failure", db_path=str(tmp_path / "test.db"))
+    try:
+        for index in range(3):
+            await _maybe(asynchronous, cm.add_user_message(f"问题 {index}"))
+            await _maybe(asynchronous, cm.add_bot_message(f"回答 {index}"))
+        mock_llm = MagicMock()
+        if asynchronous:
+            mock_llm.chat = AsyncMock(return_value="")
+        else:
+            mock_llm.chat.return_value = ""
+        with pytest.raises(RuntimeError, match="未返回有效文本"):
+            await _maybe(asynchronous, cm.summarize_and_compress(mock_llm, keep_recent_turns=1))
+        assert cm._runtime_state.summary == ""
+        call_count = mock_llm.chat.await_count if asynchronous else mock_llm.chat.call_count
+        assert call_count == 2
+    finally:
+        if asynchronous:
+            await cm.__aexit__(None, None, None)
+        else:
+            cm.close()
+
 async def make_event(settings: dict[str, object], segments: list[dict[str, object]]):
     """构造已通过适配器入站的群消息事件"""
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings=dict(settings)))

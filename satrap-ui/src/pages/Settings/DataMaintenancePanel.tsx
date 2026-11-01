@@ -10,6 +10,7 @@ import { settingsApi, statsApi, type StorageMaintenance, type TelemetrySettings 
 import { errorText } from '@/utils/errorText';
 import { formatBytes, formatTime } from '@/utils/format';
 import { Banner, ConfirmDialog, InlineSwitchRow, SectionCard } from './shared';
+import { retentionPurgeDays } from './types';
 import { useActivationLoad } from './useActivationLoad';
 
 const categoryTone: Record<string, Tone> = {
@@ -117,7 +118,7 @@ export function DataMaintenancePanel({ i, active, backendRunning, controlAvailab
   const maintenanceDirty = policy !== null
     && (policyDays !== String(policy.trash_retention_days) || policyAuto !== policy.auto_purge_enabled);
   const validPolicyDays = /^\d+$/.test(policyDays) && isRetention(Number(policyDays));
-  const policyDaysNumber = validPolicyDays ? Number(policyDays) : policy?.trash_retention_days ?? 30;
+  const purgeRetentionDays = retentionPurgeDays(policy, policyLoading, maintenanceDirty);
 
   const telemetryDirty = telemetry !== null && telemetryDraft !== null
     && JSON.stringify(telemetryDraft) !== JSON.stringify(telemetry.settings);
@@ -346,22 +347,29 @@ export function DataMaintenancePanel({ i, active, backendRunning, controlAvailab
 
   const purgeBatch = async (byRetention: boolean) => {
     setConfirm(null);
-    if (!byRetention && selectedTrash.length === 0) { toast.warning('请选择需要永久删除的回收项'); return; }
-    const days = policyDaysNumber;
+    let request: { older_than_days: number } | { archive_refs: { platform_id: string; archive_id: string }[] };
+    let detailSuffix = '';
+    if (byRetention) {
+      const days = retentionPurgeDays(policy, policyLoading, maintenanceDirty);
+      if (days === null) {
+        toast.warning('回收区保留策略未就绪', '请先保存当前策略后再按保留期清理');
+        return;
+      }
+      request = { older_than_days: days };
+      detailSuffix = ` · 保留期 ${days} 天`;
+    } else {
+      if (selectedTrash.length === 0) { toast.warning('请选择需要永久删除的回收项'); return; }
+      request = { archive_refs: selectedTrash.map((item) => ({ platform_id: item.platform_id, archive_id: item.details.archive_id || '' })) };
+    }
     const id = ++requestId.current;
     setBusyKind('batch');
     try {
-      const value = await storageApi.purgeBatch(
-        byRetention
-          ? { older_than_days: days }
-          : { archive_refs: selectedTrash.map((item) => ({ platform_id: item.platform_id, archive_id: item.details.archive_id || '' })) },
-        backendRunning,
-      );
+      const value = await storageApi.purgeBatch(request, backendRunning);
       if (id !== requestId.current) return;
       const failed = value.results.filter((entry) => !entry.ok);
       setResult({
         title: byRetention ? '回收区过期清理完成' : '选中的回收项已永久删除',
-        detail: `共处理 ${value.results.length} 项${byRetention ? ` · 保留期 ${days} 天` : ''}`,
+        detail: `共处理 ${value.results.length} 项${detailSuffix}`,
         entries: value.results.map((entry) => ({ label: entry.archive_id, ok: entry.ok, error: entry.error })),
       });
       if (failed.length > 0) toast.warning(`有 ${failed.length} 项删除失败`);
@@ -395,10 +403,11 @@ export function DataMaintenancePanel({ i, active, backendRunning, controlAvailab
       };
     }
     if (confirm.byRetention) {
+      const savedDays = policy?.trash_retention_days;
       return {
-        title: `永久删除 ${policyDaysNumber} 天前的回收项?`,
+        title: `永久删除 ${savedDays ?? '—'} 天前的回收项?`,
         description: '所有存放超过保留期的回收包都会被删除, 无法恢复。',
-        body: <p className="text-sm leading-6 text-fg-2">按已保存的回收区保留天数 ({policyDaysNumber} 天) 执行; 自动清理是否开启不影响本次手动操作。</p>,
+        body: <p className="text-sm leading-6 text-fg-2">按已保存的回收区保留天数 ({savedDays ?? '—'} 天) 执行; 自动清理是否开启不影响本次手动操作。</p>,
         label: '永久删除',
         action: () => void purgeBatch(true),
       };
@@ -473,7 +482,7 @@ export function DataMaintenancePanel({ i, active, backendRunning, controlAvailab
       <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-line bg-glass px-3.5 py-2.5">
         <span className="text-[13px] text-fg-2">回收区操作</span>
         <span className="num text-[11.5px] text-fg-4">当前保留 {policy ? `${policy.trash_retention_days} 天` : '—'}</span>
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirm({ kind: 'batch', byRetention: true })}>清理过期回收项</Button>
+        <Button size="sm" variant="ghost" disabled={busy || purgeRetentionDays === null} onClick={() => setConfirm({ kind: 'batch', byRetention: true })}>清理过期回收项</Button>
         <Button size="sm" variant="danger" disabled={busy || selectedTrash.length === 0} onClick={() => setConfirm({ kind: 'batch', byRetention: false })}>
           永久删除选中回收项 ({selectedTrash.length})
         </Button>

@@ -17,9 +17,17 @@ from satrap.core.config.versions import ConfigVersionService
 
 
 def test_raw_yaml_preflight_uses_production_validation_without_writes(tmp_path):
-    from satrap.core.config.document import validate_yaml_document
+    from satrap.core.config.document import parse_raw_config, validate_yaml_document
 
     before = list(tmp_path.iterdir())
+    # 空文件, 纯空白和纯注释都归一为空对象, 与真实加载一致
+    for text in ("", "   \n\n", "# 只有注释\n# 第二行\n"):
+        assert validate_yaml_document(text) == {"valid": True, "errors": []}
+        parsed = parse_raw_config(tmp_path / "empty.yaml", text)
+        assert parsed["platforms"] == []
+    assert not validate_yaml_document("- item\n")["valid"]
+    with pytest.raises(ValueError):
+        parse_raw_config(tmp_path / "list.yaml", "- item\n")
     assert validate_yaml_document("session_classes:\n  # 空映射\nplatforms:\n  # 空列表\n") == {"valid": True, "errors": []}
     assert validate_yaml_document("session_scan_paths: []\nplatforms: []\n")["valid"]
     syntax = validate_yaml_document("platforms: [\n  {id: bad\n")

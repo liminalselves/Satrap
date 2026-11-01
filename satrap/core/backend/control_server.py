@@ -16,6 +16,7 @@ from collections.abc import Mapping
 import urllib.request
 import urllib.error
 import urllib.parse
+import http.client
 import dataclasses
 import threading
 import subprocess
@@ -43,7 +44,7 @@ from satrap.core.config.session_instance_service import SessionInstanceConfigSer
 from satrap.core.log import logger
 from satrap.core.config.loader import ConfigLoader, ConfigLoadError
 from satrap.core.log.policy import LoggingPolicyStore, LoggingPolicyConflict
-from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager, SessionClassConfigUnavailable
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError, ModelConfigManager
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
@@ -697,14 +698,18 @@ def _asr_in_use_checker(config_name: str) -> list[dict[str, str]]:
 
 
 def _llm_in_use_checker(config_name: str) -> list[dict[str, str]]:
-    """删除或重命名模型前扫描已保存的逐群模型引用"""
+    """删除或重命名模型前扫描逐群绑定与 Chat 模型引用"""
+    from satrap.core.config.chat_references import list_chat_model_references
     from satrap.core.config.group_references import list_group_references
 
     platforms = load_config_document(CONFIG_PATH).get("platforms", [])
     if not isinstance(platforms, list):
         raise ValueError("平台配置不是数组")
     ids = [str(item.get("id") or "") for item in platforms if isinstance(item, dict)]
-    return list_group_references("llm", config_name, layout=_configured_storage_layout(), platform_ids=ids)
+    layout = _configured_storage_layout()
+    references = list_group_references("llm", config_name, layout=layout, platform_ids=ids)
+    references.extend(list_chat_model_references(config_name, database_path=layout.platform_db("chat")))
+    return references
 
 
 def _named_group_references(target: str, name: str) -> list[dict[str, str]]:
@@ -1284,9 +1289,14 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 raise RuntimeError("群配置数据损坏")
             session_platform = platform
             if not platform.get("session_type"):
-                provider = platform.get("session_provider") or "session_class"
-                classes = await asyncio.to_thread(_session_class_config_service().manager.list_configs) if provider == "session_class" else {}
-                default_name = platform["type"] if platform["type"] in classes else str(document.get("default_session_type") or "default")
+                from satrap.core.config.agent_routing import resolve_platform_session_type
+
+                provider = str(platform.get("session_provider") or "session_class")
+                classes = await asyncio.to_thread(_session_class_config_service().manager.list_configs) if provider == "session_class" else None
+                default_name = resolve_platform_session_type(
+                    str(platform.get("type") or ""), "", provider,
+                    default_session_type=str(document.get("default_session_type") or "default"), session_classes=classes,
+                )
                 session_platform = {**platform, "session_type": default_name}
             session_effective, session_sources = resolve_group_session(session_platform, session_explicit)
             event_overrides = event_values(events_explicit)
@@ -1680,6 +1690,9 @@ def _read_telemetry_source(service: str, path: str) -> dict[str, object]:
     except urllib.error.HTTPError as error:
         raise SourceUnavailable("auth_required" if error.code in {401, 403} else "error",
                                 "service_auth_required" if error.code in {401, 403} else "unsupported_version" if error.code == 404 else "source_http_error") from error
+    except http.client.HTTPException as error:
+        # IncompleteRead 等协议层异常转为固定来源状态, 由统计聚合隔离单个来源
+        raise SourceUnavailable("error", "source_http_exception") from error
     except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
         raise SourceUnavailable("offline", "service_unreachable") from error
 
@@ -3639,7 +3652,6 @@ async def _route_platform_execution(ctx: _RouteContext) -> ControlResponse | Non
         from satrap.core.telemetry.api import SourceUnavailable
 
         try:
-            await _action_backend_request("/api/health")
             status, result = await _action_backend_request("/api/config/reload", {"expected_config_revision": revision})
             raw_rows = result.get("platforms")
             rows: list[object] = cast(list[object], raw_rows) if isinstance(raw_rows, list) else []
@@ -4095,6 +4107,8 @@ async def _route_session_class_collection_post(ctx: _RouteContext) -> ControlRes
                 await _read_json_body(ctx.reader, ctx.raw_request)
             )
             return 200, {"ok": True, "config": created}
+        except SessionClassConfigUnavailable as e:
+            return 409, {"ok": False, "error": str(e), "code": "session_class_config_unavailable"}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
@@ -4189,6 +4203,8 @@ async def _route_session_class_details(ctx: _RouteContext) -> ControlResponse | 
             return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
         except ConfigReferenceScanError as e:
             return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
+        except SessionClassConfigUnavailable as e:
+            return 409, {"ok": False, "error": str(e), "code": "session_class_config_unavailable"}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
@@ -4507,9 +4523,9 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
         job_layout = await asyncio.to_thread(_configured_storage_layout)
         _RAG_JOBS = RagJobManager(job_layout, "control", _CONTROL_RUNTIME.runtime_id, lambda: _model_config_service().manager)
         await _RAG_JOBS.start([*await asyncio.to_thread(_configured_platform_ids), "chat", "local"])
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, sqlite3.DatabaseError) as error:
         _RAG_JOBS = None
-        logger.warning(f"[RAG 任务] 启动未就绪: {type(error).__name__}")
+        logger.warning(f"[RAG 任务] 启动未就绪, Control 继续提供服务: {type(error).__name__}")
     telemetry_writer = None
     try:
         telemetry_writer = await start_service_capture("control", _CONTROL_RUNTIME, await asyncio.to_thread(_configured_storage_layout))

@@ -33,6 +33,10 @@ import { AgentEditor, type AgentSaveInput } from './AgentEditor';
 import { InstancesPanel } from './InstancesPanel';
 import { PluginManager } from './PluginManager';
 import {
+  buildCreateRuntimePayload, resolveEdictumPluginTarget,
+  type CreateSessionInput,
+} from './runtimeCreate';
+import {
   edictumEntry, errorMessage, providerLabel, providerTone, relativeTime, sessionClassEntry, sumKnown,
   type AgentEntry, type Provider,
 } from './shared';
@@ -70,13 +74,6 @@ const kindLabel = (agent: AgentEntry, types: EdictumTypeDefinition[]): string =>
 const enabledPluginCount = (agent: AgentEntry): number => agent.plugins.filter(
   (plugin) => typeof plugin === 'string' || plugin.enabled !== false,
 ).length;
-
-interface CreateSessionInput {
-  session_id: string;
-  adapter_id: string;
-  llm_name: string;
-  params: Record<string, unknown>;
-}
 
 export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' }) {
   if (view === 'instances') return <InstancesPanel />;
@@ -121,7 +118,6 @@ function AgentsPage() {
   const [pluginSaving, setPluginSaving] = useState(false);
   const [pluginProgress, setPluginProgress] = useState('');
   const [createTarget, setCreateTarget] = useState<AgentEntry | null>(null);
-  const [platformChoose, setPlatformChoose] = useState<AgentEntry | null>(null);
 
   const [scanning, setScanning] = useState(false);
   const [scanPaths, setScanPaths] = useState<string[]>([]);
@@ -201,7 +197,8 @@ function AgentsPage() {
     (total, agent) => total + (agent.provider === 'edictum' ? enabledPluginCount(agent) : 0), 0,
   );
 
-  const pluginAgent = pluginTarget ? agents.find((agent) => agent.name === pluginTarget) ?? null : null;
+  // 同名会话类不能抢占 Edictum 的插件管理目标
+  const pluginAgent = resolveEdictumPluginTarget(pluginTarget, edictumAgents);
   const editorPlugins = editor
     ? editor.mode === 'edit'
       ? (editor.provider === 'edictum' ? edictumConfigs[editor.initial?.name ?? '']?.plugins ?? [] : [])
@@ -400,34 +397,18 @@ function AgentsPage() {
       toast.warning('配置已停用', '请先启用此 Edictum 配置后再创建会话');
       return;
     }
-    if (agent.provider === 'edictum') {
-      const bound = platforms.filter((platform) => platform.session_provider === 'edictum' && platform.session_type === agent.name);
-      if (bound.length > 1) { setPlatformChoose(agent); return; }
-    }
     setCreateTarget(agent);
-  }, [platforms]);
+  }, []);
 
   const submitCreateSession = useCallback(async (agent: AgentEntry, data: CreateSessionInput, platformId?: string) => {
     try {
+      const result = await sessionApi.createRuntime(
+        buildCreateRuntimePayload(agent, data, { platformId, running: isRunning }),
+        isRunning,
+      );
       if (agent.provider === 'edictum') {
-        const result = await sessionApi.createRuntime({
-          session_provider: 'edictum',
-          session_type: agent.name,
-          platform_id: platformId,
-          adapter_id: platformId,
-          activate: isRunning,
-        }, isRunning);
-        const message = isRunning ? 'Edictum 会话已创建并激活' : 'Edictum 会话已冷创建';
-        toast.success(message, result.session.session_id);
+        toast.success(isRunning ? 'Edictum 会话已创建并激活' : 'Edictum 会话已冷创建', result.session.session_id);
       } else {
-        const result = await sessionApi.createRuntime({
-          session_provider: 'session_class',
-          session_type: agent.name,
-          session_id: data.session_id || undefined,
-          adapter_id: data.adapter_id || undefined,
-          llm_name: data.llm_name || undefined,
-          params: data.params,
-        }, isRunning);
         toast.success(isRunning ? '会话已创建' : '持久化会话已冷创建', result.session.session_id);
       }
       setCreateTarget(null);
@@ -881,6 +862,7 @@ function AgentsPage() {
       <CreateSessionModal
         open={createTarget !== null}
         agent={createTarget}
+        platforms={platforms}
         backendRunning={isRunning}
         adapterIds={Object.keys(health?.adapters || {})}
         llmNames={Object.keys(llmConfigs)}
@@ -906,17 +888,6 @@ function AgentsPage() {
         <p className="whitespace-pre-wrap break-words text-[13px] leading-6 text-fg-2">{confirmPrompt?.message}</p>
       </Modal>
 
-      <PlatformChooseModal
-        open={platformChoose !== null}
-        agent={platformChoose}
-        platforms={platforms}
-        onClose={() => setPlatformChoose(null)}
-        onConfirm={async (platformId) => {
-          if (!platformChoose) return;
-          await submitCreateSession(platformChoose, { session_id: '', adapter_id: '', llm_name: '', params: {} }, platformId);
-          setPlatformChoose(null);
-        }}
-      />
     </div>
   );
 }
@@ -998,29 +969,40 @@ function AgentCard({
 }
 
 function CreateSessionModal({
-  open, agent, backendRunning, adapterIds, llmNames, onClose, onCreate,
+  open, agent, platforms, backendRunning, adapterIds, llmNames, onClose, onCreate,
 }: {
   open: boolean;
   agent: AgentEntry | null;
+  platforms: PlatformConfig[];
   backendRunning: boolean;
   adapterIds: string[];
   llmNames: string[];
   onClose: () => void;
   onCreate: (data: CreateSessionInput) => Promise<void>;
 }) {
-  const [form, setForm] = useState({ session_id: '', adapter_id: '', llm_name: '', params: '{}' });
+  const [form, setForm] = useState({ session_id: '', adapter_id: '', llm_name: '', params: '{}', platform_id: '' });
   const [busy, setBusy] = useState(false);
   const [paramsError, setParamsError] = useState('');
+  const isEdictum = agent?.provider === 'edictum';
+  const platformOptions = isEdictum && agent
+    ? platforms.filter((platform) => platform.session_provider === 'edictum' && platform.session_type === agent.name)
+    : [];
 
   useEffect(() => {
     if (!open || !agent) return;
-    setForm({ session_id: '', adapter_id: '', llm_name: agent.model_name || '', params: '{}' });
+    const bound = platforms.filter((platform) => platform.session_provider === 'edictum' && platform.session_type === agent.name);
+    setForm({
+      session_id: '',
+      adapter_id: '',
+      llm_name: agent.model_name || '',
+      params: '{}',
+      platform_id: agent.provider === 'edictum' ? bound[0]?.id ?? '' : '',
+    });
     setParamsError('');
     setBusy(false);
-  }, [open, agent]);
+  }, [open, agent, platforms]);
 
   if (!agent) return null;
-  const isEdictum = agent.provider === 'edictum';
 
   const submit = async () => {
     let parsed: Record<string, unknown>;
@@ -1034,7 +1016,13 @@ function CreateSessionModal({
     }
     setBusy(true);
     try {
-      await onCreate({ session_id: form.session_id, adapter_id: form.adapter_id, llm_name: form.llm_name, params: parsed });
+      await onCreate({
+        session_id: form.session_id,
+        adapter_id: form.adapter_id,
+        llm_name: form.llm_name,
+        params: parsed,
+        platform_id: form.platform_id || undefined,
+      });
     } finally {
       setBusy(false);
     }
@@ -1060,6 +1048,13 @@ function CreateSessionModal({
           <span className="font-mono text-fg-2">{isEdictum ? agent.edictum_type : agent.class_path}</span>
           <span className={cn('ml-auto text-[11px]', backendRunning ? 'text-green' : 'text-orange')}>{backendRunning ? '热创建并激活' : '冷创建, 后端启动后激活'}</span>
         </div>
+        {isEdictum && platformOptions.length > 1 && (
+          <Field label="目标平台" required hint="当前配置绑定多个平台, 选择要创建实例的平台">
+            <KitSelect className="field w-full" value={form.platform_id} onChange={(value) => setForm((current) => ({ ...current, platform_id: value }))}>
+              {platformOptions.map((platform) => <option key={platform.id} value={platform.id}>{`${platform.id} (${platform.type})`}</option>)}
+            </KitSelect>
+          </Field>
+        )}
         <Field label="Session ID" hint="留空将由后端自动生成; 同一平台内需唯一">
           <Input value={form.session_id} onChange={(event) => setForm((current) => ({ ...current, session_id: event.target.value }))} placeholder="如: g8823-assistant" />
         </Field>
@@ -1081,51 +1076,6 @@ function CreateSessionModal({
           <Textarea rows={5} value={form.params} onChange={(event) => { setForm((current) => ({ ...current, params: event.target.value })); setParamsError(''); }} spellCheck={false} className="font-mono text-[12px]" />
         </Field>
       </div>
-    </Modal>
-  );
-}
-
-function PlatformChooseModal({
-  open, agent, platforms, onClose, onConfirm,
-}: {
-  open: boolean;
-  agent: AgentEntry | null;
-  platforms: PlatformConfig[];
-  onClose: () => void;
-  onConfirm: (platformId: string) => Promise<void>;
-}) {
-  const options = agent
-    ? platforms.filter((platform) => platform.session_provider === 'edictum' && platform.session_type === agent.name)
-    : [];
-  const [platformId, setPlatformId] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!open || options.length === 0) return;
-    setPlatformId(options[0].id);
-    setBusy(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, agent?.name]);
-
-  return (
-    <Modal
-      open={open}
-      onClose={() => { if (!busy) onClose(); }}
-      title={`选择运行平台: ${agent?.name ?? ''}`}
-      description="此 Edictum 配置同时绑定多个平台, 请选择要创建的实例"
-      icon={<Bot className="h-[18px] w-[18px]" />}
-      size="sm"
-      className="tint-teal"
-      footer={<>
-        <Button variant="ghost" onClick={onClose} disabled={busy}>取消</Button>
-        <Button variant="tinted" tint="teal" loading={busy} disabled={!platformId} onClick={() => { setBusy(true); void onConfirm(platformId).finally(() => setBusy(false)); }}>创建并激活</Button>
-      </>}
-    >
-      <Field label="目标平台" required hint="仅列出绑定了当前配置的平台">
-        <KitSelect className="field w-full" value={platformId} onChange={(value) => setPlatformId(value)}>
-          {options.map((platform) => <option key={platform.id} value={platform.id}>{`${platform.id} (${platform.type})`}</option>)}
-        </KitSelect>
-      </Field>
     </Modal>
   );
 }

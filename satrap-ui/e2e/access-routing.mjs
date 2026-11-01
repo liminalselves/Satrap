@@ -386,7 +386,7 @@ async function agent_routing(runtime) {
         '/config/session-classes': { flow: { class_path: 'example.Flow', enabled: true, model_key: 'model_name', params: { model_name: 'flow-model' } } },
         '/config/edictum/sessions': edictum,
         '/api/sessions': { sessions: [] }, '/config/session-instances': { sessions: [] },
-        '/api/diagnostics': { records: [], available: false }, '/config/models/asr': {},
+        '/api/diagnostics': { records: [], available: false }, '/config/models/asr': {}, '/config/models': {},
       };
       return route.fulfill({ headers, json: responses[url.pathname] || { ok: true } });
     });

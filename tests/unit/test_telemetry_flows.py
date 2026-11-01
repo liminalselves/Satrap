@@ -566,6 +566,91 @@ def test_telemetry_v1_upgrade_preserves_activity_without_initializing_readonly(t
         assert db.execute('SELECT count(*),sum(event_count) FROM activity_events').fetchone()[:] == (1,1)
 
 
+def test_coverage_dropped_count_is_bound_to_gap_window(tmp_path):
+    """丢弃计数跟随缺口 from/to, T1 的丢弃不再污染 T2 窗口, 旧缺口缺 count 时兼容"""
+    from satrap.core.telemetry.query import MetricQuery, coverage
+    from satrap.core.telemetry.store import TelemetryStore
+
+    store = TelemetryStore(tmp_path / "backend.sqlite", "backend")
+    base = 1_000_000.0
+    store.begin_run("runtime", 1, base)
+    gaps = [{"from": base, "to": base + 10, "reason_code": "queue_full", "count": 3}]
+    with store.connect(write=True) as db:
+        db.execute("UPDATE collection_runs SET as_of=?,dropped_events=?,gaps_json=? WHERE runtime_id=?",
+                   (base + 30, 3, json.dumps(gaps), "runtime"))
+    later = MetricQuery.parse({"from": str(base + 20), "to": str(base + 30), "tz": "UTC", "bucket": "minute"}, "overview")
+    window = coverage(store, later)
+    assert window["dropped_events"] == 0 and window["complete"] is True
+    spanning = MetricQuery.parse({"from": str(base), "to": str(base + 30), "tz": "UTC", "bucket": "minute"}, "overview")
+    window = coverage(store, spanning)
+    assert window["dropped_events"] == 3 and window["complete"] is False
+    assert next(gap for gap in window["gaps"] if gap["reason_code"] == "queue_full")["count"] == 3
+    # 旧缺口没有 count 时按 0 累计, 但缺口本身仍标记覆盖不完整
+    with store.connect(write=True) as db:
+        db.execute("UPDATE collection_runs SET gaps_json=? WHERE runtime_id=?",
+                   (json.dumps([{"from": base, "to": base + 10, "reason_code": "queue_full"}]), "runtime"))
+    window = coverage(store, spanning)
+    assert window["dropped_events"] == 0 and window["complete"] is False
+
+
+def test_read_telemetry_source_maps_http_protocol_exception_to_unavailable(monkeypatch):
+    """IncompleteRead 等 HTTP 协议异常转换为固定来源状态, 不向聚合层抛出"""
+    import http.client
+    from satrap.core.backend import control_server
+    from satrap.core.telemetry.api import SourceUnavailable
+
+    class BrokenResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"partial", 4)
+
+    monkeypatch.setattr(control_server, "_configured_chat_url", lambda path: "http://127.0.0.1:1" + path)
+    monkeypatch.setattr(control_server.urllib.request, "urlopen", lambda *args, **kwargs: BrokenResponse())
+    with pytest.raises(SourceUnavailable) as error:
+        control_server._read_telemetry_source("chat", "/api/stats/local")
+    assert error.value.state == "error" and error.value.reason_code == "source_http_exception"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_read_isolates_single_source_and_keeps_others(tmp_path):
+    """单个来源协议异常只降级该来源, 其它来源继续聚合"""
+    import http.client
+    import time
+    from urllib.parse import parse_qs, urlsplit
+    from satrap.core.storage import StorageLayout
+    from satrap.core.telemetry.api import _source
+    from satrap.core.telemetry.contracts import MetricScope, ModelCall
+    from satrap.core.telemetry.query import MetricQuery, local_metrics
+    from satrap.core.telemetry.store import TelemetryStore
+
+    layout = StorageLayout(tmp_path / "data")
+    base = int(time.time()) - 60
+    stores = {name: TelemetryStore(layout.root / "telemetry" / f"{name}.sqlite", name) for name in ("control", "backend", "chat")}
+    for name, store in stores.items():
+        store.begin_run(name, 1, base - 60)
+        store.append(name, [])
+    scope = MetricScope(platform_id="chat", session_id="session")
+    stores["chat"].append("chat", [ModelCall("call", scope, "m", "provider", base, base + 1, 100, "succeeded")])
+    query = MetricQuery.parse({"from": str(base), "to": str(base + 30), "tz": "UTC", "bucket": "minute"}, "overview")
+
+    def fetch(service, path):
+        if service == "backend":
+            raise http.client.IncompleteRead(b"partial", 4)
+        params = {key: values[0] for key, values in parse_qs(urlsplit(path).query).items()}
+        return local_metrics(stores[service], MetricQuery.parse(params, params["view"]))
+
+    responses = await asyncio.gather(*(_source(name, layout, query, fetch) for name in ("control", "backend", "chat")))
+    by_service = {response["sources"][0]["service"]: response for response in responses}
+    assert by_service["backend"]["sources"][0]["state"] == "error"
+    assert by_service["backend"]["sources"][0]["reason_code"] == "source_http_exception"
+    assert by_service["chat"]["sources"][0]["state"] == "available" and by_service["chat"]["usage"]["calls"] == 1
+
+
 def test_offline_source_logs_once_per_state_change(monkeypatch):
     """来源离线是预期状态: 每次状态变化只记一次, 离线不按警告记录, 真正异常仍警告"""
     from satrap.core.telemetry import api

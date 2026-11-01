@@ -22,7 +22,7 @@ from .utils import (
     _load_message_content,
     _load_tool_calls,
     _protocol_payload_json,
-    _load_protocol_payload,
+    _load_optional_protocol_payload,
 )
 from .base import _ContextCore
 
@@ -174,7 +174,9 @@ class _AsyncStorage(_ContextCore):
                 if row[5] is not None:
                     msg["reasoning_content"] = row[5]
                 if row[6] is not None:
-                    msg["protocol_payload"] = _load_protocol_payload(row[6])
+                    protocol_payload = _load_optional_protocol_payload(row[6], self.conversation_id, row_index)
+                    if protocol_payload is not None:
+                        msg["protocol_payload"] = protocol_payload
                 self._messages.append(msg)
             self._saved_count = len(rows)
             await self._load_runtime_state()
