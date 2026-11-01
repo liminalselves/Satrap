@@ -886,7 +886,7 @@ class PluginInterop:
         from satrap.edictum.plugin_config import PluginConfigManager
 
         result: dict[str, _RelationNode] = {}
-        host_states = PluginConfigManager().host_states()
+        host_config = PluginConfigManager()
         for owner, binding in tuple(self.bindings.items()):
             plugin = binding.plugin
             if plugin is None or not binding.active and owner != include:
@@ -895,8 +895,7 @@ class PluginInterop:
             for kind in CAPABILITY_KINDS:
                 states = cast(Mapping[str, bool], getattr(plugin, kind))
                 capabilities[kind] = {name: self._independent(owner, kind, name) for name in states}
-            host_state = host_states.get(owner)
-            execution_enabled = host_state["execution_enabled"] if host_state is not None else True
+            execution_enabled = host_config.host_state(owner)["execution_enabled"]
             result[owner] = _RelationNode(plugin.enabled and execution_enabled, binding.spec, capabilities)
         return result
 

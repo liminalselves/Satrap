@@ -1,6 +1,6 @@
 """同步与异步模型共用的配置和请求构造"""
 
-from typing import Any, Generic, TypeVar, List, Optional, Iterable, Literal, cast
+from typing import Any, Generic, TypeVar, List, Optional, Iterable, Literal
 
 from satrap.core.utils import normalize_openai_base_url
 from .utils import _build_thinking_extra_body
@@ -308,10 +308,9 @@ class _LLMBase(Generic[_ClientT]):
         - model: 本次模型覆盖
 
         返回:
-        - 模型文本, 显式启用 return_false 时失败返回 False
+        - 模型文本; 失败时根据 return_false 返回空字符串或 False
         """
-        if self.api_type == "chat_completions":
-            from .responses import parse_chat_response
-            return parse_chat_response(cast(dict[str, object], response), self.suppress_error)
         parsed = self._parse_response(response, model)
-        return False if parsed.error_info is not None and self.return_false else parsed.content
+        if parsed.error_info is not None:
+            return False if self.return_false else ""
+        return parsed.content

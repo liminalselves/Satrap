@@ -346,6 +346,67 @@ def test_global_parameters_defaults_cas_and_restore(configured_service):
     assert service.list_plugins()[0]["execution_enabled"]
 
 
+def _host_state_payload(**plugins: object) -> str:
+    """构造宿主状态文件内容"""
+    return json.dumps({"version": 1, "plugins": plugins})
+
+
+def test_host_state_missing_defaults_and_overall_corruption_fails_closed(tmp_path: Path):
+    """缺失保持旧默认, 整体损坏时列表不崩溃且禁用, 写入拒绝覆盖, 恢复后按指纹生效"""
+    mgr = PluginConfigManager(tmp_path)
+    assert mgr.host_state("probe") == {"execution_enabled": True, "revision": 0,
+                                       "updated_at": None, "execution_updated_at": None}
+    path = tmp_path / ".host-state.json"
+    path.write_text("{broken", encoding="utf-8")
+    assert mgr.host_states() == {}
+    assert mgr.host_state("probe")["execution_enabled"] is False
+    with pytest.raises(ValueError):
+        mgr.save_execution("probe", False, 0)
+    assert path.read_text(encoding="utf-8") == "{broken"
+
+    path.write_text(_host_state_payload(probe={
+        "execution_enabled": False, "revision": 3, "updated_at": 1.0, "execution_updated_at": 2.0,
+    }), encoding="utf-8")
+    restored = mgr.host_state("probe")
+    assert (restored["execution_enabled"], restored["revision"], restored["updated_at"]) == (False, 3, 1.0)
+    assert mgr.host_states()["probe"]["revision"] == 3
+
+
+def test_host_state_keeps_valid_entries_and_disables_corrupted_entries(tmp_path: Path):
+    """可解析文件保留合法条目, 字段损坏条目以停用状态返回"""
+    mgr = PluginConfigManager(tmp_path)
+    path = tmp_path / ".host-state.json"
+    path.write_text(_host_state_payload(
+        good={"execution_enabled": True, "revision": 2, "updated_at": None, "execution_updated_at": None},
+        bad_gate={"execution_enabled": "yes", "revision": 1, "updated_at": None, "execution_updated_at": None},
+        bad_time={"execution_enabled": True, "revision": 1, "updated_at": -1, "execution_updated_at": None},
+        **{"bad name!": {"execution_enabled": True, "revision": 1, "updated_at": None, "execution_updated_at": None}},
+    ), encoding="utf-8")
+    states = mgr.host_states()
+    assert states["good"] == {"execution_enabled": True, "revision": 2, "updated_at": None, "execution_updated_at": None}
+    assert not states["bad_gate"]["execution_enabled"] and states["bad_gate"]["revision"] == 0
+    assert not states["bad_time"]["execution_enabled"] and states["bad_time"]["revision"] == 0
+    assert "bad name!" not in states
+    assert mgr.host_state("probe")["execution_enabled"] is True
+    with pytest.raises(ValueError):
+        mgr.save_execution("good", False, 2)
+
+
+def test_management_list_survives_corrupted_host_state(configured_service):
+    """管理列表读取损坏文件不崩溃, 恢复后重新按文件内容展示"""
+    service = configured_service
+    service.manager._dir.mkdir(parents=True, exist_ok=True)
+    path = service.manager._dir / ".host-state.json"
+    path.write_text("{broken", encoding="utf-8")
+    [item] = service.list_plugins()
+    assert item["execution_enabled"] is False and item["host_revision"] == 0
+    path.write_text(_host_state_payload(probe={
+        "execution_enabled": True, "revision": 4, "updated_at": None, "execution_updated_at": None,
+    }), encoding="utf-8")
+    [restored] = service.list_plugins()
+    assert restored["execution_enabled"] is True and restored["host_revision"] == 4
+
+
 async def test_plugin_host_execution_http_cas_and_batched_health(configured_service, monkeypatch):
     import asyncio
     import aiohttp

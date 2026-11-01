@@ -87,11 +87,12 @@ export function Approvals() {
 
   // 按筛选与分页缓存列表: 返回页面先显示上次结果; 决定仍带 revision 提交, 过期由后端判为冲突
   const [catalog, setCatalog] = useCachedState<ApprovalCatalog | null>(`approvals:list:${scopeSignature}`, null);
-  const [summary, setSummary] = useCachedState<ApprovalCatalog | null>(`approvals:summary:${platform}|${account}|${source}`, null);
+  const [summary, setSummary] = useCachedState<ApprovalCatalog | null>(`approvals:summary:${platform}|${account}`, null);
   const [fetching, setFetching] = useState(false);
   // 有缓存时后台刷新不切到骨架
   const loading = fetching && !catalog;
   const [syncing, setSyncing] = useState(false);
+  const [summaryError, setSummaryError] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -145,13 +146,19 @@ export function Approvals() {
       const [list, total] = await Promise.allSettled([
         approvalsApi.list(query, signal),
         approvalsApi.summary({
-          platform_id: platform || undefined, account, source: source === 'all' ? undefined : source,
+          platform_id: platform || undefined, account,
         }, signal),
       ]);
       if (current !== request.current || signal?.aborted || !mountedRef.current) return;
       if (list.status === 'rejected') throw list.reason;
       setCatalog(list.value);
-      if (total.status === 'fulfilled') setSummary(total.value);
+      if (total.status === 'fulfilled') {
+        setSummary(total.value);
+        setSummaryError(false);
+      } else {
+        // summary 失败时保留独立降级提示, 不回退到受筛选影响的 catalog 计数
+        setSummaryError(true);
+      }
       setError('');
       setLastSync(Date.now());
     } catch (caught) {
@@ -214,12 +221,13 @@ export function Approvals() {
   const selectedActionable = selectedItems.filter((item) => isActionable(item, now)).length;
 
   /* ---------- 汇总与分面 ---------- */
-  const byState = summary?.by_state ?? catalog?.by_state ?? {};
-  const bySource = summary?.by_source ?? catalog?.by_source ?? {};
-  const pendingCount = summary?.pending_count ?? catalog?.pending_count ?? (byState.pending ?? null);
+  // 全局分面只来自 summary; 列表计数受 state/source/窗口过滤, 不能冒充全局统计
+  const byState = summary?.by_state ?? {};
+  const bySource = summary?.by_source ?? {};
+  const pendingCount = summary?.pending_count ?? null;
   const stateAll = Object.values(byState).length
     ? Object.values(byState).reduce<number>((sum, value) => sum + (value ?? 0), 0)
-    : (catalog?.total ?? null);
+    : null;
   const sourceTotal = Object.values(bySource).length
     ? Object.values(bySource).reduce<number>((sum, value) => sum + (value ?? 0), 0)
     : null;
@@ -235,11 +243,11 @@ export function Approvals() {
       ...(source === 'all' && sourceTotal !== null ? { all: sourceTotal } : {}),
     },
     platforms: Object.fromEntries(platforms.map((entry) => [entry.platform_id, entry.pending_count])),
-    pendingTotal: byState.pending ?? pendingCount,
+    pendingTotal: byState.pending ?? pendingCount ?? null,
     todayDecided: summary?.today_decided ?? catalog?.today_decided ?? null,
     latencyMs: summary?.decision_latency_ms ?? catalog?.decision_latency_ms ?? null,
   };
-  const complete = summary?.complete ?? catalog?.complete ?? false;
+  const complete = !summaryError && (summary?.complete ?? catalog?.complete ?? false);
   const warnings = (summary?.warnings?.length ? summary.warnings : catalog?.warnings) ?? [];
   const coverage = summary?.sources ?? catalog?.sources ?? [];
   const accounts = [...new Set(platforms
@@ -680,7 +688,7 @@ export function Approvals() {
       loading={loading}
       complete={complete}
       totalRead={catalog?.total ?? 0}
-      summaryReady={!!summary}
+      summaryReady={!!summary && !summaryError}
       onPatch={patchScope}
       onReset={resetFilters}
       onApplyText={(nextTarget, nextAction) => patchScope({ target: nextTarget, action: nextAction })}
@@ -887,7 +895,7 @@ export function Approvals() {
               loading={loading}
               complete={complete}
               totalRead={catalog?.total ?? 0}
-              summaryReady={!!summary}
+              summaryReady={!!summary && !summaryError}
               onPatch={patchScope}
               onReset={resetFilters}
               onApplyText={(nextTarget, nextAction) => patchScope({ target: nextTarget, action: nextAction })}

@@ -117,6 +117,20 @@ def test_atomic_source_replace_and_embedding_failure(environment):
     assert service.delete_document(kb, first["source_id"])
     assert service.search("香蕉", {})["status"] == "empty"
 
+def test_ingest_returns_revision_for_sequential_imports(environment):
+    layout, models, _ = environment
+    service = RagService(layout, models, "chat", "one")
+    kb = make_library(service)
+    first = service.ingest(kb, "第一份资料", "first.md", expected_revision=1)
+    assert first["revision"] == 2
+    second = service.ingest(kb, "第二份资料", "second.md", expected_revision=first["revision"])
+    assert second["revision"] == 3
+    skipped = service.ingest(kb, "重复内容", "second.md", expected_revision=second["revision"])
+    assert skipped["status"] == "skipped" and skipped["revision"] == 3
+    with pytest.raises(ValueError, match="配置已变化"):
+        service.ingest(kb, "过期修订", "stale.md", expected_revision=first["revision"])
+
+
 def test_skip_policy_and_model_identity_change(environment):
     layout, models, _ = environment
     service = RagService(layout, models, "chat", "one")
@@ -708,6 +722,7 @@ async def test_persistent_rag_jobs_idempotency_failures_and_document_pages(envir
         assert conflict.value.status == 409
         done = await wait_rag_job(service, job["job_id"], kb_id)
         assert done["status"] == "succeeded" and done["progress"]["percent"] == 100
+        assert done["result"] is not None and done["result"]["revision"] == 2
         assert "input_name" not in done and "text" not in done
         assert not list(manager._imports.iterdir())
         documents_page = rag_jobs_read(service, "documents", "", {"kb_id": kb_id})

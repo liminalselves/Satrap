@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { BarChart3, Boxes, Coins, Cpu, Database, Gauge, Info, RotateCw, Timer, Zap } from 'lucide-react';
 import {
-  Badge, Button, Card, CountUp, EmptyState, PageHeader, Skeleton, Sparkline, StatusDot, Tabs, Tooltip,
+  Badge, Button, Card, CountUp, EmptyState, PageHeader, Skeleton, Sparkline, StatusDot, Tabs, Tooltip, toast,
   type Tone,
 } from '@/components/kit';
 import {
-  sourceStateLabels, statsApi,
+  sourceStateLabels,
   type AggregateMeta, type MetricBucket, type ModelMetrics, type Overview, type Purpose,
   type Service, type SessionMetrics, type SourceCoverage, type StatsWindowQuery, type UsageTotals,
 } from '@/api/contracts';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import { useCachedState } from '@/hooks/useCachedState';
 import { cn } from '@/utils/cn';
+import { loadUsage, nextUsageNotifySignature, type UsageLoadResult } from './loadUsage';
 
 type Range = 'today' | '7d' | '30d';
 type PurposeFilter = Purpose | 'all';
@@ -34,14 +35,13 @@ const pct = (part: number, whole: number): number => whole ? Math.round((part / 
 
 const formatPercent = (value: number): string => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
 
-/** 今日不传 from/to 用后端默认窗口; 跨天范围从本地今日零点回推 N-1 天 */
+/** 所有范围都显式传 from/to: 后端缺省窗口按视图不同 (模型 7 天, 会话 14 天), 今日按小时会超出桶数上限 */
 function statsWindowQuery(range: Range, purpose: PurposeFilter): StatsWindowQuery {
-  if (range === 'today') return { bucket: 'hour', purpose };
-  const days = range === '7d' ? 7 : 30;
+  const days = range === 'today' ? 1 : range === '7d' ? 7 : 30;
   const midnight = new Date();
   midnight.setHours(0, 0, 0, 0);
   const from = Math.floor((midnight.getTime() - (days - 1) * 86_400_000) / 1000);
-  return { from, to: Math.floor(Date.now() / 1000), bucket: 'day', purpose };
+  return { from, to: Math.floor(Date.now() / 1000), bucket: range === 'today' ? 'hour' : 'day', purpose };
 }
 
 /** 趋势点只按已上报的总量作图, 未上报按 0 占位 */
@@ -228,30 +228,50 @@ export function Usage() {
   const [sessions, setSessions] = useCachedState<SessionMetrics[] | null>(`${cacheKey}:sessions`, null);
   const [loaded, setLoaded] = useCachedState(`${cacheKey}:loaded`, false);
   const [refreshing, setRefreshing] = useState(false);
+  const [errorText, setErrorText] = useState('');
+  const lastNotifyRef = useRef('');
   const pollRef = useRef<ReturnType<typeof startVisiblePoll> | null>(null);
   // 该范围有缓存就直接显示, 后台轮询再更新; 从未加载过才显示骨架
   const loading = !loaded;
 
+  const applyResult = (result: UsageLoadResult, signal: AbortSignal) => {
+    if (result.status === 'aborted' || signal.aborted) return;
+    // 仅回写成功的来源, 失败来源保留上次缓存, 格式错误不会被当成空数组
+    if (result.data.overview) setOverview(result.data.overview);
+    if (result.data.models) setModels(result.data.models);
+    if (result.data.sessions) setSessions(result.data.sessions);
+    if (result.status === 'failure') {
+      setErrorText(`用量数据读取失败, 正在显示缓存数据: ${result.errors.join('; ')}`);
+    } else if (result.status === 'partial') {
+      setErrorText(`部分数据读取失败, 已保留上次成功数据: ${result.errors.join('; ')}`);
+    } else {
+      setErrorText('');
+    }
+    // 全部失败时不把 loaded 标成成功, 保留缓存并允许重试
+    if (result.status !== 'failure') setLoaded(true);
+    const notify = nextUsageNotifySignature(lastNotifyRef.current, result);
+    lastNotifyRef.current = notify.signature;
+    if (notify.notify) {
+      toast.error(
+        result.status === 'failure' ? '用量数据读取失败' : '部分用量数据读取失败',
+        result.errors.join('; '),
+      );
+    }
+    setRefreshing(false);
+  };
+
   useEffect(() => {
     const poll = startVisiblePoll(async (signal) => {
-      const query = statsWindowQuery(range, purpose);
-      const [nextOverview, nextModels, nextSessions] = await Promise.all([
-        statsApi.overview(query, signal).catch(() => null),
-        statsApi.models({ ...query, limit: 100 }, signal).catch(() => null),
-        statsApi.sessions({ ...query, limit: 100 }, signal).catch(() => null),
-      ]);
-      if (signal.aborted) return;
-      if (nextOverview) setOverview(nextOverview);
-      if (nextModels) setModels(Array.isArray(nextModels.models) ? nextModels.models : []);
-      if (nextSessions) setSessions(Array.isArray(nextSessions.sessions) ? nextSessions.sessions : []);
-      setLoaded(true);
-      setRefreshing(false);
+      const result = await loadUsage(statsWindowQuery(range, purpose), signal);
+      applyResult(result, signal);
     }, { interval: 30000 });
     pollRef.current = poll;
     return () => {
       poll.stop();
       pollRef.current = null;
     };
+    // applyResult 只读取当前渲染的缓存更新函数, 范围切换时重新创建轮询
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range, purpose, setOverview, setModels, setSessions, setLoaded]);
 
   const refresh = () => {
@@ -303,6 +323,13 @@ export function Usage() {
       />
 
       <CoverageNotice meta={overview} />
+
+      {errorText && (
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-[rgb(var(--rgb-orange)/0.35)] bg-[rgb(var(--rgb-orange)/0.1)] px-4 py-2.5 text-sm text-orange">
+          <span className="min-w-0 flex-1 break-words">{errorText}</span>
+          <Button size="sm" variant="ghost" icon={<RotateCw className="h-3.5 w-3.5" />} loading={refreshing} onClick={refresh}>重试</Button>
+        </div>
+      )}
 
       {loading ? <UsageSkeleton /> : (
         <>

@@ -14,7 +14,7 @@ import textwrap
 from typing import Any
 
 import httpx
-from openai import OpenAI, AsyncOpenAI
+from openai import OpenAI, AsyncOpenAI, APIStatusError
 import pytest
 
 from satrap import LLM, AsyncLLM, ModelWorkflowFramework, AsyncModelWorkflowFramework, Tool, AsyncTool, ToolsManager, AsyncToolsManager
@@ -275,6 +275,85 @@ async def test_failures_do_not_become_successful_tool_calls(clients, async_mode,
             assert parsed.error_info is not None and parsed.type == "error"
             assert parsed.tool_calls is None
             assert "credential" not in parsed.content
+    finally:
+        await llm.client.close() if async_mode else llm.client.close()
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("method", ["chat", "structured_output", "stream_chat"])
+@pytest.mark.parametrize("failure", ["failed", "http"])
+@pytest.mark.parametrize("return_false", [False, True])
+async def test_text_apis_never_return_provider_error_text(clients, async_mode, method, failure, return_false):
+    """Responses 文本入口失败时返回空串或 False, 不把错误正文当正文"""
+    _, state = clients
+    if failure == "http":
+        state["http_status"] = 400
+    else:
+        state["result"] = response([], status="failed", error={"code": "server_error", "message": "credential must never escape"})
+    llm = (AsyncLLM if async_mode else LLM)(api_key="test", model="example", base_url="https://models.test/v1",
+                                            api_type="responses", return_false=return_false)
+    try:
+        pending = getattr(llm, method)([{"role": "user", "content": "问题"}])
+        result = (([item async for item in pending] if async_mode else list(pending))
+                  if method.startswith("stream") else (await pending if async_mode else pending))
+        expected = False if return_false else ""
+        assert result == ([expected] if method.startswith("stream") else expected)
+        assert "credential" not in str(result)
+    finally:
+        await llm.client.close() if async_mode else llm.client.close()
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("method", ["chat", "structured_output", "stream_chat"])
+async def test_text_apis_rethrow_when_not_suppressed(clients, async_mode, method):
+    """suppress_error=False 时文本入口保留原异常"""
+    _, state = clients
+    state["http_status"] = 400
+    llm = (AsyncLLM if async_mode else LLM)(api_key="test", model="example", base_url="https://models.test/v1",
+                                            api_type="responses", suppress_error=False)
+    try:
+        with pytest.raises(APIStatusError):
+            pending = getattr(llm, method)([{"role": "user", "content": "问题"}])
+            if method.startswith("stream"):
+                [item async for item in pending] if async_mode else list(pending)
+            else:
+                await pending if async_mode else pending
+    finally:
+        await llm.client.close() if async_mode else llm.client.close()
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("thinking", ["off", "none"])
+async def test_responses_close_aliases_request_none_effort(clients, async_mode, thinking):
+    """Responses 的 off 与 none 都请求关闭推理, 不附加 summary"""
+    requests, state = clients
+    state["result"] = response()
+    llm = (AsyncLLM if async_mode else LLM)(api_key="test", model="example", base_url="https://models.test/v1",
+                                            api_type="responses")
+    try:
+        pending = llm.call([{"role": "user", "content": "问题"}], thinking=thinking)
+        result = await pending if async_mode else pending
+        assert requests[-1]["reasoning"] == {"effort": "none"}
+        assert result.content == "结果是 3"
+    finally:
+        await llm.client.close() if async_mode else llm.client.close()
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("method", ["call", "stream_call"])
+async def test_responses_invalid_thinking_is_rejected(clients, async_mode, method):
+    """非法运行时思考强度在 Responses 中同样明确拒绝"""
+    _, state = clients
+    state["result"] = response()
+    llm = (AsyncLLM if async_mode else LLM)(api_key="test", model="example", base_url="https://models.test/v1",
+                                            api_type="responses", suppress_error=False)
+    try:
+        with pytest.raises(ValueError, match="不支持的思考强度"):
+            pending = getattr(llm, method)([{"role": "user", "content": "问题"}], thinking="extreme")
+            if method.startswith("stream"):
+                [item async for item in pending] if async_mode else list(pending)
+            else:
+                await pending if async_mode else pending
     finally:
         await llm.client.close() if async_mode else llm.client.close()
 

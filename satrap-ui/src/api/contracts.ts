@@ -150,6 +150,7 @@ export interface ApprovalCatalog {
   by_state: Partial<Record<ActionState, number>>; by_source: Partial<Record<ApprovalSource, number>>;
   today_decided: number; automatic_count: number; expired_count: number; decision_latency_ms: number | null;
   window: { from: number | null; to: number | null; tz: string; bucket: null };
+  today_window: { from: number | null; to: number | null; tz: string; bucket: 'day' };
   has_more: boolean; next_cursor: string | null;
   sources?: SourceCoverage[];
 }
@@ -177,6 +178,12 @@ export const approvalStateLabels: Record<ActionState, string> = {
 
 export interface RagScope { platform_id: string; session_id?: string; kb_id: string }
 export interface RagProgress { unit: 'documents' | 'chunks'; done: number; total: number | null; percent: number | null }
+export interface RagIngestResult {
+  status: 'indexed' | 'skipped'; source_id: string; chunks: number; revision: number;
+}
+export interface RagRebuildResult {
+  id: string; revision: number; document_count: number; chunk_count: number;
+}
 export interface RagJob {
   job_id: string; operation_id: string; owner_service: 'control' | 'chat'; owner_runtime_id: string | null;
   platform_id: string; session_id: string; kb_id: string; action: 'ingest' | 'rebuild';
@@ -184,7 +191,7 @@ export interface RagJob {
   phase: 'queued' | 'parsing' | 'splitting' | 'embedding' | 'publishing' | 'finished';
   progress: RagProgress; created_at: number; started_at: number | null; finished_at: number | null;
   error: PublicFailure | null;
-  result: { document_ids: string[]; indexed_documents: number; indexed_chunks: number; generation: string } | null;
+  result: RagIngestResult | RagRebuildResult | null;
 }
 export interface RagJobDocument {
   document_id: string; source_id: string | null; name: string; size_bytes: number | null;
@@ -277,7 +284,7 @@ export const activityApi = {
 export const approvalsApi = {
   list: (query: ApprovalQuery = {}, signal?: AbortSignal) =>
     control<ApprovalCatalog>('/api/platform-actions', { query: { ...query }, signal }),
-  summary: (query: Pick<ApprovalQuery, 'platform_id' | 'account' | 'source' | 'from' | 'to' | 'tz'> = {}, signal?: AbortSignal) =>
+  summary: (query: Pick<ApprovalQuery, 'platform_id' | 'account' | 'from' | 'to' | 'tz'> = {}, signal?: AbortSignal) =>
     control<ApprovalCatalog>('/api/platform-actions/summary', { query: { ...query }, signal, background: true }),
   decide: (items: DecisionInput[]) => {
     if (items.length < 1 || items.length > 20) throw new Error('每批需提交 1 至 20 项审批');
@@ -294,14 +301,14 @@ export const ragJobsApi = {
     const target = ragTarget(scope, via);
     return serviceFetch<{ job: RagJob }>(target.base, `${target.prefix}/jobs/${encodeURIComponent(jobId)}`, { query: target.query, signal });
   },
-  submit: (scope: RagScope, payload: RagJobSubmit, via?: 'control') => {
+  submit: (scope: RagScope, payload: RagJobSubmit, via?: 'control', signal?: AbortSignal) => {
     const target = ragTarget(scope, via);
-    return serviceFetch<{ job: RagJob }>(target.base, `${target.prefix}/jobs`, { method: 'POST', query: target.query, body: { kb_id: scope.kb_id, ...payload } });
+    return serviceFetch<{ job: RagJob }>(target.base, `${target.prefix}/jobs`, { method: 'POST', query: target.query, body: { kb_id: scope.kb_id, ...payload }, signal });
   },
-  upload: (scope: RagScope, file: File, params: { operation_id: string; expected_revision: number; source?: string }, via?: 'control') => {
+  upload: (scope: RagScope, file: File, params: { operation_id: string; expected_revision: number; source?: string }, via?: 'control', signal?: AbortSignal) => {
     const target = ragTarget(scope, via);
     return serviceFetch<{ job: RagJob }>(target.base, `${target.prefix}/jobs/upload`, {
-      method: 'POST', raw: file, query: { ...target.query, file_name: file.name, ...params },
+      method: 'POST', raw: file, query: { ...target.query, file_name: file.name, ...params }, signal,
     });
   },
   documents: (scope: RagScope, query: { limit?: number; cursor?: string } = {}, via?: 'control', signal?: AbortSignal) => {

@@ -91,6 +91,9 @@ jobs:
           $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
           $plan = Get-Content -Raw -Encoding utf8 ci-test-plan.json | ConvertFrom-Json
           $testArgs = @($plan.python_tests) + @('-q', '-n', '2', '--dist', 'loadfile', '--durations=20', '-o', 'faulthandler_timeout=90')
+          if (@($plan.python_tests | Where-Object { $_ -like 'tests/integration/*' }).Count -gt 0) {
+            $testArgs += '--run-integration'
+          }
           python -m pytest @testArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   compatibility:

@@ -90,6 +90,10 @@ export function FilterRail({
   const allPlatformsCount = Object.values(counts.platforms).some((value) => value === null)
     ? null
     : Object.values(counts.platforms).reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  // summary 不可用时来源分面未知, 不能用缺失值相加伪装成 0
+  const allSourcesCount = ALL_SOURCES.some((source) => counts.sources[source] === null || counts.sources[source] === undefined)
+    ? null
+    : ALL_SOURCES.reduce<number>((sum, source) => sum + (counts.sources[source] ?? 0), 0);
   const accountOptions: SelectOption[] = [
     { value: 'current', label: '当前账号', description: '各平台默认机器人' },
     ...accounts.map((account) => ({ value: account, label: account })),
@@ -145,7 +149,7 @@ export function FilterRail({
             active={scope.source === 'all'}
             label="全部来源"
             icon={<ListFilter className="h-3.5 w-3.5" />}
-            count={ALL_SOURCES.reduce<number>((sum, source) => sum + (counts.sources[source] ?? 0), 0)}
+            count={allSourcesCount}
             loading={loading}
             onClick={() => onPatch({ source: 'all' })}
           />

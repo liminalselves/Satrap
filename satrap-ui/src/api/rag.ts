@@ -37,14 +37,14 @@ export function ragErrorMessage(reason: unknown): string {
 }
 
 export const ragApi = {
-  upload: async (context: RagContext, kbId: string, file: File, source: string, onProgress: (percent: number) => void): Promise<Record<string, unknown>> => {
+  upload: async (context: RagContext, kbId: string, file: File, source: string, onProgress: (percent: number) => void, signal?: AbortSignal): Promise<Record<string, unknown>> => {
     const chat = context.platformId === 'chat' && context.via !== 'control';
     const base = chat ? getChatApiUrl() : getControlApiUrl();
     await ensureApiSession(base);
     const path = chat ? '/api/chat/rag/upload' : '/config/rag/upload';
     const params = new URLSearchParams({ platform_id: context.platformId, session_id: context.sessionId || '', kb_id: kbId, file_name: file.name, source });
     const send = () => axios.post<Record<string, unknown>>(base + path + '?' + params, file, {
-      withCredentials: true, timeout: 300000,
+      withCredentials: true, timeout: 300000, signal,
       headers: { 'Content-Type': 'application/octet-stream' },
       onUploadProgress: (event) => onProgress(Math.min(100, Math.round(event.loaded * 100 / (event.total || file.size || 1)))),
     });
@@ -57,10 +57,10 @@ export const ragApi = {
       throw error;
     }
   },
-  list: (context: RagContext, kbId = ''): Promise<RagResult> => context.platformId === 'chat' && context.via !== 'control'
-    ? chatApi.ragList(context.sessionId || '', kbId)
-    : controlApi.ragList(context.platformId, context.sessionId || '', kbId),
-  action: (context: RagContext, payload: Record<string, unknown>): Promise<Record<string, unknown>> => context.platformId === 'chat' && context.via !== 'control'
-    ? chatApi.ragAction(context.sessionId || '', payload)
-    : controlApi.ragAction(context.platformId, context.sessionId || '', payload),
+  list: (context: RagContext, kbId = '', signal?: AbortSignal): Promise<RagResult> => context.platformId === 'chat' && context.via !== 'control'
+    ? chatApi.ragList(context.sessionId || '', kbId, signal)
+    : controlApi.ragList(context.platformId, context.sessionId || '', kbId, signal),
+  action: (context: RagContext, payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> => context.platformId === 'chat' && context.via !== 'control'
+    ? chatApi.ragAction(context.sessionId || '', payload, signal)
+    : controlApi.ragAction(context.platformId, context.sessionId || '', payload, signal),
 };

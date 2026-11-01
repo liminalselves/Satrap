@@ -99,6 +99,108 @@ async def test_corrupt_tool_calls_does_not_discard_other_messages(tmp_path: Path
     assert [message["content"] for message in loaded.get_context()] == ["第一条", "第二条"]
     assert "tool_calls" not in loaded.get_context()[0]
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_corrupt_protocol_payload_does_not_discard_other_messages(tmp_path: Path, asynchronous: bool):
+    """同步与异步加载遇到损坏或非对象 protocol_payload 时只丢弃该字段"""
+    db = str(tmp_path / "chat_history.db")
+    if asynchronous:
+        ctx = AsyncContextManager("conv-protocol", db_path=db)
+        await ctx.initialize()
+        await ctx.add_user_message("第一条")
+        await ctx.add_bot_message("第二条", protocol_payload={"items": []})
+        await ctx.add_bot_message("第三条", protocol_payload={"items": [1]})
+        await ctx.add_bot_message("第四条", protocol_payload={"items": [2]})
+    else:
+        ctx = ContextManager("conv-protocol", db_path=db)
+        ctx.add_user_message("第一条")
+        ctx.add_bot_message("第二条", protocol_payload={"items": []})
+        ctx.add_bot_message("第三条", protocol_payload={"items": [1]})
+        ctx.add_bot_message("第四条", protocol_payload={"items": [2]})
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "UPDATE chat_history SET protocol_payload = ? WHERE conversation_id = ? AND content = ?",
+            ("{broken", "conv-protocol", "第二条"),
+        )
+        conn.execute(
+            "UPDATE chat_history SET protocol_payload = ? WHERE conversation_id = ? AND content = ?",
+            (json.dumps([1, 2]), "conv-protocol", "第三条"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    if asynchronous:
+        loaded = AsyncContextManager("conv-protocol", db_path=db)
+        await loaded.initialize()
+    else:
+        loaded = ContextManager("conv-protocol", db_path=db)
+    context = loaded.get_context()
+    assert [message["content"] for message in context] == ["第一条", "第二条", "第三条", "第四条"]
+    assert "protocol_payload" not in context[1]
+    assert "protocol_payload" not in context[2]
+    assert context[3]["protocol_payload"]["items"] == [2]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_corrupt_protocol_payload_allows_subsequent_save(tmp_path: Path, asynchronous: bool):
+    """加载时忽略损坏字段后仍可追加保存, 不清空原消息也不改写原字段"""
+    db = str(tmp_path / "chat_history.db")
+    if asynchronous:
+        ctx = AsyncContextManager("conv-protocol-save", db_path=db)
+        await ctx.initialize()
+        await ctx.add_user_message("第一条")
+        await ctx.add_bot_message("第二条", protocol_payload={"items": []})
+    else:
+        ctx = ContextManager("conv-protocol-save", db_path=db)
+        ctx.add_user_message("第一条")
+        ctx.add_bot_message("第二条", protocol_payload={"items": []})
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "UPDATE chat_history SET protocol_payload = ? WHERE conversation_id = ? AND content = ?",
+            ("{broken", "conv-protocol-save", "第二条"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    if asynchronous:
+        loaded = AsyncContextManager("conv-protocol-save", db_path=db)
+        await loaded.initialize()
+        await loaded.add_user_message("后续")
+        await loaded.save_context()
+    else:
+        loaded = ContextManager("conv-protocol-save", db_path=db)
+        loaded.add_user_message("后续")
+        loaded.save_context()
+
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT content, protocol_payload FROM chat_history WHERE conversation_id = ? ORDER BY id",
+            ("conv-protocol-save",),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [row[0] for row in rows] == ["第一条", "第二条", "后续"]
+    assert rows[1][1] == "{broken"
+
+    if asynchronous:
+        await loaded.reset_system_prompt("新系统提示")
+        rewritten = AsyncContextManager("conv-protocol-save", db_path=db)
+        await rewritten.initialize()
+    else:
+        loaded.reset_system_prompt("新系统提示")
+        rewritten = ContextManager("conv-protocol-save", db_path=db)
+    # 全量重写可以省略已损坏的可选字段, 但不得删除其它消息正文
+    assert [message["content"] for message in rewritten.get_context() if message["role"] != "system"] == [
+        "第一条", "第二条", "后续",
+    ]
+
 def test_reset_system_prompt_triggers_full_rewrite(tmp_path: Path):
     """编辑操作 (reset_system_prompt) 走全量重写, 库内容与内存一致"""
     db = str(tmp_path / "chat_history.db")

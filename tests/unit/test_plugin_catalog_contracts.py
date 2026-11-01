@@ -56,6 +56,33 @@ def test_warm_catalog_index_copies_and_external_invalidation(tmp_path, monkeypat
     path.unlink()
     assert catalog.get('probe').version == 'shadow'
 
+def test_presentation_fields_are_relaxed_but_identity_and_schema_stay_strict(tmp_path):
+    """展示字段损坏不淘汰插件, 身份版本权限声明仍按原规则拒绝"""
+    preset = tmp_path / 'preset'
+    plugin_dir = preset / 'demo'
+    plugin_dir.mkdir(parents=True)
+    meta_path = plugin_dir / 'meta.yaml'
+    meta_path.write_text(cast(Any, yaml).safe_dump({
+        'name': 'demo', 'version': '1.0.0', 'display_name': '显示名', 'icon': {'bad': 1},
+        'license': ['MIT'], 'homepage': 7, 'repository': 'x' * 2049,
+    }, allow_unicode=True), encoding='utf-8')
+    entry = PluginCatalog(preset_dir=preset, user_dir=tmp_path / 'user').get('demo')
+    assert entry is not None
+    payload = entry.to_payload()
+    assert payload['display_name'] == '显示名'
+    assert all(key not in payload for key in ('icon', 'license', 'homepage', 'repository'))
+
+    for invalid in (
+        {'version': '1.0.0'},
+        {'name': 'demo', 'version': '1.0.0', 'config_version': -1},
+        {'name': 'demo', 'version': '1.0.0', 'permission_schema_version': 2},
+    ):
+        meta_path.write_text(cast(Any, yaml).safe_dump(invalid), encoding='utf-8')
+        catalog = PluginCatalog(preset_dir=preset, user_dir=tmp_path / 'user')
+        assert catalog.get('demo') is None
+        assert catalog.scan_errors
+
+
 def test_broken_metadata_recovers_and_preserves_errors(tmp_path):
     path = write_meta(tmp_path, 'probe')
     catalog = PluginCatalog(tmp_path, tmp_path / 'missing')

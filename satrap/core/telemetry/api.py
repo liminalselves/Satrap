@@ -13,6 +13,7 @@ import threading
 import asyncio
 from pathlib import Path
 import sqlite3
+import http.client
 from typing import cast
 from copy import deepcopy
 import time
@@ -35,13 +36,14 @@ _SOURCE_PROBLEMS: dict[str, str] = {}   # 每个来源最近一次已报告的�
 _SOURCE_LOCK = threading.Lock()
 
 
-def _note_source(service: str, reason: str | None) -> None:
+def _note_source(service: str, reason: str | None, detail: str = "") -> None:
     """
     仅在来源状态变化时写日志, 离线是预期状态不按警告记录
 
     参数:
     - service: 统计来源服务
     - reason: 不可用原因, None 表示本次读取成功
+    - detail: 可选的异常类型等定位信息, 不包含 URL 或响应正文
     """
     with _SOURCE_LOCK:
         previous = _SOURCE_PROBLEMS.get(service)
@@ -56,7 +58,8 @@ def _note_source(service: str, reason: str | None) -> None:
     elif reason == "service_unreachable":
         logger.info(f"[统计] 来源 {service} 未运行, 使用已保存的统计快照")
     else:
-        logger.warning(f"[统计] 来源 {service} 不可用: {reason}")
+        suffix = f" ({detail})" if detail else ""
+        logger.warning(f"[统计] 来源 {service} 不可用: {reason}{suffix}")
 
 
 @dataclass
@@ -148,6 +151,7 @@ async def _source(service: Service, layout: StorageLayout, query: MetricQuery | 
         params["cursor"] = query.cursor(query.after)
     state: SourceState = "error"
     reason = "source_invalid_response"
+    detail = ""
     try:
         if service == "control" or fetch is None:
             return await QUERY_WORKERS.run(_local, store, query)
@@ -165,9 +169,13 @@ async def _source(service: Service, layout: StorageLayout, query: MetricQuery | 
         return payload
     except SourceUnavailable as error:
         state, reason = error.state, error.reason_code
+    except http.client.HTTPException as error:
+        # HTTP 协议层的截断或连接异常只降级当前来源, 不让聚合整体失败
+        state, reason, detail = "error", "source_http_exception", type(error).__name__
     except (ValueError, OSError, sqlite3.Error, WorkerBusyError) as error:
         reason = "local_snapshot_unavailable" if service == "control" else "source_invalid_response"
-    _note_source(service, reason)
+        detail = type(error).__name__
+    _note_source(service, reason, detail)
     if state == "offline" and store.path.is_file():
         try:
             payload = await QUERY_WORKERS.run(_local, store, query)

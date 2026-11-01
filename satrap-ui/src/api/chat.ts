@@ -368,8 +368,8 @@ export const chatApi = {
   setApproval: (conversationId: string, mode: ApprovalMode, revision: number) =>
     request<ApprovalState>('PUT', '/api/chat/approval?' + new URLSearchParams({ conversation: conversationId }), { mode, expected_revision: revision }),
   refreshHistoryStorage: () => request<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('POST', '/api/chat/history/storage'),
-  ragList: (sessionId: string, kbId: string) => request<RagResult>('GET', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId, kb_id: kbId })}`),
-  ragAction: (sessionId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>('POST', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId })}`, payload),
+  ragList: (sessionId: string, kbId: string, signal?: AbortSignal) => request<RagResult>('GET', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId, kb_id: kbId })}`, undefined, signal),
+  ragAction: (sessionId: string, payload: Record<string, unknown>, signal?: AbortSignal) => request<Record<string, unknown>>('POST', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId })}`, payload, signal),
   pluginModelOptions: () => request<{ options: ModelOptions }>('GET', '/api/chat/plugin-model-options'),
   getSessionPluginConfig: (conversationId: string, plugin: string) => request<SessionPluginSettings>('GET', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`),
   saveSessionPluginConfig: (conversationId: string, plugin: string, overrides: Record<string, unknown>, revision: number, tools?: import('./pluginSettings').SessionToolOverrides) => request<SessionPluginSettings>('PUT', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`, { overrides, expected_revision: revision, ...tools }),

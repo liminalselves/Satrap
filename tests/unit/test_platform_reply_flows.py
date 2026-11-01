@@ -617,6 +617,30 @@ def _sent_segments(adapter: OneBotAdapter, private: bool = False):
     return [call.kwargs["message"] for call in mock.await_args_list]
 
 @pytest.mark.asyncio
+async def test_send_records_single_delivery_end_with_error_type(monkeypatch):
+    """成功与失败都只产生一次 delivery.end, 失败路径保留 error_type 且不重复记录"""
+    from satrap.core.log.debug import capture
+
+    records: list[tuple[str, str, dict[str, Any]]] = []
+    monkeypatch.setattr(capture, "record_debug", lambda category, phase, **kwargs: records.append((category, phase, kwargs)))
+    adapter, event = await _event()
+    await event.send(MessageChain.from_text("成功"))
+    ends = [record for record in records if record[0] == "delivery" and record[1] == "end"]
+    assert len(ends) == 1 and ends[0][2]["metadata"]["error_type"] == ""
+
+    records.clear()
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(adapter, "send_message", fail)
+    receipt = await event.send(MessageChain.from_text("失败"))
+    ends = [record for record in records if record[0] == "delivery" and record[1] == "end"]
+    assert len(ends) == 1 and ends[0][2]["metadata"]["error_type"] == "RuntimeError"
+    assert receipt is not None and receipt.status == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_default_policy_keeps_plain_reply():
     adapter, event = await _event()
     await event.send(MessageChain.from_text("回复"))

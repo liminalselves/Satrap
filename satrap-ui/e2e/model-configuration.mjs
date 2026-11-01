@@ -532,14 +532,14 @@ async function chat_model_binding(runtime) {
     delete models.B;
     await page.reload();
     await page.getByText('会话 B', { exact: true }).first().click();
-    await page.getByText('模型 B 不可用, 请展开选项手动选择', { exact: true }).waitFor();
+    await page.getByText('模型 B 不可用, 请切换模型或检查模型配置', { exact: true }).waitFor();
     await page.getByPlaceholder(/输入消息/).fill('不能偷偷换模型执行');
     assert.equal(await page.getByTitle('发送', { exact: true }).isDisabled(), true);
     assert.equal(bindings.b, 'B');
     delete models.A;
     await page.reload();
     await page.getByText('会话 B', { exact: true }).first().click();
-    await page.getByText('模型 B 不可用, 请展开选项手动选择', { exact: true }).waitFor();
+    await page.getByText('模型 B 不可用, 请切换模型或检查模型配置', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
     console.log('PASS: 会话绑定切换等待确认, 普通发送/重试使用当前模型, 旧变体标记, 保存失败恢复, 整体默认仅影响新会话, 刷新回填, 双标签同步和删除后明确不可用');
   } finally {

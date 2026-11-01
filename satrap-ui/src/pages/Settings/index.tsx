@@ -13,7 +13,10 @@ import { usePrefsStore } from '@/stores/usePrefsStore';
 import { controlApi } from '@/api/control';
 import { errorText } from '@/utils/errorText';
 import type { AdministratorGroup, AdministratorOverride } from '@/api/administrators';
-import { extractCommonConfig, mergeCommonConfig, initialCommonConfig, type CommonConfig } from './types';
+import {
+  advanceConfigRevision, extractCommonConfig, initialCommonConfig, mergeAdministratorConfig, mergeCommonConfig,
+  runSectionSaves, type CommonConfig,
+} from './types';
 import { AppearanceSection } from './AppearanceSection';
 import { CommonConfigSection } from './CommonConfigSection';
 import { BackendControlSection } from './BackendControlSection';
@@ -79,11 +82,15 @@ export function Settings() {
   const rawDraftRef = useRef(rawDraft);
   const commonSavedRef = useRef(commonSaved);
   const commonDraftRef = useRef(commonDraft);
+  const configRef = useRef(config);
+  const configRevisionRef = useRef(configRevision);
 
   rawSavedRef.current = rawSaved;
   rawDraftRef.current = rawDraft;
   commonSavedRef.current = commonSaved;
   commonDraftRef.current = commonDraft;
+  configRef.current = config;
+  configRevisionRef.current = configRevision;
 
   const backendRunning = runState === 'running';
   const controlOnline = controlAvailable;
@@ -102,6 +109,8 @@ export function Settings() {
         }
         delete loaded.llm_timeout;
         const text = dumpConfig(loaded);
+        configRef.current = loaded;
+        configRevisionRef.current = result.revision;
         setConfig(loaded);
         setConfigRevision(result.revision);
         setRawSaved(text);
@@ -122,10 +131,10 @@ export function Settings() {
   }, []);
 
   /** 原始配置的“重新读取”: 保留有未保存修改的草稿, 只刷新已保存版本与修订号 */
-  const reloadRaw = useCallback(async () => {
+  const reloadRaw = useCallback(async (): Promise<string | undefined> => {
     try {
       const result = await controlApi.getConfig();
-      if (!result.ok || !result.config) return;
+      if (!result.ok || !result.config) return undefined;
       const loaded = { ...result.config } as Record<string, unknown>;
       if (!('session_timeout' in loaded) && 'llm_timeout' in loaded) {
         loaded.session_timeout = loaded.llm_timeout as number | null;
@@ -134,6 +143,8 @@ export function Settings() {
       const text = dumpConfig(loaded);
       const rawClean = rawDraftRef.current === rawSavedRef.current;
       const commonClean = JSON.stringify(commonDraftRef.current) === JSON.stringify(commonSavedRef.current);
+      configRef.current = loaded;
+      configRevisionRef.current = result.revision;
       setConfig(loaded);
       setConfigRevision(result.revision);
       setConfigPath(result.path || '');
@@ -144,8 +155,10 @@ export function Settings() {
       const extracted = extractCommonConfig(loaded, commonDraftRef.current);
       setCommonSaved(extracted);
       if (commonClean) setCommonDraft(extracted);
+      return result.revision;
     } catch {
       // 控制服务不可用时保留当前草稿, 由横幅提示
+      return undefined;
     }
   }, []);
 
@@ -175,6 +188,8 @@ export function Settings() {
     const text = dumpConfig(nextConfig);
     const rawClean = rawDraftRef.current === rawSavedRef.current;
     const commonClean = JSON.stringify(commonDraftRef.current) === JSON.stringify(commonSavedRef.current);
+    configRef.current = nextConfig;
+    if (revision) configRevisionRef.current = revision;
     setConfig(nextConfig);
     if (revision) setConfigRevision(revision);
     setConfigExists(true);
@@ -189,7 +204,7 @@ export function Settings() {
   const persistConfig = useCallback(async (payload: Record<string, unknown>, source: 'common' | 'raw'): Promise<boolean> => {
     setSaving(true);
     try {
-      const result = await controlApi.saveConfig(payload, configRevision);
+      const result = await controlApi.saveConfig(payload, configRevisionRef.current);
       if (!result.ok) {
         toast('error', result.error || '保存失败');
         return false;
@@ -212,18 +227,18 @@ export function Settings() {
     } finally {
       setSaving(false);
     }
-  }, [applyServerConfig, configRevision, controlBackend, isRunning]);
+  }, [applyServerConfig, controlBackend, isRunning]);
 
   const saveCommon = useCallback(async (): Promise<boolean> => {
     if (!controlOnline || !configExists) { toast('error', '控制服务未运行或配置文件缺失'); return false; }
-    return persistConfig(mergeCommonConfig(config, commonDraft), 'common');
-  }, [commonDraft, config, configExists, controlOnline, persistConfig]);
+    return persistConfig(mergeCommonConfig(configRef.current, commonDraftRef.current), 'common');
+  }, [configExists, controlOnline, persistConfig]);
 
   const saveRaw = useCallback(async (): Promise<boolean> => {
     if (!controlOnline || !configExists) { toast('error', '控制服务未运行或配置文件缺失'); return false; }
     let parsed: unknown;
     try {
-      parsed = yaml.load(rawDraft, { schema: yaml.JSON_SCHEMA, json: true });
+      parsed = yaml.load(rawDraftRef.current, { schema: yaml.JSON_SCHEMA, json: true });
     } catch (cause) {
       toast('error', 'YAML 格式错误: ' + (cause instanceof Error ? cause.message : '未知错误'));
       return false;
@@ -233,7 +248,7 @@ export function Settings() {
       return false;
     }
     return persistConfig(parsed as Record<string, unknown>, 'raw');
-  }, [controlOnline, configExists, persistConfig, rawDraft]);
+  }, [controlOnline, configExists, persistConfig]);
 
   const createDefault = useCallback(async (): Promise<boolean> => {
     setLoading(true);
@@ -256,17 +271,22 @@ export function Settings() {
     }
   }, [applyServerConfig]);
 
-  const handleAdminSaved = useCallback((groups: AdministratorGroup[], overrides: AdministratorOverride[]) => {
-    const nextConfig: Record<string, unknown> = {
-      ...config,
-      administrator_groups: groups,
-      administrator_overrides: overrides,
-    };
+  const handleAdminSaved = useCallback((
+    groups: AdministratorGroup[], overrides: AdministratorOverride[], revision: string, previousRevision: string,
+  ) => {
+    const nextConfig = mergeAdministratorConfig(configRef.current, groups, overrides);
     const text = dumpConfig(nextConfig);
+    const rawClean = rawDraftRef.current === rawSavedRef.current;
+    const nextRevision = advanceConfigRevision(configRevisionRef.current, previousRevision, revision);
+    configRef.current = nextConfig;
+    configRevisionRef.current = nextRevision;
     setConfig(nextConfig);
+    setConfigRevision(nextRevision);
+    rawSavedRef.current = text;
+    if (rawClean) rawDraftRef.current = text;
     setRawSaved(text);
-    setRawDraft((current) => (rawDraftRef.current === rawSavedRef.current ? text : current));
-  }, [config]);
+    setRawDraft((current) => (rawClean ? text : current));
+  }, []);
 
   const undoCommon = useCallback(() => {
     setCommonDraft(commonSaved);
@@ -285,10 +305,8 @@ export function Settings() {
     if (savingAll) return;
     setSavingAll(true);
     try {
-      for (const id of saveOrder) {
-        if (!dirty[id]) continue;
-        await actionsRef.current[id]?.save();
-      }
+      const failedSection = await runSectionSaves(saveOrder, dirty, actionsRef.current);
+      if (failedSection) toast('error', `${dirtyLabels[failedSection]}保存失败, 已停止后续分节`);
     } finally {
       setSavingAll(false);
     }
@@ -490,12 +508,13 @@ export function Settings() {
             draft={rawDraft}
             saved={rawSaved}
             revision={configRevision || '—'}
+            revisionRef={configRevisionRef}
             path={configPath}
             backendRunning={backendRunning}
             controlOnline={controlOnline}
             onChange={setRawDraft}
             onSave={saveRaw}
-            onReload={() => { void reloadRaw(); }}
+            onReload={reloadRaw}
             onDirty={dirtyReporters.raw}
             register={registerers.raw}
           />

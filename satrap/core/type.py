@@ -16,6 +16,24 @@ from satrap.core.call_context import CallOrigin
 from satrap.core.components import BaseMessageComponent
 
 THINKING_LEVEL_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+THINKING_CLOSE_VALUES = ("off", "none")
+
+
+def validate_runtime_thinking(value: object) -> str:
+    """
+    校验运行时思考强度, 统一关闭别名与已开放强度
+
+    参数:
+    - value: 调用方传入的思考强度
+
+    返回:
+    - str: 通过校验的思考强度, 非法值抛出 ValueError
+    """
+    valid = {"default", *THINKING_CLOSE_VALUES, *THINKING_LEVEL_VALUES}
+    if not isinstance(value, str) or value not in valid:
+        raise ValueError(f"不支持的思考强度: {value!r}")
+    return value
+
 
 
 def validate_thinking_levels(value: object) -> Optional[List[str]]:

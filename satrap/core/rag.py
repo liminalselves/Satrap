@@ -405,7 +405,7 @@ class RagService:
         - progress: 可选的阶段内进度回调
 
         返回:
-        - indexed 或 skipped, 来源 ID 及片段数
+        - indexed 或 skipped, 来源 ID、片段数及操作后的知识库修订
         """
         if expected_revision is not None:
             self._validate_revision(expected_revision)
@@ -425,7 +425,7 @@ class RagService:
             source_id = hashlib.sha256(source.strip().encode("utf-8")).hexdigest()
             current = self.documents(kb_id)
             if config["duplicate_policy"] == "skip" and any(item["source_id"] == source_id for item in current):
-                return {"status": "skipped", "source_id": source_id, "chunks": 0}
+                return {"status": "skipped", "source_id": source_id, "chunks": 0, "revision": row["revision"]}
             generation = uuid.uuid4().hex
             index = self._stage(row, generation)
             record: dict[str, Any] = {"source_id": source_id, "source": source.strip(), "source_text": text, "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(), "updated_at": time.time()}
@@ -433,15 +433,16 @@ class RagService:
                 count = self._embed_source(index, config, record, model, progress)
                 if progress:
                     progress("publishing", "chunks", count, count)
-                self._publish(database, row, generation, index)
+                revision = self._publish(database, row, generation, index)
                 self._discard_inactive(row, generation)
-                return {"status": "indexed", "source_id": source_id, "chunks": count}
+                return {"status": "indexed", "source_id": source_id, "chunks": count, "revision": revision}
             except Exception as error:
                 self._discard_inactive(row, row["generation"])
                 self._record_error(database, kb_id, f"索引处理失败 ({type(error).__name__})")
                 raise
 
-    def _publish(self, database: Path, row: dict[str, Any], generation: str, index: DataBase, config: dict[str, Any] | None = None, identity: str | None = None) -> None:
+    def _publish(self, database: Path, row: dict[str, Any], generation: str, index: DataBase, config: dict[str, Any] | None = None, identity: str | None = None) -> int:
+        """原子发布索引并返回操作后的知识库修订"""
         with closing(self._connect(database)) as connection, connection:
             changed = connection.execute(
                 "UPDATE rag_knowledge_bases SET generation=?, config_json=?, embed_identity=?, revision=revision+1, status='ready', last_error='', "
@@ -451,6 +452,7 @@ class RagService:
             ).rowcount
             if changed != 1:
                 raise ValueError("知识库配置已被其他操作修改, 请刷新后重试")
+        return int(row["revision"]) + 1
 
     def _record_error(self, database: Path, kb_id: str, error: str) -> None:
         with closing(self._connect(database)) as connection, connection:

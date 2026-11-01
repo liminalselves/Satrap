@@ -84,6 +84,32 @@ async def _wait_conversation_task(service: ChatService, conversation_id: str) ->
 
 
 @pytest.mark.asyncio
+async def test_chat_inbound_and_outbound_message_scope_match(tmp_path, monkeypatch):
+    """同一 Chat 轮次的入站与出站消息共享 session/context/model 归属"""
+    from satrap.core.telemetry import capture
+
+    service = _make_service(tmp_path, monkeypatch)
+    cid = await service.create_conversation()
+    conv = _must_conversation(service, cid)
+    scopes = []
+
+    def record(scope, message_id, **kwargs):
+        scopes.append((message_id, scope))
+
+    monkeypatch.setattr(capture, "record_message", record)
+    try:
+        assert (await service.send(cid, "归属测试"))["ok"]
+        await _wait_conversation_task(service, cid)
+    finally:
+        await service.close()
+    inbound = next(scope for message_id, scope in scopes if message_id.startswith("input:"))
+    outbound = next(scope for message_id, scope in scopes if message_id.startswith("output:"))
+    assert (inbound.session_id, inbound.context_id, inbound.model_config) == (
+        outbound.session_id, outbound.context_id, outbound.model_config)
+    assert inbound.session_id == cid and inbound.context_id == cid and inbound.model_config == conv.model
+
+
+@pytest.mark.asyncio
 async def test_temperature_settings_round_snapshot_retry_restart_and_fork(tmp_path, monkeypatch):
     """温度覆盖可持久修改, 本轮固定参数, 重试与分支继承最新偏好"""
     service = _make_service(tmp_path, monkeypatch)
@@ -593,6 +619,45 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         workspace_roots=[tmp_path],   # 业务测试使用隔离工作区, 不探测宿主机磁盘
         settings=ChatSettingsStore(tmp_path / "chat_settings.json"),
     )
+
+
+@pytest.mark.asyncio
+async def test_chat_model_delete_checks_default_and_conversation_references(tmp_path: Path, monkeypatch: Any):
+    """Chat 自身删除入口拒绝默认和活跃会话引用, 改绑后允许删除"""
+    service = _make_service(tmp_path, monkeypatch)
+    try:
+        blocked_default = service.delete_model("default")
+        assert blocked_default["code"] == "config_in_use"
+        cid = await service.create_conversation(model="fast")
+        blocked = service.delete_model("fast")
+        assert blocked["code"] == "config_in_use"
+        assert any(item.get("conversation_id") == cid for item in blocked["references"])
+        assert (await service.set_model(cid, "default"))["ok"]
+        monkeypatch.setattr(service._model_cfg, "remove_llm_config", lambda name: name == "fast", raising=False)
+        assert service.delete_model("fast") == {"ok": True}
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_rag_sqlite_startup_failure_is_degraded(tmp_path: Path, monkeypatch: Any):
+    """RAG 启动扫描损坏时保留 Chat HTTP 服务"""
+    from sqlite3 import DatabaseError
+
+    service = _make_service(tmp_path, monkeypatch)
+
+    async def fail_start(self, platforms):
+        raise DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr("satrap.display.server.RagJobManager.start", fail_start)
+    server = ChatHTTPServer(service, host="127.0.0.1", port=0)
+    await server.start()
+    try:
+        assert server._server is not None
+        assert server._rag_jobs is None
+    finally:
+        await server.stop()
+        await service.close()
 
 
 @pytest.mark.asyncio
@@ -1332,6 +1397,29 @@ async def test_initial_approval_rejects_invalid_or_unavailable_modes_without_sta
         result = await svc.send(cid, "未预选模式的普通对话")
         assert result["ok"]
         await _wait_conversation_task(svc, cid)
+    finally:
+        await svc.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_routes_reject_invalid_think_before_starting_turn(tmp_path, monkeypatch):
+    """创建/发送/重试在 HTTP 边界拒绝非法思考强度"""
+    svc = _make_service(tmp_path, monkeypatch)
+    server = ChatHTTPServer(svc)
+    try:
+        status, result = await server._route("POST", "/api/chat/conversations", json.dumps(
+            {"model": "fast", "think": "extreme"}
+        ).encode("utf-8"))
+        assert status == 400 and "思考强度" in result["error"]
+        cid = await svc.preload_conversation()
+        for path, payload in (
+            ("/api/chat/send", {"conversation": cid, "text": "不应启动", "think": "extreme"}),
+            ("/api/chat/retry", {"conversation": cid, "think": "extreme"}),
+        ):
+            status, result = await server._route("POST", path, json.dumps(payload).encode("utf-8"))
+            assert status == 400 and "思考强度" in result["error"]
+        conv = _must_conversation(svc, cid)
+        assert conv.task is None and not conv.recorder.list_turns()
     finally:
         await svc.close()
 

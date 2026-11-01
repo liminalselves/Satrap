@@ -38,10 +38,17 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     """
 在调用方事务中按版本向前迁移平台表
 
+    调用方必须在写入路径显式执行 BEGIN IMMEDIATE 并负责提交或回滚;
+    未处于事务且需要迁移时, 本函数会先取得写锁再重新读取版本决定迁移
+
     参数:
-    - connection: 平台数据库连接; 调用方负责事务提交或回滚
+    - connection: 平台数据库连接
     """
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if version < PLATFORM_SCHEMA_VERSION and not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")   # DDL 与版本水位一起提交, 中断时不留下部分新增列
+        # 等待写锁期间其它连接可能已完成迁移, 以重读后的水位重新决定迁移
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     existing = _tables(connection)
     required = (({_OVERRIDE_TABLE} if version >= 1 else set()) | (_GROUP_TABLES if version >= 2 else set())
                 | (_MESSAGE_TABLES if version >= 4 else set())
@@ -64,9 +71,6 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
             columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
             if not fields <= columns:
                 raise RuntimeError(f"平台数据库结构损坏: {table} 缺少动作项修订或决策字段")
-
-    if version < PLATFORM_SCHEMA_VERSION and not connection.in_transaction:
-        connection.execute("BEGIN IMMEDIATE")   # DDL 与版本水位一起提交, 中断时不留下部分新增列
 
     if version < 1:
         connection.execute(

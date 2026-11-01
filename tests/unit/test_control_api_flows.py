@@ -169,6 +169,31 @@ async def test_session_class_enable_disable_and_detail(
     assert data == {"error": "not found"}
 
 @pytest.mark.asyncio
+async def test_session_class_writes_return_409_when_initial_load_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """首次加载失败的管理器在各写入路由返回 409 及原因, 文件保持原样"""
+    storage = tmp_path / "sc.json"
+    storage.write_text("{broken", encoding="utf-8")
+    mgr = SessionClassConfigManager(storage_path=storage)
+    mgr._configs["demo"] = {"class_path": "satrap.core.framework.Base.Session", "_updated_at": None, "is_async": False,
+                            "enabled": True, "context_key": "", "model_key": "", "description": "", "params": {}}
+    _patch_manager(monkeypatch, "session_class_mgr", mgr)
+    server = _http_api_dispatch_make_server(tmp_path)
+
+    for method, path, body in (
+        ("POST", "/api/config/session-classes", b'{"name":"new","class_path":"satrap.core.framework.Base.Session"}'),
+        ("POST", "/api/config/session-classes/demo/enable", b""),
+        ("POST", "/api/config/session-classes/demo/disable", b""),
+        ("PATCH", "/api/config/session-classes/demo", b'{"description":"x"}'),
+        ("DELETE", "/api/config/session-classes/demo", b""),
+    ):
+        status, data = await _http_api_dispatch_route(server, method, path, body)
+        assert status == 409, (method, path, data)
+        assert data["code"] == "session_class_config_unavailable"
+    assert storage.read_text(encoding="utf-8") == "{broken"
+
+@pytest.mark.asyncio
 async def test_edictum_enable_disable_and_detail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """edictum 前缀区段: 详情未命中报 404, enable 作用于未知名称报 400"""
     registry = create_default_edictum_type_registry()

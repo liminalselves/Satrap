@@ -342,7 +342,9 @@ function AdaptersCard({ adapters, today, minute, platformConfig }: {
                     ? <span className="num w-14 text-right text-xs text-fg-3">{usage.messages.toLocaleString()}</span>
                     : <span className="num w-14 text-right text-xs text-fg-3" title="未知">—</span>}
                 </div>
-                {series.length > 1 && <Sparkline data={series} className="hidden h-6 w-16 flex-none opacity-80 md:block" />}
+                {series.length > 1 && series.some((value) => value > 0)
+                  ? <Sparkline data={series} className="hidden h-6 w-16 flex-none opacity-80 md:block" />
+                  : <span aria-hidden className="hidden h-6 w-16 flex-none md:block" />}
                 <Badge tone={ok ? 'green' : 'orange'} dot live={ok}>{ok ? '在线' : '降级'}</Badge>
               </button>
               <div className="px-3 pb-3 pl-[60px]">

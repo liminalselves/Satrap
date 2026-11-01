@@ -29,6 +29,7 @@ from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
+from satrap.core.framework.SessionClassManager import SessionClassConfigUnavailable
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.model_service import ModelConfigService
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
@@ -1349,6 +1350,8 @@ class BackendHTTPServer(MiniHTTPServer):
                 payload = _parse_json_object(body)
                 SessionClassConfigService(backend.session_class_mgr).create(payload)
                 return 200, {"ok": True}
+            except SessionClassConfigUnavailable as e:
+                return 409, {"ok": False, "error": str(e), "code": "session_class_config_unavailable"}
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: POST /api/config/session-classes
@@ -1761,16 +1764,15 @@ class BackendHTTPServer(MiniHTTPServer):
         backend = self.backend
         path_prefix = "/api/config/session-classes/"
 
-        if method == "POST" and path.startswith(path_prefix) and path.endswith("/enable") and backend.session_class_mgr:
-            name = unquote(path[len(path_prefix):-len("/enable")])
-            updated = SessionClassConfigService(backend.session_class_mgr).set_enabled(name, True)
-            return 200, {"ok": True, "config": updated}
+        for suffix, enabled in (("/enable", True), ("/disable", False)):
+            if method == "POST" and path.startswith(path_prefix) and path.endswith(suffix) and backend.session_class_mgr:
+                name = unquote(path[len(path_prefix):-len(suffix)])
+                try:
+                    updated = SessionClassConfigService(backend.session_class_mgr).set_enabled(name, enabled)
+                except SessionClassConfigUnavailable as e:
+                    return 409, {"ok": False, "error": str(e), "code": "session_class_config_unavailable"}
+                return 200, {"ok": True, "config": updated}
         # 接口: POST /api/config/session-classes/{name}/enable
-
-        if method == "POST" and path.startswith(path_prefix) and path.endswith("/disable") and backend.session_class_mgr:
-            name = unquote(path[len(path_prefix):-len("/disable")])
-            updated = SessionClassConfigService(backend.session_class_mgr).set_enabled(name, False)
-            return 200, {"ok": True, "config": updated}
         # 接口: POST /api/config/session-classes/{name}/disable
 
         # 接口: GET /api/config/session-classes/{name}
@@ -1794,6 +1796,8 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
             except ConfigReferenceScanError as e:
                 return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
+            except SessionClassConfigUnavailable as e:
+                return 409, {"ok": False, "error": str(e), "code": "session_class_config_unavailable"}
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: PUT /api/config/session-classes/{name}
@@ -1811,6 +1815,8 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
             except ConfigReferenceScanError as e:
                 return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
+            except SessionClassConfigUnavailable as e:
+                return 409, {"ok": False, "error": str(e), "code": "session_class_config_unavailable"}
             except Exception as error:
                 logger.error(f"[Agent 配置] 删除 session_class/{name} 失败: {error}\n{traceback.format_exc()}")
                 return 400, {"error": str(error)}

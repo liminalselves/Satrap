@@ -474,6 +474,67 @@ def test_group_model_reference_blocks_delete_and_rename(tmp_path: Path) -> None:
         manager.update_named_config("llm", "chat", {}, new_name="new")
     assert manager.get_llm_config("chat").model == "example"
 
+def test_chat_model_references_include_default_persisted_and_active(tmp_path: Path) -> None:
+    from satrap.core.config.chat_references import list_chat_model_references
+    from satrap.display.recorder import DisplayRecorder
+    from satrap.display.settings import ChatSettingsStore
+
+    settings = ChatSettingsStore(tmp_path / "chat_settings.json")
+    settings.save("chat", settings.read()["revision"])
+    database = tmp_path / "display.db"
+    recorder = DisplayRecorder(str(database), "persisted")
+    recorder.save_meta("chat")
+    recorder.close()
+    references = list_chat_model_references(
+        "chat", settings_path=settings.path, database_path=database,
+        active_models={"persisted": "chat", "draft": "chat"},
+    )
+    assert {(item["kind"], item.get("conversation_id")) for item in references} == {
+        ("chat_default", None), ("chat_conversation", "persisted"), ("chat_conversation", "draft"),
+    }
+    assert len(references) == 3
+
+
+def test_chat_model_reference_scan_fails_closed(tmp_path: Path) -> None:
+    from satrap.core.config.chat_references import ChatReferenceScanError, list_chat_model_references
+    from satrap.display.recorder import DisplayRecorder
+
+    settings = tmp_path / "chat_settings.json"
+    settings.write_text("invalid", encoding="utf-8")
+    with pytest.raises(ChatReferenceScanError, match="默认设置"):
+        list_chat_model_references("chat", settings_path=settings, database_path=tmp_path / "missing.db")
+
+    settings.write_text('{"default_model":"chat"}', encoding="utf-8")
+    database = tmp_path / "display.db"
+    recorder = DisplayRecorder(str(database), "one")
+    recorder.save_meta("chat")
+    recorder.close()
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE conversation_meta SET conversation_id='' WHERE conversation_id='one'")
+    with pytest.raises(ChatReferenceScanError, match="会话 ID"):
+        list_chat_model_references("chat", settings_path=settings, database_path=database)
+
+
+def test_chat_model_reference_blocks_manager_delete_and_rename(tmp_path: Path) -> None:
+    from satrap.core.config.chat_references import list_chat_model_references
+    from satrap.display.settings import ChatSettingsStore
+
+    settings = ChatSettingsStore(tmp_path / "chat_settings.json")
+    settings.save("chat", settings.read()["revision"])
+    manager = ModelConfigManager(
+        storage_path=tmp_path / "models.json",
+        llm_in_use_checker=lambda name: list_chat_model_references(
+            name, settings_path=settings.path, database_path=tmp_path / "missing.db",
+        ),
+    )
+    manager.set_llm_config(LLMConfig(name="chat", model="example", api_key="test"), name="chat")
+    with pytest.raises(ConfigInUseError):
+        manager.remove_llm_config("chat")
+    with pytest.raises(ConfigInUseError):
+        manager.update_named_config("llm", "chat", {}, new_name="new")
+    assert manager.get_llm_config("chat").model == "example"
+
+
 def test_named_session_services_refuse_bound_delete() -> None:
     reference = lambda _: [{"summary": "群 123 的会话绑定", "kind": "group_binding"}]
     cls = SessionClassConfigService(cast(Any, SimpleNamespace(remove_config=lambda _: True)), reference)

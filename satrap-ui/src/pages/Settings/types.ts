@@ -61,6 +61,49 @@ export function mergeCommonConfig(config: Record<string, unknown>, value: Common
   };
 }
 
+/** 按已保存保留期清理时返回可用天数; 策略缺失、加载中或有未保存修改时不可执行 */
+export function retentionPurgeDays(
+  policy: { trash_retention_days: number } | null,
+  loading: boolean,
+  dirty: boolean,
+): number | null {
+  if (!policy || loading || dirty) return null;
+  return policy.trash_retention_days;
+}
+
+/** 把管理员保存结果合并到最新配置, 避免旧闭包覆盖其它区段 */
+export function mergeAdministratorConfig(
+  config: Record<string, unknown>,
+  groups: unknown[],
+  overrides: unknown[],
+): Record<string, unknown> {
+  return { ...config, administrator_groups: groups, administrator_overrides: overrides };
+}
+
+/** 当前修订仍与保存前一致时才推进, 避免覆盖期间产生的更新修订 */
+export function advanceConfigRevision(
+  current: string | undefined,
+  previousRevision: string | undefined,
+  revision: string,
+): string | undefined {
+  if (current === undefined || current === previousRevision) return revision;
+  return current;
+}
+
+/** 按顺序保存有未保存修改的分节, 返回首个失败分节并在该处停止 */
+export async function runSectionSaves<K extends string>(
+  order: readonly K[],
+  dirty: Partial<Record<K, boolean>>,
+  actions: Partial<Record<K, { save: () => Promise<boolean> }>>,
+): Promise<K | null> {
+  for (const id of order) {
+    if (!dirty[id]) continue;
+    const saved = await actions[id]?.save();
+    if (saved !== true) return id;
+  }
+  return null;
+}
+
 export function formatUptime(seconds: number | null): string {
   if (seconds === null || !Number.isFinite(seconds)) return '—';
   const s = Math.max(0, Math.floor(seconds));

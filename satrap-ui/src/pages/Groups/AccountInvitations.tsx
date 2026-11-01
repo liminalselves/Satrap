@@ -120,7 +120,7 @@ export function AccountInvitations({ adapterId, account, open, onClose }: {
             {invitations.map((invitation) => (
               <div key={invitation.request_id} className="rounded-xl border border-line bg-glass p-3.5">
                 <div className="flex flex-wrap items-start gap-3">
-                  <Avatar name={`群 ${invitation.group_id}`} hue={hueFor(invitation.group_id)} square online />
+                  <Avatar name={`群 ${invitation.group_id}`} hue={hueFor(invitation.group_id)} square />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-[13px] font-medium text-fg">群 {invitation.group_id}</span>

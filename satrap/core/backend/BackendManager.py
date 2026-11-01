@@ -29,7 +29,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 from satrap.core.config.platform_policy import hot_reload_keys
-from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
+from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, resolve_platform_session_type, validate_session_bindings
 from satrap.core.config.platform_messages import PlatformMessageStore
 from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.group_store import GroupConfigStore
@@ -1551,10 +1551,13 @@ class BackendManager:
             if not isinstance(identity, str) or not identity:
                 continue
             adapter = self._adapter_mgr.get_adapter(identity) if self._adapter_mgr else None
-            current_account = adapter.friend_account() if adapter else ''
-            online = bool(adapter and adapter.config.enable and current_account)
-            if isinstance(adapter, OneBotAdapter):
-                online = online and adapter.get_client() is not None
+            try:
+                state = adapter.approval_state() if adapter is not None else None
+            except Exception as error:
+                logger.warning(f"[统一审批] 适配器账号状态读取失败 platform={identity}: {type(error).__name__}")
+                state = None
+            current_account = state.account if state is not None else ''
+            online = bool(state is not None and state.online)
             scopes.append(ActionScope(identity, self._storage.platform_db(identity), current_account, online))
         return scopes
 
@@ -3450,16 +3453,11 @@ class BackendManager:
         返回:
         - str: 显式绑定, 同名会话类或全局默认会话类
         """
-        explicit = configured_session_type.strip()
-        if explicit:
-            return explicit
-        if (
-            session_provider == SESSION_CLASS_PROVIDER
-            and self._session_cls_cfg
-            and self._session_cls_cfg.has_config(platform_type)
-        ):
-            return platform_type
-        return self.config.default_session_type
+        return resolve_platform_session_type(
+            platform_type, configured_session_type, session_provider,
+            default_session_type=self.config.default_session_type,
+            session_classes=self._session_cls_cfg.list_configs() if self._session_cls_cfg else None,
+        )
 
     @staticmethod
     def _require_platform_binding(session_manager: SessionManager, session_type: str, session_provider: str, prefix: str) -> None:
@@ -3554,6 +3552,11 @@ class BackendManager:
             adapter.account_request_handler = lambda params: self.submit_account_group_invite(
                 pid, adapter.bot_self_id, params, actor_kind="model",
             )
+        elif adapter.config.type == "misskey":
+            from satrap.core.platform.misskey.adapter import MisskeyAdapter
+
+            if isinstance(adapter, MisskeyAdapter):
+                adapter.set_approval_account_store(GroupDirectoryStore(self._storage.platform_db(pid)))
         self._attach_send_attempt_recorder(adapter)
         adapter.friend_host = self.friend_service(pid)
         self._attach_request_ledger(adapter)

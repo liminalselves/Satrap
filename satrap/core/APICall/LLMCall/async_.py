@@ -85,12 +85,12 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             return self._parse_text_response(response, model)
 
         except APIError as e:
-            info = self._report_error(e)
-            return False if self.return_false else info.text
+            self._report_error(e)
+            return False if self.return_false else ""
 
         except Exception as e:
-            info = self._report_error(e)
-            return False if self.return_false else info.text
+            self._report_error(e)
+            return False if self.return_false else ""
 
     async def stream_chat(
         self,
@@ -121,7 +121,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                 if event.kind == "content_delta":
                     yield event.delta
                 elif event.kind == "error":
-                    yield False if self.return_false else event.error or ""
+                    yield False if self.return_false else ""
             return
 
         parameters = self._generation_parameters(model, temperature, top_p, max_tokens)
@@ -149,12 +149,12 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                         yield content
 
         except APIError as e:
-            info = self._report_error(e)
-            yield False if self.return_false else info.text
+            self._report_error(e)
+            yield False if self.return_false else ""
 
         except Exception as e:
-            info = self._report_error(e)
-            yield False if self.return_false else info.text
+            self._report_error(e)
+            yield False if self.return_false else ""
 
     async def structured_output(
         self,
@@ -207,12 +207,12 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             return self._parse_text_response(response, model)
 
         except APIError as e:
-            info = self._report_error(e)
-            return False if self.return_false else info.text
+            self._report_error(e)
+            return False if self.return_false else ""
 
         except Exception as e:
-            info = self._report_error(e)
-            return False if self.return_false else info.text
+            self._report_error(e)
+            return False if self.return_false else ""
 
     async def call(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Callable
 import asyncio
 import random
+import sqlite3
 from typing import Any, cast
 import re
 from time import time
@@ -35,6 +36,7 @@ from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetad
 from satrap.core.components import File, Image, PlatformComponentType, Record, Video
 from satrap.core.components import Plain
 from satrap.core.platform import (
+    ApprovalAdapterState,
     EventHandler,
     PlatformAdapter,
     PlatformConfig,
@@ -42,6 +44,7 @@ from satrap.core.platform import (
 )
 from satrap.core.type import PlatformMessage, safe_getattr, safe_getattr_str
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, archive_time
+from satrap.core.config.group_directory import GroupDirectoryStore
 
 from satrap.core.log import logger
 
@@ -158,6 +161,8 @@ class MisskeyAdapter(PlatformAdapter):
         self._running = False
         self._media_send_tasks: set[asyncio.Task[Any]] = set()
         self.bot_self_id = ""
+        self._identity_confirmed = False
+        self._approval_account_store: GroupDirectoryStore | None = None
         self._bot_username = ""
         self._user_cache: dict[str, dict[str, Any]] = {}
 
@@ -209,15 +214,23 @@ class MisskeyAdapter(PlatformAdapter):
             max_download_bytes=self.max_download_bytes,
         )
         self._running = True
+        self._identity_confirmed = False   # 新连接需重新用 get_current_user 确认身份
 
         try:
             user_info = await self._client.get_current_user()
             self.bot_self_id = str(user_info.get("id", ""))
+            self._identity_confirmed = bool(self.bot_self_id)
             self.client_self_id = self.bot_self_id or self.client_self_id
             self._bot_username = str(user_info.get("username", ""))
             self._bot_profile = {"self_id": self.bot_self_id, "nickname": user_info.get("name") or self._bot_username,
                                  "avatar_url": user_info.get("avatarUrl"), "as_of": time()}
             logger.info(f"[MisskeyAdapter] 已连接用户: {self._bot_username} ({self.bot_self_id})")
+            if self._identity_confirmed and self._approval_account_store is not None:
+                try:
+                    # 只持久化协议确认账号, 离线审批不从历史消息推断身份
+                    await asyncio.to_thread(self._approval_account_store.bind_approval_account, self.bot_self_id)
+                except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+                    logger.warning(f"[MisskeyAdapter] 审批账号绑定保存失败: {type(error).__name__}: {error}")
         except Exception as e:
             self._running = False
             self.record_error(f"[MisskeyAdapter] 获取用户信息失败: {e}")
@@ -906,6 +919,24 @@ class MisskeyAdapter(PlatformAdapter):
         if self._client:
             await self._client.close()
             self._client = None
+
+    def set_approval_account_store(self, store: GroupDirectoryStore) -> None:
+        """绑定审批账号的显式持久化存储, 不改变好友服务语义"""
+        self._approval_account_store = store
+
+    def approval_state(self) -> ApprovalAdapterState:
+        """
+        返回由 get_current_user 确认的账号和实际 streaming 连接状态
+
+        返回:
+        - 身份未确认时账号为空, 在线要求主循环和 WebSocket 同时保持连接
+        """
+        client = self._client
+        streaming = getattr(client, "streaming", None) if client is not None else None
+        confirmed = bool(self._identity_confirmed and self.bot_self_id)
+        online = bool(confirmed and self.config.enable and self._running and client is not None
+                      and bool(getattr(streaming, "is_connected", False)))
+        return ApprovalAdapterState(self.bot_self_id if confirmed else "", online)
 
     def get_client(self) -> Any:
         """

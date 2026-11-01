@@ -440,6 +440,28 @@ async def test_control_server_manages_session_classes_while_backend_is_stopped(
     assert control_server._session_class_config_service().list_configs() == {}
 
 @pytest.mark.asyncio
+async def test_control_server_rejects_session_class_writes_when_file_is_corrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """首次加载失败时写入路由返回 409 及原因, 不落通用 500 也不覆盖文件"""
+    session_class_path = tmp_path / "session-classes.json"
+    session_class_path.write_text("{broken", encoding="utf-8")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"session_class_config_path": str(session_class_path), "platforms": []}), encoding="utf-8")
+    monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
+
+    for path, method, body in (
+        ("/config/session-classes", "POST", b'{"name":"cold","class_path":"satrap.core.framework.Base.Session"}'),
+    ):
+        response = await _request(path, method, body)
+        assert b"409" in response.split(b"\r\n", 1)[0], response
+        payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
+        assert payload["code"] == "session_class_config_unavailable"
+        assert "首次加载失败" in payload["error"]
+    assert session_class_path.read_text(encoding="utf-8") == "{broken"
+
+@pytest.mark.asyncio
 async def test_control_server_manages_edictum_config_while_backend_is_stopped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -159,6 +159,8 @@ satrap model remove llm default
 
 `SessionManager` 创建 Session 时, 会从 Session 参数中的 `model_name` 读取模型配置名称, 默认使用 `default`。
 
+删除或重命名 LLM 配置前会检查群模型覆盖、Chat 整体默认模型及 Chat 会话绑定。仍存在引用时返回结构化 `references` 并拒绝变更, 需先改绑; 设置文件或会话数据库无法完整扫描时同样拒绝, 不会把扫描失败当成无引用。
+
 ### LLM 配置字段
 
 `llm` 类型支持以下字段 (`satrap model set llm <name> --set key=value`):

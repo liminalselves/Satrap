@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { AlertCircle, ChevronLeft, ChevronRight, Database, FileText, FolderTree, Info, Layers, Plus, RefreshCw, RotateCw, Search, ShieldAlert, Trash2 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { controlApi } from '@/api/control';
@@ -17,7 +17,7 @@ import { ConfigModal } from '@/components/rag/ConfigModal';
 import { DetailDrawer } from '@/components/rag/DetailDrawer';
 import { ImportModal } from '@/components/rag/ImportModal';
 import { KnowledgeBaseCard, type KbAction } from '@/components/rag/KnowledgeBaseCard';
-import { isJobPayload, jobsUnavailable, readDocuments, readLatestJob, waitForJob } from '@/components/rag/jobs';
+import { isAbortError, isJobPayload, jobsUnavailable, readDocuments, readLatestJob, waitForJob } from '@/components/rag/jobs';
 import {
   emptyCapabilities, newOperationId, toDoc, toKb, toLegacyDoc,
   type Doc, type ImportSummary, type Kb, type KBConfig, type KBDraft,
@@ -56,6 +56,10 @@ export function Rag() {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [docsLoading, setDocsLoading] = useState(false);
   const [docsError, setDocsError] = useState('');
+  const listAbortRef = useRef<AbortController | null>(null);
+  const listRequestRef = useRef(0);
+  const rebuildAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
 
   const selectedSession = sessions.find((item) => `${item.platform_id}:${item.session_id}` === scopeId);
   const platformId = selectedSession?.platform_id || (scopeId.startsWith('platform:') ? scopeId.slice(9) : 'local');
@@ -76,6 +80,15 @@ export function Rag() {
   const contextLabel = sessionId ? `${scope.label} · ${sessionId}` : scope.label;
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      listAbortRef.current?.abort();
+      rebuildAbortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     controlApi.listSessionInstances().then((result) => setSessions(result.sessions)).catch((reason: Error) => setLoadError(reason.message));
   }, []);
 
@@ -91,21 +104,34 @@ export function Rag() {
   }, [platformId, chatSearch, chatPage]);
 
   const reload = useCallback(async () => {
+    const request = ++listRequestRef.current;
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
     setLoading(true);
     try {
-      const result = await ragApi.list(context);
+      const result = await ragApi.list(context, '', controller.signal);
+      if (listRequestRef.current !== request) return;
       setData(result);
       setLoadError('');
     } catch (reason) {
-      setLoadError(ragErrorMessage(reason));
+      if (listRequestRef.current === request && !isAbortError(reason)) setLoadError(ragErrorMessage(reason));
     } finally {
-      setLoading(false);
+      if (listRequestRef.current === request && mountedRef.current) setLoading(false);
     }
   }, [context]);
 
-  useEffect(() => { void reload(); }, [reload, refreshKey]);
+  useEffect(() => {
+    void reload();
+    return () => {
+      listRequestRef.current += 1;
+      listAbortRef.current?.abort();
+    };
+  }, [reload, refreshKey]);
 
   useEffect(() => {
+    rebuildAbortRef.current?.abort();
+    setWorking(false);
     setDetailId(null);
     setImportTargetId(null);
     setConfigTarget(null);
@@ -117,22 +143,22 @@ export function Rag() {
 
   useEffect(() => {
     if (!data) return;
-    let cancelled = false;
+    const controller = new AbortController();
     const current = data.knowledge_bases;
     void Promise.all(current.map(async (item) => {
       const job = await readLatestJob({
         platform_id: platformId,
         session_id: item.scope === 'session' ? item.session_id : sessionId || '',
         kb_id: item.id,
-      }, 'control');
+      }, 'control', controller.signal);
       return [item.id, job] as const;
     })).then((entries) => {
-      if (cancelled) return;
+      if (controller.signal.aborted) return;
       const next: Record<string, RagJob> = {};
       for (const [id, job] of entries) if (job) next[id] = job;
       setJobs(next);
-    });
-    return () => { cancelled = true; };
+    }).catch((reason) => { if (!isAbortError(reason)) setLoadError(ragErrorMessage(reason)); });
+    return () => controller.abort();
   }, [data, platformId, sessionId]);
 
   const kbs = useMemo(() => (data?.knowledge_bases ?? []).map((item) => toKb(item, jobs[item.id])), [data, jobs]);
@@ -160,6 +186,7 @@ export function Rag() {
   useEffect(() => {
     if (!docsTargetId) { setDocs([]); setDocsError(''); return; }
     let cancelled = false;
+    const controller = new AbortController();
     setDocsLoading(true);
     setDocsError('');
     const raw = data?.knowledge_bases.find((item) => item.id === docsTargetId);
@@ -170,20 +197,20 @@ export function Rag() {
     };
     void (async () => {
       try {
-        const catalog = await readDocuments(scopeForDocs, 'control');
+        const catalog = await readDocuments(scopeForDocs, 'control', controller.signal);
         if (cancelled) return;
         if (catalog) setDocs(catalog.map(toDoc));
         else {
-          const result = await ragApi.list(context, docsTargetId);
+          const result = await ragApi.list(context, docsTargetId, controller.signal);
           if (!cancelled) setDocs(result.documents.map(toLegacyDoc));
         }
       } catch (reason) {
-        if (!cancelled) setDocsError(ragErrorMessage(reason));
+        if (!cancelled && !isAbortError(reason)) setDocsError(ragErrorMessage(reason));
       } finally {
         if (!cancelled) setDocsLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [docsTargetId, context, platformId, sessionId, refreshKey, data]);
 
   // 不在此处清理失效 id: 创建知识库后目标 id 会先于列表刷新到达, 用旧 data 清理会把刚打开的目标关掉。
@@ -255,6 +282,9 @@ export function Rag() {
     }
     setRebuildTarget(null);
     setWorking(true);
+    rebuildAbortRef.current?.abort();
+    const controller = new AbortController();
+    rebuildAbortRef.current = controller;
     const config = target.config ?? target.kb.config;
     const scopeForJob: RagScope = {
       platform_id: platformId,
@@ -267,7 +297,7 @@ export function Rag() {
       try {
         const response = await ragJobsApi.submit(scopeForJob, {
           operation_id: operationId, expected_revision: target.kb.revision, action: 'rebuild', config,
-        }, 'control');
+        }, 'control', controller.signal);
         if (isJobPayload(response)) job = response.job;
       } catch (reason) {
         if (!(jobsUnavailable(reason) || (reason instanceof ApiError && reason.status === 404))) throw reason;
@@ -275,21 +305,24 @@ export function Rag() {
       if (job) {
         toast.info('开始重建索引', '后台重新向量化全部文档，期间旧索引仍可检索');
         const finished = await waitForJob(scopeForJob, job, 'control', (current) => {
-          setJobs((previous) => ({ ...previous, [target.kb.id]: current }));
-        });
+          if (!controller.signal.aborted) setJobs((previous) => ({ ...previous, [target.kb.id]: current }));
+        }, controller.signal);
         if (finished.status !== 'succeeded') throw new Error(finished.error?.message || '重建未完成');
-        toast.success('索引重建完成', '新索引已原子切换，旧版本已清理');
       } else {
-        const result = await ragApi.action(context, { action: 'rebuild', kb_id: target.kb.id, config, expected_revision: target.kb.revision });
+        const result = await ragApi.action(context, { action: 'rebuild', kb_id: target.kb.id, config, expected_revision: target.kb.revision }, controller.signal);
         if (result.ok === false) throw new Error(String(result.error || '重建未完成'));
-        toast.success('索引重建完成', '新索引已原子切换，旧版本已清理');
       }
+      if (controller.signal.aborted || !mountedRef.current) return;
+      toast.success('索引重建完成', '新索引已原子切换，旧版本已清理');
       setNotice('索引重建完成，已切换到新版本');
       setRefreshKey((key) => key + 1);
     } catch (reason) {
-      toast.error('重建索引失败', ragErrorMessage(reason));
+      if (!isAbortError(reason) && !controller.signal.aborted) toast.error('重建索引失败', ragErrorMessage(reason));
     } finally {
-      setWorking(false);
+      if (rebuildAbortRef.current === controller) {
+        rebuildAbortRef.current = null;
+        if (mountedRef.current) setWorking(false);
+      }
     }
   };
 

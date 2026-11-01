@@ -965,7 +965,12 @@ async def test_platform_approval_catalog_preserves_sources_pagination_and_storag
     backend.config.platforms = [{'id': 'ob', 'type': 'onebot', 'settings': {}}]
     backend._storage = SimpleNamespace(platform_db=lambda identity: database)
     backend._adapter_mgr = PlatformAdapterManager()
-    backend._adapter_mgr._adapters['ob'] = _adapter()
+    connected = _adapter()
+    connected._running = True
+    connected._client_connected = True
+    connected._connection_generation = 1
+    connected._approval_identity_confirmed = True
+    backend._adapter_mgr._adapters['ob'] = connected
     server = BackendHTTPServer(backend, port=0)
     status, page = await server._route('GET', '/api/platform-actions?source=invitation', b'')
     assert status == 200 and page['total'] == 1
@@ -975,6 +980,10 @@ async def test_platform_approval_catalog_preserves_sources_pagination_and_storag
     assert not historical_page['items'][0]['can_decide']
     second_adapter = _adapter()
     second_adapter.bot_self_id = 'different-account'
+    second_adapter._running = True
+    second_adapter._client_connected = True
+    second_adapter._connection_generation = 1
+    second_adapter._approval_identity_confirmed = True
     backend._adapter_mgr._adapters['second'] = second_adapter
     backend.config.platforms.append({'id': 'second', 'type': 'onebot', 'settings': {}})
     current_page = (await server._route('GET', '/api/platform-actions', b''))[1]
@@ -1111,6 +1120,81 @@ async def test_unified_catalog_covers_memory_search_sort_and_readonly_legacy(tmp
 
 
 @pytest.mark.asyncio
+async def test_unified_catalog_facets_are_full_history_and_today_metrics_use_explicit_window(tmp_path):
+    """分面不受列表筛选和今日窗口影响, today 字段只统计明确的今日自然日"""
+    import json
+    from contextlib import closing
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    from satrap.core.config.platform_schema import ensure_platform_tables
+    from satrap.core.platform.action_catalog import ActionScope, UnifiedActionQuery, unified_action_catalog
+
+    now = 1_800_000_000.0   # UTC 正午, 便于构造昨天/今天边界
+    databases = [tmp_path / 'p1.db', tmp_path / 'p2.db']
+    for database in databases:
+        with closing(sqlite3.connect(database)) as connection, connection:
+            ensure_platform_tables(connection)
+
+    def add_group(database, action_id, account, state, created, decision_at=None, decision=None):
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute(
+                "INSERT INTO group_actions(action_id,self_id,group_id,action_type,params_json,fingerprint,actor_kind,"
+                "policy_revision,state,created_at,expires_at,decision_at,result_json,action_revision,decision,decided_by_json) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,NULL,?,NULL,1,?,?)",
+                (action_id, account, '456', 'ban_group_member', json.dumps({'user_id': '42'}), 'fp', 'panel', 7,
+                 state, created, decision_at, decision, json.dumps({'kind': 'panel', 'id': None}) if decision else None))
+
+    def add_friend(database, action_id, account, state, created):
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute(
+                "INSERT INTO friend_actions(self_id,action_id,action_type,params_json,actor_kind,state,created_at,expires_at,"
+                "decision_at,executed_at,result_json,target_json,actor_id,action_revision) "
+                "VALUES(?,?,?,?,?,?,?,?,NULL,NULL,NULL,'{}','author',1)",
+                (account, action_id, 'delete_friend', json.dumps({'user_id': '42'}), 'model', state, created, now + 600))
+
+    # p1: 昨天/今天各有待处理, 另有一条今天决定和一条昨天决定, 以及好友来源待处理
+    add_group(databases[0], 'pending-yesterday', '100', 'pending', now - 90000)
+    add_group(databases[0], 'pending-today', '100', 'pending', now - 60)
+    add_group(databases[0], 'decided-today', '100', 'succeeded', now - 300, now - 100, 'approved')
+    add_group(databases[0], 'decided-yesterday', '100', 'succeeded', now - 90000, now - 86400, 'rejected')
+    add_friend(databases[0], 'friend-pending', '100', 'pending', now - 120)
+    # p2: 另一平台的待处理, 用于验证平台维度
+    add_group(databases[1], 'other-platform', '200', 'pending', now - 30)
+    scopes = [ActionScope('p1', databases[0], '100', True), ActionScope('p2', databases[1], '200', True)]
+
+    query = UnifiedActionQuery.parse({'source': 'group', 'state': 'pending', 'tz': 'UTC'}, now=now)
+    page = await unified_action_catalog(scopes, query)
+    # 列表只受 source/state 约束, 但分面统计操作账号范围内的全历史
+    assert page['total'] == 3
+    assert page['pending_count'] == 4 and page['by_state']['pending'] == 4
+    assert page['by_source'] == {'group': 5, 'friend': 1}
+    assert {entry['platform_id']: entry['pending_count'] for entry in page['platforms']} == {'p1': 3, 'p2': 1}
+    # 非 summary 列表的 today 字段必须只统计今天, 不能把昨天决定算进来
+    assert page['today_decided'] == 1 and page['decision_latency_ms'] == 200000
+    assert page['window'] == {'from': None, 'to': None, 'tz': 'UTC', 'bucket': None}
+    assert page['today_window']['tz'] == 'UTC' and page['today_window']['bucket'] == 'day'
+    utc_midnight = datetime.fromtimestamp(now, ZoneInfo('UTC')).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    assert page['today_window']['from'] == utc_midnight and page['today_window']['to'] == now
+    # 指定 from/to 只影响列表, 不改变今日指标
+    windowed = await unified_action_catalog(
+        scopes, UnifiedActionQuery.parse({'from': str(now - 200000), 'to': str(now), 'tz': 'UTC'}, now=now))
+    assert windowed['today_decided'] == 1 and windowed['by_state']['pending'] == 4
+    # summary 与 state 分面语义一致, 并采用请求时区
+    summary = await unified_action_catalog(scopes, UnifiedActionQuery.parse({'tz': 'Asia/Shanghai'}, summary=True, now=now), summary=True)
+    assert summary['pending_count'] == 4 and summary['by_state']['pending'] == 4 and summary['today_decided'] == 1
+    assert summary['today_window']['tz'] == 'Asia/Shanghai' and summary['today_window']['from'] == datetime.fromtimestamp(
+        now, ZoneInfo('Asia/Shanghai')).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    # 单个平台读取失败时保留其它平台分面并明确标记不完整
+    broken = tmp_path / 'broken.db'
+    broken.write_bytes(b'not a sqlite database')
+    partial = await unified_action_catalog([ActionScope('bad', broken, '100', True), scopes[1]],
+                                           UnifiedActionQuery.parse({'tz': 'UTC'}, summary=True, now=now), summary=True)
+    assert partial['complete'] is False and any('bad' in warning for warning in partial['warnings'])
+    assert {entry['platform_id']: entry.get('pending_count') for entry in partial['platforms']} == {'bad': None, 'p2': 1}
+    assert partial['pending_count'] == 1
+
+
+@pytest.mark.asyncio
 async def test_batch_decisions_bound_concurrency_and_reject_duplicate_revision(tmp_path):
     """两个并行批次合计最多二项执行, 同项并发只有一方提交决定"""
     from satrap.core.platform.action_catalog import ActionScope
@@ -1154,3 +1238,185 @@ async def test_batch_decisions_bound_concurrency_and_reject_duplicate_revision(t
         await asyncio.to_thread(store.settle, '100', '456', item.action_id, 'succeeded', '')
     first, second = await asyncio.gather(run_decisions([item], scopes, racing), run_decisions([item], scopes, racing))
     assert writes == 1 and {first['items'][0]['result'], second['items'][0]['result']} == {'applied','conflict'}
+
+
+def test_action_scopes_uses_confirmed_adapter_identity_and_connection(tmp_path):
+    """审批范围只在协议确认后采用账号, 断线和账号切换立即反映到在线状态"""
+    from types import SimpleNamespace
+    from satrap.core.platform.action_catalog import ActionScope
+    from support.misskey import make_adapter
+
+    backend = BackendManager()
+    backend.config.platforms = [{'id': 'ob', 'type': 'onebot', 'settings': {}}, {'id': 'mk', 'type': 'misskey', 'settings': {}}]
+    backend._storage = SimpleNamespace(platform_db=lambda identity: tmp_path / f'{identity}.db')
+    backend._adapter_mgr = PlatformAdapterManager()
+    onebot = _adapter()
+    backend._adapter_mgr._adapters['ob'] = onebot
+    misskey = make_adapter()
+    backend._adapter_mgr._adapters['mk'] = misskey
+
+    scopes = {scope.platform_id: scope for scope in backend.action_scopes()}
+    assert scopes['ob'] == ActionScope('ob', tmp_path / 'ob.db', '', False)
+    assert scopes['mk'] == ActionScope('mk', tmp_path / 'mk.db', '', False)
+
+    onebot._running = True
+    onebot._client_connected = True
+    onebot._connection_generation = 1
+    onebot._approval_identity_confirmed = True
+    misskey._running = True
+    misskey._identity_confirmed = True
+    misskey._client.streaming = SimpleNamespace(is_connected=True)
+    scopes = {scope.platform_id: scope for scope in backend.action_scopes()}
+    assert scopes['ob'].current_account == '10000' and scopes['ob'].online
+    assert scopes['mk'].current_account == 'bot-id' and scopes['mk'].online
+
+    onebot._client_connected = False
+    misskey._client.streaming.is_connected = False
+    scopes = {scope.platform_id: scope for scope in backend.action_scopes()}
+    assert scopes['ob'].current_account == '10000' and not scopes['ob'].online
+    assert scopes['mk'].current_account == 'bot-id' and not scopes['mk'].online
+
+    onebot.bot_self_id = '20000'
+    misskey.bot_self_id = 'next-id'
+    misskey._identity_confirmed = False
+    scopes = {scope.platform_id: scope for scope in backend.action_scopes()}
+    assert scopes['ob'].current_account == '20000'
+    assert scopes['mk'].current_account == ''
+    misskey._identity_confirmed = True
+    scope = next(item for item in backend.action_scopes() if item.platform_id == 'mk')
+    assert scope.current_account == 'next-id' and not scope.online
+
+
+@pytest.mark.asyncio
+async def test_onebot_heartbeat_confirms_approval_identity_without_lifecycle():
+    """心跳可确认审批账号和在线状态, 断线保留账号且不伪造连接代次"""
+    adapter = _adapter()
+    adapter._running = True
+    assert adapter.approval_state().account == '' and not adapter.approval_state().online
+
+    await adapter._handle_meta({'self_id': '10000', 'meta_event_type': 'heartbeat', 'status': {'online': True}})
+    assert adapter.connection_generation() == 0
+    assert adapter.approval_state().account == '10000' and adapter.approval_state().online
+
+    await adapter._handle_meta({'self_id': '10000', 'meta_event_type': 'lifecycle', 'sub_type': 'disable'})
+    assert adapter.connection_generation() == 0
+    assert adapter.approval_state().account == '10000' and not adapter.approval_state().online
+
+
+@pytest.mark.asyncio
+async def test_onebot_protocol_identity_persists_for_cold_action_scope(tmp_path):
+    """协议确认的账号经现有 group_accounts 绑定供离线目录读取, 后绑账号覆盖当前账号"""
+    from satrap.core.config.group_directory import GroupDirectoryStore
+    from satrap.core.platform.action_catalog import cold_action_scopes
+    from satrap.core.storage import StorageLayout
+    from satrap.core.platform import PlatformConfig
+
+    layout = StorageLayout(tmp_path / 'data')
+    adapter = OneBotAdapter(PlatformConfig(id='ob', type='onebot', settings={}))
+    adapter._bot = AsyncMock()
+    adapter._running = True
+    adapter.set_group_access_store(GroupDirectoryStore(layout.platform_db('ob')))
+    await adapter._handle_meta({'self_id': '10000', 'meta_event_type': 'lifecycle', 'sub_type': 'connect'})
+    assert adapter.approval_state().account == '10000' and adapter.approval_state().online
+    cold = cold_action_scopes(layout, ['ob'])
+    assert cold[0].current_account == '10000' and not cold[0].online
+
+    replacement = OneBotAdapter(PlatformConfig(id='ob', type='onebot', settings={}))
+    replacement._bot = AsyncMock()
+    replacement._running = True
+    replacement.set_group_access_store(GroupDirectoryStore(layout.platform_db('ob')))
+    await replacement._handle_meta({'self_id': '20000', 'meta_event_type': 'lifecycle', 'sub_type': 'connect'})
+    assert cold_action_scopes(layout, ['ob'])[0].current_account == '20000'
+    assert cold_action_scopes(layout, ['mk'])[0].current_account == ''
+
+
+@pytest.mark.asyncio
+async def test_misskey_protocol_identity_persists_for_cold_memory(tmp_path, monkeypatch):
+    """Misskey 协议确认账号写入显式绑定, 冷目录只允许同账号 memory 决策"""
+    from satrap.core.config.group_directory import GroupDirectoryStore
+    from satrap.core.platform.action_catalog import cold_action_scopes
+    from satrap.core.platform.action_decisions import DecisionItem, DecisionTarget
+    from satrap.core.platform import action_decisions
+    from satrap.core.platform.misskey.adapter import MisskeyAdapter
+    from satrap.core.storage import StorageLayout
+    from types import SimpleNamespace
+    import satrap.core.platform.misskey.adapter as misskey_module
+
+    layout = StorageLayout(tmp_path / 'data')
+    store = GroupDirectoryStore(layout.platform_db('mk'))
+    adapter = MisskeyAdapter(PlatformConfig(id='mk', type='misskey', settings={
+        'misskey_instance_url': 'https://misskey.example', 'misskey_token': 'test-token',
+    }))
+    adapter.set_approval_account_store(store)
+    client = SimpleNamespace(get_current_user=AsyncMock(return_value={'id': 'bot-id', 'username': 'bot'}))
+    monkeypatch.setattr(misskey_module, 'MisskeyAPI', lambda *args, **kwargs: client)
+    monkeypatch.setattr(adapter, '_start_websocket_connection', AsyncMock())
+    await adapter.run()
+    assert adapter.approval_state().account == 'bot-id'
+    scopes = cold_action_scopes(layout, ['mk'])
+    assert scopes[0].current_account == 'bot-id' and not scopes[0].online
+
+    calls: list[str] = []
+    async def dispatch(item, target):
+        calls.append(item.action_id)
+    monkeypatch.setattr(action_decisions, 'read_decision_target', lambda scope, item: DecisionTarget(
+        item.expected_revision, 'pending', 'pending', None, '456', 0,
+    ))
+    items = [
+        DecisionItem('mk', 'bot-id', 'memory', 'memory-current', 1, True),
+        DecisionItem('mk', 'historical-id', 'memory', 'memory-historical', 1, True),
+    ]
+    result = await action_decisions.run_decisions(items, scopes, dispatch)
+    assert calls == ['memory-current']
+    assert {entry['result'] for entry in result['items']} == {'conflict', 'unavailable'}
+
+
+@pytest.mark.asyncio
+async def test_offline_decisions_allow_only_matching_memory_scope(tmp_path, monkeypatch):
+    """热目录断线仍只允许匹配账号的 memory 审批, 冷目录依赖显式绑定账号"""
+    from types import SimpleNamespace
+    from satrap.core.config.group_directory import GroupDirectoryStore
+    from satrap.core.platform.action_catalog import cold_action_scopes
+    from satrap.core.platform.action_decisions import DecisionItem, DecisionTarget
+    from satrap.core.platform import action_decisions
+    from satrap.core.storage import StorageLayout
+    from satrap.core.platform import PlatformConfig
+
+    layout = StorageLayout(tmp_path / 'data')
+    GroupDirectoryStore(layout.platform_db('ob')).adopt_legacy('10000', {})
+    adapter = OneBotAdapter(PlatformConfig(id='ob', type='onebot', settings={}))
+    adapter._bot = AsyncMock()
+    adapter.bot_self_id = '10000'
+    adapter._connection_generation = 1
+    adapter._approval_identity_confirmed = True
+    adapter._client_connected = False
+    adapter._running = True
+    backend = BackendManager()
+    backend.config.platforms = [{'id': 'ob', 'type': 'onebot', 'settings': {}}]
+    backend._storage = SimpleNamespace(platform_db=lambda identity: layout.platform_db(identity))
+    backend._adapter_mgr = PlatformAdapterManager()
+    backend._adapter_mgr._adapters['ob'] = adapter
+
+    calls: list[str] = []
+    async def dispatch(item, target):
+        calls.append(f'{item.source}:{item.self_id}:{item.action_id}')
+    def target(scope, item):
+        return DecisionTarget(item.expected_revision, 'pending', 'pending', None, '456', 0)
+    monkeypatch.setattr(action_decisions, 'read_decision_target', target)
+    items = [
+        DecisionItem('ob', '10000', 'memory', 'memory-match', 1, True),
+        DecisionItem('ob', '10000', 'group', 'group-offline', 1, True),
+        DecisionItem('ob', '20000', 'memory', 'memory-old', 1, True),
+    ]
+    hot_scopes = backend.action_scopes()
+    assert hot_scopes[0].current_account == '10000' and not hot_scopes[0].online
+    hot = await action_decisions.run_decisions(items, hot_scopes, dispatch)
+    assert calls == ['memory:10000:memory-match']
+    assert {entry['result'] for entry in hot['items']} == {'conflict', 'unavailable'}
+
+    calls.clear()
+    cold_scopes = cold_action_scopes(layout, ['ob'])
+    assert cold_scopes[0].current_account == '10000' and not cold_scopes[0].online
+    cold = await action_decisions.run_decisions(items, cold_scopes, dispatch)
+    assert calls == ['memory:10000:memory-match']
+    assert {entry['result'] for entry in cold['items']} == {'conflict', 'unavailable'}

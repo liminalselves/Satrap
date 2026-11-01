@@ -9,7 +9,7 @@ import { Button } from '@/components/kit/Button';
 import { Field, Input, Textarea } from '@/components/kit/Field';
 import { Modal } from '@/components/kit/Modal';
 import { formatBytes } from '@/utils/format';
-import { isJobPayload, jobsUnavailable, newOperationId, recoverJob, waitForJob } from './jobs';
+import { isAbortError, isJobPayload, jobsUnavailable, newOperationId, recoverJob, waitForJob } from './jobs';
 import { docTint, estimateChunks, type ImportSummary, type ImportSummaryItem as SummaryItem, type Kb } from './types';
 
 type QueueStatus = 'pending' | 'invalid' | 'uploading' | 'indexed' | 'skipped' | 'failed';
@@ -72,6 +72,9 @@ export function ImportModal({ context, target, capabilities, existingSources = [
   const inputRef = useRef<HTMLInputElement>(null);
   const nextId = useRef(0);
   const running = useRef(false);
+  const mounted = useRef(true);
+  const abortRef = useRef<AbortController | null>(null);
+  const revisionRef = useRef(target.revision);
   const itemsRef = useRef<QueueItem[]>([]);
   const [mode, setMode] = useState<'file' | 'text'>('file');
   const [items, setItems] = useState<QueueItem[]>([]);
@@ -84,9 +87,20 @@ export function ImportModal({ context, target, capabilities, existingSources = [
   const [dragging, setDragging] = useState(false);
 
   useEffect(() => { itemsRef.current = items; }, [items]);
-  useEffect(() => () => { running.current = false; }, []);
+  useEffect(() => {
+    if (!running.current) revisionRef.current = target.revision;
+  }, [target.revision]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      running.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const patch = (id: number, value: Partial<QueueItem>) => {
+    if (!mounted.current) return;
     itemsRef.current = itemsRef.current.map((item) => item.id === id ? { ...item, ...value } : item);
     setItems(itemsRef.current);
   };
@@ -117,31 +131,36 @@ export function ImportModal({ context, target, capabilities, existingSources = [
     if (inputRef.current) inputRef.current.value = '';
   };
 
-  const uploadViaJobs = async (file: File, documentSource: string, onJob: (job: RagJob) => void): Promise<{ status: 'indexed' | 'skipped'; chunks: number } | null> => {
+  const uploadViaJobs = async (file: File, documentSource: string, onJob: (job: RagJob) => void, signal: AbortSignal): Promise<{ status: 'indexed' | 'skipped'; chunks: number } | null> => {
     const operationId = newOperationId();
     let job: RagJob | null = null;
     try {
-      const response = await ragJobsApi.upload(scope, file, { operation_id: operationId, expected_revision: target.revision, source: documentSource }, context.via);
+      const response = await ragJobsApi.upload(scope, file, { operation_id: operationId, expected_revision: revisionRef.current, source: documentSource }, context.via, signal);
       if (!isJobPayload(response)) return null;
       job = response.job;
     } catch (reason) {
+      if (isAbortError(reason)) throw reason;
       if (reason instanceof ApiError && reason.status && reason.status >= 400 && reason.status < 500 && reason.status !== 404) throw reason;
-      job = await recoverJob(scope, operationId, reason, context.via);
+      job = await recoverJob(scope, operationId, reason, context.via, signal);
       if (!job) {
         if (jobsUnavailable(reason) || (reason instanceof ApiError && reason.status === 404)) return null;
         throw reason;
       }
     }
-    const finished = await waitForJob(scope, job, context.via, onJob);
+    const finished = await waitForJob(scope, job, context.via, onJob, signal);
     if (finished.status !== 'succeeded') throw new Error(jobFailure(finished));
-    const result = (finished.result || {}) as Record<string, unknown>;
-    const chunks = Number(result.indexed_chunks ?? result.chunks ?? 0);
-    const status = result.status === 'skipped' ? 'skipped' : 'indexed';
-    return { status, chunks };
+    const result = finished.result;
+    if (!result || !('status' in result) || !Number.isInteger(result.revision)) {
+      throw new Error('导入结果缺少知识库修订, 请刷新后确认状态');
+    }
+    revisionRef.current = result.revision;
+    return { status: result.status, chunks: result.chunks };
   };
 
   const runQueue = async (retry = false) => {
     if (running.current) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     running.current = true;
     setBusy(true);
     setDone(null);
@@ -149,6 +168,7 @@ export function ImportModal({ context, target, capabilities, existingSources = [
     try {
       const queue = itemsRef.current.filter((item) => item.status === (retry ? 'failed' : 'pending'));
       for (const item of queue) {
+        if (controller.signal.aborted || !mounted.current) return;
         const trimmed = item.source.trim();
         if (!trimmed) {
           patch(item.id, { status: 'failed', error: '来源名称不能为空' });
@@ -157,27 +177,37 @@ export function ImportModal({ context, target, capabilities, existingSources = [
         patch(item.id, { status: 'uploading', progress: 0, phase: '', error: '' });
         try {
           const viaJobs = await uploadViaJobs(item.file, trimmed, (job) => {
-            patch(item.id, { progress: job.progress?.percent ?? 100, phase: ragPhaseLabels[job.phase] || '' });
-          });
-          const result = (viaJobs ?? await ragApi.upload(context, target.id, item.file, trimmed, (percent) => patch(item.id, { progress: percent }))) as { ok?: unknown; status?: unknown; chunks?: unknown; error?: unknown };
+            if (!controller.signal.aborted) patch(item.id, { progress: job.progress?.percent ?? 100, phase: ragPhaseLabels[job.phase] || '' });
+          }, controller.signal);
+          const result = (viaJobs ?? await ragApi.upload(context, target.id, item.file, trimmed, (percent) => {
+            if (!controller.signal.aborted) patch(item.id, { progress: percent });
+          }, controller.signal)) as { ok?: unknown; status?: unknown; chunks?: unknown; error?: unknown };
+          if (controller.signal.aborted) return;
           if (result.ok === false) throw new Error(String(result.error || '导入失败'));
           const status = result.status === 'skipped' ? 'skipped' : 'indexed';
           patch(item.id, { status, progress: 100, phase: '', chunks: Number(result.chunks || 0) });
         } catch (reason) {
+          if (isAbortError(reason) || controller.signal.aborted) return;
           patch(item.id, { status: 'failed', phase: '', error: ragErrorMessage(reason) });
         }
       }
+      if (controller.signal.aborted || !mounted.current) return;
       const summary = summarize(itemsRef.current);
       setDone(summary);
       onComplete(summary);
     } finally {
-      running.current = false;
-      setBusy(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        running.current = false;
+        if (mounted.current) setBusy(false);
+      }
     }
   };
 
   const runText = async () => {
     if (running.current || !text.trim() || !source.trim() || text.length > maxChars) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     running.current = true;
     setBusy(true);
     setError('');
@@ -186,9 +216,12 @@ export function ImportModal({ context, target, capabilities, existingSources = [
       // 正文按原始文件上传: JSON 任务请求体上限 1 MiB, 中文长文本会在字符上限之前超出
       const file = new File([text], 'pasted-text.txt', { type: 'text/plain' });
       const viaJobs = await uploadViaJobs(file, source.trim(), (job) => {
-        setProgress(job.progress?.percent ?? 100);
-      });
-      const result = (viaJobs ?? await ragApi.upload(context, target.id, file, source.trim(), setProgress)) as { ok?: unknown; status?: unknown; chunks?: unknown; error?: unknown };
+        if (!controller.signal.aborted && mounted.current) setProgress(job.progress?.percent ?? 100);
+      }, controller.signal);
+      const result = (viaJobs ?? await ragApi.upload(context, target.id, file, source.trim(), (percent) => {
+        if (!controller.signal.aborted && mounted.current) setProgress(percent);
+      }, controller.signal)) as { ok?: unknown; status?: unknown; chunks?: unknown; error?: unknown };
+      if (controller.signal.aborted || !mounted.current) return;
       if (result.ok === false) throw new Error(String(result.error || '导入失败'));
       const chunks = Number(result.chunks || 0);
       const summary: ImportSummary = {
@@ -202,10 +235,13 @@ export function ImportModal({ context, target, capabilities, existingSources = [
       onComplete(summary);
       onClose();
     } catch (reason) {
-      setError(ragErrorMessage(reason));
+      if (!isAbortError(reason) && !controller.signal.aborted && mounted.current) setError(ragErrorMessage(reason));
     } finally {
-      running.current = false;
-      setBusy(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        running.current = false;
+        if (mounted.current) setBusy(false);
+      }
     }
   };
 

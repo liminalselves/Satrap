@@ -281,6 +281,31 @@ def _load_protocol_payload(value: str) -> dict[str, object]:
     return result
 
 
+def _load_optional_protocol_payload(
+    value: str,
+    conversation_id: str,
+    row_index: int,
+) -> dict[str, object] | None:
+    """
+    逐行加载可选协议资料, 损坏数据只影响当前字段
+
+    参数:
+    - value: 数据库中的协议资料 JSON
+    - conversation_id: 对话 ID
+    - row_index: 消息行序号
+
+    返回:
+    - 有效协议资料对象, 无效时返回 None
+    """
+    try:
+        return _load_protocol_payload(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"[上下文管理器] 忽略损坏的协议资料字段, 对话ID: {conversation_id}, 行号: {row_index}"
+        )
+        return None
+
+
 def _ensure_protocol_column(conn: sqlite3.Connection) -> None:
     """
     为历史恢复或停机编辑升级已有消息表

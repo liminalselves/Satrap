@@ -151,7 +151,6 @@ class PluginManagementService:
         - 插件列表, 使用数量包含已配置的 Chat 和所有引用该插件的命名配置
         """
         chat_states = {item["name"]: item for item in self.chat.scan()}
-        host_states = self.manager.host_states()
         result: list[dict[str, Any]] = []
         for entry in self.catalog.scan():
             references = [
@@ -165,15 +164,15 @@ class PluginManagementService:
             chat_enabled = bool(chat_states.get(entry.name, {}).get("enabled", False))
             chat_configured = bool(chat_states.get(entry.name, {}).get("configured", False))
             payload = entry.to_payload()
-            host = host_states.get(entry.name)
+            host = self.manager.host_state(entry.name)
             payload.update(
                 source="builtin" if entry.path.resolve().is_relative_to(self.catalog.preset_dir.resolve()) else "user",
                 # Chat 默认启用的插件未写入配置也算使用位置, 与健康判定口径一致
                 usage_count=len(references) + int(chat_configured or chat_enabled),
                 edictum_configs=references,
                 chat_enabled=chat_enabled,
-                execution_enabled=host["execution_enabled"] if host else True,
-                host_revision=host["revision"] if host else 0,
+                execution_enabled=host["execution_enabled"],
+                host_revision=host["revision"],
             )
             result.append(payload)
         return result

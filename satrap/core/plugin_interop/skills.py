@@ -41,8 +41,10 @@ class SkillHostAccess:
         def refresh() -> None:
             """只替换当前插件的技能名册, 不执行外部技能代码"""
             self._host._runtime()
-            binding = runtime.bindings[owner]
-            plugin = binding.plugin
+            if not runtime.plugin_available(owner):
+                return
+            binding = runtime.bindings.get(owner)
+            plugin = binding.plugin if binding is not None else None
             if plugin is None:
                 return
             found = factory()

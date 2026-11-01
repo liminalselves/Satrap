@@ -12,5 +12,6 @@ import { scenarios as cases10 } from './chat-recovery-flows.mjs';
 import { scenarios as cases11 } from './logging-flows.mjs';
 import { scenarios as cases12 } from './startup-forms.mjs';
 import { scenarios as cases13 } from './knowledge-flows.mjs';
+import { scenarios as cases14 } from './operations-flows.mjs';
 import { runSuite } from './runtime.mjs';
-await runSuite([...cases0, ...cases1, ...cases2, ...cases3, ...cases4, ...cases5, ...cases6, ...cases7, ...cases8, ...cases9, ...cases10, ...cases11, ...cases12, ...cases13]);
+await runSuite([...cases0, ...cases1, ...cases2, ...cases3, ...cases4, ...cases5, ...cases6, ...cases7, ...cases8, ...cases9, ...cases10, ...cases11, ...cases12, ...cases13, ...cases14]);
