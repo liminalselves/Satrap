@@ -395,7 +395,11 @@ export function RawConfigSection({
                 : <Badge tone="red">{issues.length} 错误</Badge>}
               {validated && issues.length > 0 && (
                 <Button size="sm" variant="ghost" className="ml-auto !h-6"
-                  onClick={() => { const first = issues.find((issue) => issue.line !== null); if (first?.line) jumpTo(first.line); }}>
+                  onClick={() => {
+                    const first = issues.find((issue) => issue.line !== null);
+                    if (first?.line) jumpTo(first.line);
+                    else toast.warning('无法定位错误', '这些错误来自整体配置校验, 没有对应的行号, 请按提示内容手动修改');
+                  }}>
                   跳到第一个错误
                 </Button>
               )}

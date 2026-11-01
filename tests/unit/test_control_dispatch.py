@@ -376,6 +376,37 @@ async def test_control_exact_vs_prefix_boundaries(
 
 
 @pytest.mark.asyncio
+async def test_control_raw_config_returns_real_secrets_that_pass_yaml_precheck(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """原始配置读取不打码, 读回文本直接通过实时预检, 保存仍兼容掩码回写"""
+    from satrap.core.config._yaml import safe_yaml_dump
+    from satrap.core.config.document import MASKED_SECRET
+
+    _use_config(monkeypatch, tmp_path)
+    config_path = control_server.CONFIG_PATH
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    password = "pbkdf2_sha256$600000$c2FsdA$aGFzaA"
+    document["api"] = {"dashboard_password": password}
+    document["platforms"] = [{"id": "qq", "type": "onebot", "settings": {"access_token": "real-token"}}]
+    config_path.write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = _json_body(await _request("/config"))
+    assert loaded["config"]["api"]["dashboard_password"] == password
+    assert loaded["config"]["platforms"][0]["settings"]["access_token"] == "real-token"
+
+    precheck = _json_body(await _request("/config/validate-yaml", "POST", json.dumps({"yaml": safe_yaml_dump(loaded["config"])}).encode()))
+    assert precheck == {"valid": True, "errors": []}
+
+    submitted = json.loads(json.dumps(loaded["config"]))
+    submitted["platforms"][0]["settings"]["access_token"] = MASKED_SECRET
+    saved = _json_body(await _request(f"/config?expected_revision={loaded['revision']}", "PUT", json.dumps(submitted).encode()))
+    assert saved["ok"] is True
+    assert saved["config"]["platforms"][0]["settings"]["access_token"] == "real-token"
+
+
+@pytest.mark.asyncio
 async def test_control_query_bearing_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

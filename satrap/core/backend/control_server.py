@@ -2232,9 +2232,10 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
     if ctx.method == "GET" and ctx.path == "/config":
         try:
             config_data = load_config_document(CONFIG_PATH)
+            # 原始配置编辑需要真实凭据才能通过校验; 保存仍合并掩码值以兼容旧客户端
             return 200, {
                 "ok": True,
-                "config": redact_config_document(config_data),
+                "config": config_data,
                 "revision": config_document_revision(config_data),
                 "path": str(CONFIG_PATH),
                 "exists": CONFIG_PATH.exists(),
@@ -2262,7 +2263,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
                 "ok": True,
                 "message": "配置已保存",
                 "revision": config_document_revision(config_data),
-                "config": redact_config_document(config_data),
+                "config": config_data,
                 "path": str(CONFIG_PATH),
                 "exists": True,
             }
@@ -2279,7 +2280,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
             return 200, {
                 "ok": True,
                 "message": "默认配置已创建",
-                "config": redact_config_document(config_data),
+                "config": config_data,
                 "path": str(CONFIG_PATH),
                 "exists": True,
             }
@@ -2289,7 +2290,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
     if ctx.method == "POST" and ctx.path == "/config/validate":
         try:
             config_data = validate_config_document(await _read_json_body(ctx.reader, ctx.raw_request))
-            return 200, {"ok": True, "config": redact_config_document(config_data)}
+            return 200, {"ok": True, "config": config_data}
         except (json.JSONDecodeError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
 

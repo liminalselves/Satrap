@@ -35,14 +35,13 @@ const pct = (part: number, whole: number): number => whole ? Math.round((part / 
 
 const formatPercent = (value: number): string => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
 
-/** 今日不传 from/to 用后端默认窗口; 跨天范围从本地今日零点回推 N-1 天 */
+/** 所有范围都显式传 from/to: 后端缺省窗口按视图不同 (模型 7 天, 会话 14 天), 今日按小时会超出桶数上限 */
 function statsWindowQuery(range: Range, purpose: PurposeFilter): StatsWindowQuery {
-  if (range === 'today') return { bucket: 'hour', purpose };
-  const days = range === '7d' ? 7 : 30;
+  const days = range === 'today' ? 1 : range === '7d' ? 7 : 30;
   const midnight = new Date();
   midnight.setHours(0, 0, 0, 0);
   const from = Math.floor((midnight.getTime() - (days - 1) * 86_400_000) / 1000);
-  return { from, to: Math.floor(Date.now() / 1000), bucket: 'day', purpose };
+  return { from, to: Math.floor(Date.now() / 1000), bucket: range === 'today' ? 'hour' : 'day', purpose };
 }
 
 /** 趋势点只按已上报的总量作图, 未上报按 0 占位 */

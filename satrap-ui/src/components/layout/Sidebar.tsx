@@ -2,9 +2,8 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { MessageSquare, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { usePrefsStore } from '@/stores/usePrefsStore';
-import { useBackendStore } from '@/stores/useBackendStore';
 import { useServiceHealthStore } from '@/stores/useServiceHealthStore';
-import { StatusDot, Tooltip } from '@/components/kit';
+import { Tooltip } from '@/components/kit';
 import { Logo } from '@/components/common/Logo';
 import { navGroups, findNav, type NavItem as NavEntry } from './nav';
 
@@ -58,7 +57,6 @@ export function Sidebar({ className, onNavigate, forceExpanded }: { className?: 
   const { pathname } = useLocation();
   const prefCollapsed = usePrefsStore((state) => state.sidebarCollapsed);
   const toggle = usePrefsStore((state) => state.toggleSidebar);
-  const runState = useBackendStore((state) => state.runState);
   const pending = useServiceHealthStore((state) => state.pendingApprovals);
   const control = useServiceHealthStore((state) => state.services.control.health);
   const collapsed = !forceExpanded && prefCollapsed;
@@ -72,12 +70,7 @@ export function Sidebar({ className, onNavigate, forceExpanded }: { className?: 
       style={{ width: collapsed ? 'var(--sidebar-w-collapsed)' : 'var(--sidebar-w)' }}
     >
       <div className={cn('flex h-16 flex-none items-center', collapsed ? 'justify-center' : 'gap-3 px-4')}>
-        <div className="relative h-9 w-9 flex-none">
-          <Logo className="h-9 w-9" />
-          <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[var(--bg-base)] p-[2px]">
-            <StatusDot tone={runState === 'running' ? 'green' : runState === 'stopped' ? 'neutral' : 'orange'} className="!h-2 !w-2" />
-          </span>
-        </div>
+        <Logo className="h-9 w-9 flex-none" />
         {!collapsed && (
           <div className="min-w-0 animate-fade">
             <div className="display text-[15px] font-semibold leading-5 text-fg">Satrap</div>

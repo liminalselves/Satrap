@@ -9,20 +9,6 @@ import { EmptyState } from '@/components/kit/Feedback';
 import { toast } from '@/components/kit/Toast';
 import type { Tint } from '@/components/kit';
 
-/** 复用预览的头像块: 首字 + 渐变玻璃底 */
-export function Avatar({ name, tint = 'green', size = 'md', live }: {
-  name: string; tint?: Tint; size?: 'sm' | 'md' | 'lg'; live?: boolean;
-}) {
-  const dim = size === 'lg' ? 'h-12 w-12 rounded-[15px] text-[17px]' : size === 'sm' ? 'h-8 w-8 rounded-[10px] text-[12px]' : 'h-10 w-10 rounded-xl text-[14px]';
-  return (
-    <span className={cn('relative grid flex-none place-items-center font-semibold', dim, `tint-${tint}`,
-      'border border-[rgb(var(--tint)/0.25)] bg-[linear-gradient(140deg,rgb(var(--tint)/0.32),rgb(var(--tint)/0.08))] text-tint shadow-[inset_0_1px_0_var(--glass-highlight)]')}>
-      {name.trim().slice(0, 1).toUpperCase() || '?'}
-      {live && <span className="absolute -bottom-1 -right-1 rounded-full bg-[var(--bg-base)] p-[3px]"><span className="dot tint-green block !h-2 !w-2" data-live="1" /></span>}
-    </span>
-  );
-}
-
 export function StatTile({ label, value, hint, tint }: { label: string; value: ReactNode; hint?: ReactNode; tint?: Tint }) {
   return (
     <div className={cn('min-w-0 rounded-xl border border-line bg-glass px-3 py-2', tint && `tint-${tint}`)}>

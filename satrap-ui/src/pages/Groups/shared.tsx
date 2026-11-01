@@ -46,8 +46,8 @@ const avatarSize = {
   xl: 'h-16 w-16 text-[22px] rounded-[18px]',
 };
 
-export function Avatar({ name, hue = 330, size = 'md', online, ring, className, square }: {
-  name: string; hue?: number; size?: keyof typeof avatarSize; online?: boolean; ring?: boolean; className?: string; square?: boolean;
+export function Avatar({ name, hue = 330, size = 'md', ring, className, square }: {
+  name: string; hue?: number; size?: keyof typeof avatarSize; ring?: boolean; className?: string; square?: boolean;
 }) {
   const text = (name || '?').trim().slice(0, 2).toUpperCase();
   return (
@@ -56,9 +56,6 @@ export function Avatar({ name, hue = 330, size = 'md', online, ring, className, 
       style={{ background: `linear-gradient(140deg, hsl(${hue} 68% 56%), hsl(${hue + 26} 58% 38%))` }}
     >
       {text}
-      {online !== undefined && (
-        <span aria-label={online ? '在线' : '离线'} className={cn('absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-[var(--bg-base)]', online ? 'bg-green' : 'bg-fg-4')} />
-      )}
     </span>
   );
 }

@@ -293,8 +293,6 @@ export function DebugLogs() {
                 item={item}
                 open={objectKey === objectId(item)}
                 selectedCtx={context?.object_key === item.object_key ? context.context_id : undefined}
-                recording={settings ? (debugMode(settings.policy, item.object) === 'on'
-                  || (debugMode(settings.policy, item.object) === 'inherit' && settings.policy.default_enabled)) : false}
                 onToggle={() => { setObjectKey(objectKey === objectId(item) ? undefined : objectId(item)); setContext(undefined); }}
                 onSelectCtx={(value) => setContext({ ...value, service: value.service || item.service })}
                 base={sourceUrl(item.service)}
@@ -358,11 +356,10 @@ export function DebugLogs() {
   );
 }
 
-function ObjectItem({ item, open, selectedCtx, recording, onToggle, onSelectCtx, base, query, refresh }: {
+function ObjectItem({ item, open, selectedCtx, onToggle, onSelectCtx, base, query, refresh }: {
   item: DebugObjectSummary;
   open: boolean;
   selectedCtx?: string;
-  recording: boolean;
   onToggle: () => void;
   onSelectCtx: (context: DebugContext) => void;
   base: string;
@@ -383,11 +380,8 @@ function ObjectItem({ item, open, selectedCtx, recording, onToggle, onSelectCtx,
           open ? 'bg-[rgb(var(--tint)/0.1)]' : 'hover:bg-glass-hover',
         )}
       >
-        <span className="relative grid h-9 w-9 flex-none place-items-center rounded-xl bg-[rgb(var(--tint)/0.15)] text-tint">
+        <span className="grid h-9 w-9 flex-none place-items-center rounded-xl bg-[rgb(var(--tint)/0.15)] text-tint">
           <Icon className="h-4 w-4" />
-          <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[var(--bg-base)] p-[2px]">
-            <StatusDot tone={recording ? 'green' : 'neutral'} live={recording} className="!h-2 !w-2" />
-          </span>
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
@@ -968,7 +962,7 @@ function Timeline({ base, request, depth = 0, onState }: { base: string; request
           const left = Math.min(96, (offset / totalSeconds) * 100);
           return (
             <li key={event.event_id} className="relative">
-              <span aria-hidden className={cn('dot absolute -left-[18px] top-[15px]', tint)} />
+              <span aria-hidden className={cn('dot absolute -left-[16.5px] top-[15px]', tint)} />
               <div
                 data-debug-event={event.event_id}
                 data-diagnostic-tone={presentation.tone}

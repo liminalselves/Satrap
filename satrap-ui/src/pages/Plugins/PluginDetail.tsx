@@ -312,7 +312,7 @@ export function PluginDetail() {
     return (
       <div className="space-y-4">
         <Link to="/plugins" className="inline-flex items-center gap-1 text-xs text-fg-3 transition hover:text-fg">
-          <ArrowLeft className="h-3 w-3" />← 返回插件列表
+          <ArrowLeft className="h-3 w-3" />返回插件列表
         </Link>
         <Card padding="none">
           <div role="alert">
@@ -338,7 +338,7 @@ export function PluginDetail() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2 animate-rise">
         <Link to="/plugins" className="inline-flex items-center gap-1 text-xs text-fg-3 transition hover:text-fg">
-          <ArrowLeft className="h-3 w-3" />← 返回插件列表
+          <ArrowLeft className="h-3 w-3" />返回插件列表
         </Link>
         <span className="flex items-center gap-1.5 font-mono text-[11px] text-fg-4">
           <CheckCircle2 className="h-3 w-3 text-green" />插件目录已同步

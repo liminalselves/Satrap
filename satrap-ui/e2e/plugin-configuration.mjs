@@ -166,7 +166,7 @@ async function plugins(runtime) {
     await page.getByRole('heading', { name: 'installed_probe', exact: true }).waitFor();
     assert.equal(installs, 1);
     assert.equal(plugins.at(-1).chat_enabled, false);
-    await page.getByRole('link', { name: '← 返回插件列表' }).click();
+    await page.getByRole('link', { name: '返回插件列表' }).click();
     await page.getByRole('link', { name: /installed_probe/ }).waitFor();
     await page.goto(origin + '/plugins/builtin_probe');
     await page.getByRole('region', { name: '插件交互关系' }).getByText('可选依赖 · formatter', { exact: true }).waitFor();
@@ -378,7 +378,7 @@ async function plugin_loading(runtime) {
     assert.equal(await note.isEnabled(), true);
     assert.equal(knowledgeReads, 0);
     page.once('dialog', (confirmation) => confirmation.accept());
-    await page.getByRole('link', { name: '← 返回插件列表' }).click();
+    await page.getByRole('link', { name: '返回插件列表' }).click();
     await page.getByRole('link', { name: /plain_probe/ }).click();
     await page.getByRole('heading', { name: 'plain_probe', exact: true }).waitFor();
     assert.equal(catalogReads, 1);
