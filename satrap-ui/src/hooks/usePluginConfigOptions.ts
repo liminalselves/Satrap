@@ -6,7 +6,7 @@ import { errorText } from '@/utils/errorText';
 
 export function pluginOptionNeeds(schema: Record<string, EdictumPluginConfigField> | undefined) {
   const fields = Object.values(schema || {});
-  return { models: fields.some((field) => ['llm', 'embed', 'rerank', 'asr'].includes(field.type)),
+  return { models: fields.some((field) => ['llm', 'embed', 'rerank', 'asr', 'img'].includes(field.type)),
     knowledge: fields.some((field) => ['knowledge_base', 'knowledge_bases'].includes(field.type)) };
 }
 

@@ -97,8 +97,21 @@ export interface ASRConfig {
   timeout?: number;
 }
 
-export type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig;
-export type ModelType = 'llm' | 'embedding' | 'rerank' | 'asr';
+export interface ImgConfig {
+  name: string;
+  model?: string;
+  base_url?: string;
+  edit_base_url?: string | null;
+  api_key?: string;
+  api_type?: 'openai_images' | 'seedream' | 'novelai';
+  timeout?: number;
+  default_params?: Record<string, unknown> | null;
+  lock_api_key?: boolean;
+  allow_insecure_base_url?: boolean;
+}
+
+export type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig | ImgConfig;
+export type ModelType = 'llm' | 'embedding' | 'rerank' | 'asr' | 'img';
 
 export interface SessionClassConfig {
     name?: string;

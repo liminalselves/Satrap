@@ -87,6 +87,7 @@ export const MODEL_TYPES = [
   { value: 'embedding', label: 'Embedding 配置' },
   { value: 'rerank', label: 'ReRank 配置' },
   { value: 'asr', label: 'ASR 配置' },
+  { value: 'img', label: '图片模型' },
 ] as const;
 
 export const THINKING_FIELD_OPTIONS = [

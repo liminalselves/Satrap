@@ -20,7 +20,7 @@ class GroupReferenceScanError(RuntimeError):
 
 def _plugin_fields(target: str, plugins_dir: Path | None) -> dict[str, list[str]]:
     """严格读取群配置资源字段, 保留已有名称与空字段项语义"""
-    if target not in {"llm", "asr"}:
+    if target not in {"llm", "asr", "img"}:
         return {}
 
     def failure(directory: Path, error: Exception | None) -> GroupReferenceScanError:
@@ -34,7 +34,7 @@ def list_group_references(
     platform_ids: list[str], plugins_dir: Path | None = None,
 ) -> list[dict[str, str]]:
     """扫描平台群配置, 数据库损坏时拒绝判定为无引用"""
-    if target not in {"session_class", "edictum", "llm", "asr"}:
+    if target not in {"session_class", "edictum", "llm", "asr", "img"}:
         raise ValueError("不支持的引用目标")
     references: list[dict[str, str]] = []
     with REFERENCE_SCAN_LOCK:

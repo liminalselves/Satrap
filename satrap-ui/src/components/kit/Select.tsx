@@ -47,18 +47,21 @@ const EDGE = 8;
 
 /**
  * 玻璃下拉: 替代原生 select, 原生弹层由系统绘制无法统一外观.
- * 选项可用 options 传入, 也可沿用 <option> 子元素; 列表渲染到 body, 避免被玻璃卡片裁剪.
+ * 选项可用 options 传入, 也可沿用 <option> 子元素; 列表渲染到 body, 避免被玻璃卡片裁剪
+ * editable 开启时允许直接输入自定义值, 与固定选项共用箭头和弹层样式
  */
 export function Select({
-  value, onChange, options: optionList, children, placeholder = '请选择', className, id, disabled, title, ...aria
+  value, onChange, options: optionList, children, placeholder = '请选择', className, id, disabled, title, editable = false, ...aria
 }: {
   value: string; onChange: (value: string) => void; options?: SelectOption[]; children?: ReactNode;
   placeholder?: string; className?: string; id?: string; disabled?: boolean; title?: string;
+  editable?: boolean;
   'aria-invalid'?: boolean; 'aria-describedby'?: string; 'aria-label'?: string; 'aria-labelledby'?: string;
 }) {
   const listId = useId();
   const triggerId = useId();
-  const btnRef = useRef<HTMLButtonElement>(null);
+  const btnRef = useRef<HTMLElement | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const typeahead = useRef({ text: '', at: 0 });
   const [open, setOpen] = useState(false);
@@ -66,10 +69,11 @@ export function Select({
   const [rect, setRect] = useState<DOMRect | null>(null);
   const options = useMemo(() => optionList ?? optionsFromChildren(children), [optionList, children]);
   const current = options.find((o) => o.value === value);
+  const focusTrigger = () => (editable ? inputRef.current : btnRef.current)?.focus();
 
   useLayoutEffect(() => {
     if (open && btnRef.current) setRect(btnRef.current.getBoundingClientRect());
-  }, [open]);
+  }, [open, editable]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -99,7 +103,7 @@ export function Select({
       event.preventDefault();
       event.stopPropagation();
       setOpen(false);
-      btnRef.current?.focus();
+      (editable ? inputRef.current : btnRef.current)?.focus();
     };
     const close = () => setOpen(false);
     window.addEventListener('pointerdown', onPointer, true);
@@ -112,7 +116,7 @@ export function Select({
       window.removeEventListener('resize', close);
       window.removeEventListener('keydown', onKey, true);
     };
-  }, [open]);
+  }, [open, editable]);
 
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
 
@@ -126,14 +130,14 @@ export function Select({
   const openList = () => {
     if (disabled || !options.length) return;
     const selected = options.findIndex((o) => o.value === value);
-    setActive(selected >= 0 ? selected : enabledIndex(-1, 1));
+    setActive(selected >= 0 ? selected : editable ? -1 : enabledIndex(-1, 1));
     setOpen(true);
   };
   const commit = (index: number) => {
     const option = options[index];
     if (!option || option.disabled) return;
     setOpen(false);
-    btnRef.current?.focus();
+    focusTrigger();
     if (option.value !== value) onChange(option.value);
   };
   const jumpTo = (key: string) => {
@@ -146,19 +150,25 @@ export function Select({
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key.length === 1 && event.key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (editable && event.nativeEvent.isComposing) return;
+    if (!editable && event.key.length === 1 && event.key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
       jumpTo(event.key);
       return;
     }
     if (!open) {
-      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) { event.preventDefault(); openList(); }
+      if ((editable ? ['ArrowDown', 'ArrowUp'] : ['ArrowDown', 'ArrowUp', 'Enter', ' ']).includes(event.key)) { event.preventDefault(); openList(); }
+      else if (editable && event.key === 'Enter') event.preventDefault();
       return;
     }
     if (event.key === 'ArrowDown') { event.preventDefault(); setActive((index) => enabledIndex(index, 1)); }
-    else if (event.key === 'ArrowUp') { event.preventDefault(); setActive((index) => enabledIndex(index, -1)); }
-    else if (event.key === 'Home') { event.preventDefault(); setActive(enabledIndex(-1, 1)); }
-    else if (event.key === 'End') { event.preventDefault(); setActive(enabledIndex(options.length, -1)); }
-    else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); commit(active); }
+    else if (event.key === 'ArrowUp') { event.preventDefault(); setActive((index) => enabledIndex(index < 0 ? options.length : index, -1)); }
+    else if (!editable && event.key === 'Home') { event.preventDefault(); setActive(enabledIndex(-1, 1)); }
+    else if (!editable && event.key === 'End') { event.preventDefault(); setActive(enabledIndex(options.length, -1)); }
+    else if (event.key === 'Enter' || (!editable && event.key === ' ')) {
+      event.preventDefault();
+      if (active >= 0) commit(active);
+      else setOpen(false);
+    }
     else if (event.key === 'Tab') setOpen(false);
   };
 
@@ -169,8 +179,22 @@ export function Select({
 
   return (
     <>
-      <button
-        ref={btnRef}
+      {editable ? <div ref={(node) => { btnRef.current = node; }} className={cn('select-trigger field', className)}
+        data-editable="" data-open={open ? '' : undefined} data-disabled={disabled ? '' : undefined} aria-invalid={aria['aria-invalid']}>
+        <input ref={inputRef} id={id ?? triggerId} className="select-editable-input" type="text" role="combobox"
+          aria-autocomplete="list" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined}
+          aria-activedescendant={open && active >= 0 ? `${listId}-${active}` : undefined} data-value={value}
+          disabled={disabled} title={title} value={value} placeholder={placeholder} autoComplete="off"
+          onClick={(event) => { event.stopPropagation(); if (!open) openList(); }}
+          onChange={(event) => { onChange(event.target.value); setActive(-1); setOpen(true); }}
+          onKeyDown={onKeyDown} {...aria} />
+        <button type="button" tabIndex={-1} className="select-chevron" aria-label="展开选项" disabled={disabled}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={(event) => { event.stopPropagation(); if (open) setOpen(false); else { openList(); focusTrigger(); } }}>
+          <ChevronDown aria-hidden />
+        </button>
+      </div> : <button
+        ref={(node) => { btnRef.current = node; }}
         id={id ?? triggerId}
         type="button"
         role="combobox"
@@ -190,7 +214,7 @@ export function Select({
         {current?.icon && <span aria-hidden className="flex-none">{current.icon}</span>}
         <span className={cn('select-value', !current && 'text-fg-4')}>{current?.label ?? placeholder}</span>
         <span aria-hidden className="select-chevron"><ChevronDown /></span>
-      </button>
+      </button>}
       {open && rect && createPortal(
         <div
           ref={listRef}

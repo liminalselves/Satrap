@@ -162,6 +162,132 @@ if encoding is not None:
 
 库只负责调用和图片解析, 不保存文件, 不新增数据库表, 不把 Base64 写入会话历史, 不自动发送消息; 模型管理页面和绘图工具可在此调用层上接入
 
+## 命名图片模型与管理页面
+
+模型管理页面的「图片模型」标签使用 `img` 类型, 可以新增, 编辑, 重命名和删除配置, 并使用后端保存的密钥显式测试生成
+
+常用默认参数使用表单控件, 不需要手写 JSON:
+
+- 分辨率: 使用模型默认值, 常用尺寸预设, 自定义宽高像素, 或协议支持的分辨率档位
+- 生成数量, 随机或固定种子, 输出格式, 按协议显示可用字段
+- NovelAI: 采样步数, 引导强度, 可自定义的采样器, 负向提示词
+- NAI 高级区: CFG 重缩放, 噪声调度, SMEA 等三态开关, 图生图修改强度和噪声, 颜色校正
+- 多角色区: 添加和移除角色, 编辑角色正负提示词与多个归一化位置
+
+空输入沿用默认行为, 开关可以区分默认, 开启和关闭; 固定种子 0 与关闭值 false 会保留; 随机模式省略 seed, 不发送 -1
+
+表单仍保存为同一个 `default_params` 对象, 不新增平行配置字段; 旧尺寸字符串未编辑时保留原格式; 未提供控件的参数放在折叠的扩展 JSON 中, 未识别字段不自动删除; 表单与扩展 JSON 重复配置同一字段时阻止保存
+
+切换协议保留尚未保存的输入, 对不兼容参数明确提示, 由用户清除或切回原协议; 「清空绘图默认值」清除本次草稿中的全部默认参数, 保存时提交 null
+
+配置沿用模型配置 JSON 文件的命名集合:
+
+```json
+{
+  "img": {
+    "painter": {
+      "name": "painter",
+      "api_type": "novelai",
+      "model": "nai-diffusion-4-5-full",
+      "base_url": "https://image.novelai.net/ai/generate-image",
+      "edit_base_url": null,
+      "api_key": "填写 Persistent API Token",
+      "timeout": 180,
+      "default_params": {
+        "size": [832, 1216],
+        "steps": 28,
+        "scale": 5,
+        "native": {}
+      }
+    }
+  }
+}
+```
+
+`ImgConfig` 在创建和重载时验证参数; `build_imagegen_from_config(config, async_=True)` 将尺寸数组和角色 JSON 转为调用层类型, 不发送网络请求; 清空默认参数提交 `null`, 修改时不提交空密钥即可保留旧密钥
+
+- 冷管理: `GET /config/models?type=img`, `POST/PATCH/DELETE /config/models/img/{name}`
+- 热管理: `GET /api/config/models?type=img`, `POST/PATCH/DELETE /api/config/models/img/{name}`
+- 配置快照: `GET /config/snapshot?resource=models&type=img`
+- 查看密钥: `POST /config/models/img/{name}/api-key`, 沿用控制服务鉴权
+- 真实测试: `POST /config/models/img/{name}/test`, 请求体仅含 `prompt`
+
+测试接口强制单图, 预览图片合计最多 12 MiB, 仅在响应中临时返回 Data URL; 不写模型配置, 会话历史或图片数据库, 不自动重试; 模型配置中拒绝保存底图, 遮罩和参考图片字节
+
+CLI 支持 `satrap model list img` 及现有 `show`, `set`, `remove` 操作; 插件可声明图片模型引用:
+
+```yaml
+config_schema:
+  painter:
+    type: img
+    label: 绘图模型
+```
+
+插件通过 `PluginResources` 取得匹配同步或异步的图片客户端; 配置快照保留安装时的参数; 删除或重命名前检查插件全局配置, 命名 Agent 配置, 会话覆盖和群插件配置中的引用, 扫描不完整时拒绝变更
+
+## image_generation 插件
+
+内置插件目录为 `satrap/expend/plugins/image_generation`, 启用时选择一个已经保存的 `img` 模型配置
+
+插件提供两个工具:
+
+- `generate_image`: 请求生成一次, 保存图片, 再交付当前会话
+- `send_generated_image`: 按当前会话的 `file_id` 重发已经保存的图片, 不调用图片模型
+
+插件配置示例:
+
+```yaml
+img_model: painter
+accept_natural_language: true
+accept_keywords: true
+prompt_guidance: "推荐英文关键词, 使用逗号分隔; 可以混合自然语言描述"
+size_mode: choices
+size_choices: |
+  832x1216
+  1216x832
+  1024x1024
+size_default: "832x1216"
+count_mode: range
+count_min: 1
+count_max: 4
+count_default: 1
+allow_negative_prompt: true
+```
+
+两个提示词开关互相独立, 至少开启一个; 它们和 `prompt_guidance` 共同生成 `prompt` 的参数描述, 不额外要求模型选择格式, 不强制翻译或自动判断标签写法
+
+尺寸策略:
+
+| 模式 | 配置 | 模型侧参数 |
+| --- | --- | --- |
+| `fixed` | `size_fixed` | 不暴露尺寸参数 |
+| `choices` | 多行 `size_choices`, `size_default` | `size`, 限制在候选列表内 |
+| `range` | `width_min/max`, `height_min/max`, `size_step`, `max_pixels`, `size_default` | `width`, `height`, 两者同时填写或同时省略 |
+
+范围模式的默认尺寸使用 `宽x高`, 宽高须在范围内并为 `size_step` 的整数倍, 宽高乘积不能超过 `max_pixels`; 像素尺寸也受调用层的 4000 万像素硬上限约束
+
+固定和候选模式可使用所选协议接受的原生尺寸值, 如 Seedream 的 `2K`; 原生档位对应的实际像素数由上游模型决定, `max_pixels` 只能约束显式像素尺寸
+
+数量策略使用 `count_mode: fixed | range`; 固定模式读取 `count_fixed`, 不暴露 `n`; 范围模式使用 `count_min`, `count_max`, `count_default`, 模型省略 `n` 时由插件补入默认值
+
+模型默认参数首先生效, 然后由插件策略及允许的本次参数覆盖尺寸与数量; 其它参数继续继承, 不修改保存的模型配置; 不开放任意 `native` 给模型填写
+
+`allow_negative_prompt` 仅在 NovelAI 协议中可开启; 省略负向提示词继承模型默认值, 空字符串表示本次清空; OpenAI Images 与 Seedream 不支持公共负向提示词时, 安装阶段直接拒绝开启
+
+安装阶段校验默认值, 候选尺寸, 协议能力和原生字段冲突, 不发送 HTTP 请求; 动态 schema 与运行时校验使用同一策略, 固定参数不能通过额外字段覆盖, 越界不会静默截断
+
+当前 Seedream 公共调用只支持 `n=1`, 插件禁止配置多张数量, 并将继承的组图开关覆盖为关闭; 上游返回图片少于请求数量时报告实际数量, 不额外补发生成请求
+
+图片通过现有会话文件产物机制保存和交付, Chat 登记附件, 平台使用各适配器的文件上传或发布能力; 不指定任意发送目标, 不新增数据库表, 不把 Base64 放入工具结果或历史
+
+每张图片在当前会话的 `artifacts` 目录保留一份, `.image_generation` 子目录仅保存文件摘要, 尺寸和种子等轻量索引; 临时复制文件在保存后删除; 沿用单文件 32 MiB, 每会话 128 项及 512 MiB 的产物上限
+
+结果分别提供 `generation_status`, `delivery_status`, `requested_count`, `actual_count` 和每张图片的 `file` 引用及交付回执; 生成成功但交付失败时保留文件, 使用 `send_generated_image({"file_id": "sf_..."})` 重发, 不重新生成和计费; 回执为 `unknown` 时不自动重发
+
+同步和异步会话均受支持; 异步文件操作在线程执行, 取消不触发请求重试; 计划模式或失效安装不执行生成或交付
+
+此插件当前提供文生图, 编辑底图和蒙版继续使用调用层的 `edit` 接口, 尚未作为插件工具开放
+
 ## 上游参考
 
 - [OpenAI Images](https://developers.openai.com/api/docs/guides/image-generation)

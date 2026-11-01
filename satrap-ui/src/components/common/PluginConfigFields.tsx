@@ -24,7 +24,7 @@ interface Props {
   onReset?: (key: string) => void;
 }
 
-const MODEL_TYPES = ['llm', 'embed', 'rerank', 'asr'];
+const MODEL_TYPES = ['llm', 'embed', 'rerank', 'asr', 'img'];
 const KNOWLEDGE_TYPES = ['knowledge_base', 'knowledge_bases'];
 
 function inheritedLabel(source?: string) {

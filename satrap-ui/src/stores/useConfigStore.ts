@@ -1,10 +1,11 @@
 import { create } from 'zustand';
+import { errorText } from '@/utils/errorText';
 import { modelApi } from '@/api/model';
 import { sessionApi } from '@/api/session';
 import { edictumApi } from '@/api/edictum';
 import { getConfigVersions, readConfigSnapshot, VersionedConfigRead, type ConfigReadOptions, type ConfigResource } from '@/api/configVersions';
 import type { EdictumSessionConfig } from '@/api/types';
-import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, ModelConfig, ModelType, SessionClassConfig } from '@/api/types';
+import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, ImgConfig, ModelConfig, ModelType, SessionClassConfig } from '@/api/types';
 
 
 interface ConfigState {
@@ -13,6 +14,8 @@ interface ConfigState {
   embeddingConfigs: Record<string, EmbeddingConfig>;
   rerankConfigs: Record<string, ReRankConfig>;
   asrConfigs: Record<string, ASRConfig>;
+  imgConfigs: Record<string, ImgConfig>;
+  modelError: string | null;
 
   // 会话类配置
   sessionClasses: Record<string, SessionClassConfig>;
@@ -33,10 +36,10 @@ interface ConfigState {
 
 let sessionClassRequest = 0;
 let edictumRequest = 0;
-const modelRequests: Record<ModelType, number> = { llm: 0, embedding: 0, rerank: 0, asr: 0 };
+const modelRequests: Record<ModelType, number> = { llm: 0, embedding: 0, rerank: 0, asr: 0, img: 0 };
 export type WatchedConfig = ModelType | 'sessions' | 'edictum';
 const watchers = new Map<WatchedConfig, number>();
-const modelTypes: ModelType[] = ['llm', 'embedding', 'rerank', 'asr'];
+const modelTypes: ModelType[] = ['llm', 'embedding', 'rerank', 'asr', 'img'];
 const modelReads = Object.fromEntries(modelTypes.map((type) => [type,
   new VersionedConfigRead(['models'], (signal) => modelApi.list(type, signal), undefined,
     (signal) => readConfigSnapshot<Record<string, ModelConfig>>('models', signal, { type })),
@@ -51,6 +54,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   embeddingConfigs: {},
   rerankConfigs: {},
   asrConfigs: {},
+  imgConfigs: {},
+  modelError: null,
   sessionClasses: {},
   edictumConfigs: {},
 
@@ -61,6 +66,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     if (type === 'llm') set({ llmConfigs: data as Record<string, LLMConfig> });
     else if (type === 'embedding') set({ embeddingConfigs: data as Record<string, EmbeddingConfig> });
     else if (type === 'asr') set({ asrConfigs: data as Record<string, ASRConfig> });
+    else if (type === 'img') set({ imgConfigs: data as Record<string, ImgConfig> });
     else set({ rerankConfigs: data as Record<string, ReRankConfig> });
   },
 
@@ -70,6 +76,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
       get().fetchModels('embedding'),
       get().fetchModels('rerank'),
       get().fetchModels('asr'),
+      get().fetchModels('img'),
     ]);
   },
 
@@ -117,34 +124,40 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   },
 
   createModel: async (type, name, config) => {
+    set({ modelError: null });
     try {
       await modelApi.create(type, name, config);
       modelReads[type].invalidate();
       await get().fetchModels(type);
       return true;
-    } catch {
+    } catch (error) {
+      set({ modelError: errorText(error) });
       return false;
     }
   },
 
   updateModel: async (type, name, config) => {
+    set({ modelError: null });
     try {
       await modelApi.update(type, name, config);
       modelReads[type].invalidate();
       await get().fetchModels(type);
       return true;
-    } catch {
+    } catch (error) {
+      set({ modelError: errorText(error) });
       return false;
     }
   },
 
   deleteModel: async (type, name) => {
+    set({ modelError: null });
     try {
       await modelApi.delete(type, name);
       modelReads[type].invalidate();
       await get().fetchModels(type);
       return true;
-    } catch {
+    } catch (error) {
+      set({ modelError: errorText(error) });
       return false;
     }
   },
