@@ -684,8 +684,29 @@ async function main_merge(runtime) {
     let overrides = {};
     let revision = 'initial';
     const action = { action_id: 'model-approval-1', self_id: '100', group_id: '456', action_type: 'ban_group_member',
-      params: { user_id: '123', duration: 60 }, actor_kind: 'model', state: 'pending', policy_revision: 1,
+      params: { user_id: '123', duration: 60 }, actor_kind: 'model', state: 'pending', policy_revision: 1, revision: 1,
       created_at: Date.now() / 1000, expires_at: Date.now() / 1000 + 600, decision_at: null, executed_at: null, result: null };
+    const approvalKey = { platform_id: 'ob', self_id: '100', source: 'group', action_id: action.action_id };
+    const approvalItem = () => ({
+      ...action, ...approvalKey, key: { ...approvalKey }, group_name: '合并验收群', source_state: action.state,
+      decided_at: action.decision_at, decided_by: action.state === 'pending' ? null : { kind: 'panel', id: null },
+      decision: action.state === 'pending' ? null : 'approved', note: null, risk: 'medium', risk_source: 'policy',
+      target: { user_id: '123' }, actor_id: 'model-1', requester: null,
+      request: { action_type: action.action_type, params: action.params },
+      can_decide: action.state === 'pending', unavailable_reason: action.state === 'pending' ? '' : '审批已完成',
+    });
+    const approvalCatalog = (items) => {
+      const pending = action.state === 'pending' ? 1 : 0;
+      return {
+        generated_at: Math.floor(Date.now() / 1000), items, total: 1, complete: true, warnings: [],
+        platforms: [{ platform_id: 'ob', current_account: '100', online: true, accounts: ['100'], pending_count: pending }],
+        pending_count: pending, by_state: { pending, succeeded: 1 - pending }, by_source: { group: 1 },
+        today_decided: 1 - pending, automatic_count: 0, expired_count: 0, decision_latency_ms: null,
+        window: { from: null, to: null, tz: 'Asia/Shanghai', bucket: null },
+        today_window: { from: null, to: null, tz: 'Asia/Shanghai', bucket: 'day' },
+        has_more: false, next_cursor: null,
+      };
+    };
     const config = { account: '100', current_account: '100', group: { group_id: '456', group_name: '合并验收群', membership: 'joined' },
       explicit: { policy: {}, session: {}, events: {}, approval: {} }, revision: 0, saved_revision: 0, active_revision: 0,
       apply_status: 'applied', route_generation: 0, base_revision: 'base', effective: { policy: { enabled: true }, session: {}, approval: {}, events: {} },
@@ -712,13 +733,32 @@ async function main_merge(runtime) {
         return reply({ ok: true, schema, defaults, overrides, config: { ...defaults, ...overrides }, revision, runtime: [] });
       }
       if (pathname === '/api/platforms/ob/groups/456/config') return reply(config);
-      if (pathname.endsWith('/actions/model-approval-1/decision')) {
+      if (pathname === '/api/platform-actions/summary') {
+        return reply(approvalCatalog([]));
+      }
+      if (pathname === '/api/platform-actions/decisions') {
         const body = route.request().postDataJSON();
-        assert.equal(body.expected_self_id, '100');
-        assert.equal(body.approve, true);
-        decisions.push(body);
+        assert.equal(body.items.length, 1);
+        const decision = body.items[0];
+        assert.deepEqual(decision.key, approvalKey);
+        assert.equal(decision.expected_revision, action.revision);
+        assert.equal(decision.approve, true);
+        decisions.push(decision);
         action.state = 'succeeded';
-        return reply(action);
+        action.revision += 1;
+        action.decision_at = Date.now() / 1000;
+        return reply({ items: [{ key: approvalKey, result: 'applied', action: {
+          revision: action.revision, state: action.state, source_state: action.state, decision: 'approved',
+        }, error: null }] });
+      }
+      if (pathname === '/api/platform-actions') {
+        assert.equal(url.searchParams.get('platform_id'), 'ob');
+        assert.equal(url.searchParams.get('account'), '100');
+        assert.equal(url.searchParams.get('source'), 'group');
+        assert.equal(url.searchParams.get('target'), '456');
+        assert.equal(url.searchParams.get('action_id'), action.action_id);
+        const items = url.searchParams.get('state') === 'all' || url.searchParams.get('state') === action.state ? [approvalItem()] : [];
+        return reply({ ...approvalCatalog(items), total: items.length });
       }
       if (pathname === '/api/platforms/ob/groups/456/actions') {
         const items = url.searchParams.get('state') === 'all' || url.searchParams.get('state') === action.state ? [action] : [];
@@ -747,15 +787,30 @@ async function main_merge(runtime) {
     assert.equal(await page.getByLabel('high_risk_approval', { exact: true }).isChecked(), true);
     assert.equal(await page.getByLabel('allowed_read_callers', { exact: true }).inputValue(), '123\n789');
     await page.goto(origin + '/platforms/ob/groups/456/actions?account=100');
-    await page.getByText('ID: model-approval-1', { exact: true }).waitFor();
-    assert.equal(await page.getByRole('button', { name: '批准', exact: true }).count(), 1);
-    await page.getByRole('button', { name: '批准', exact: true }).click();
+    const actionText = page.getByText(/^ID: model-approval-1(?: · 到期 .*)?$/);
+    await actionText.waitFor();
+    const approvalLink = page.getByRole('link', { name: '前往审批中心', exact: true });
+    assert.equal(await approvalLink.getAttribute('href'), '/platforms/approvals?platform=ob&account=100&source=group&target=456&action=model-approval-1&state=all');
+    await approvalLink.click();
+    await page.getByRole('heading', { name: '审批中心', exact: true }).waitFor();
+    assert.deepEqual(Object.fromEntries(new URL(page.url()).searchParams), {
+      platform: 'ob', account: '100', source: 'group', target: '456', action: 'model-approval-1', state: 'all',
+    });
+    await page.getByText('禁言成员 123 1 分钟', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '通过', exact: true }).click();
+    const decisionDialog = page.getByRole('dialog', { name: '批准执行', exact: true });
+    await decisionDialog.waitFor();
+    await decisionDialog.getByRole('button', { name: '确认通过', exact: true }).click();
+    await page.getByText('批准 1 项: 1 项已写入', { exact: true }).waitFor();
+    assert.equal(decisions.length, 1);
+    await page.goto(origin + '/platforms/ob/groups/456/actions?account=100');
     await page.getByText('共 0 条', { exact: true }).waitFor();
-    await page.getByLabel('动作状态', { exact: true }).selectOption('all');
-    await page.getByText('ID: model-approval-1', { exact: true }).waitFor();
+    await page.getByRole('combobox', { name: '动作状态', exact: true }).click();
+    await page.getByRole('option', { name: '全部', exact: true }).click();
+    await actionText.waitFor();
     assert.ok((await page.locator('main').innerText()).includes('已成功'));
     assert.equal(decisions.length, 1);
-    assert.equal(await page.getByRole('button', { name: '批准', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('link', { name: '前往审批中心', exact: true }).count(), 0);
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
     assert.deepEqual(errors, []);
