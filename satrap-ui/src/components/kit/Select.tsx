@@ -234,6 +234,7 @@ export function Select({
         >
           {options.map((option, index) => {
             const selected = option.value === value;
+            // 弹层位置变化也会让静止指针触发 pointerenter, 只有实际移动才能接管键盘高亮
             return (
               <div
                 key={`${option.value}:${index}`}
@@ -244,7 +245,7 @@ export function Select({
                 data-value={option.value}
                 data-index={index}
                 data-active={index === active ? '' : undefined}
-                onPointerEnter={() => { if (!option.disabled) setActive(index); }}
+                onPointerMove={() => { if (!option.disabled) setActive(index); }}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={() => commit(index)}
                 className="select-option"

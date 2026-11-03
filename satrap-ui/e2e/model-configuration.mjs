@@ -635,6 +635,9 @@ async function img_models(runtime) {
     await page.getByRole('option', { name: 'k_euler_ancestral', exact: true }).click();
     assert.equal(await sampler.inputValue(), 'k_euler_ancestral');
     await sampler.fill('custom_sampler_v2');
+    // 弹层出现在静止鼠标下方也会产生 pointerover, 不应覆盖输入后的高亮状态
+    await page.getByRole('option', { name: 'k_euler_ancestral', exact: true }).dispatchEvent('pointerover', { pointerType: 'mouse' });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await sampler.press('Enter');
     assert.equal(await sampler.inputValue(), 'custom_sampler_v2');
     assert.equal(writes.length, 0);
@@ -652,6 +655,8 @@ async function img_models(runtime) {
     assert.equal(await schedule.inputValue(), 'karras');
     await schedule.fill('custom_noise_v2');
     await schedule.press('ArrowDown');
+    await page.getByRole('option', { name: 'karras', exact: true }).dispatchEvent('pointerover', { pointerType: 'mouse' });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await schedule.press('Enter');
     assert.equal(await schedule.inputValue(), '');
     await schedule.fill('custom_noise_v2');
