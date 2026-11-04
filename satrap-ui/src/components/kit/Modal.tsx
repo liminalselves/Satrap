@@ -11,6 +11,8 @@ export function Modal({ open, onClose, title, description, icon, children, foote
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -19,7 +21,7 @@ export function Modal({ open, onClose, title, description, icon, children, foote
     const focusable = () => Array.from(panel?.querySelectorAll<HTMLElement>('button, [href], input, textarea, [tabindex]:not([tabindex="-1"])') ?? []).filter((el) => !el.hasAttribute('disabled'));
     requestAnimationFrame(() => (panel?.querySelector<HTMLElement>('[data-autofocus]') ?? focusable()[1] ?? panel)?.focus());
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+      if (e.key === 'Escape') { e.stopPropagation(); onCloseRef.current(); }
       if (e.key !== 'Tab') return;
       const els = focusable();
       if (!els.length) return;
@@ -30,7 +32,7 @@ export function Modal({ open, onClose, title, description, icon, children, foote
     };
     document.addEventListener('keydown', onKey, true);
     return () => { document.removeEventListener('keydown', onKey, true); restoreRef.current?.focus?.(); };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   const width = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' }[size];
