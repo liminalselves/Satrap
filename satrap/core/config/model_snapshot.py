@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
-from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, ReRankConfig
 
 
 class ModelConfigReader(Protocol):
@@ -20,9 +20,10 @@ class ModelConfigReader(Protocol):
     def get_embedding_config(self, name: str = "default") -> EmbeddingConfig: ...
     def get_rerank_config(self, name: str = "default") -> ReRankConfig: ...
     def get_asr_config(self, name: str = "default") -> ASRConfig: ...
+    def get_img_config(self, name: str = "default") -> ImgConfig: ...
 
 
-TModel = TypeVar("TModel", LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig)
+TModel = TypeVar("TModel", LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, ImgConfig)
 
 
 def llm_config_fingerprint(config: LLMConfig) -> str:
@@ -91,7 +92,7 @@ class ModelConfigSnapshot:
 
         values: dict[str, dict[str, Any]] = {
             "llm": parse("llm", LLMConfig), "embedding": parse("embedding", EmbeddingConfig),
-            "rerank": parse("rerank", ReRankConfig), "asr": parse("asr", ASRConfig),
+            "rerank": parse("rerank", ReRankConfig), "asr": parse("asr", ASRConfig), "img": parse("img", ImgConfig),
         }
         return cls(path, values)
 
@@ -139,3 +140,7 @@ class ModelConfigSnapshot:
     def get_asr_config(self, name: str = "default") -> ASRConfig:
         """读取捕获的转写模型参数, 返回独立副本"""
         return self._get("asr", name, ASRConfig)
+
+    def get_img_config(self, name: str = "default") -> ImgConfig:
+        """读取图片模型快照, 不回退到当前文件"""
+        return self._get("img", name, ImgConfig)

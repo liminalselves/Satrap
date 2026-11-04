@@ -5,13 +5,14 @@ from dataclasses import fields
 from pathlib import Path
 from time import monotonic
 import asyncio
+import base64
 from typing import Any, cast
 
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
 from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.core.APICall.ASRCall import AsyncASR, build_asr_from_config
 from satrap.core.pipeline.audio_convert import AudioConvertError, convert_to_wav, probe_audio
-from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, validate_thinking_levels
+from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, validate_thinking_levels
 
 ASR_TEST_MAX_AUDIO_BYTES = 8 * 1024 * 1024
 """ASR 转录测试接受的解码后音频字节上限"""
@@ -52,6 +53,8 @@ class ModelConfigService:
             return self.manager.list_embedding_configs(mask_api_key=True)
         if normalized == "asr":
             return self.manager.list_asr_configs(mask_api_key=True)
+        if normalized == "img":
+            return self.manager.list_img_configs(mask_api_key=True)
         return self.manager.list_rerank_configs(mask_api_key=True)
 
     def reveal_api_key(self, target: str, name: str) -> str:
@@ -94,6 +97,8 @@ class ModelConfigService:
             self.manager.set_embedding_config(EmbeddingConfig(**cleaned), name=config_name)
         elif normalized == "asr":
             self.manager.set_asr_config(ASRConfig(**cleaned), name=config_name)
+        elif normalized == "img":
+            self.manager.set_img_config(ImgConfig(**cleaned), name=config_name)
         else:
             self.manager.set_rerank_config(ReRankConfig(**cleaned), name=config_name)
 
@@ -137,6 +142,8 @@ class ModelConfigService:
             return self.manager.remove_embedding_config(config_name)
         if normalized == "asr":
             return self.manager.remove_asr_config(config_name)
+        if normalized == "img":
+            return self.manager.remove_img_config(config_name)
         return self.manager.remove_rerank_config(config_name)
 
     async def test_asr_config(self, name: str, filename: str, audio: bytes) -> dict[str, Any]:
@@ -182,6 +189,48 @@ class ModelConfigService:
         if converted_from:
             payload["converted_from"] = converted_from
         return payload
+
+    async def test_img_config(self, name: str, prompt: str) -> dict[str, Any]:
+        """
+        显式测试已保存的图片模型, 图片仅随本次响应返回
+
+        参数:
+        - name: 已保存的图片模型配置名
+        - prompt: 本次测试提示词
+
+        返回:
+        - 图片预览, 模型和耗时, 不保存会话或图片数据库记录
+        """
+        from satrap.core.APICall.ImageCall import ImageGenParams, build_imagegen_from_config
+
+        config_name = self._validate_name(name)
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000:
+            raise ValueError("测试提示词不能为空且不能超过 4000 字符")
+        if not self.manager.has_config("img", config_name):
+            raise ValueError("图片模型配置不存在")
+        config = self.manager.get_img_config(config_name)
+        native = (config.default_params or {}).get("native") or {}
+        test_params = ImageGenParams(n=1, native={"sequential_image_generation": "disabled"}
+                                    if config.api_type == "seedream" and "sequential_image_generation" in native else None)
+        client = build_imagegen_from_config(config, async_=True)
+        client.suppress_error = False
+        started = monotonic()
+        async with client:
+            async with asyncio.timeout(240):
+                result = await client.generate(prompt.strip(), params=test_params)
+        if result is None or not result.images:
+            raise RuntimeError("图片接口未返回图片")
+        if sum(len(image.data) for image in result.images) > 12 * 1024 * 1024:
+            raise RuntimeError("测试图片超过 12 MiB 预览上限")
+
+        def preview() -> list[dict[str, Any]]:
+            """编码响应图片时不阻塞事件循环, 不持久化 Base64"""
+            return [{"data_url": f"data:{image.mime_type};base64,{base64.b64encode(image.data).decode('ascii')}",
+                     "mime_type": image.mime_type, "width": image.width, "height": image.height,
+                     "seed": image.seed} for image in result.images]
+
+        return {"model": result.model, "images": await asyncio.to_thread(preview),
+                "elapsed_ms": int((monotonic() - started) * 1000), "request_id": result.request_id, "usage": result.usage}
 
     @staticmethod
     async def _prepare_test_audio(audio: bytes, filename: str) -> tuple[bytes, str, str]:

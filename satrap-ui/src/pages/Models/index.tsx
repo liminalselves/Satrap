@@ -8,10 +8,12 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { Badge, Button, Card, EmptyState, IconButton, Input, PageHeader } from '@/components/kit';
 import { toast } from '@/components/ui/Toast';
 import { MODEL_TYPES } from '@/utils/constants';
+import { ImgConfigModal } from './ImgConfigModal';
+import { ImgTestModal } from './ImgTestModal';
 import { LLMConfigModal } from '@/components/common/LLMConfigModal';
 import { FormModal, type FormField } from '@/components/common';
 import {
-  AudioLines, Boxes, Cpu, Edit2, Eye, EyeOff, LayoutGrid, Layers, List, Mic, Plus, Search, Sparkles, Star, Trash2,
+  AudioLines, Boxes, Cpu, Edit2, Eye, EyeOff, LayoutGrid, Layers, List, Mic, Image as ImageIcon, Plus, Search, Sparkles, Star, Trash2,
 } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { controlApi, type AsrTestResult } from '@/api/control';
@@ -19,7 +21,7 @@ import { sourceStateLabels, statsApi, type ModelsResponse, type ModelMetrics, ty
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import { cn } from '@/utils/cn';
 import type { Tint } from '@/components/kit';
-import type { ASRConfig, EmbeddingConfig, LLMConfig, ModelConfig, ModelType, ReRankConfig } from '@/api/types';
+import type { ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, ModelConfig, ModelType, ReRankConfig } from '@/api/types';
 
 interface ModelFormData {
   name: string;
@@ -37,6 +39,7 @@ interface ModelFormData {
 
 const FIELD_META: Record<ModelType, FormField[]> = {
   llm: [],
+  img: [],
   embedding: [
     { key: 'model', label: '模型' },
     { key: 'base_url', label: 'Base URL' },
@@ -65,6 +68,7 @@ const KIND_META: Record<ModelType, { icon: ReactNode; tint: Tint }> = {
   llm: { icon: <Sparkles className="h-3.5 w-3.5" />, tint: 'purple' },
   embedding: { icon: <Layers className="h-3.5 w-3.5" />, tint: 'teal' },
   rerank: { icon: <Boxes className="h-3.5 w-3.5" />, tint: 'orange' },
+  img: { icon: <ImageIcon className="h-3.5 w-3.5" />, tint: 'teal' },
   asr: { icon: <AudioLines className="h-3.5 w-3.5" />, tint: 'pink' },
 };
 
@@ -103,6 +107,10 @@ function tagsFor(type: ModelType, config: ModelConfig): string[] {
       const rerank = config as ReRankConfig;
       return rerank.top_k ? [`Top ${rerank.top_k}`] : [];
     }
+    case 'img': {
+      const img = config as ImgConfig;
+      return [img.api_type === 'novelai' ? 'NovelAI' : img.api_type === 'seedream' ? 'Seedream' : 'OpenAI Images'];
+    }
     case 'asr': {
       const asr = config as ASRConfig;
       return asr.language ? [`语言 ${asr.language}`] : [];
@@ -129,17 +137,18 @@ function UsageCoverage({ usage }: { usage: ModelsResponse | null }) {
 
 export function Models() {
   const confirm = useConfirm();
-  useConfigWatch(['llm', 'embedding', 'rerank', 'asr']);
+  useConfigWatch(['llm', 'embedding', 'rerank', 'asr', 'img']);
   const {
     llmConfigs,
     embeddingConfigs,
     rerankConfigs,
     asrConfigs,
+    imgConfigs,
     createModel,
     updateModel,
     deleteModel,
   } = useConfigStore(useShallow((state) => ({
-    llmConfigs: state.llmConfigs, embeddingConfigs: state.embeddingConfigs, rerankConfigs: state.rerankConfigs, asrConfigs: state.asrConfigs,
+    llmConfigs: state.llmConfigs, embeddingConfigs: state.embeddingConfigs, rerankConfigs: state.rerankConfigs, asrConfigs: state.asrConfigs, imgConfigs: state.imgConfigs,
     createModel: state.createModel, updateModel: state.updateModel, deleteModel: state.deleteModel,
   })));
 
@@ -147,6 +156,7 @@ export function Models() {
   const [showModal, setShowModal] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [formData, setFormData] = useState<ModelFormData>({ name: '' });
+  const [imgTestName, setImgTestName] = useState<string | null>(null);
   const [asrTestName, setAsrTestName] = useState<string | null>(null);
   const [q, setQ] = useState('');
   const [view, setView] = useState<'grid' | 'list'>('grid');
@@ -169,16 +179,18 @@ export function Models() {
     embedding: Object.keys(embeddingConfigs).length,
     rerank: Object.keys(rerankConfigs).length,
     asr: Object.keys(asrConfigs).length,
-  }), [llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs]);
+    img: Object.keys(imgConfigs).length,
+  }), [llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, imgConfigs]);
 
   const configs = useMemo<Record<string, ModelConfig>>(() => {
     switch (activeTab) {
       case 'llm': return llmConfigs;
       case 'embedding': return embeddingConfigs;
       case 'asr': return asrConfigs;
+      case 'img': return imgConfigs;
       case 'rerank': return rerankConfigs;
     }
-  }, [activeTab, llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs]);
+  }, [activeTab, llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, imgConfigs]);
 
   const usageModels = useMemo<ModelMetrics[]>(() => (Array.isArray(usage?.models) ? usage.models : []), [usage]);
   const usageByConfig = useMemo(() => {
@@ -188,6 +200,7 @@ export function Models() {
   }, [usageModels]);
 
   const callsFor = useCallback((name: string, config: ModelConfig): number | null => {
+    if (activeTab === 'img') return null;
     const direct = usageByConfig.get(name);
     const directCalls = direct ? finite(direct.usage?.calls) : null;
     if (directCalls !== null) return directCalls;
@@ -200,7 +213,7 @@ export function Models() {
       }
     }
     return null;
-  }, [usageByConfig, usageModels]);
+  }, [usageByConfig, usageModels, activeTab]);
 
   const list = useMemo(
     () => Object.entries(configs).filter(([name]) => name.toLowerCase().includes(q.trim().toLowerCase())),
@@ -262,6 +275,13 @@ export function Models() {
     return ok;
   };
 
+  const handleImgSave = async (config: ImgConfig) => {
+    const ok = editingName ? await updateModel('img', editingName, config) : await createModel('img', config.name, config);
+    if (!ok) throw new Error(useConfigStore.getState().modelError || '保存图片模型失败');
+    toast('success', editingName ? '已更新图片模型' : '已创建图片模型');
+    return true;
+  };
+
   const currentTypeLabel = useMemo(
     () => MODEL_TYPES.find((type) => type.value === activeTab)?.label || activeTab,
     [activeTab],
@@ -271,7 +291,7 @@ export function Models() {
     <div className="space-y-6">
       <PageHeader
         title="模型配置"
-        description="管理 LLM、Embedding、ReRank 与 ASR 模型"
+        description="管理 LLM、Embedding、ReRank、ASR 与图片模型"
         actions={<Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={handleAdd}>新增配置</Button>}
       />
 
@@ -323,7 +343,7 @@ export function Models() {
               index={index}
               onEdit={() => handleEdit(name, config)}
               onDelete={() => handleDelete(name)}
-              onTest={activeTab === 'asr' ? () => setAsrTestName(name) : undefined}
+              onTest={activeTab === 'asr' ? () => setAsrTestName(name) : activeTab === 'img' ? () => setImgTestName(name) : undefined}
             />
           ))}
           <button type="button" onClick={handleAdd}
@@ -365,6 +385,9 @@ export function Models() {
                       <td className="px-5 py-3">
                         <div className="flex items-center justify-end gap-1.5">
                           <Button size="sm" variant="ghost" onClick={() => handleEdit(name, config)} title="编辑" icon={<Edit2 className="h-3 w-3" />}>编辑</Button>
+                          {activeTab === 'img' && (
+                            <Button size="sm" variant="ghost" onClick={() => setImgTestName(name)} aria-label={`测试生成 ${name}`} icon={<ImageIcon className="h-3 w-3" />}>测试</Button>
+                          )}
                           {activeTab === 'asr' && (
                             <Button size="sm" variant="ghost" onClick={() => setAsrTestName(name)} aria-label={`测试转录 ${name}`} icon={<Mic className="h-3 w-3" />}>测试</Button>
                           )}
@@ -380,9 +403,14 @@ export function Models() {
         </Card>
       )}
 
+      <ImgTestModal name={imgTestName} onClose={() => setImgTestName(null)} />
       <AsrTestModal name={asrTestName} onClose={() => setAsrTestName(null)} />
 
-      {showModal && activeTab === 'llm' ? <LLMConfigModal
+      {showModal && activeTab === 'img' ? <ImgConfigModal
+        key={editingName ?? 'new-img'} name={editingName}
+        initialConfig={editingName ? imgConfigs[editingName] : undefined}
+        onClose={() => setShowModal(false)} onSave={handleImgSave}
+      /> : showModal && activeTab === 'llm' ? <LLMConfigModal
         key={editingName ?? ''} modelName={editingName ?? ''} defaultName="default" allowRename
         initialConfig={editingName ? llmConfigs[editingName] : undefined} onClose={() => setShowModal(false)} onSave={handleLLMSave}
       /> : <FormModal
@@ -491,7 +519,8 @@ function ModelCard({
         <div className="mt-3 flex gap-2">
           <Button variant="default" size="sm" className="flex-1" onClick={onEdit} title="编辑" icon={<Edit2 className="h-3 w-3" />}>编辑</Button>
           {onTest && (
-            <Button variant="default" size="sm" onClick={onTest} aria-label={`测试转录 ${name}`} icon={<Mic className="h-3 w-3" />}>测试转录</Button>
+            <Button variant="default" size="sm" onClick={onTest} aria-label={`${modelType === 'img' ? '测试生成' : '测试转录'} ${name}`}
+              icon={modelType === 'img' ? <ImageIcon className="h-3 w-3" /> : <Mic className="h-3 w-3" />}>{modelType === 'img' ? '测试生成' : '测试转录'}</Button>
           )}
           <IconButton label={`删除 ${name}`} size="sm" onClick={onDelete} className="hover:text-red"><Trash2 className="h-3.5 w-3.5" /></IconButton>
         </div>

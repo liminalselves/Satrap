@@ -7,7 +7,7 @@ import json
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.cli.output import CliError, dispatch_action, ok, print_json, print_table, render_data
-from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, safe_getattr_callable
+from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, safe_getattr_callable
 from satrap.core.config.reference_checkers import build_reference_checker
 
 
@@ -15,6 +15,7 @@ TYPE_MAP = {
     "llm": ("list_llm_configs", "get_llm_config", "set_llm_config", "update_llm_config", "remove_llm_config"),
     "embedding": ("list_embedding_configs", "get_embedding_config", "set_embedding_config", "update_embedding_config", "remove_embedding_config"),
     "rerank": ("list_rerank_configs", "get_rerank_config", "set_rerank_config", "update_rerank_config", "remove_rerank_config"),
+    "img": ("list_img_configs", "get_img_config", "set_img_config", "update_img_config", "remove_img_config"),
     "asr": ("list_asr_configs", "get_asr_config", "set_asr_config", "update_asr_config", "remove_asr_config"),
 }
 CLS_MAP = MODEL_CONFIG_CLASSES
@@ -28,10 +29,11 @@ def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
     - ModelConfigManager: 离线模型配置管理器
     """
     config = load_cli_config(args)
-    return ModelConfigManager(storage_path=config.model_config_path, asr_in_use_checker=build_reference_checker("asr", config))
+    return ModelConfigManager(storage_path=config.model_config_path, asr_in_use_checker=build_reference_checker("asr", config),
+                              img_in_use_checker=build_reference_checker("img", config))
 
 
-def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig) -> dict[str, Any]:
+def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig | ImgConfig) -> dict[str, Any]:
     """
     参数:
     - config: 配置信息
@@ -55,7 +57,7 @@ def _require_type(args: argparse.Namespace) -> tuple[str, str, str, str, str]:
     """
     info = TYPE_MAP.get(args.type)
     if not info:
-        raise CliError(f"未知类型: {args.type}", hint="可选: llm / embedding / rerank / asr")
+        raise CliError(f"未知类型: {args.type}", hint="可选: llm / embedding / rerank / asr / img")
     return info
 
 

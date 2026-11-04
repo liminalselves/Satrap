@@ -1137,3 +1137,35 @@ async def test_control_password_endpoints_gate_bootstrap_and_change(tmp_path: Pa
     assert b"200" in cleared
     status_response = await _request("/auth/password/status", authenticated=False)
     assert b"false" in status_response
+
+
+@pytest.mark.asyncio
+async def test_control_img_models_crud_snapshot_and_test_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """冷管理支持图片配置, 快照和显式生成测试, 密钥不进入预览响应"""
+    from satrap.core.config.model_service import ModelConfigService
+
+    config_path = tmp_path / "config.yaml"
+    model_path = tmp_path / "models.json"
+    config_path.write_text(json.dumps({"model_config_path": str(model_path), "platforms": []}), encoding="utf-8")
+    monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
+    raw = json.dumps({"model": "nai-diffusion-4-5-full", "api_type": "novelai", "api_key": "private-img-key",
+                      "base_url": "https://image.test/exact/", "default_params": {"steps": 20, "seed": 0}}).encode()
+    assert b"200" in await _request("/config/models/img/paint", "POST", raw)
+    snapshot = await _request("/config/snapshot?resource=models&type=img")
+    assert b"200" in snapshot and b"paint" in snapshot and b"private-img-key" not in snapshot
+    assert b"private-img-key" in await _request("/config/models/img/paint/api-key", "POST")
+    assert b"200" in await _request("/config/models/img/paint", "PATCH", b'{"edit_base_url":null,"default_params":null}')
+    calls = []
+
+    async def fake_test(self, name, prompt):
+        calls.append((name, prompt))
+        return {"model": "image-model", "images": [], "elapsed_ms": 1}
+
+    monkeypatch.setattr(ModelConfigService, "test_img_config", fake_test)
+    assert b"200" in await _request("/config/models/img/paint/test", "POST", b'{"prompt":"cat"}')
+    assert calls == [("paint", "cat")]
+    assert b"400" in await _request("/config/models/img/paint/test", "POST", b'{"prompt":"cat","api_key":"x"}')
+    assert len(calls) == 1
+    rejected = await _request("/config/models/img/paint/test", "POST", b'{"prompt":"cat"}', authenticated=False)
+    assert b"401" in rejected and len(calls) == 1
+    assert b"200" in await _request("/config/models/img/paint", "DELETE")

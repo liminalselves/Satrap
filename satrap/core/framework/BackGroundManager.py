@@ -15,14 +15,14 @@ from typing import Any, Callable, Dict, Literal, TypeVar, cast
 import json
 import os
 
-from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, ReRankConfig
 
 from satrap.core.log import logger
 
 
-ConfigTarget = Literal["llm", "embedding", "rerank", "asr"]
-ResetTarget = Literal["llm", "embedding", "rerank", "asr", "all"]
-TConfig = TypeVar("TConfig", bound=LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig)
+ConfigTarget = Literal["llm", "embedding", "rerank", "asr", "img"]
+ResetTarget = Literal["llm", "embedding", "rerank", "asr", "img", "all"]
+TConfig = TypeVar("TConfig", bound=LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig | ImgConfig)
 
 from satrap.core.config_paths import get_config_path
 from satrap.core.storage.file_lock import FileLock
@@ -73,6 +73,7 @@ class ModelConfigManager:
         auto_create: bool = True,
         asr_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
         llm_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
+        img_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
     ) -> None:
         """
         初始化 ModelConfigManager
@@ -88,6 +89,7 @@ class ModelConfigManager:
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
         self._asr_in_use_checker = asr_in_use_checker
         self._llm_in_use_checker = llm_in_use_checker
+        self._img_in_use_checker = img_in_use_checker
 
         self._llm_configs: Dict[str, LLMConfig] = {
             self.DEFAULT_NAME: LLMConfig(name=self.DEFAULT_NAME)
@@ -101,6 +103,8 @@ class ModelConfigManager:
         self._asr_configs: Dict[str, ASRConfig] = {
             self.DEFAULT_NAME: ASRConfig(name=self.DEFAULT_NAME)
         }
+
+        self._img_configs: Dict[str, ImgConfig] = {self.DEFAULT_NAME: ImgConfig(name=self.DEFAULT_NAME)}
 
         if auto_create:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,6 +239,7 @@ class ModelConfigManager:
             "embedding": dump_named(self._embedding_configs),
             "rerank": dump_named(self._rerank_configs),
             "asr": dump_named(self._asr_configs),
+            "img": dump_named(self._img_configs),
         }
 
     @contextmanager
@@ -268,8 +273,8 @@ class ModelConfigManager:
             data = json.load(stream)
         if not isinstance(data, dict):
             raise ValueError('模型配置必须是对象')
-        parsed: dict[str, dict[str, LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig]] = {}
-        for target, kind in (('llm', LLMConfig), ('embedding', EmbeddingConfig), ('rerank', ReRankConfig), ('asr', ASRConfig)):
+        parsed: dict[str, dict[str, LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig | ImgConfig]] = {}
+        for target, kind in (('llm', LLMConfig), ('embedding', EmbeddingConfig), ('rerank', ReRankConfig), ('asr', ASRConfig), ('img', ImgConfig)):
             raw = data.get(target, {})
             if not isinstance(raw, dict):
                 raise ValueError(f'模型配置 {target} 格式错误')
@@ -325,7 +330,11 @@ class ModelConfigManager:
             return self._embedding_configs
         if target == "asr":
             return self._asr_configs
-        return self._rerank_configs
+        if target == "img":
+            return self._img_configs
+        if target == "rerank":
+            return self._rerank_configs
+        raise ValueError(f"未知模型类型: {target}")
 
     # ---------- LLM 配置 ----------
     def get_llm_config(self, name: str = DEFAULT_NAME) -> LLMConfig:
@@ -714,6 +723,47 @@ class ModelConfigManager:
         """删除/重命名前的引用扫描, 未装配检查器时放行; 扫描不完整时拒绝但不伪称找到引用"""
         return self._check_model_reference("asr", name, self._asr_in_use_checker)
 
+    def get_img_config(self, name: str = DEFAULT_NAME) -> ImgConfig:
+        """读取图片模型独立副本, 缺失名称返回空配置"""
+        with self._synchronized():
+            key = self._normalize_name(name)
+            config = self._img_configs.get(key)
+            return ImgConfig(**asdict(config)) if config is not None else ImgConfig(name=key)
+
+    def list_img_configs(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Any]]:
+        """读取图片模型集合, 可沿用统一密钥脱敏"""
+        with self._synchronized():
+            return self._to_payload_locked(mask_api_key=mask_api_key)["img"]
+
+    def set_img_config(self, config: ImgConfig, name: str | None = None) -> None:
+        """原子保存图片配置, 不覆盖其他进程刚保存的模型集合"""
+        with self._synchronized():
+            key = self._normalize_name(name or config.name)
+            self._img_configs[key] = ImgConfig(**{**asdict(config), "name": key})
+            self._save_locked()
+
+    def update_img_config(self, name: str = DEFAULT_NAME, **kwargs: Any) -> None:
+        """更新指定图片配置, default_params 按完整对象替换"""
+        with self._synchronized():
+            key = self._normalize_name(name)
+            payload = asdict(self._img_configs.get(key, ImgConfig(name=key)))
+            payload.update(kwargs)
+            payload["name"] = key
+            self._img_configs[key] = self._from_dict(payload, ImgConfig)
+            self._save_locked()
+
+    def _check_img_in_use(self, name: str) -> list[dict[str, str]]:
+        """引用扫描不完整时拒绝删除或重命名"""
+        return self._check_model_reference("img", name, self._img_in_use_checker)
+
+    def remove_img_config(self, name: str) -> bool:
+        """共用引用扫描锁和文件事务, 仅删除未被引用的图片模型"""
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            return self._remove_referenced_config(name, "img", self._img_configs,
+                                                  lambda key: ImgConfig(name=key), self._check_img_in_use)
+
     # ---------- 公共配置 ----------
     def update_named_config(
         self,
@@ -753,6 +803,10 @@ class ModelConfigManager:
                 references = self._check_asr_in_use(current_key)
                 if references:
                     raise ConfigInUseError("asr", current_key, references)
+            if target == "img" and target_key != current_key:
+                references = self._check_img_in_use(current_key)
+                if references:
+                    raise ConfigInUseError("img", current_key, references)
             if target == "llm" and target_key != current_key:
                 references = self._check_llm_in_use(current_key)
                 if references:
@@ -767,6 +821,8 @@ class ModelConfigManager:
                 updated = self._from_dict(payload, EmbeddingConfig)
             elif target == "asr":
                 updated = self._from_dict(payload, ASRConfig)
+            elif target == "img":
+                updated = self._from_dict(payload, ImgConfig)
             else:
                 updated = self._from_dict(payload, ReRankConfig)
 
@@ -834,4 +890,6 @@ class ModelConfigManager:
                 self._rerank_configs = {self.DEFAULT_NAME: ReRankConfig(name=self.DEFAULT_NAME)}
             if target in ("asr", "all"):
                 self._asr_configs = {self.DEFAULT_NAME: ASRConfig(name=self.DEFAULT_NAME)}
+            if target in ("img", "all"):
+                self._img_configs = {self.DEFAULT_NAME: ImgConfig(name=self.DEFAULT_NAME)}
             self._save_locked()

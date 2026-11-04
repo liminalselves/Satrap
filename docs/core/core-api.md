@@ -31,6 +31,8 @@ from satrap import (
 
 ## LLM / AsyncLLM
 
+图片生成和编辑使用独立的 `ImageGen` / `AsyncImageGen`, 详见 [图片调用 API](image-generation.md)
+
 `LLM` 和 `AsyncLLM` 封装 OpenAI-compatible Chat Completions API。
 
 常用初始化参数:

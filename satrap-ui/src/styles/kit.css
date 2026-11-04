@@ -331,12 +331,16 @@ h1, h2, h3, .display {
   text-align: left;
   cursor: pointer;
 }
-.select-trigger:disabled { cursor: not-allowed; opacity: 0.55; }
-.select-trigger[data-open] {
+.select-trigger:disabled, .select-trigger[data-disabled] { cursor: not-allowed; opacity: 0.55; }
+.select-trigger[data-open], .select-trigger[data-editable]:focus-within {
   border-color: rgb(var(--rgb-accent) / 0.7);
   background: var(--glass-bg-hover);
   box-shadow: 0 0 0 4px rgb(var(--rgb-accent) / 0.16);
 }
+.select-trigger[data-editable] { cursor: text; }
+.select-editable-input { width: 100%; min-width: 0; flex: 1; padding: 0; border: 0; outline: none; background: transparent; color: inherit; font: inherit; }
+.select-editable-input::placeholder { color: var(--text-3); }
+.select-trigger[data-editable] .select-chevron { cursor: pointer; }
 .select-value { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-chevron {
   display: grid;
@@ -353,7 +357,7 @@ h1, h2, h3, .display {
     background-color var(--dur-2) var(--ease-standard);
 }
 .select-chevron > svg { width: 15px; height: 15px; transition: transform var(--dur-3) var(--ease-out); }
-.select-trigger:not(:disabled):hover .select-chevron { color: var(--text-1); background: var(--glass-bg-hover); transform: translateY(1px); }
+.select-trigger:not(:disabled):not([data-disabled]):hover .select-chevron { color: var(--text-1); background: var(--glass-bg-hover); transform: translateY(1px); }
 .select-trigger[data-open] .select-chevron { color: rgb(var(--rgb-accent)); background: rgb(var(--rgb-accent) / 0.12); transform: none; }
 .select-trigger[data-open] .select-chevron > svg { transform: rotate(180deg); }
 

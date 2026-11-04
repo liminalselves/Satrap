@@ -3193,8 +3193,17 @@ class BackendManager:
             storage_path=self.config.model_config_path,
             asr_in_use_checker=self._check_asr_in_use,
             llm_in_use_checker=self._check_llm_in_use,
+            img_in_use_checker=self._check_img_in_use,
         )
         logger.info("[BackendManager] ModelConfigManager 就绪")
+
+    def _check_img_in_use(self, config_name: str) -> list[dict[str, str]]:
+        """检查图片模型的全部插件配置引用"""
+        from satrap.core.config.img_references import list_img_config_references
+
+        return list_img_config_references(config_name, platforms=list(self.config.platforms),
+                                          layout=self._storage,
+                                          edictum_config_path=self.config.edictum_config_path)
 
     def _check_asr_in_use(self, config_name: str) -> list[dict[str, str]]:
         """后端运行时的 ASR 引用扫描, 平台绑定取当前已加载配置"""

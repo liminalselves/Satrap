@@ -9,10 +9,11 @@ import json
 
 from satrap.core.framework.BackGroundManager import ConfigTarget
 from satrap.core.config.model_snapshot import ModelConfigReader, ModelConfigSnapshot
-from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, ReRankConfig
 from satrap.core.APICall.ReRankCall import AsyncReRank, ReRank
 from satrap.core.APICall.EmbedCall import AsyncEmbedding, Embedding
 from satrap.core.APICall.ASRCall import ASR, AsyncASR, build_asr_from_config
+from satrap.core.APICall.ImageCall import ImageGen, AsyncImageGen, build_imagegen_from_config
 from satrap.edictum.plugin_config import ConfigField
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 
@@ -20,13 +21,13 @@ from satrap.core.log import logger
 
 T = TypeVar("T")
 
-ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig
+ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig | ImgConfig
 """已注册的命名模型配置类型"""
-ModelClient = LLM | AsyncLLM | Embedding | AsyncEmbedding | ReRank | AsyncReRank | ASR | AsyncASR
+ModelClient = LLM | AsyncLLM | Embedding | AsyncEmbedding | ReRank | AsyncReRank | ASR | AsyncASR | ImageGen | AsyncImageGen
 """插件可取得的模型客户端类型"""
 
 
-MODEL_TYPES: dict[str, ConfigTarget] = {"llm": "llm", "embed": "embedding", "rerank": "rerank", "asr": "asr"}
+MODEL_TYPES: dict[str, ConfigTarget] = {"llm": "llm", "embed": "embedding", "rerank": "rerank", "asr": "asr", "img": "img"}
 
 
 @overload
@@ -37,6 +38,8 @@ def named_model_config(manager: ModelConfigReader, kind: Literal["embed", "embed
 def named_model_config(manager: ModelConfigReader, kind: Literal["rerank"], name: str) -> ReRankConfig: ...
 @overload
 def named_model_config(manager: ModelConfigReader, kind: Literal["asr"], name: str) -> ASRConfig: ...
+@overload
+def named_model_config(manager: ModelConfigReader, kind: Literal["img"], name: str) -> ImgConfig: ...
 @overload
 def named_model_config(manager: ModelConfigReader, kind: str, name: str) -> ModelConfig: ...
 def named_model_config(manager: ModelConfigReader, kind: str, name: str) -> ModelConfig:
@@ -49,6 +52,8 @@ def named_model_config(manager: ModelConfigReader, kind: str, name: str) -> Mode
     config = getattr(manager, f"get_{target}_config")(name)
     if not config.model or not config.api_key:
         raise ValueError(f"模型配置缺少 model 或 api_key: {target}/{name}")
+    if target == "img" and not config.base_url:
+        raise ValueError(f"图片模型配置缺少完整 base_url: {name}")
     if target == "rerank" and not config.base_url:
         raise ValueError(f"重排模型配置缺少 base_url: {name}")
     return config
@@ -71,6 +76,10 @@ def build_model_client(kind: Literal["asr"], config: ASRConfig, *, async_: Liter
 @overload
 def build_model_client(kind: Literal["asr"], config: ASRConfig, *, async_: Literal[True]) -> AsyncASR: ...
 @overload
+def build_model_client(kind: Literal["img"], config: ImgConfig, *, async_: Literal[False] = False) -> ImageGen: ...
+@overload
+def build_model_client(kind: Literal["img"], config: ImgConfig, *, async_: Literal[True]) -> AsyncImageGen: ...
+@overload
 def build_model_client(kind: str, config: ModelConfig, *, async_: bool = False) -> ModelClient: ...
 def build_model_client(kind: str, config: ModelConfig, *, async_: bool = False) -> ModelClient:
     """完整传递后端声明参数, 模型调用错误由工具显式处理"""
@@ -82,6 +91,12 @@ def build_model_client(kind: str, config: ModelConfig, *, async_: bool = False) 
         if not isinstance(config, ASRConfig):
             raise ValueError(f"模型配置类型与 kind 不符: {kind}")
         client = build_asr_from_config(config, async_=async_)
+        client.suppress_error = False
+        return client
+    if kind == "img":
+        if not isinstance(config, ImgConfig):
+            raise ValueError(f"模型配置类型与 kind 不符: {kind}")
+        client = build_imagegen_from_config(config, async_=async_)
         client.suppress_error = False
         return client
     values = {key: value for key, value in asdict(config).items() if key != "name" and value is not None}

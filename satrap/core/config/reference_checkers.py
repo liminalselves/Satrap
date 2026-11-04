@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendConfig
 
 
-def build_reference_checker(target: Literal["asr", "session_class", "edictum"], config: BackendConfig,
+def build_reference_checker(target: Literal["asr", "img", "session_class", "edictum"], config: BackendConfig,
                             *, session_classes: Callable[[], dict[str, dict[str, Any]]] | None = None) -> Callable[[str], list[dict[str, str]]]:
     """
     为离线配置管理装配引用检查, 会话类声明在实际检查时读取
@@ -23,13 +23,17 @@ def build_reference_checker(target: Literal["asr", "session_class", "edictum"], 
     返回:
     - 输入配置名称并返回完整引用清单的检查器
     """
-    model_layout = StorageLayout(config.data_root) if target == "asr" else None
+    model_layout = StorageLayout(config.data_root) if target in {"asr", "img"} else None
 
     def check(name: str) -> list[dict[str, str]]:
         """保留各领域原有数据目录与默认绑定读取时机"""
         if target == "asr":
             from satrap.core.config.asr_references import list_asr_config_references
             return list_asr_config_references(name, platforms=list(config.platforms), layout=model_layout)
+        if target == "img":
+            from satrap.core.config.img_references import list_img_config_references
+            return list_img_config_references(name, platforms=list(config.platforms), layout=model_layout,
+                                              edictum_config_path=config.edictum_config_path)
         from satrap.core.config.agent_references import list_agent_references
         return list_agent_references(target, name, platforms=config.platforms, layout=StorageLayout(config.data_root),
             default_session_type=config.default_session_type,

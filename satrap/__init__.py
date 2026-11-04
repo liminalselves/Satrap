@@ -6,6 +6,11 @@ from .core.utils.TCBuilder import ToolsManager, AsyncToolsManager, Tool, AsyncTo
 from .core.utils.mcp import MCPClient, MCPToolAdapter
 from .core.utils.skills import Skill, SkillsManager, SkillTool
 from .core.APICall.LLMCall import LLM, AsyncLLM
+from .core.APICall.ImageCall import (
+    ImageGen, AsyncImageGen, ImageGenParams, NovelAIParams, ImageInput,
+    CharacterPrompt, PreciseReference, VibeEncoding, VibeReference,
+    GeneratedImage, ImageGenResponse, ImageGenError,
+)
 from .core.type import ContextUsageSnapshot, LLMCallResponse, LLMCallStreamEvent, TokenUsage
 from .core.log import Logger
 from .edictum import AsyncSimpleSession, Plugin, SessionHandler, SimpleSession
@@ -32,6 +37,18 @@ __all__ = [
     "SkillTool",
     "LLM",
     "AsyncLLM",
+    "ImageGen",
+    "AsyncImageGen",
+    "ImageGenParams",
+    "NovelAIParams",
+    "ImageInput",
+    "CharacterPrompt",
+    "PreciseReference",
+    "VibeEncoding",
+    "VibeReference",
+    "GeneratedImage",
+    "ImageGenResponse",
+    "ImageGenError",
     "LLMCallResponse",
     "LLMCallStreamEvent",
     "TokenUsage",

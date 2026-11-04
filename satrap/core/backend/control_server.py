@@ -697,6 +697,18 @@ def _asr_in_use_checker(config_name: str) -> list[dict[str, str]]:
     return list_asr_config_references(config_name, config_path=CONFIG_PATH, layout=_configured_storage_layout())
 
 
+def _img_in_use_checker(config_name: str) -> list[dict[str, str]]:
+    """扫描图片模型在插件全局, Agent, 会话和群中的引用"""
+    from satrap.core.config.img_references import list_img_config_references
+
+    raw_path = load_config_document(CONFIG_PATH).get("edictum_config_path")
+    named_path = Path(str(raw_path)) if raw_path else None
+    if named_path is not None and not named_path.is_absolute():
+        named_path = PROJECT_ROOT / named_path
+    return list_img_config_references(config_name, config_path=CONFIG_PATH, layout=_configured_storage_layout(),
+                                      edictum_config_path=named_path)
+
+
 def _llm_in_use_checker(config_name: str) -> list[dict[str, str]]:
     """删除或重命名模型前扫描逐群绑定与 Chat 模型引用"""
     from satrap.core.config.chat_references import list_chat_model_references
@@ -763,7 +775,7 @@ def _model_config_service() -> ModelConfigService:
             storage_path = PROJECT_ROOT / storage_path
     return ModelConfigService(ModelConfigManager(
         storage_path=storage_path, asr_in_use_checker=_asr_in_use_checker,
-        llm_in_use_checker=_llm_in_use_checker,
+        llm_in_use_checker=_llm_in_use_checker, img_in_use_checker=_img_in_use_checker,
     ))
 
 
@@ -2413,6 +2425,21 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
             except (OSError, ValueError) as error:
                 logger.warning(f"[模型配置] 查看密钥失败: {model_type}/{name}, {error}")
                 return 400, {"error": str(error)}
+        if len(parts) == 2 and parts[0] == "img" and parts[1].endswith("/test"):
+            if ctx.method != "POST":
+                return 404, {"error": "not found"}
+            name = urllib.parse.unquote(parts[1][:-len("/test")])
+            try:
+                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                if not isinstance(payload, dict) or set(payload) != {"prompt"}:
+                    raise ValueError("图片模型测试仅接受 prompt 字段")
+                result = await _model_config_service().test_img_config(name, payload["prompt"])
+                return 200, {"ok": True, **result}
+            except (HTTPRequestError, ValueError) as error:
+                return 400, {"ok": False, "error": str(error)}
+            except Exception as error:
+                logger.warning(f"[图片模型] 测试失败: {type(error).__name__}")
+                return 502, {"ok": False, "error": "图片生成失败, 请检查模型配置或服务状态"}
         if len(parts) == 2 and parts[0] == "asr" and parts[1].endswith("/test"):
             # ASR 转录测试: POST /config/models/asr/{name}/test, 请求体 {filename, audio_base64}
             if ctx.method != "POST":

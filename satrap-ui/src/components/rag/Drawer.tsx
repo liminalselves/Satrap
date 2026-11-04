@@ -14,6 +14,8 @@ export function Drawer({ open, onClose, label, children, width = 720, className 
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -25,11 +27,11 @@ export function Drawer({ open, onClose, label, children, width = 720, className 
       const panels = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'));
       if (panels[panels.length - 1] !== panelRef.current) return;
       e.stopPropagation();
-      onClose();
+      onCloseRef.current();
     };
     document.addEventListener('keydown', onKey, true);
     return () => { document.removeEventListener('keydown', onKey, true); restoreRef.current?.focus?.(); };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return createPortal(

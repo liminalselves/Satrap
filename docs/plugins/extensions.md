@@ -8,7 +8,7 @@
 - `satrap.expend.mcp`: MCP 生态扩展 (预留)
 - `satrap.expend.command`: 可复用的 Session 命令
 - `satrap.expend.skills`: 内置技能 (coding_agent / web_research)
-- `satrap.expend.plugins`: 官方预设插件 (base_take / satrap_coding / rag), 经插件系统安装启用, 见 [插件系统](../edictum/plugin-system.md)
+- `satrap.expend.plugins`: 官方预设插件 (base_take / satrap_coding / rag / image_generation 等), 经插件系统安装启用, 见 [插件系统](../edictum/plugin-system.md); 生图工具配置见 [图片生成插件](../core/image-generation.md#image_generation-插件)
 
 顶层导出包括长期记忆, RAG, 搜索, 网页抓取和代码沙箱 (旧路径 `satrap.expend.<mod>` 兼容):
 

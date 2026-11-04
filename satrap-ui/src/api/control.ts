@@ -196,6 +196,14 @@ export function parseModelConfigs(data: unknown): Record<string, ModelConfig> {
   return data as Record<string, ModelConfig>;
 }
 
+export interface ImgTestResult {
+  ok: boolean;
+  error?: string;
+  model?: string;
+  elapsed_ms?: number;
+  images?: Array<{ data_url: string; mime_type: string; width: number; height: number; seed?: number | null }>;
+}
+
 export function parseSessionClassConfigs(data: unknown): Record<string, SessionClassConfig> {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) {
     throw new TypeError('会话类配置接口返回了无效数据');
@@ -396,6 +404,19 @@ export const controlApi = {
       `/config/models/${type}/${encodeURIComponent(name)}`,
     );
     return response.data;
+  },
+
+  testImgConfig: async (name: string, prompt: string): Promise<ImgTestResult> => {
+    try {
+      return (await controlClient.post<ImgTestResult>(`/config/models/img/${encodeURIComponent(name)}/test`,
+        { prompt }, { timeout: 300000 })).data;
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status !== 401 && error.response?.status !== 403
+        && error.response?.data && typeof error.response.data === 'object') {
+        return { ok: false, error: (error.response.data as ImgTestResult).error || '图片生成失败' };
+      }
+      throw error;
+    }
   },
 
   testAsrConfig: async (name: string, filename: string, audioBase64: string): Promise<AsrTestResult> => {

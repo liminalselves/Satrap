@@ -547,7 +547,266 @@ async function chat_model_binding(runtime) {
   }
 }
 
+async function img_models(runtime) {
+  // 验证图片配置新增, 重载, 编辑, 删除和测试预览, 不调用真实生成服务
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  await fs.mkdir(path.join(root, 'test-results'), { recursive: true });
+  const server = await runtime.vite({ root, server: { host: '127.0.0.1', port: 0 } });
+  await runtime.listen(server);
+  const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+  const context = await runtime.browser.newContext({ viewport: { width: 1280, height: 1000 } });
+  const models = { llm: {}, embedding: {}, rerank: {}, asr: {}, img: {} };
+  const writes = [], tests = [], errors = [];
+  let revision = 1;
+  let testMode = 'error';
+  const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg==';
+  try {
+    await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
+      backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
+    } }));
+    await context.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true',
+        'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS' };
+      if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+      if (url.pathname.endsWith('/test') && request.method() === 'POST') {
+        tests.push(request.postDataJSON());
+        return route.fulfill({ status: testMode === 'error' ? 502 : 200, headers, json: testMode === 'error'
+          ? { ok: false, error: '图片服务暂时不可用' }
+          : { ok: true, model: 'nai-diffusion-4-5-full', elapsed_ms: 100, images: [{ data_url: tinyPng, width: 1, height: 1 }] } });
+      }
+      const match = url.pathname.match(/^\/config\/models\/(\w+)\/([^/]+)$/);
+      if (match && ['POST', 'PATCH', 'DELETE'].includes(request.method())) {
+        const [, type, encodedName] = match;
+        const name = decodeURIComponent(encodedName);
+        const body = request.method() === 'DELETE' ? {} : request.postDataJSON();
+        writes.push({ method: request.method(), type, name, body });
+        if (request.method() === 'DELETE') delete models[type][name];
+        else {
+          const nextName = body.name || name;
+          models[type][nextName] = { ...models[type][name], ...body, api_key: '********key' };
+          if (nextName !== name) delete models[type][name];
+        }
+        revision++;
+        return route.fulfill({ headers, json: { ok: true } });
+      }
+      if (url.pathname === '/config/models') return route.fulfill({ headers, json: models[url.searchParams.get('type')] || {} });
+      return route.fulfill({ headers, json: url.pathname === '/status' ? { running: true } : emptyConfigResponse(request.url()) });
+    });
+    const page = await context.newPage();
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
+    await mockConfigVersions(page, origin, () => String(revision));
+    await page.goto(`${origin}/models`);
+    await page.getByRole('button', { name: '图片模型', exact: true }).click();
+    await page.getByRole('button', { name: '新增配置', exact: true }).click();
+    let dialog = page.getByRole('dialog');
+    await dialog.getByLabel('配置名称').fill('paint');
+    await dialog.getByLabel('模型 ID').fill('nai-diffusion-4-5-full');
+    await dialog.getByLabel('请求协议').selectOption('novelai');
+    await dialog.getByLabel('生成请求地址').fill('https://image.test/exact/?v=1');
+    await dialog.getByLabel('编辑请求地址').fill('https://image.test/edit');
+    await dialog.getByLabel('API Key').fill('img-secret');
+    await dialog.locator('summary').filter({ hasText: '扩展参数 (JSON)' }).click();
+    await dialog.getByLabel('扩展参数 (JSON)').fill('[]');
+    await dialog.getByRole('button', { name: '创建', exact: true }).click();
+    await dialog.getByRole('alert').waitFor();
+    assert.equal(writes.length, 0);
+    await dialog.getByLabel('扩展参数 (JSON)').fill('');
+    await dialog.getByLabel('分辨率设置', { exact: true }).selectOption('pixels');
+    await dialog.getByLabel('常用尺寸', { exact: true }).selectOption('512x768');
+    await dialog.getByLabel('随机种子模式', { exact: true }).selectOption('fixed');
+    await dialog.getByLabel('固定随机种子', { exact: true }).fill('0');
+    await dialog.getByLabel('采样步数', { exact: true }).fill('20');
+    await dialog.getByLabel('提示词引导强度', { exact: true }).fill('5');
+    await dialog.getByLabel('生成数量', { exact: true }).fill('2');
+    const positiveInjection = dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true });
+    const negativeInjection = dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true });
+    assert.equal(await positiveInjection.isChecked(), false);
+    assert.equal(await negativeInjection.isChecked(), false);
+    await positiveInjection.check();
+    await negativeInjection.check();
+    await page.screenshot({ path: path.join(root, 'test-results', 'img-nai-default-prompts.png'), animations: 'disabled' });
+    const sampler = dialog.getByLabel('采样器', { exact: true });
+    assert.equal(await sampler.getAttribute('role'), 'combobox');
+    assert.equal(await dialog.locator('datalist').count(), 0);
+    await sampler.click();
+    await page.getByRole('option', { name: 'k_euler_ancestral', exact: true }).click();
+    assert.equal(await sampler.inputValue(), 'k_euler_ancestral');
+    await sampler.fill('custom_sampler_v2');
+    // 弹层出现在静止鼠标下方也会产生 pointerover, 不应覆盖输入后的高亮状态
+    await page.getByRole('option', { name: 'k_euler_ancestral', exact: true }).dispatchEvent('pointerover', { pointerType: 'mouse' });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await sampler.press('Enter');
+    assert.equal(await sampler.inputValue(), 'custom_sampler_v2');
+    assert.equal(writes.length, 0);
+    await sampler.click();
+    await page.getByRole('option', { name: '使用默认值', exact: true }).click();
+    assert.equal(await sampler.inputValue(), '');
+    await sampler.fill('custom_sampler_v2');
+    await sampler.press('Escape');
+    assert.equal(await sampler.getAttribute('aria-expanded'), 'false');
+    assert.equal(await dialog.isVisible(), true);
+    await dialog.locator('summary').filter({ hasText: 'NAI 高级参数' }).click();
+    const schedule = dialog.getByLabel('噪声调度', { exact: true });
+    await schedule.click();
+    await page.getByRole('option', { name: 'karras', exact: true }).click();
+    assert.equal(await schedule.inputValue(), 'karras');
+    await schedule.fill('custom_noise_v2');
+    await schedule.press('ArrowDown');
+    await page.getByRole('option', { name: 'karras', exact: true }).dispatchEvent('pointerover', { pointerType: 'mouse' });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await schedule.press('Enter');
+    assert.equal(await schedule.inputValue(), '');
+    await schedule.fill('custom_noise_v2');
+    await schedule.press('Enter');
+    assert.equal(await schedule.inputValue(), 'custom_noise_v2');
+    await dialog.locator('summary').filter({ hasText: 'NAI 高级参数' }).click();
+    await dialog.locator('summary').filter({ hasText: '多角色提示词' }).click();
+    await dialog.getByRole('button', { name: '添加角色', exact: true }).click();
+    await dialog.getByLabel('角色 1 提示词', { exact: true }).fill('woman, blue hair');
+    await dialog.getByRole('button', { name: '添加角色 1 位置', exact: true }).click();
+    await dialog.getByLabel('角色 1 位置 1 X', { exact: true }).fill('0.25');
+    await dialog.locator('summary').filter({ hasText: '多角色提示词' }).click();
+    await dialog.locator('summary').filter({ hasText: '扩展参数 (JSON)' }).click();
+    await dialog.getByText('绘图默认参数', { exact: true }).evaluate((element) => element.scrollIntoView({ block: 'start' }));
+    await page.screenshot({ path: path.join(root, 'test-results', 'img-params-form.png'), animations: 'disabled' });
+    await sampler.click();
+    await page.getByRole('listbox').waitFor();
+    await page.screenshot({ path: path.join(root, 'test-results', 'img-sampler-select.png'), animations: 'disabled' });
+    await sampler.press('Escape');
+    await dialog.getByLabel('配置名称').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(root, 'test-results', 'img-model-form.png'), animations: 'disabled' });
+    await dialog.getByRole('button', { name: '创建', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(writes[0].body.base_url, 'https://image.test/exact/?v=1');
+    assert.equal(writes[0].body.default_params.seed, 0);
+    assert.deepEqual(writes[0].body.default_params.size, [512, 768]);
+    assert.equal(writes[0].body.default_params.n, 2);
+    assert.equal(writes[0].body.default_params.steps, 20);
+    assert.equal(writes[0].body.default_params.inject_default_positive_prompt, true);
+    assert.equal(writes[0].body.default_params.inject_default_negative_prompt, true);
+    assert.equal(writes[0].body.default_params.sampler, 'custom_sampler_v2');
+    assert.equal(writes[0].body.default_params.noise_schedule, 'custom_noise_v2');
+    assert.equal(writes[0].body.default_params.use_coords, true);
+    assert.deepEqual(writes[0].body.default_params.characters[0].centers, [[0.25, 0.5]]);
+    await page.getByRole('heading', { name: 'paint', exact: true }).waitFor();
+    await page.getByRole('button', { name: '测试生成 paint', exact: true }).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: '开始生成', exact: true }).click();
+    await dialog.getByRole('alert').filter({ hasText: '图片服务暂时不可用' }).waitFor();
+    assert.equal(tests.length, 1);
+    assert.deepEqual(Object.keys(tests[0]), ['prompt']);
+    testMode = 'ok';
+    await dialog.getByRole('button', { name: '开始生成', exact: true }).click();
+    await dialog.getByRole('img', { name: '测试生成图片 1' }).waitFor();
+    await dialog.getByRole('img', { name: '测试生成图片 1' }).evaluate((image) => image.decode());
+    await page.screenshot({ path: path.join(root, 'test-results', 'img-models.png'), animations: 'disabled' });
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    dialog = page.getByRole('dialog');
+    assert.equal(await dialog.getByLabel('API Key').inputValue(), '');
+    await dialog.getByLabel('配置名称').fill('drawing');
+    await dialog.getByLabel('编辑请求地址').fill('');
+    assert.equal(await dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true }).isChecked(), true);
+    assert.equal(await dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true }).isChecked(), true);
+    await dialog.getByRole('button', { name: '清空绘图默认值', exact: true }).click();
+    assert.equal(await dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true }).isChecked(), false);
+    assert.equal(await dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true }).isChecked(), false);
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(writes[1].method, 'PATCH');
+    assert.equal(writes[1].body.edit_base_url, null);
+    assert.equal(writes[1].body.default_params, null);
+    assert.equal('api_key' in writes[1].body, false);
+    await page.reload();
+    await page.getByRole('button', { name: '图片模型', exact: true }).click();
+    await page.getByRole('heading', { name: 'drawing', exact: true }).waitFor();
+    await page.getByRole('button', { name: '删除 drawing', exact: true }).click();
+    const confirmation = page.getByRole('dialog', { name: '确认操作', exact: true });
+    await confirmation.getByRole('button', { name: '确认', exact: true }).click();
+    await page.getByRole('heading', { name: 'drawing', exact: true }).waitFor({ state: 'hidden' });
+    assert.equal(writes.at(-1).method, 'DELETE');
+    const legacyParams = { size: '832x1216', seed: 0, steps: 23, sm: false, use_coords: true,
+      inject_default_positive_prompt: false, inject_default_negative_prompt: true,
+      sampler: 'legacy_custom_sampler', noise_schedule: 'legacy_custom_noise',
+      characters: [{ prompt: 'woman', negative_prompt: 'hat', centers: [[0.2, 0.5], [0.8, 0.5]] }],
+      native: { parameters: { future: false } } };
+    models.img.legacy = { model: 'nai-diffusion-4-5-full', api_type: 'novelai', name: 'legacy',
+      base_url: 'https://image.test/exact', api_key: '****key', default_params: legacyParams };
+    revision++;
+    await page.reload();
+    await page.getByRole('button', { name: '图片模型', exact: true }).click();
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    dialog = page.getByRole('dialog');
+    assert.equal(await dialog.getByLabel('图片宽度 (像素)', { exact: true }).inputValue(), '832');
+    assert.equal(await dialog.getByLabel('图片高度 (像素)', { exact: true }).inputValue(), '1216');
+    assert.equal(await dialog.getByLabel('固定随机种子', { exact: true }).inputValue(), '0');
+    await dialog.getByLabel('请求协议').selectOption('openai_images');
+    await dialog.getByText(/已有参数与当前协议不兼容/).waitFor();
+    await dialog.getByLabel('请求协议').selectOption('novelai');
+    assert.equal(await dialog.getByLabel('采样步数').inputValue(), '23');
+    assert.equal(await dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true }).isChecked(), false);
+    assert.equal(await dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true }).isChecked(), true);
+    assert.equal(await dialog.getByLabel('采样器', { exact: true }).inputValue(), 'legacy_custom_sampler');
+    await dialog.locator('summary').filter({ hasText: 'NAI 高级参数' }).click();
+    assert.equal(await dialog.getByLabel('SMEA', { exact: true }).getAttribute('data-value'), 'false');
+    assert.equal(await dialog.getByLabel('噪声调度', { exact: true }).inputValue(), 'legacy_custom_noise');
+    await dialog.locator('summary').filter({ hasText: '多角色提示词' }).click();
+    assert.equal(await dialog.getByLabel('角色 1 位置 2 X').inputValue(), '0.8');
+    await dialog.getByLabel('角色 1 提示词', { exact: true }).fill('woman, blue hair');
+    await dialog.locator('summary').filter({ hasText: '扩展参数 (JSON)' }).click();
+    const extras = await dialog.getByLabel('扩展参数 (JSON)').inputValue();
+    await dialog.getByLabel('扩展参数 (JSON)').fill('{"steps":99}');
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
+    await dialog.getByRole('alert').filter({ hasText: '不要重复' }).waitFor();
+    assert.equal(writes.length, 3);
+    await dialog.getByLabel('扩展参数 (JSON)').fill(extras);
+    await dialog.getByRole('button', { name: '保存修改', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    assert.deepEqual(writes.at(-1).body.default_params, { ...legacyParams,
+      characters: [{ ...legacyParams.characters[0], prompt: 'woman, blue hair' }] });
+    for (const apiType of ['seedream', 'openai_images']) {
+      await page.getByRole('button', { name: '新增配置', exact: true }).click();
+      dialog = page.getByRole('dialog');
+      await dialog.getByLabel('配置名称').fill(apiType);
+      await dialog.getByLabel('模型 ID').fill('image-model');
+      await dialog.getByLabel('请求协议').selectOption(apiType);
+      await dialog.getByLabel('生成请求地址').fill('https://image.test/exact');
+      await dialog.getByLabel('API Key').fill('test-key');
+      assert.equal(await dialog.getByLabel('采样步数', { exact: true }).count(), 0);
+      assert.equal(await dialog.getByLabel('负向提示词', { exact: true }).count(), 0);
+      assert.equal(await dialog.getByLabel('在提示词末尾注入默认正向提示词', { exact: true }).count(), 0);
+      assert.equal(await dialog.getByLabel('在负向提示词开头注入默认负向提示词', { exact: true }).count(), 0);
+      if (apiType === 'seedream') {
+        assert.equal(await dialog.getByLabel('生成数量', { exact: true }).count(), 0);
+        assert.equal(await dialog.getByLabel('输出格式', { exact: true }).count(), 0);
+        await dialog.getByLabel('分辨率设置', { exact: true }).selectOption('value');
+        await dialog.getByLabel('分辨率档位或尺寸值', { exact: true }).fill('2K');
+        await dialog.getByLabel('随机种子模式', { exact: true }).selectOption('fixed');
+        await dialog.getByLabel('固定随机种子', { exact: true }).fill('0');
+      } else {
+        assert.equal(await dialog.getByLabel('随机种子模式', { exact: true }).count(), 0);
+        await dialog.getByLabel('分辨率设置', { exact: true }).selectOption('pixels');
+        await dialog.getByLabel('常用尺寸', { exact: true }).selectOption('1024x1024');
+        await dialog.getByLabel('生成数量', { exact: true }).fill('1');
+        await dialog.getByLabel('输出格式', { exact: true }).selectOption('jpeg');
+      }
+      await dialog.getByRole('button', { name: '创建', exact: true }).click();
+      await dialog.waitFor({ state: 'hidden' });
+      assert.deepEqual(writes.at(-1).body.default_params, apiType === 'seedream'
+        ? { size: '2K', seed: 0 } : { size: [1024, 1024], n: 1, output_format: 'jpeg' });
+    }
+    assert.deepEqual(errors, []);
+    console.log('PASS: 图片模型新增, 参数校验, 密钥保留, 重命名, 清空默认值, 重载, 删除和生成预览');
+  } finally {
+    await runtime.closeContexts(); await runtime.releaseServer(server);
+  }
+}
+
 export const scenarios = [
+  ["img-models", img_models],
   ["chat-model-binding", chat_model_binding],
   ["asr-models", asr_models],
   ["model-dimensions", model_dimensions],

@@ -1,0 +1,147 @@
+name: image_generation
+version: 0.1.0
+author: Satrap Team
+description: "调用已配置的图片模型, 按提示词写法及尺寸和数量策略生成图片, 交付当前会话"
+
+config_schema:
+  img_model:
+    type: img
+    default: ""
+    required: true
+    strict: true
+    description: "使用的图片模型配置"
+  accept_natural_language:
+    type: bool
+    default: true
+    strict: true
+    description: "允许自由文本 prompt; 关闭并仅启用关键词时, 工具改为必填 keywords 数组"
+  accept_keywords:
+    type: bool
+    default: true
+    strict: true
+    description: "接受关键词或标签; 仅开启此项时强制使用关键词数组, 两项同时开启允许混合文本"
+  prompt_guidance:
+    type: textarea
+    default: ""
+    strict: true
+    description: "告诉模型如何编写提示词, 可填写语言, 标签规范及示例"
+  size_mode:
+    type: select
+    default: choices
+    options: [fixed, choices, range]
+    option_labels: {fixed: 固定尺寸, choices: 候选尺寸, range: 宽高范围}
+    strict: true
+    description: "固定尺寸不允许模型调整, 候选尺寸或范围模式允许模型选择"
+  size_fixed:
+    type: string
+    default: "1024x1024"
+    strict: true
+    description: "固定模式的尺寸, 如 832x1216 或模型原生的 2K"
+  size_choices:
+    type: textarea
+    default: "1024x1024\n832x1216\n1216x832"
+    strict: true
+    description: "候选模式允许的尺寸, 每行一项"
+  size_default:
+    type: string
+    default: "1024x1024"
+    strict: true
+    description: "候选或范围模式的默认尺寸, 范围模式须使用 宽x高"
+  width_min:
+    type: number
+    default: 512
+    minimum: 1
+    integer: true
+    strict: true
+    description: "范围模式的最小宽度, 单位像素"
+  width_max:
+    type: number
+    default: 2048
+    minimum: 1
+    integer: true
+    strict: true
+    description: "范围模式的最大宽度, 单位像素"
+  height_min:
+    type: number
+    default: 512
+    minimum: 1
+    integer: true
+    strict: true
+    description: "范围模式的最小高度, 单位像素"
+  height_max:
+    type: number
+    default: 2048
+    minimum: 1
+    integer: true
+    strict: true
+    description: "范围模式的最大高度, 单位像素"
+  size_step:
+    type: number
+    default: 64
+    minimum: 1
+    integer: true
+    strict: true
+    description: "范围模式的宽高须为此值的整数倍"
+  max_pixels:
+    type: number
+    default: 4194304
+    minimum: 1
+    maximum: 40000000
+    integer: true
+    strict: true
+    description: "像素尺寸的最大宽高乘积, 原生 2K 等档位由上游验证"
+  count_mode:
+    type: select
+    default: fixed
+    options: [fixed, range]
+    option_labels: {fixed: 固定数量, range: 数量范围}
+    strict: true
+    description: "是否允许模型调整单次请求的图片数量"
+  count_fixed:
+    type: number
+    default: 1
+    minimum: 1
+    maximum: 32
+    integer: true
+    strict: true
+    description: "固定模式的图片数量"
+  count_default:
+    type: number
+    default: 1
+    minimum: 1
+    maximum: 32
+    integer: true
+    strict: true
+    description: "范围模式省略 n 时的默认数量"
+  count_min:
+    type: number
+    default: 1
+    minimum: 1
+    maximum: 32
+    integer: true
+    strict: true
+    description: "范围模式的最少数量"
+  count_max:
+    type: number
+    default: 4
+    minimum: 1
+    maximum: 32
+    integer: true
+    strict: true
+    description: "范围模式的最多数量, 须符合所选模型能力"
+  allow_negative_prompt:
+    type: bool
+    default: false
+    strict: true
+    description: "向模型开放负向提示词, 当前仅 NovelAI 协议支持"
+
+tools:
+  generate_image: "按插件策略生成图片并交付当前会话"
+  send_generated_image: "仅重新交付当前会话已生成的图片, 不调用生图模型"
+
+compatibility:
+  satrap: ">=0.2,<0.3"
+
+applicability:
+  session_types: [chat, platform, embedded]
+  platforms: "*"

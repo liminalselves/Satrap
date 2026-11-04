@@ -495,6 +495,8 @@ async function edictum_settings(runtime) {
     assert.equal(await dialog.getByLabel('note', { exact: true }).inputValue(), '全局继承');
     await dialog.getByText('继承全局配置', { exact: true }).waitFor();
     await dialog.getByLabel('note', { exact: true }).fill('保留草稿');
+    await page.clock.runFor(100);
+    assert.equal(await dialog.getByLabel('note', { exact: true }).evaluate((element) => element === document.activeElement), true);
     await dialog.getByText('probe_tool', { exact: true }).locator('..').locator('..').getByRole('checkbox').uncheck();
     const readsBefore = configReads;
     configs.assistant.description = '后台更新的说明';

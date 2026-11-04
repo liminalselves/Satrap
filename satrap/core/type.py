@@ -489,6 +489,28 @@ class ASRConfig:
     """是否显式允许非回环 HTTP API 地址"""
 
 @dataclass
+class ImgConfig:
+    """图片模型配置, 默认参数仅保存 JSON 元数据"""
+
+    name: Optional[str] = None
+    model: Optional[str] = None
+    base_url: Optional[str] = None
+    edit_base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    api_type: Literal["openai_images", "seedream", "novelai"] = "openai_images"
+    timeout: float = 180.0
+    default_params: Optional[Dict[str, Any]] = None
+    lock_api_key: bool = True
+    allow_insecure_base_url: bool = False
+
+    def __post_init__(self) -> None:
+        """创建和重载均验证配置, 不进行网络调用"""
+        from satrap.core.APICall.ImageCall.config import validate_img_config
+
+        validate_img_config(self)
+
+
+@dataclass
 class ASRResponse:
     """一次语音转录的类型化结果"""
     text: str
@@ -1199,7 +1221,7 @@ def safe_getattr_callable(obj: Any, name: str) -> Callable[..., Any] | None:
 
 
 
-MODEL_CONFIG_CLASSES: dict[str, type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig] | type[ASRConfig]] = {
-    "llm": LLMConfig, "embedding": EmbeddingConfig, "rerank": ReRankConfig, "asr": ASRConfig,
+MODEL_CONFIG_CLASSES: dict[str, type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig] | type[ASRConfig] | type[ImgConfig]] = {
+    "llm": LLMConfig, "embedding": EmbeddingConfig, "rerank": ReRankConfig, "asr": ASRConfig, "img": ImgConfig,
 }
-"""模型配置类型名到数据类的唯一映射, 新增模型类型只需在此登记"""
+"""模型配置类型到数据类的映射, 读写分派和客户端工厂须同步适配"""

@@ -35,7 +35,7 @@ from satrap.core.log import logger
 CONFIG_DIR = get_config_path("plugins", legacy_name="plugin_config")
 """插件全局配置目录, 与其它 JSON 配置共用项目 .satrap/config"""
 
-_FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "llm", "embed", "rerank", "asr", "knowledge_base", "knowledge_bases")
+_FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "llm", "embed", "rerank", "asr", "img", "knowledge_base", "knowledge_bases")
 """支持的配置字段类型"""
 
 _PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
@@ -131,7 +131,7 @@ class ConfigField:
             if self.nullable:
                 return None
             return self.default
-        if self.type in {"llm", "embed", "rerank", "asr", "knowledge_base", "knowledge_bases"}:
+        if self.type in {"llm", "embed", "rerank", "asr", "img", "knowledge_base", "knowledge_bases"}:
             return self.validate_strict(value)
         try:
             if self.type == "bool":
