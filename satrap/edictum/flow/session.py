@@ -126,6 +126,21 @@ class AsyncFlowSession(AsyncSession):
         """全部 WF 实例 {节点 id: WF}"""
         return dict(self._workflows)
 
+    async def observe(self, event: Any) -> None:
+        """
+        流程会话的消息入口: 每条入站消息都先到这里, 由内部决定唤醒谁
+
+        参数:
+        - event: 平台消息事件 (MessageEvent)
+        """
+        await self._ensure_initialized()
+        # P1-5 的触发引擎接管实际的磁贴判定; 这里只保证每条消息都被会话看到
+        if self._definition is None:
+            return
+        # 被 @ 的消息通过现有回复链路唤醒前台 WF 是 P1-5 的事; 当前先把消息交给
+        # 触发引擎前的事件总线 (P1-5 实现后替换为真实分发)
+        event.set_extra("flow_observed", True)
+
     async def install_plugin_to_workflow(
         self,
         node_id: str,

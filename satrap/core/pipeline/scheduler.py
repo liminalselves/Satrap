@@ -693,6 +693,12 @@ class PipelineScheduler:
                         logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
                         return
                     session_id = resolved
+                # flow 类型旁路: 不占 _session_turn 锁, 每条消息都交给流程会话的 observe;
+                # 会话内部自行决定唤醒谁, 唤醒后再走正常执行路径绑定回复轮次
+                flow_session = await self._flow_session_for(session_manager, session_id, event, route, extra_params)
+                if flow_session is not None:
+                    await flow_session.observe(event)
+                    return
                 await turn.enter_async_context(self._session_turn(session_manager, session_id))
                 if not await self._queued_source_current(event, session_manager):
                     return
@@ -903,6 +909,72 @@ class PipelineScheduler:
                 del self._session_turns[key]
             else:
                 self._session_turns[key] = (lock, users - 1)
+
+    async def _flow_session_for(
+        self, manager: SessionManager, session_id: str, event: MessageEvent,
+        route: ConversationRoute | None, extra_params: dict[str, str] | None,
+    ) -> Any | None:
+        """
+        按会话类型拿流程会话实例, 未激活时先走正常创建路径激活
+
+        参数:
+        - manager: 绑定本平台的会话管理器
+        - session_id: 路由解析后的最终会话 ID
+        - event: 当前消息事件
+        - route: 会话路由
+        - extra_params: 路由附加参数
+
+        返回:
+        - AsyncFlowSession | None: 流程会话; 不是 flow 类型返回 None
+        """
+        from satrap.edictum.flow.session import AsyncFlowSession
+
+        pool = getattr(manager, "pool", None)
+        entries_fn = getattr(pool, "list_entries", None)
+        entries = entries_fn() if callable(entries_fn) and not asyncio.iscoroutinefunction(entries_fn) else {}
+        if not isinstance(entries, dict):
+            entries = {}
+        entry = entries.get(session_id)
+        if entry is not None and isinstance(entry.session, AsyncFlowSession):
+            return entry.session
+        # 会话还没激活或不是 flow: 通过 provider 判定类型, 是 flow 就走正常创建激活后再取
+        session_type = event.session_type or ""
+        provider_get = getattr(getattr(manager, "provider_registry", None), "get", None)
+        definition = None
+        if provider_get is not None and not asyncio.iscoroutinefunction(provider_get):
+            try:
+                provider = provider_get(event.session_provider or "edictum")
+            except Exception as error:
+                logger.debug(f"[PipelineScheduler] flow 类型判定失败 session={session_id}: {error}")
+                return None
+            candidate = getattr(provider, "get_definition", None)
+            if candidate is not None and not asyncio.iscoroutinefunction(candidate):
+                try:
+                    definition = candidate(session_type)
+                except Exception as error:
+                    logger.debug(f"[PipelineScheduler] flow 定义读取失败 session={session_id}: {error}")
+                    return None
+        metadata = getattr(definition, "metadata", None)
+        if not isinstance(metadata, dict) or metadata.get("edictum_type") != "flow":
+            return None
+        try:
+            config = manager._resolve_or_create_session_config(UserCall(
+                session_id=session_id or None,
+                session_provider=event.session_provider,
+                session_type=session_type,
+                message=event.get_message_str(),
+                route=route,
+                origin=event.call_origin,
+                received_at=event.queued_at,
+                received_wall_at=event.platform_message.received_at,
+            ))
+            await manager._acquire_or_create_entry_async(config)
+        except Exception as error:
+            logger.error(f"[PipelineScheduler] flow 会话创建失败 session={session_id}: {error}")
+            return None
+        entries = entries_fn() if callable(entries_fn) and not asyncio.iscoroutinefunction(entries_fn) else {}
+        entry = entries.get(session_id) if isinstance(entries, dict) else None
+        return entry.session if entry is not None and isinstance(entry.session, AsyncFlowSession) else None
 
     async def _queued_source_current(self, event: MessageEvent, manager: SessionManager) -> bool:
         """
