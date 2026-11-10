@@ -10,6 +10,7 @@ from satrap.core.framework.Base import AsyncModelWorkflowFramework, AsyncSession
 from satrap.core.utils.TCBuilder import AsyncToolsManager
 from satrap.edictum.flow.definition import FlowDefinition, FlowNodeInstance, parse_flow_definition
 from satrap.edictum.flow.registry import FlowNodeRegistry
+from satrap.edictum.flow.store import FlowStore
 from satrap.edictum.flow.validate import validate
 
 from typing import Any
@@ -64,6 +65,8 @@ class AsyncFlowSession(AsyncSession):
         self._issues: list[Any] = []
         self._workflows: dict[str, AsyncModelWorkflowFramework] = {}
         """节点 id -> WF 实例"""
+        self._flow_store: FlowStore | None = None
+        self._scope_key: str = ""
 
     async def _async_init(self) -> None:
         """解析定义, 静态检查, 按 WF 节点装配 AsyncModelWorkflowFramework"""
@@ -75,6 +78,7 @@ class AsyncFlowSession(AsyncSession):
         self._issues = validate(definition, registry)
         if any(i.level == "error" for i in self._issues):
             raise ValueError("流程定义存在错误, 请先通过 /config/edictum/flow/validate 检查")
+        self._definition = definition
         for node in definition.nodes.values():
             node_type = registry.get(node.type)
             if node_type is None or node_type.role != "workflow":
@@ -90,7 +94,41 @@ class AsyncFlowSession(AsyncSession):
             await wf.initialize()
             self._track_workflow_context(wf_id, wf.ctx)
             self._workflows[node.id] = wf
-        self._definition = definition
+            self._bind_snapshot_tools(node, wf)
+
+    def _bind_snapshot_tools(self, node: FlowNodeInstance, wf: AsyncModelWorkflowFramework) -> None:
+        """
+        给装了 flow_snapshot 的 WF 注入状态槽工具, 只绑它连着的状态槽
+
+        参数:
+        - node: WF 节点实例
+        - wf: 已装配的工作流
+        """
+        plugins = [p.strip() for p in str(node.config.get("plugins") or "").splitlines() if p.strip()]
+        if "flow_snapshot" not in plugins:
+            return
+        # 找这个 WF 写着的状态槽 (text -> state.write) 并读它的 max_chars
+        assert self._definition is not None
+        allowed: dict[str, int] = {}
+        registry = FlowNodeRegistry()
+        for e in self._definition.edges:
+            if e.source != node.id or e.source_port != "text":
+                continue
+            target = self._definition.nodes.get(e.target)
+            if target is None or target.type != "state" or e.target_port != "write":
+                continue
+            max_chars = int(target.config.get("max_chars") or 6000)
+            allowed[e.target] = max_chars
+        self._flow_store = FlowStore(self.session_ctx.db_path, "", self._flow_name())
+        self._scope_key = self.session_id
+        self._flow_snapshot_binding = (self._flow_store, self._scope_key, allowed)
+        from satrap.expend.plugins.flow_snapshot.tools import get_tools
+        for tool in get_tools(self):
+            wf.tools_manager.register_tool(tool)
+
+    def _flow_name(self) -> str:
+        """流程配置名, 用作持久化分组的第二维"""
+        return self.session_id
 
     def _resolve_llm(self, node: FlowNodeInstance, registry: FlowNodeRegistry) -> Any:
         """

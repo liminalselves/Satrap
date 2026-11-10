@@ -60,8 +60,12 @@ class FlowStore:
         self.flow_name = flow_name
 
     def _connect(self) -> sqlite3.Connection:
-        """打开平台数据库连接"""
-        return sqlite3.connect(self.database.as_uri() + "?mode=rw", uri=True, timeout=5)
+        """打开平台数据库连接, 首次写路径顺带执行表结构迁移"""
+        connection = sqlite3.connect(self.database.as_uri() + "?mode=rwc", uri=True, timeout=5)
+        from satrap.core.config.platform_schema import ensure_platform_tables
+        ensure_platform_tables(connection)
+        connection.commit()
+        return connection
 
     # ---------- 阈值位置 ----------
 
@@ -172,12 +176,25 @@ class FlowStore:
         返回:
         - {version, content, covers_to, committed_at, run_id}; 不存在返回版本 0
         """
+        return self.state_by_scope_key(scope.key, state_id)
+
+    def state_by_scope_key(self, scope_key: str, state_id: str) -> dict[str, Any]:
+        """
+        按已冻结的对话键读取状态槽, 供工具在拿不到 MessageScope 时使用
+
+        参数:
+        - scope_key: 对话键
+        - state_id: 状态槽节点 id
+
+        返回:
+        - {version, content, covers_to, committed_at, run_id}; 不存在返回版本 0
+        """
         with closing(self._connect()) as connection:
             connection.execute("BEGIN")
             row = connection.execute(
                 "SELECT version, content, covers_to, committed_at, run_id FROM flow_states "
                 "WHERE scope_key=? AND flow_name=? AND state_id=?",
-                (scope.key, self.flow_name, state_id),
+                (scope_key, self.flow_name, state_id),
             ).fetchone()
             if row is None:
                 return {"version": 0, "content": "", "covers_to": 0, "committed_at": 0.0, "run_id": ""}
@@ -193,13 +210,29 @@ class FlowStore:
 
         参数:
         - scope: 对话身份
-        - tile_id: 驱动本次运行的阈值磁贴节点 id
+        - tile_id: 驱动本次运行的阈值磁贴节点 id, 空串表示非阈值触发不推进位置
         - wf_id: WF 节点 id
-        - seq: 批次末尾的消息序号
+        - seq: 批次末尾的消息序号 (tile_id 为空时忽略)
         - commits: 要写入的状态槽列表 (同一 WF 可能写多个槽, 全部 CAS 通过才一起提交)
 
         返回:
         - 无; 任一槽 base_version 不匹配时整个事务回滚并抛 FlowConflictError
+        """
+        self.commit_states_by_scope_key(scope.key, tile_id, wf_id, seq, commits)
+
+    def commit_states_by_scope_key(
+        self, scope_key: str, tile_id: str, wf_id: str, seq: int,
+        commits: list[StateCommit],
+    ) -> None:
+        """
+        按已冻结的对话键提交状态槽与位置, 供工具在拿不到 MessageScope 时使用
+
+        参数:
+        - scope_key: 对话键
+        - tile_id: 阈值磁贴节点 id, 空串不推进位置
+        - wf_id: WF 节点 id
+        - seq: 批次末尾序号
+        - commits: 要写入的状态槽列表
         """
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -207,7 +240,7 @@ class FlowStore:
                 for commit in commits:
                     row = connection.execute(
                         "SELECT version FROM flow_states WHERE scope_key=? AND flow_name=? AND state_id=?",
-                        (scope.key, self.flow_name, commit.state_id),
+                        (scope_key, self.flow_name, commit.state_id),
                     ).fetchone()
                     current = int(row[0]) if row else 0
                     if current != commit.base_version:
@@ -221,11 +254,11 @@ class FlowStore:
                         "ON CONFLICT(scope_key, flow_name, state_id) DO UPDATE SET "
                         "version=excluded.version, content=excluded.content, covers_to=excluded.covers_to, "
                         "committed_at=excluded.committed_at, run_id=excluded.run_id",
-                        (scope.key, self.flow_name, commit.state_id, commit.base_version + 1,
+                        (scope_key, self.flow_name, commit.state_id, commit.base_version + 1,
                          commit.content, commit.covers_to, time.time(), commit.run_id),
                     )
                 if tile_id:
-                    self.commit_position(connection, scope.key, tile_id, wf_id, seq)
+                    self.commit_position(connection, scope_key, tile_id, wf_id, seq)
             except Exception:
                 connection.execute("ROLLBACK")
                 raise
