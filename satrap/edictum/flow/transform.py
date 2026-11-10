@@ -46,6 +46,7 @@ class TransformEvaluator:
         *,
         resolve_transform: Callable[[FlowNodeInstance, str], Callable[..., Any] | None] | None = None,
         resolve_state: Callable[[str], StateView] | None = None,
+        release_ref: Callable[[str, Any], Any] | None = None,
         timeout: float = 60.0,
     ) -> None:
         """
@@ -56,12 +57,14 @@ class TransformEvaluator:
         - node_types: {节点 id: 节点契约}
         - resolve_transform: 插件节点函数解析回调 {node: fn}; 内置节点用内置实现
         - resolve_state: state 槽读取回调
+        - release_ref: 归还实例引用的回调 (node_id, instance); 来自 FlowNodeInstancePool
         - timeout: 节点求值默认超时
         """
         self.definition = definition
         self.node_types = node_types
         self._resolve_transform = resolve_transform or (lambda node, run_id: None)
         self._resolve_state = resolve_state or (lambda state_id: StateView.empty())
+        self._release_ref = release_ref
         self.timeout = timeout
         self._cells: dict[tuple[str, str], _EvalCell] = {}
         """(event_id, 节点 id) -> 共享求值"""
@@ -150,9 +153,16 @@ class TransformEvaluator:
         if fn is None:
             raise ValueError(f"transform 节点 {node.id} 没有可调用实现")
         args = await self._transform_args(node, node_type, run_id, event)
-        if inspect.iscoroutinefunction(fn):
-            return await fn(*args)
-        return await SESSION_WORKERS.run(fn, *args)
+        try:
+            if inspect.iscoroutinefunction(fn):
+                return await fn(*args)
+            return await SESSION_WORKERS.run(fn, *args)
+        finally:
+            # 经实例池取得的调用要归还引用 (P2-2), 使进行中的求值完成后旧实例才 close
+            if self._release_ref is not None:
+                result = self._release_ref(node.id, fn)
+                if inspect.isawaitable(result):
+                    await result
 
     async def _transform_args(
         self, node: FlowNodeInstance, node_type: FlowNodeType, run_id: str, event: Any,

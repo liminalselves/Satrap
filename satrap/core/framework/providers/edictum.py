@@ -443,6 +443,18 @@ class EdictumProvider:
         - session: 待释放的 Edictum 会话
         """
         state = self._pop_runtime_state(session)
+        # 流程会话的插件节点实例在池子里; 同步路径只能尽力调度, 完整关闭走异步释放
+        close_nodes = getattr(session, "close_flow_nodes", None)
+        if callable(close_nodes):
+            try:
+                result = close_nodes()
+                if inspect.isawaitable(result):
+                    close = getattr(result, "close", None)
+                    if callable(close):
+                        close()
+                    logger.warning("[EdictumProvider] 同步释放路径无法等待流程节点关闭")
+            except Exception as error:
+                logger.warning(f"[EdictumProvider] 流程节点实例关闭失败: {error}")
         if state is None or state.type_definition.plugin_uninstaller is None:
             return
         for plugin_state in reversed(state.plugins):
@@ -468,6 +480,15 @@ class EdictumProvider:
         - session: 待释放的 Edictum 会话
         """
         state = self._pop_runtime_state(session)
+        # 流程会话的插件节点实例在池子里, 不走 plugin_uninstaller; 先统一 close
+        close_nodes = getattr(session, "close_flow_nodes", None)
+        if callable(close_nodes):
+            try:
+                result = close_nodes()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as error:
+                logger.warning(f"[EdictumProvider] 流程节点实例关闭失败: {error}")
         if state is None or state.type_definition.plugin_uninstaller is None:
             return
         for plugin_state in reversed(state.plugins):

@@ -9,6 +9,7 @@ from __future__ import annotations
 from satrap.core.framework.Base import AsyncModelWorkflowFramework, AsyncSession
 from satrap.core.utils.TCBuilder import AsyncToolsManager
 from satrap.edictum.flow.definition import FlowDefinition, FlowNodeInstance, parse_flow_definition
+from satrap.edictum.flow.instances import FlowNodeInstancePool, config_fingerprint
 from satrap.edictum.flow.registry import FlowNodeRegistry
 from satrap.edictum.flow.store import FlowStore
 from satrap.edictum.flow.validate import validate
@@ -38,6 +39,8 @@ class AsyncFlowSession(AsyncSession):
         enable_checkpoint: bool = False,
         model_resolver: Any = None,
         plugin_installer: Any = None,
+        plugin_catalog: Any = None,
+        plugin_config: Any = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -52,6 +55,8 @@ class AsyncFlowSession(AsyncSession):
         - enable_checkpoint: 是否启用会话级检查点
         - model_resolver: 按 model_name 解析 AsyncLLM 的可调用对象, 缺省使用 llm
         - plugin_installer: 往指定 WF 安装一个插件的可调用对象 (session, wf, path, config)
+        - plugin_catalog: 插件目录 (PluginCatalog); 插件节点实现经它定位
+        - plugin_config: 插件配置管理器 (PluginConfigManager); 插件节点全局默认经它读取
         - kwargs: 其他会话参数
         """
         init_kwargs: dict[str, Any] = {"enable_checkpoint": enable_checkpoint}
@@ -61,6 +66,8 @@ class AsyncFlowSession(AsyncSession):
         self._init_llm = llm
         self._model_resolver = model_resolver
         self._plugin_installer = plugin_installer
+        self._plugin_catalog = plugin_catalog
+        self._plugin_config = plugin_config
         self._raw_flow = flow or {}
         self._definition: FlowDefinition | None = None
         self._issues: list[Any] = []
@@ -75,18 +82,29 @@ class AsyncFlowSession(AsyncSession):
         self._failure_notified: dict[str, bool] = {}
         self._wake_count: dict[str, int] = {}
         self._budget: FlowCallBudget | None = None
+        self._instances = FlowNodeInstancePool()
+        """插件节点实例池 (P2-2); 类写法按生效配置指纹重建"""
+        self._plugin_impls: dict[str, dict[str, Any]] = {}
+        """{插件名: {节点名: 实现}}; 插件重载时重新加载"""
+        self._plugin_impl_stamp: dict[str, int] = {}
+        """{插件名: flow_nodes.py mtime 纳秒}; 变化时重载实现"""
+        self._catalog_stamp: tuple[int, ...] = ()
+        """插件目录快照标识 (各 meta.yaml mtime), 变化时重建注册表"""
+        self._registry = FlowNodeRegistry()
+        self._node_types: dict[str, Any] = {}
 
     async def _async_init(self) -> None:
         """解析定义, 静态检查, 按 WF 节点装配 AsyncModelWorkflowFramework"""
         if self._definition is not None:
             return
         from satrap.edictum.flow.definition import migrate_flow_definition
-        definition, _, _ = migrate_flow_definition(parse_flow_definition(self._raw_flow), FlowNodeRegistry())
-        registry = FlowNodeRegistry()
-        self._issues = validate(definition, registry)
+        self._refresh_registry()
+        definition, _, _ = migrate_flow_definition(parse_flow_definition(self._raw_flow), self._registry)
+        self._issues = validate(definition, self._registry)
         if any(i.level == "error" for i in self._issues):
             raise ValueError("流程定义存在错误, 请先通过 /config/edictum/flow/validate 检查")
         self._definition = definition
+        self._node_types = {n.id: self._registry.get(n.type) for n in definition.nodes.values()}
         if definition.budget is not None:
             self._budget = FlowCallBudget(
                 max_calls=definition.budget.max_calls,
@@ -96,7 +114,7 @@ class AsyncFlowSession(AsyncSession):
         else:
             self._budget = FlowCallBudget(max_calls=0)
         for node in definition.nodes.values():
-            node_type = registry.get(node.type)
+            node_type = self._registry.get(node.type)
             if node_type is None or node_type.role != "workflow":
                 continue
             wf_id = self.workflow_id_assign(node.id)
@@ -111,6 +129,81 @@ class AsyncFlowSession(AsyncSession):
             self._track_workflow_context(wf_id, wf.ctx)
             self._workflows[node.id] = wf
             self._bind_snapshot_tools(node, wf)
+        await self._refresh_instances()
+
+    # ---------- 插件节点实现与实例 (P2-2) ----------
+
+    def _refresh_registry(self) -> None:
+        """扫插件目录刷新节点类型注册表与 flow_nodes.py 实现; 目录或文件变化时重载"""
+        entries = [] if self._plugin_catalog is None else list(self._plugin_catalog.scan())
+        stamp = tuple(sorted(
+            (entry.path / "flow_nodes.py").stat().st_mtime_ns
+            if (entry.path / "flow_nodes.py").is_file() else 0
+            for entry in entries if entry.flow_nodes
+        ))
+        if stamp == self._catalog_stamp and self._catalog_stamp:
+            return
+        self._catalog_stamp = stamp
+        self._registry = FlowNodeRegistry()
+        self._plugin_impls = {}
+        self._plugin_impl_stamp = {}
+        for entry in entries:
+            if not entry.flow_nodes:
+                continue
+            self._registry.register_plugin_nodes(entry.name, list(entry.flow_nodes))
+            module = (entry.path / "flow_nodes.py")
+            self._plugin_impl_stamp[entry.name] = module.stat().st_mtime_ns if module.is_file() else 0
+            from satrap.edictum.flow.plugin_nodes import load_flow_node_functions
+            try:
+                impls = load_flow_node_functions(entry.path, f"satrap_flow_plugin_{entry.name}")
+            except Exception as error:
+                logger.warning(f"[流程会话] 插件 {entry.name} flow_nodes.py 加载失败: {error}")
+                impls = {}
+            self._plugin_impls[entry.name] = impls
+
+    def _node_impl(self, node_id: str) -> Any:
+        """取插件节点的实现 (函数或 FlowNode 子类); 内置/未知返回 None"""
+        node = self._definition.nodes.get(node_id) if self._definition else None
+        node_type = self._node_types.get(node_id) if node is not None else None
+        if node_type is None or not node_type.plugin:
+            return None
+        return self._plugin_impls.get(node_type.plugin, {}).get(node_type.type.rsplit(".", 1)[-1])
+
+    async def _refresh_instances(self) -> None:
+        """重算各插件节点的生效配置指纹, 变化时经池子重建实例"""
+        if self._definition is None:
+            return
+        from satrap.edictum.flow.definition import resolve_node_config
+        for node_id, node in self._definition.nodes.items():
+            node_type = self._node_types.get(node_id)
+            if node_type is None or not node_type.plugin:
+                continue
+            impl = self._node_impl(node_id)
+            if impl is None:
+                continue
+            plugin_defaults = self._plugin_defaults(node_type.plugin)
+            resolved = resolve_node_config(node_type, node, self._definition.defaults, plugin_defaults)
+            fingerprint = config_fingerprint(resolved.values)
+            ctx = self._node_ctx(node, resolved.values)
+            await self._instances.ensure(node_id, impl, fingerprint, ctx)
+
+    def _plugin_defaults(self, plugin: str) -> dict[str, dict[str, Any]]:
+        """读插件节点全局默认; 未注入管理器时按空表"""
+        if self._plugin_config is None or not plugin:
+            return {}
+        try:
+            return self._plugin_config.load_flow_nodes_global(plugin)
+        except Exception as error:
+            logger.warning(f"[流程会话] 插件 {plugin} 节点默认读取失败, 按空处理: {error}")
+            return {}
+
+    def _node_ctx(self, node: FlowNodeInstance, resolved: dict[str, Any]) -> Any:
+        """给插件 setup/条件/transform 用的轻量 ctx"""
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            config=resolved, node_id=node.id, session_id=self.session_id,
+            diagnostic=lambda *a, **kw: None, resources={}, service=lambda *a, **kw: None,
+        )
 
     def _bind_snapshot_tools(self, node: FlowNodeInstance, wf: AsyncModelWorkflowFramework) -> None:
         """
@@ -191,16 +284,23 @@ class AsyncFlowSession(AsyncSession):
         if self._definition is None:
             return
         event.set_extra("flow_observed", True)
+        # 配置/插件变化时重建插件节点实例; 频率低, 变化才产生开销
+        self._refresh_registry()
+        await self._refresh_instances()
         await self._handle_observed(event)
 
     async def _handle_observed(self, event: Any) -> None:
         """分发一条已观察的消息给触发引擎 (P1-5 已就位, 唤醒/阈值判定由引擎做)"""
         if self._engine is None:
-            from satrap.edictum.flow.engine import TriggerEngine
+            from satrap.edictum.flow.engine import ConditionEvaluator, TriggerEngine
             self._engine = TriggerEngine(
                 self._definition,
-                {n.id: FlowNodeRegistry().get(n.type) for n in self._definition.nodes.values()},
+                self._node_types,
+                evaluate_condition=ConditionEvaluator(),
                 resolve_state=lambda sid: self._state_view(sid),
+                calls_used=lambda nid: (self._budget.calls(kind="all") if self._budget else 0),
+                resolve_condition=lambda node: self._instances.acquire(node.id),
+                release_ref=self._instances.release_ref,
             )
             self._engine.on_trigger(self._on_wf_trigger)
         # 每条消息都过阈值磁贴 (按 seq); 唤醒磁贴只在唤醒判定通过时发事件
@@ -304,8 +404,10 @@ class AsyncFlowSession(AsyncSession):
         if self._transform is None:
             self._transform = TransformEvaluator(
                 self._definition,
-                {n.id: FlowNodeRegistry().get(n.type) for n in self._definition.nodes.values()},
+                self._node_types,
+                resolve_transform=lambda node, run_id: self._instances.acquire(node.id),
                 resolve_state=self._state_view,
+                release_ref=self._instances.release_ref,
             )
         inputs: list[Any] = []
         for e in self._definition.edges:
@@ -483,6 +585,10 @@ class AsyncFlowSession(AsyncSession):
         if self._plugin_installer is None:
             raise TypeError("流程会话未配置插件安装器")
         return await self._plugin_installer(self, self._workflows[node_id], path, config)
+
+    async def close_flow_nodes(self) -> None:
+        """会话释放时关闭全部插件节点实例 (edictum provider 释放路径调用)"""
+        await self._instances.close_all()
 
     @property
     def issues(self) -> list[Any]:

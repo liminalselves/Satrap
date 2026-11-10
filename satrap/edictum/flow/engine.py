@@ -65,14 +65,21 @@ class EventContext:
 class ConditionEvaluator:
     """条件节点求值器: 内置直接调, 插件函数进有界线程池, 超时/异常/池满判错误"""
 
-    def __init__(self, timeout: float = 0.15) -> None:
+    def __init__(
+        self,
+        timeout: float = 0.15,
+        *,
+        release_ref: Callable[[str, Any], Any] | None = None,
+    ) -> None:
         """
         初始化求值器
 
         参数:
         - timeout: 条件函数限时, 默认 150 毫秒
+        - release_ref: 归还实例引用回调 (node_id, instance); 来自 FlowNodeInstancePool
         """
         self.timeout = timeout
+        self._release_ref = release_ref
         self._cache: dict[tuple[str, str], bool | str] = {}
         """(event_id, 节点 id) -> 结果缓存; 每个事件对每个条件节点最多求值一次"""
 
@@ -128,6 +135,11 @@ class ConditionEvaluator:
                     "node": node.id, "reason": type(error).__name__}})
                 logger.warning(f"[流程引擎] 条件节点 {node.id} 求值失败 ({type(error).__name__}), 判为错误")
                 return "error"
+            finally:
+                if self._release_ref is not None:
+                    result = self._release_ref(node.id, fn)
+                    if inspect.isawaitable(result):
+                        await result
         # 内置条件节点直接在事件循环求值
         try:
             return self._builtin(node, node_type, config, event, state_view)
@@ -278,6 +290,8 @@ class TriggerEngine:
         evaluate_condition: Callable[..., Any] | None = None,
         resolve_state: Callable[[str], StateView] | None = None,
         calls_used: Callable[[str], int] | None = None,
+        resolve_condition: Callable[[FlowNodeInstance], Callable[..., Any] | None] | None = None,
+        release_ref: Callable[[str, Any], Any] | None = None,
     ) -> None:
         """
         初始化引擎
@@ -288,12 +302,16 @@ class TriggerEngine:
         - evaluate_condition: 插件条件求值回调 (async), 缺省用内置 ConditionEvaluator
         - resolve_state: state 槽读取回调 {state_node_id: StateView}
         - calls_used: 调用计数回调 {wf_id: int}
+        - resolve_condition: 插件条件实现解析回调 {node: fn}; 来自 FlowNodeInstancePool.acquire
+        - release_ref: 归还实例引用回调 {node_id, instance}; 与 resolve_condition 成对
         """
         self.definition = definition
         self.node_types = node_types
         self._resolve_state = resolve_state or (lambda state_id: StateView.empty())
         self._calls_used = calls_used or (lambda wf_id: 0)
-        self._evaluator = evaluate_condition or ConditionEvaluator()
+        self._resolve_condition = resolve_condition or (lambda node: None)
+        self._release_ref = release_ref
+        self._evaluator = evaluate_condition or ConditionEvaluator(release_ref=release_ref)
         self._wf: dict[str, _WfState] = {n.id: _WfState() for n in definition.nodes.values()
                                          if (t := node_types.get(n.id)) and t.role == "workflow"}
         self._handlers: list[Callable[[str, FlowEvent], Any]] = []
@@ -443,10 +461,11 @@ class TriggerEngine:
             if e.target == node.id and e.target_port == "state":
                 state_view = self._resolve_state(e.source)
         config = self._config(node.id)
+        fn = self._resolve_condition(node) if node_type.plugin else None
         try:
             evaluator = self._evaluator
             if isinstance(evaluator, ConditionEvaluator):
-                result = await evaluator.evaluate(node, node_type, None, config, event, state_view,
+                result = await evaluator.evaluate(node, node_type, fn, config, event, state_view,
                                                   calls_used=self._calls_used(node.id))
             else:
                 result = await evaluator(node, node_type, config, event, state_view, self._calls_used(node.id))
