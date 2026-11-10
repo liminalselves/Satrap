@@ -117,6 +117,7 @@ class PlatformAdapter(ABC):
     conversation_catalog_fields: dict[str, str] = {}
     conversation_kinds: dict[str, str] = {"private": "私聊", "group": "群聊"}
     supports_scheduled_group_send: bool = False
+    supports_scheduled_private_send: bool = False
 
     @staticmethod
     def normalize_user_identifier(value: str) -> str:

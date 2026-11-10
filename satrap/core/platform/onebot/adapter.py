@@ -194,6 +194,7 @@ class OneBotAdapter(PlatformAdapter):
 
     display_name = "OneBot"
     supports_scheduled_group_send = True
+    supports_scheduled_private_send = True
 
     @classmethod
     def conversation_catalog_metadata(cls, connection: sqlite3.Connection, route: dict[str, str]) -> dict[str, str]:
