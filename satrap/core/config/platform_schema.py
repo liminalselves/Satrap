@@ -78,6 +78,7 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
         message_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(platform_messages)")}
         if "seq" not in message_columns:
             raise RuntimeError("平台数据库结构损坏: 消息表缺少 seq 序号")
+        required |= {"flow_threshold_positions", "flow_states"}
 
     if version < 1:
         connection.execute(
@@ -309,4 +310,17 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
                 (next_seq, scope_key),
             )
         connection.execute("CREATE INDEX IF NOT EXISTS idx_platform_messages_seq ON platform_messages(scope_key, seq)")
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS flow_threshold_positions ("
+            "scope_key TEXT NOT NULL, flow_name TEXT NOT NULL, tile_id TEXT NOT NULL, wf_id TEXT NOT NULL, "
+            "committed_seq INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, "
+            "PRIMARY KEY(scope_key, flow_name, tile_id, wf_id))"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS flow_states ("
+            "scope_key TEXT NOT NULL, flow_name TEXT NOT NULL, state_id TEXT NOT NULL, "
+            "version INTEGER NOT NULL DEFAULT 0, content TEXT NOT NULL DEFAULT '', "
+            "covers_to INTEGER NOT NULL DEFAULT 0, committed_at REAL NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '', "
+            "PRIMARY KEY(scope_key, flow_name, state_id))"
+        )
         connection.execute("PRAGMA user_version = 13")

@@ -845,3 +845,31 @@ def test_message_seq_survives_delete_restore(tmp_path: Path) -> None:
     items = {item["message_id"]: item["seq"] for item in store.after(scope, 0)}
     assert items["a"] < items["b"] < items["c"]
     assert items["c"] == seq_c   # c 的 seq 不变, 没有被恢复顶掉
+
+def test_flow_store_cas_and_positions(tmp_path: Path) -> None:
+    """FlowStore: 阈值位置独立, 状态槽 CAS 冲突时整体不提交"""
+    import sqlite3
+    from satrap.edictum.flow.store import FlowStore, StateCommit, FlowConflictError
+    store = _platform_messages_store(tmp_path)
+    scope = SCOPE
+    for i in range(3):
+        store.record(scope, _message(f"m{i}"))
+    fs = FlowStore(store.database, "a", "myflow")
+
+    # 两个 WF 各自位置: 一个提交一个失败, 下次只重试失败的
+    fs.commit_states(scope, "th", "agent", 3, [StateCommit("snap", "v1", 0, 3, "r1")])
+    assert fs.state(scope, "snap")["version"] == 1
+    assert fs.positions_for_tile(scope, "th") == {"agent": 3}
+
+    import pytest
+    with pytest.raises(FlowConflictError) as exc:
+        fs.commit_states(scope, "th", "agent", 3, [StateCommit("snap", "v2", 0, 3, "r2")])
+    assert exc.value.code == "flow_state_conflict"
+    assert fs.state(scope, "snap")["version"] == 1   # 冲突时不推进
+
+    # ensure_position 从当前末尾开始
+    import sqlite3
+    conn = sqlite3.connect(store.database); conn.execute("BEGIN")
+    pos = fs.ensure_position(conn, scope.key, "th", "new_wf")
+    conn.commit(); conn.close()
+    assert pos == store.latest_seq(scope)
