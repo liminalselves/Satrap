@@ -363,6 +363,20 @@ class PlatformMessageStore:
         - 按 seq 升序的消息列表 (active + recalled, 含删除占位以保证序号连续可读)
         """
         self._check_scope(scope)
+        return self.after_by_scope_key(scope.key, seq, limit)
+
+    def after_by_scope_key(self, scope_key: str, seq: int, limit: int = 500) -> list[dict[str, Any]]:
+        """
+        按已冻结的对话键读取某位置之后的消息, 供流程会话按自有绑定取批次
+
+        参数:
+        - scope_key: 已核验身份的冻结对话键 (MessageScope.key)
+        - seq: 已提交位置, 返回 seq 更大的消息; 0 表示从头读
+        - limit: 单批上限, 1 到 1000
+
+        返回:
+        - 按 seq 升序的消息列表 (active + recalled, 含删除占位以保证序号连续可读)
+        """
         if type(seq) is not int or seq < 0:
             raise ValueError("seq 必须是非负整数")
         if type(limit) is not int or not 1 <= limit <= 1000:
@@ -374,7 +388,7 @@ class PlatformMessageStore:
             connection.execute("BEGIN")
             rows = connection.execute(
                 "SELECT * FROM platform_messages WHERE scope_key=? AND seq>? ORDER BY seq LIMIT ?",
-                (scope.key, seq, limit),
+                (scope_key, seq, limit),
             ).fetchall()
             return [self._item(row) for row in rows]
 
@@ -417,13 +431,25 @@ class PlatformMessageStore:
         - 最大 seq; 无消息或档案不存在时返回 0
         """
         self._check_scope(scope)
+        return self.latest_seq_by_scope_key(scope.key)
+
+    def latest_seq_by_scope_key(self, scope_key: str) -> int:
+        """
+        按已冻结的对话键读当前最大 seq, 供 /new 的 drop 直接跳位置
+
+        参数:
+        - scope_key: 已核验身份的冻结对话键
+
+        返回:
+        - 最大 seq; 无消息或档案不存在时返回 0
+        """
         connection = self._connect()
         if connection is None:
             return 0
         with closing(connection):
             connection.execute("BEGIN")
             row = connection.execute(
-                "SELECT MAX(seq) FROM platform_messages WHERE scope_key=?", (scope.key,),
+                "SELECT MAX(seq) FROM platform_messages WHERE scope_key=?", (scope_key,),
             ).fetchone()
             return int(row[0] or 0)
 

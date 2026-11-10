@@ -58,6 +58,8 @@ class FlowStore:
         self.database = Path(database)
         self.adapter_id = adapter_id
         self.flow_name = flow_name
+        self.scope_key = ""
+        """绑定的对话键; ensure_positions_for_tile 用, 由会话在绑档案时写入"""
 
     def _connect(self) -> sqlite3.Connection:
         """打开平台数据库连接, 首次写路径顺带执行表结构迁移"""
@@ -154,14 +156,50 @@ class FlowStore:
         返回:
         - {wf_id: committed_seq}
         """
+        return self.positions_for_tile_by_scope_key(scope.key, tile_id)
+
+    def positions_for_tile_by_scope_key(self, scope_key: str, tile_id: str) -> dict[str, int]:
+        """
+        按已冻结的对话键读一个磁贴驱动的全部 WF 位置
+
+        参数:
+        - scope_key: 对话键
+        - tile_id: 阈值磁贴节点 id
+
+        返回:
+        - {wf_id: committed_seq}
+        """
         with closing(self._connect()) as connection:
             connection.execute("BEGIN")
             rows = connection.execute(
                 "SELECT wf_id, committed_seq FROM flow_threshold_positions "
                 "WHERE scope_key=? AND flow_name=? AND tile_id=?",
-                (scope.key, self.flow_name, tile_id),
+                (scope_key, self.flow_name, tile_id),
             ).fetchall()
             return {str(r[0]): int(r[1]) for r in rows}
+
+    def ensure_positions_for_tile(self, tile_id: str, wf_ids: list[str]) -> dict[str, int]:
+        """
+        为磁贴实际驱动的每个 WF 取或初始化已提交位置 (新驱动从桶末尾开始)
+
+        参数:
+        - tile_id: 阈值磁贴节点 id
+        - wf_ids: 该磁贴 event 边下游的全部 WF 节点 id
+
+        返回:
+        - {wf_id: committed_seq}; 首次驱动的 WF 取当前最新 seq
+        """
+        out: dict[str, int] = {}
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for wf_id in wf_ids:
+                out[wf_id] = self.ensure_position(connection, self._current_scope_key, tile_id, wf_id)
+        return out
+
+    @property
+    def _current_scope_key(self) -> str:
+        """会话绑定的对话键 (会话在绑档案时写入 store.scope_key)"""
+        return self.scope_key
 
     # ---------- 状态槽 ----------
 
