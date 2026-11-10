@@ -21,6 +21,7 @@ from satrap.core.storage.persist import atomic_write_json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypedDict, cast
+import hashlib
 import threading
 import time
 import json
@@ -569,6 +570,106 @@ class PluginConfigManager:
             atomic_write_json(path, cleaned, indent=2)
             self._record_config_update(name)
         return self.load_global(name, schema)
+
+    # ---------- 插件节点全局默认 (<插件名>.flow_nodes.json) ----------
+
+    def flow_nodes_path(self, name: str) -> Path:
+        """
+        校验插件名称并返回节点默认文件路径
+
+        参数:
+        - name: 插件稳定名称
+
+        返回:
+        - Path: 严格位于全局配置目录内的 <插件名>.flow_nodes.json
+        """
+        if _PLUGIN_NAME_RE.fullmatch(name) is None:
+            raise ValueError(f"非法插件名称: {name}")
+        root = self._dir.resolve()
+        path = (root / f"{name}.flow_nodes.json").resolve()
+        if path.parent != root:
+            raise ValueError(f"非法插件配置路径: {name}")
+        return path
+
+    def load_flow_nodes_global(self, name: str) -> dict[str, dict[str, Any]]:
+        """
+        读取插件节点全局默认, 缺失时返回空表
+
+        参数:
+        - name: 插件稳定名称
+
+        返回:
+        - {节点名: {"version": int, "config": dict}}; 文件损坏按空表处理并警告
+        """
+        path = self.flow_nodes_path(name)
+        if not path.is_file():
+            return {}
+        try:
+            raw: object = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            logger.warning(f"[插件配置] {name} 节点默认文件损坏, 按空处理: {error}")
+            return {}
+        if not isinstance(raw, dict) or raw.get("format") != 1 or not isinstance(raw.get("nodes"), dict):
+            logger.warning(f"[插件配置] {name} 节点默认文件格式非法, 按空处理")
+            return {}
+        nodes: dict[str, dict[str, Any]] = {}
+        for node_name, entry in cast(dict[str, Any], raw["nodes"]).items():
+            if not isinstance(entry, dict):
+                continue
+            entry_map = cast(dict[str, Any], entry)
+            config = entry_map.get("config")
+            if not isinstance(config, dict):
+                config = {}
+            version = entry_map.get("version", 1)
+            if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+                version = 1
+            nodes[str(node_name)] = {"version": version, "config": dict(cast(dict[str, Any], config))}
+        return nodes
+
+    def flow_nodes_revision(self, name: str) -> str:
+        """
+        节点默认文件的并发版本, 缺失时为 "missing"
+
+        参数:
+        - name: 插件稳定名称
+
+        返回:
+        - 原始文件内容的 SHA256 或 "missing"
+        """
+        path = self.flow_nodes_path(name)
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "missing"
+
+    def save_flow_nodes_global(
+        self,
+        name: str,
+        nodes: dict[str, dict[str, Any]],
+        *,
+        expected_revision: str,
+    ) -> dict[str, dict[str, Any]]:
+        """
+        原子写插件节点默认文件, 并发修改时拒绝
+
+        参数:
+        - name: 插件稳定名称
+        - nodes: {节点名: {"version": int, "config": dict}}; 写完整内容, 空节点表清空文件
+        - expected_revision: 编辑开始时读取的文件版本
+
+        返回:
+        - 保存后的节点默认表; 并发冲突抛 ConfigRevisionConflict
+        """
+        from satrap.core.config.document import ConfigRevisionConflict
+
+        path = self.flow_nodes_path(name)
+        with FileLock(path.with_suffix(".lock")):
+            if self.flow_nodes_revision(name) != expected_revision:
+                raise ConfigRevisionConflict("节点默认已被修改, 请重新读取后合并")
+            if not nodes:
+                if path.is_file():
+                    path.unlink()
+                return {}
+            self._dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(path, {"format": 1, "nodes": nodes}, indent=2)
+        return self.load_flow_nodes_global(name)
 
     def resolve(
         self,

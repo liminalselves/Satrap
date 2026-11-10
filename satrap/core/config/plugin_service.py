@@ -143,6 +143,69 @@ class PluginManagementService:
             self.manager.save_global(name, entry.config_schema, cleaned)
             return {**self.get_config(name), "saved": True}
 
+    # ---------- 插件节点全局默认 (<插件名>.flow_nodes.json) ----------
+
+    def get_flow_nodes(self, name: str) -> dict[str, Any]:
+        """
+        读取插件节点全局默认与并发版本
+
+        参数:
+        - name: 目录中的插件名称
+
+        返回:
+        - {"ok": True, "nodes": {节点名: {version, config}}, "revision": str, "schema": {节点名: 配置schema}}
+        """
+        entry = self.catalog.get(name)
+        if entry is None:
+            raise KeyError(f"插件不存在: {name}")
+        nodes = self.manager.load_flow_nodes_global(name)
+        return {
+            "ok": True,
+            "nodes": nodes,
+            "revision": self.manager.flow_nodes_revision(name),
+            "schema": {node.type.rsplit(".", 1)[-1]: node.to_payload()["schema"] for node in entry.flow_nodes},
+        }
+
+    def save_flow_nodes(self, name: str, nodes: dict[str, Any], expected_revision: str) -> dict[str, Any]:
+        """
+        校验并保存插件节点全局默认, 字段按各节点 config_schema 校验
+
+        参数:
+        - name: 插件名称
+        - nodes: {节点名: {version?: int, config: {字段: 值}}}
+        - expected_revision: 编辑开始时读取的文件版本
+
+        返回:
+        - 保存后的完整快照; 并发冲突抛 ConfigRevisionConflict
+        """
+        entry = self.catalog.get(name)
+        if entry is None:
+            raise KeyError(f"插件不存在: {name}")
+        declared = {node.type.rsplit(".", 1)[-1]: node for node in entry.flow_nodes}
+        cleaned: dict[str, dict[str, Any]] = {}
+        for node_name, spec in nodes.items():
+            node_type = declared.get(str(node_name))
+            if node_type is None:
+                raise ValueError(f"插件 {name} 未声明节点 {node_name}")
+            if not isinstance(spec, dict):
+                raise ValueError(f"节点 {node_name} 的默认必须是对象")
+            spec_map = dict(spec)
+            config = spec_map.get("config") or {}
+            if not isinstance(config, dict):
+                raise ValueError(f"节点 {node_name}.config 必须是对象")
+            version = spec_map.get("version", node_type.version)
+            if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+                raise ValueError(f"节点 {node_name}.version 必须是正整数")
+            if version != node_type.version:
+                # 插件全局默认写入时必须是当前契约版本; 低版本由宿主加载时迁移
+                raise ValueError(f"节点 {node_name}.version 必须等于当前契约版本 {node_type.version}")
+            cleaned[str(node_name)] = {
+                "version": version,
+                "config": validate_config_values(node_type.config_schema, config),
+            }
+        saved = self.manager.save_flow_nodes_global(name, cleaned, expected_revision=expected_revision)
+        return {**self.get_flow_nodes(name), "saved": True, "nodes": saved}
+
     def list_plugins(self) -> list[dict[str, Any]]:
         """
         汇总目录来源与使用位置数量

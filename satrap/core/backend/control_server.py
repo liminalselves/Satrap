@@ -3534,6 +3534,28 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
             except ApplicationProgressError as error:
                 return error.status, {"error": str(error)}
         return 200, {"ok": True, "runtime": await _apply_plugin_runtime(**scope)}
+    if ctx.path.startswith("/config/plugins/") and ctx.path.endswith("/flow-nodes") and ctx.method in {"GET", "PUT"}:
+        name = urllib.parse.unquote(ctx.path[len("/config/plugins/"):-len("/flow-nodes")])
+        try:
+            catalog = await PluginCatalog().snapshot_async()
+            service = await RAG_WORKERS.run(_plugin_management_service, catalog)
+            if ctx.method == "GET":
+                return 200, await RAG_WORKERS.run(service.get_flow_nodes, name)
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            nodes = payload.get("config")
+            revision = payload.get("expected_revision")
+            if not isinstance(nodes, dict) or not isinstance(revision, str):
+                raise ValueError("缺少 config 对象或 expected_revision")
+            return 200, await RAG_WORKERS.run(service.save_flow_nodes, name, nodes, revision)
+        except ConfigRevisionConflict as error:
+            return 409, {"error": str(error)}
+        except KeyError as error:
+            return 404, {"error": str(error)}
+        except WorkerBusyError as error:
+            return 503, {"error": str(error)}
+        except (OSError, TypeError, ValueError) as error:
+            return 400, {"error": str(error)}
+
     prefix = "/config/plugins/"
     if not ctx.path.startswith(prefix) or not ctx.path.endswith("/config") or ctx.method not in {"GET", "PUT"}:
         return None
