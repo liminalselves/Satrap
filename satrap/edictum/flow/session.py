@@ -195,12 +195,19 @@ class AsyncFlowSession(AsyncSession):
             self._engine.on_trigger(self._on_wf_trigger)
         # 每条消息都过阈值磁贴 (按 seq); 唤醒磁贴只在唤醒判定通过时发事件
         await self._check_thresholds()
+        is_private = bool(getattr(event, "is_private_chat", lambda: False)())
         try:
             from satrap.core.pipeline.wake_policy import evaluate_wake
             decision = evaluate_wake(event)
         except Exception:
             decision = None
-        if decision is not None and decision.triggered:
+        if is_private:
+            # 私聊里沿用群唤醒的私聊语义: use_platform_policy 时每条消息都唤醒,
+            # 自定义规则时按 @ (私聊视为总是被 @)/唤醒词/新消息数
+            decision_triggered = decision is None or decision.triggered
+        else:
+            decision_triggered = decision is not None and decision.triggered
+        if decision_triggered:
             for node in self._definition.nodes.values():
                 if node.type != "wake":
                     continue
