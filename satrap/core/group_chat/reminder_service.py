@@ -57,8 +57,11 @@ async def execute_reminder_tool(
         if context.store is None:
             raise ReminderError("unavailable", "当前平台没有提醒存储")
         writing = operation in {"group_chat_create_reminder", "group_chat_cancel_reminder"}
-        if writing and (current_tool_workflow() is None or current_tool_workflow() is not getattr(session, "_wf", None)):
-            raise ReminderError("read_only_workflow", "只有当前主工作流可以创建或取消提醒")
+        if writing:
+            from satrap.edictum.flow.session import current_flow_workflow
+            bound = current_flow_workflow.get() or getattr(session, "_wf", None)
+            if current_tool_workflow() is None or current_tool_workflow() is not bound:
+                raise ReminderError("read_only_workflow", "只有当前主工作流可以创建或取消提醒")
         captured_config = dict(config)
         connection = context.adapter.group_chat_connection_token()
         repository = await asyncio.to_thread(ReminderStore, context.store.database)

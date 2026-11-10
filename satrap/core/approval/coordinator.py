@@ -54,7 +54,8 @@ def _evidence(session: SimpleSession | AsyncSimpleSession) -> list[dict[str, obj
     - 保留消息角色和来源的证据副本, 不读取隐藏思考
     """
     result: list[dict[str, object]] = []
-    main = getattr(session, "_wf", None)
+    from satrap.edictum.flow.session import current_flow_workflow
+    main = current_flow_workflow.get() or getattr(session, "_wf", None)
     executing = current_tool_workflow()
     workflows = [(main, "main_history")]
     if executing is not None and executing is not main:

@@ -776,6 +776,26 @@ class PluginInterop:
             raise PluginInteractionError("capability_stale", "宿主会话已结束")
         return session
 
+    @staticmethod
+    def _bound_workflow(session: SessionType) -> object | None:
+        """
+        当前会话里应绑到的工作流; 流程会话正在运行的 WF 优先, 否则回退 session._wf
+
+        参数:
+        - session: 宿主会话
+
+        返回:
+        - 正在运行的 WF 或 None
+        """
+        try:
+            from satrap.edictum.flow.session import current_flow_workflow
+            current = current_flow_workflow.get()
+            if current is not None:
+                return current
+        except ImportError:
+            pass
+        return getattr(session, "_wf", None)
+
     def prepare(self, name: str, spec: InteropSpec) -> PluginHost:
         """
         为正在安装的插件创建宿主接口
@@ -1060,7 +1080,8 @@ class PluginInterop:
         if self._configuration_update() is not None:
             return []
         session = self.session()
-        manager, workflow = session._skills_manager, session._wf
+        manager = session._skills_manager
+        workflow = self._bound_workflow(session)
         if manager is None or workflow is None:
             return []
         view = _RelationView(self._relation_nodes())
@@ -1079,7 +1100,8 @@ class PluginInterop:
     def synchronize_skills(self) -> None:
         """同步装配关系变更后的有效技能, 保留原用户开关"""
         session = self.session()
-        manager, workflow = session._skills_manager, session._wf
+        manager = session._skills_manager
+        workflow = self._bound_workflow(session)
         if manager is None or workflow is None:
             return
         for name, enabled in self._skill_changes():
@@ -1090,7 +1112,8 @@ class PluginInterop:
     async def synchronize_skills_async(self) -> None:
         """异步装配关系变更后的有效技能, 保留原用户开关"""
         session = self.session()
-        manager, workflow = session._skills_manager, session._wf
+        manager = session._skills_manager
+        workflow = self._bound_workflow(session)
         if manager is None or workflow is None:
             return
         for name, enabled in self._skill_changes():

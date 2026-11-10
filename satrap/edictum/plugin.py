@@ -789,6 +789,24 @@ class Plugin:
         default_factory=dict[str, tuple[Any, list[Any]]], repr=False, compare=False,
     )
 
+    def _bound_workflow(self) -> Any:
+        """
+        当前会话里这个插件应绑到的工作流
+
+        返回:
+        - 正在运行的 WF (流程会话经 contextvar), 否则回退 session._wf
+        """
+        if self._session is None:
+            return None
+        try:
+            from satrap.edictum.flow.session import current_flow_workflow
+            current = current_flow_workflow.get()
+            if current is not None:
+                return current
+        except ImportError:
+            pass   # flow 会话未启用时按单工作流处理
+        return getattr(self._session, "_wf", None)
+
     def _check_capability_change(self, kind: CapabilityKind, name: str, enabled: bool) -> None:
         """
         提交独立开关前核验关系, 失败时保持原运行状态
@@ -817,7 +835,7 @@ class Plugin:
         返回:
         - bool: 独立启用插件内工具 (插件停用期间只改状态, 不生效)
         """
-        wf = self._session._wf if self._session is not None else None
+        wf = self._bound_workflow()
         if wf is None:
             logger.warning("[插件] 插件未绑定会话或工作流未初始化, 启用工具忽略")
             return False
@@ -839,7 +857,7 @@ class Plugin:
         返回:
         - bool: 独立停用插件内工具
         """
-        wf = self._session._wf if self._session is not None else None
+        wf = self._bound_workflow()
         if wf is None:
             logger.warning("[插件] 插件未绑定会话或工作流未初始化, 停用工具忽略")
             return False
@@ -945,7 +963,7 @@ class Plugin:
         返回:
         - bool: 独立启用插件内 MCP 连接的全部工具
         """
-        wf = self._session._wf if self._session is not None else None
+        wf = self._bound_workflow()
         if wf is None:
             logger.warning("[插件] 插件未绑定会话或工作流未初始化, 启用 MCP 忽略")
             return False
@@ -968,7 +986,7 @@ class Plugin:
         返回:
         - bool: 独立停用插件内 MCP 连接的全部工具
         """
-        wf = self._session._wf if self._session is not None else None
+        wf = self._bound_workflow()
         if wf is None:
             logger.warning("[插件] 插件未绑定会话或工作流未初始化, 停用 MCP 忽略")
             return False

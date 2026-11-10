@@ -361,7 +361,9 @@ def plugin_tool_live(session: SessionType, plugin_name: str, name: str, tool: Bo
     plugin = next((item for item in session.list_plugins() if item.name == plugin_name), None)
     if plugin is None or not plugin.enabled or not plugin.tools.get(name, False):
         return "entry_disabled"
-    manager = getattr(getattr(session, "_wf", None), "tools_manager", None)
+    from satrap.edictum.flow.session import current_flow_workflow
+    workflow = current_flow_workflow.get() or getattr(session, "_wf", None)
+    manager = getattr(workflow, "tools_manager", None)
     if manager is None or manager.tools.get(name) is not tool or not manager.is_tool_enabled(name) or not tool.is_enabled():
         return "stale_authorization"
     return None

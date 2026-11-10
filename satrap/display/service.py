@@ -2426,7 +2426,7 @@ class ChatService:
                     return {"ok": False, "error": "任务已取消"}
                 if run["status"] == "completed" and run["payload"].get("committed_context_fingerprint") != store.history_signature():
                     return {"ok": False, "error": "任务完成后会话历史已改变, 不能回填旧轮次"}
-                workflow = conv.session._wf
+                workflow = getattr(conv.session, "_wf", None)
                 if workflow is None:
                     return {"ok": False, "error": "会话工作流未初始化"}
                 if run["status"] != "completed" and (
