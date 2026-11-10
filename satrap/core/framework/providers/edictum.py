@@ -254,8 +254,13 @@ class EdictumProvider:
         if type_name in {"simple", "async_simple"}:
             payload = normalize_session_settings(payload)
         elif type_name == "flow":
-            # 流程会话不走 simple 的参数归一化; params.flow 由工厂按节点解析
-            pass
+            # 流程会话不走 simple 的参数归一化; params.flow 由工厂按节点解析;
+            # flow_name 用命名配置名, 同一配置跨会话共享阈值位置与状态槽
+            payload.setdefault("flow_name", name)
+            # 插件目录与配置管理器由宿主注入, 会话据此解析插件节点与全局默认
+            payload.setdefault("plugin_catalog", self.plugin_catalog)
+            from satrap.edictum.plugin_config import PluginConfigManager
+            payload.setdefault("plugin_config", PluginConfigManager())
         payload.pop("model_name", None)
         payload.pop("plugins", None)
         payload.pop("plugin_environment", None)

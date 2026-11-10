@@ -365,7 +365,10 @@ class PlatformMessageStore:
         self._check_scope(scope)
         return self.after_by_scope_key(scope.key, seq, limit)
 
-    def after_by_scope_key(self, scope_key: str, seq: int, limit: int = 500) -> list[dict[str, Any]]:
+    def after_by_scope_key(
+        self, scope_key: str, seq: int, limit: int = 500,
+        *, received_from: float | None = None,
+    ) -> list[dict[str, Any]]:
         """
         按已冻结的对话键读取某位置之后的消息, 供流程会话按自有绑定取批次
 
@@ -373,6 +376,7 @@ class PlatformMessageStore:
         - scope_key: 已核验身份的冻结对话键 (MessageScope.key)
         - seq: 已提交位置, 返回 seq 更大的消息; 0 表示从头读
         - limit: 单批上限, 1 到 1000
+        - received_from: 档案起点 (秒); 提供时起点之前的消息不可见 (/new 语义)
 
         返回:
         - 按 seq 升序的消息列表 (active + recalled, 含删除占位以保证序号连续可读)
@@ -384,11 +388,13 @@ class PlatformMessageStore:
         connection = self._connect()
         if connection is None:
             return []
+        boundary = " AND received_at>=?" if received_from is not None else ""
+        args: tuple[Any, ...] = (scope_key, seq, limit) if received_from is None else (scope_key, seq, received_from, limit)
         with closing(connection):
             connection.execute("BEGIN")
             rows = connection.execute(
-                "SELECT * FROM platform_messages WHERE scope_key=? AND seq>? ORDER BY seq LIMIT ?",
-                (scope_key, seq, limit),
+                f"SELECT * FROM platform_messages WHERE scope_key=? AND seq>?{boundary} ORDER BY seq LIMIT ?",
+                args,
             ).fetchall()
             return [self._item(row) for row in rows]
 

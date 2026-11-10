@@ -310,12 +310,22 @@ class FlowStore:
         - scope: 对话身份
         - state_id: 状态槽节点 id
         """
+        self.clear_state_by_scope_key(scope.key, state_id)
+
+    def clear_state_by_scope_key(self, scope_key: str, state_id: str) -> None:
+        """
+        按已冻结的对话键清状态槽
+
+        参数:
+        - scope_key: 对话键
+        - state_id: 状态槽节点 id
+        """
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "UPDATE flow_states SET version=0, content='', covers_to=0, committed_at=0, run_id='' "
                 "WHERE scope_key=? AND flow_name=? AND state_id=?",
-                (scope.key, self.flow_name, state_id),
+                (scope_key, self.flow_name, state_id),
             )
 
     def drop_position(self, scope: MessageScope, tile_id: str, wf_id: str, seq: int) -> None:
@@ -328,6 +338,18 @@ class FlowStore:
         - wf_id: WF 节点 id
         - seq: 目标序号 (取当前最新)
         """
+        self.drop_position_by_scope_key(scope.key, tile_id, wf_id, seq)
+
+    def drop_position_by_scope_key(self, scope_key: str, tile_id: str, wf_id: str, seq: int) -> None:
+        """
+        按已冻结的对话键把已提交位置跳到指定序号
+
+        参数:
+        - scope_key: 对话键
+        - tile_id: 阈值磁贴节点 id
+        - wf_id: WF 节点 id
+        - seq: 目标序号
+        """
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            self.commit_position(connection, scope.key, tile_id, wf_id, seq)
+            self.commit_position(connection, scope_key, tile_id, wf_id, seq)

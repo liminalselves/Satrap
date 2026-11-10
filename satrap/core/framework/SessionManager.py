@@ -1719,6 +1719,10 @@ class SessionManager:
                 async with entry.async_operation_lock:
                     group_plugins = self._group_plugin_target(target, user_call)
                     setattr(entry.session, "_satrap_group_plugins", group_plugins)
+                    # 流程会话接管 /new: 记档案起点与旧会话, 首个 observe 按各节点 on_new 结算
+                    if action.action in {"new_session", "switch"}:
+                        setattr(entry.session, "_flow_new_from", source.session_id)
+                        setattr(entry.session, "_flow_history_start", target.history_started_at)
                     await self._prepare_session_async(entry.session)
                     await self._apply_group_session_overrides(target, entry.session, user_call, group_plugins)
                     result = self._publish_transition(user_call, source, target, action)

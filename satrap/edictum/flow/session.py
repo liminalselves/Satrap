@@ -45,6 +45,9 @@ class AsyncFlowSession(AsyncSession):
         plugin_catalog: Any = None,
         plugin_config: Any = None,
         message_store: Any = None,
+        flow_name: str = "",
+        history_start: float | None = None,
+        new_from: str | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -63,6 +66,9 @@ class AsyncFlowSession(AsyncSession):
         - plugin_config: 插件配置管理器 (PluginConfigManager); 插件节点全局默认经它读取
         - message_store: 消息档案 (PlatformMessageStore); 阈值磁贴与桶的数据来源,
           缺省则由首次 observe 从事件适配器补入
+        - flow_name: 命名流程配置名, 持久化分组的第二维; 缺省退化为 session_id
+        - history_start: 档案起点 (秒); 起点之前的消息对桶/阈值不可见 (/new 语义)
+        - new_from: /new 切换时的旧会话 id; 提供则首次接管按各节点 on_new 结算
         - kwargs: 其他会话参数
         """
         init_kwargs: dict[str, Any] = {"enable_checkpoint": enable_checkpoint}
@@ -75,6 +81,13 @@ class AsyncFlowSession(AsyncSession):
         self._plugin_catalog = plugin_catalog
         self._plugin_config = plugin_config
         self._message_store = message_store
+        self._named_flow = flow_name or ""
+        self._history_start = history_start
+        self._new_from = new_from
+        self._new_done = new_from is None
+        """/new 结算是否已完成; 直接创建 (非 /new) 的会话无需结算"""
+        self._new_checked = False
+        """首次 observe 是否已吸收过属性补丁 (/new 边界由 SessionManager 构造后注入)"""
         self._raw_flow = flow or {}
         self._definition: FlowDefinition | None = None
         self._issues: list[Any] = []
@@ -244,8 +257,8 @@ class AsyncFlowSession(AsyncSession):
             wf.tools_manager.register_tool(tool)
 
     def _flow_name(self) -> str:
-        """流程配置名, 用作持久化分组的第二维"""
-        return self.session_id
+        """流程配置名, 用作持久化分组的第二维; 缺省退化为 session_id"""
+        return self._named_flow or self.session_id
 
     def _resolve_llm(self, node: FlowNodeInstance, registry: FlowNodeRegistry) -> Any:
         """
@@ -294,6 +307,18 @@ class AsyncFlowSession(AsyncSession):
         event.set_extra("flow_observed", True)
         # 档案来源: 首次 observe 从事件适配器补入消息库与对话键
         self._bind_archive(event)
+        # SessionManager 经属性注入的 /new 边界在构造后到达, 首个 observe 才读
+        if not self._new_checked:
+            self._new_checked = True
+            if self._new_from is None:
+                self._new_from = getattr(self, "_flow_new_from", None)
+            if self._history_start is None:
+                self._history_start = getattr(self, "_flow_history_start", None)
+            self._new_done = self._new_from is None
+        # /new 接管: 先按各节点 on_new 结算 (drain 会跑完积压批次), 再处理新消息
+        if not self._new_done:
+            self._new_done = True
+            await self._settle_new()
         # 配置/插件变化时重建插件节点实例; 频率低, 变化才产生开销
         self._refresh_registry()
         await self._refresh_instances()
@@ -317,6 +342,88 @@ class AsyncFlowSession(AsyncSession):
         except Exception as error:
             logger.warning(f"[流程会话] 重启恢复检查失败: {error}")
         record_debug("flow_resume", "end", metadata={"session": self.session_id})
+
+    async def _settle_new(self) -> None:
+        """
+        /new 结算: 按各节点 on_new 处理持久化状态与位置
+
+        状态槽 on_new=clear 清回版本 0; 阈值磁贴 on_new=drop 直接把每个
+        驱动 WF 的已提交位置跳到最新 seq; drain 先按已提交位置把每个
+        落后 WF 的积压批次跑完 (受 max_batch 限制, 120 秒上限), 再让
+        档案起点生效
+        """
+        if self._definition is None or self._flow_store is None:
+            return
+        record_debug("flow_new", "start", metadata={"session": self.session_id, "from": self._new_from})
+        latest = self._message_store.latest_seq_by_scope_key(self._scope_key) if self._message_store else 0
+        # Step.1 状态槽: clear 的清回版本 0
+        for node in self._definition.nodes.values():
+            if node.type != "state":
+                continue
+            if str(node.config.get("on_new") or "keep") == "clear":
+                self._flow_store.clear_state_by_scope_key(self._scope_key, node.id)
+        # Step.2 阈值磁贴: drain 先跑完积压 (带 120 秒上限), drop 直接跳最新
+        for node in self._definition.nodes.values():
+            if node.type != "threshold":
+                continue
+            mode = str(node.config.get("on_new") or "drop")
+            wf_ids = self._threshold_wfs(node.id)
+            positions = self._flow_store.positions_for_tile_by_scope_key(self._scope_key, node.id)
+            if mode == "drain" and self._message_store is not None:
+                await self._drain_threshold(node, wf_ids, positions, latest)
+            elif mode == "drop":
+                for wf_id in wf_ids:
+                    self._flow_store.drop_position_by_scope_key(self._scope_key, node.id, wf_id, latest)
+        record_debug("flow_new", "end", metadata={"session": self.session_id})
+
+    async def _drain_threshold(
+        self, node: FlowNodeInstance, wf_ids: list[str], positions: dict[str, int], latest: int,
+    ) -> None:
+        """
+        drain: 落后的 WF 各按 max_batch 把积压批次跑完, 超过 120 秒的按 drop 结算
+
+        参数:
+        - node: 阈值磁贴节点
+        - wf_ids: 该磁贴驱动的 WF
+        - positions: {wf_id: 已提交位置}
+        - latest: 档案当前最新 seq
+        """
+        import time as _t
+        deadline = _t.monotonic() + 120.0
+        await self._ensure_engine()
+        for wf_id in wf_ids:
+            committed = positions.get(wf_id, 0)
+            while committed < latest:
+                if _t.monotonic() > deadline:
+                    # 超时按 drop 结算并写诊断
+                    self._flow_store.drop_position_by_scope_key(self._scope_key, node.id, wf_id, latest)
+                    record_debug("flow_new", "drain_timeout", metadata={
+                        "tile": node.id, "wf": wf_id, "dropped_to": latest})
+                    logger.warning(f"[流程会话] {node.title} 对 {wf_id} 的 /new drain 超过 120 秒, 按 drop 跳到最新")
+                    break
+                pending = self._message_store.after_by_scope_key(
+                    self._scope_key, committed,
+                    limit=int(node.config.get("max_batch") or 200),
+                    received_from=None,
+                )
+                if not pending:
+                    break
+                from satrap.edictum.flow.engine import FlowEvent
+                import uuid
+                event = FlowEvent(
+                    event_id=uuid.uuid4().hex, kind="batch", tile=node.id,
+                    why=f"/new drain: {node.title}",
+                    batch=tuple(self._to_flow_message(m) for m in pending),
+                    batch_from=committed, batch_to=pending[-1]["seq"],
+                )
+                # drain 触发走同一 _run_workflow 路径, 完成后位置随之推进
+                await self._run_workflow(wf_id, event)
+                committed = self._flow_store.positions_for_tile_by_scope_key(
+                    self._scope_key, node.id).get(wf_id, committed)
+                if committed <= event.batch_from:
+                    # 位置没推进 (运行失败) 按 drop 结算剩余
+                    self._flow_store.drop_position_by_scope_key(self._scope_key, node.id, wf_id, latest)
+                    break
 
     async def _ensure_engine(self) -> None:
         """触发引擎惰性装配 (恢复与常规 observe 共用)"""
@@ -563,6 +670,7 @@ class AsyncFlowSession(AsyncSession):
                 pending = self._message_store.after_by_scope_key(
                     self._scope_key, committed,
                     limit=int(config.get("max_batch") or 200),
+                    received_from=self._history_start,
                 )
                 hit = self._threshold_hit(config, committed, pending)
                 if not hit:
