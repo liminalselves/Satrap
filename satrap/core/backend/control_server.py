@@ -3799,6 +3799,15 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
+    if ctx.method == "GET" and ctx.path == "/config/edictum/flow/runtime":
+        # 运行状态只存在于后端进程内的活会话, 控制服务代理到后端
+        query = urllib.parse.urlsplit(ctx.raw_path).query
+        try:
+            status, result = await _action_backend_request(f"/api/config/edictum/flow/runtime?{query}")
+            return status, result
+        except Exception as error:
+            return 503, {"error": f"后端不可用: {error}"}
+
     if ctx.method == "GET" and ctx.path == "/config/edictum/plugins":
         try:
             catalog = await PluginCatalog().snapshot_async()

@@ -1425,6 +1425,27 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 400, {"error": str(e)}
         # 接口: POST /api/config/edictum/flow/validate
 
+        if method == "GET" and path.startswith("/api/config/edictum/flow/runtime"):
+            try:
+                query = parse_qs(urlsplit(path).query)
+                platform_id = query.get("platform_id", [""])[0].strip()
+                session_id = query.get("session_id", [""])[0].strip()
+                if not platform_id or not session_id:
+                    return 400, {"error": "platform_id 与 session_id 必填"}
+                runtime = backend.get_platform_runtime(platform_id)
+                if runtime is None:
+                    return 404, {"error": f"平台实例未运行: {platform_id}"}
+                entry = runtime[0].pool.list_entries().get(session_id)
+                if entry is None:
+                    return 404, {"error": f"会话未激活: {session_id}"}
+                from satrap.edictum.flow.session import AsyncFlowSession
+                if not isinstance(entry.session, AsyncFlowSession):
+                    return 400, {"error": f"会话不是流程类型: {session_id}"}
+                return 200, entry.session.runtime_status()
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: GET /api/config/edictum/flow/runtime?platform_id&session_id
+
         edictum_prefix = "/api/config/edictum/sessions/"
         if (
             path.startswith(edictum_prefix)

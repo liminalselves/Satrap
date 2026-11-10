@@ -16,8 +16,10 @@ from satrap.edictum.flow.store import FlowStore
 from satrap.edictum.flow.validate import validate
 from satrap.edictum.flow.budget import FlowCallBudget, BudgetExceeded
 
+from collections import deque
 from typing import Any
 import contextvars
+import time
 
 from satrap.core.log import logger
 
@@ -113,6 +115,8 @@ class AsyncFlowSession(AsyncSession):
         """插件目录快照标识 (各 meta.yaml mtime), 变化时重建注册表"""
         self._registry = FlowNodeRegistry()
         self._node_types: dict[str, Any] = {}
+        self._events: deque[dict[str, Any]] = deque(maxlen=50)
+        """最近 50 条触发/运行事件, 供运行状态接口; 重启即丢弃 (瞬态)"""
 
     async def _async_init(self) -> None:
         """解析定义, 静态检查, 按 WF 节点装配 AsyncModelWorkflowFramework"""
@@ -514,6 +518,8 @@ class AsyncFlowSession(AsyncSession):
         """执行一次 WF 运行; 状态槽提交/位置推进/失败处理按运行时契约"""
         import uuid
         run_id = uuid.uuid4().hex
+        self._events.append({"at": time.time(), "kind": "run_start",
+                             "wf": wf_id, "run_id": run_id, "event_id": event.event_id, "why": event.why})
         record_debug("flow_run", "start", metadata={"wf": wf_id, "run_id": run_id, "event_id": event.event_id})
         try:
             wf = self._workflows[wf_id]
@@ -546,8 +552,12 @@ class AsyncFlowSession(AsyncSession):
             await self._send_output(wf_id, output or "", event)
             # done 事件
             await self._engine.complete(wf_id, event, output or "")
+            self._events.append({"at": time.time(), "kind": "run_end", "wf": wf_id,
+                                 "run_id": run_id, "status": "ok"})
             record_debug("flow_run", "end", metadata={"wf": wf_id, "run_id": run_id, "status": "ok"})
         except Exception as error:
+            self._events.append({"at": time.time(), "kind": "run_end", "wf": wf_id,
+                                 "run_id": run_id, "status": "failed", "error": str(error)[:200]})
             record_debug("flow_run", "end", metadata={"wf": wf_id, "run_id": run_id, "status": "failed"})
             logger.error(f"[流程会话] WF {wf_id} 本次运行失败 run={run_id}: {error}")
             if isinstance(error, BudgetExceeded):
@@ -765,6 +775,46 @@ class AsyncFlowSession(AsyncSession):
     async def close_flow_nodes(self) -> None:
         """会话释放时关闭全部插件节点实例 (edictum provider 释放路径调用)"""
         await self._instances.close_all()
+
+    def runtime_status(self) -> dict[str, Any]:
+        """
+        流程会话运行状态: 阈值位置与积压, 状态槽版本, 正在运行的 WF
+
+        返回:
+        - dict: {flow_name, scope_key, tiles, states, running_wfs, node_status};
+          未绑档案或未初始化时尽力返回已持久化部分
+        """
+        out: dict[str, Any] = {
+            "flow_name": self._flow_name(),
+            "session_id": self.session_id,
+            "scope_key": self._scope_key,
+            "history_start": self._history_start,
+            "tiles": {},
+            "states": {},
+            "running_wfs": [],
+            "events": list(self._events),
+            "node_status": self._instances.status(),
+        }
+        if self._engine is not None:
+            out["running_wfs"] = self._engine.running_workflows()
+        if self._flow_store is None or self._definition is None:
+            return out
+        # 阈值磁贴: 每个 WF 的已提交位置与积压数
+        positions = self._flow_store.positions_for_scope_key(self._scope_key)
+        latest = self._message_store.latest_seq_by_scope_key(self._scope_key) if self._message_store else 0
+        tiles: dict[str, dict[str, Any]] = {}
+        for (tile_id, wf_id), committed in positions.items():
+            entry = tiles.setdefault(tile_id, {"title": self._title_of(tile_id), "wfs": {}})
+            entry["wfs"][wf_id] = {"committed": committed, "backlog": max(0, latest - committed)}
+        out["tiles"] = tiles
+        # 状态槽
+        out["states"] = self._flow_store.states_for_scope_key(self._scope_key)
+        return out
+
+    def _title_of(self, node_id: str) -> str:
+        """节点显示名"""
+        node = self._definition.nodes.get(node_id) if self._definition else None
+        return node.title if node is not None else node_id
 
     @property
     def issues(self) -> list[Any]:

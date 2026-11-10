@@ -239,6 +239,48 @@ class FlowStore:
             return {"version": int(row[0]), "content": str(row[1]), "covers_to": int(row[2]),
                     "committed_at": float(row[3]), "run_id": str(row[4])}
 
+    def states_for_scope_key(self, scope_key: str) -> dict[str, dict[str, Any]]:
+        """
+        按已冻结的对话键读取全部状态槽, 供运行状态接口
+
+        参数:
+        - scope_key: 对话键
+
+        返回:
+        - {state_id: {version, covers_to, committed_at, run_id}}
+        """
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                "SELECT state_id, version, covers_to, committed_at, run_id FROM flow_states "
+                "WHERE scope_key=? AND flow_name=?",
+                (scope_key, self.flow_name),
+            ).fetchall()
+            return {
+                str(r[0]): {"version": int(r[1]), "covers_to": int(r[2]),
+                            "committed_at": float(r[3]), "run_id": str(r[4])}
+                for r in rows
+            }
+
+    def positions_for_scope_key(self, scope_key: str) -> dict[tuple[str, str], int]:
+        """
+        按已冻结的对话键读取全部阈值位置, 供运行状态接口
+
+        参数:
+        - scope_key: 对话键
+
+        返回:
+        - {(tile_id, wf_id): committed_seq}
+        """
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                "SELECT tile_id, wf_id, committed_seq FROM flow_threshold_positions "
+                "WHERE scope_key=? AND flow_name=?",
+                (scope_key, self.flow_name),
+            ).fetchall()
+            return {(str(r[0]), str(r[1])): int(r[2]) for r in rows}
+
     def commit_states(
         self, scope: MessageScope, tile_id: str, wf_id: str, seq: int,
         commits: list[StateCommit],

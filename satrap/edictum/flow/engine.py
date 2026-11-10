@@ -536,6 +536,10 @@ class TriggerEngine:
             return
         state.queued.append(event)
 
+    def running_workflows(self) -> list[str]:
+        """当前正忙的 WF 节点 id 列表, 供运行状态接口读"""
+        return [wf_id for wf_id, state in self._wf.items() if state.busy]
+
     async def finish(self, wf_id: str, event: FlowEvent) -> FlowEvent | None:
         """
         WF 本次运行结束后取下一个事件 (merged 优先, 否则 queue 首项)
