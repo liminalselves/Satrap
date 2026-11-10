@@ -218,6 +218,15 @@ class PluginArchiveInstaller:
                 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", entry.name):
                     raise ValueError("插件名称须为 1 到 64 位英文字母、数字、下划线、点或连字符")
                 _safe_parts(entry.name)
+                if entry.flow_nodes:
+                    # flow_nodes 契约校验: 声明/实现必须一一对应, 签名与端口一致;
+                    # 不通过即安装失败, 和 services 的严格规则一致而不是 tools 的只警告
+                    from satrap.edictum.flow.plugin_nodes import load_flow_node_functions, validate_flow_node_pairing
+                    validate_flow_node_pairing(
+                        entry.name,
+                        list(entry.flow_nodes),
+                        load_flow_node_functions(plugin_dir, f"satrap_preview_{entry.name}"),
+                    )
                 self._check_conflict(entry.name)
                 token = secrets.token_urlsafe(32)
                 self._previews[token] = _Preview(temporary, plugin_dir, entry.name, time.monotonic() + PREVIEW_TTL_SECONDS)

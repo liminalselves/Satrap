@@ -6,7 +6,7 @@ from satrap.core.plugin_interop.contracts import parse_interop
 from dataclasses import dataclass, field, replace
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import os
 import time
 import yaml
@@ -16,6 +16,10 @@ import hashlib
 from satrap.edictum.plugin_compatibility import PluginEnvironment, check_plugin_compatibility, parse_compatibility
 from satrap.edictum.plugin_permissions import EMPTY_PERMISSIONS, PluginPermissions, parse_plugin_permissions
 from satrap.edictum.plugin_config import ConfigField, parse_config_schema, schema_to_payload
+
+if TYPE_CHECKING:
+    from satrap.edictum.flow.plugin_nodes import FlowWorkflowDecl
+    from satrap.edictum.flow.registry import FlowNodeType
 from satrap.core.utils.snapshot_cache import SnapshotCache
 from satrap.core.utils.async_worker import RAG_WORKERS
 from satrap.edictum.plugin import (
@@ -27,6 +31,12 @@ from satrap.edictum.plugin import (
 )
 
 from satrap.core.log import logger
+
+
+def _empty_flow_workflow() -> FlowWorkflowDecl:
+    """延迟构造默认声明, 避免模块级导入 flow 契约造成环"""
+    from satrap.edictum.flow.plugin_nodes import FlowWorkflowDecl
+    return FlowWorkflowDecl()
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,10 @@ class PluginCatalogEntry:
     license: str = ""
     homepage: str = ""
     repository: str = ""
+    flow_nodes: tuple[FlowNodeType, ...] = ()
+    """插件提供的流程节点契约, 解析失败即视为元数据损坏"""
+    flow_workflow: FlowWorkflowDecl = field(default_factory=lambda: _empty_flow_workflow())
+    """装到 WF 节点上时的限制与能力声明"""
 
     def check_environment(self, environment: PluginEnvironment):
         """根据指定环境计算适用性"""
@@ -73,6 +87,8 @@ class PluginCatalogEntry:
                 kind: dict(self.capabilities.get(kind, {}))
                 for kind in CAPABILITY_KINDS
             },
+            "flow_nodes": [node.to_payload() for node in self.flow_nodes],
+            "flow_workflow": self.flow_workflow.to_payload(),
         }
 
 
@@ -227,6 +243,9 @@ class PluginCatalog:
                 descriptions.setdefault(kind, {}).setdefault(capability_name, "")
         config_schema = parse_config_schema(meta)
         permissions = parse_plugin_permissions(meta, config_schema)
+        from satrap.edictum.flow.plugin_nodes import parse_flow_nodes, parse_flow_workflow
+        flow_nodes = tuple(parse_flow_nodes(meta, name))
+        flow_workflow = parse_flow_workflow(meta, name)
         config_version = meta.get("config_version", 0)
         if type(config_version) is not int or config_version < 0:
             raise ValueError("插件配置版本必须为非负整数")
@@ -249,6 +268,8 @@ class PluginCatalog:
             description=str(meta.get("description") or ""),
             config_schema=config_schema,
             permissions=permissions,
+            flow_nodes=flow_nodes,
+            flow_workflow=flow_workflow,
             interop=interop.to_payload(),
             capabilities={
                 kind: dict(descriptions.get(kind, {}))
