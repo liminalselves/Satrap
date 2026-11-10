@@ -35,8 +35,11 @@ from satrap.core.log import logger
 CONFIG_DIR = get_config_path("plugins", legacy_name="plugin_config")
 """插件全局配置目录, 与其它 JSON 配置共用项目 .satrap/config"""
 
-_FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "llm", "embed", "rerank", "asr", "img", "knowledge_base", "knowledge_bases")
+_FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "time", "llm", "embed", "rerank", "asr", "img", "knowledge_base", "knowledge_bases")
 """支持的配置字段类型"""
+
+_TIME_RE = re.compile(r"^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$")
+"""time 字段的 HH:MM 取值格式, 允许 24:00 表示当天结束"""
 
 _PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 """插件配置文件使用的稳定名称格式"""
@@ -83,6 +86,10 @@ class ConfigField:
     label: str = ""
     option_labels: dict[str, str] = field(default_factory=dict[str, str])
     strict: bool = False
+    group: str = ""
+    """属性面板分组名, 空串表示不分组"""
+    visible_when: dict[str, Any | list[Any]] | None = None
+    """显示条件 {字段: 值 或 [值, ...]}: 全部满足才显示, 只影响前端展示, 后端照常校验"""
 
     def validate_strict(self, value: Any) -> Any:
         """管理接口严格校验显式值, 不以默认值吞掉非法输入"""
@@ -113,6 +120,8 @@ class ConfigField:
                 raise ValueError(f"{self.name} 必须是字符串")
             if self.type == "select" and self.options and value not in self.options:
                 raise ValueError(f"{self.name} 不在可选值中")
+            if self.type == "time" and _TIME_RE.fullmatch(value) is None:
+                raise ValueError(f"{self.name} 必须是 HH:MM 格式 (00:00-24:00)")
         return value
 
     def validate(self, value: Any) -> Any:
@@ -157,6 +166,12 @@ class ConfigField:
                 text = str(value)
                 if self.options and text not in self.options:
                     logger.warning(f"[插件配置] {self.name} 值 {text} 不在可选 {self.options}, 回退默认")
+                    return self.default
+                return text
+            if self.type == "time":
+                text = str(value).strip()
+                if _TIME_RE.fullmatch(text) is None:
+                    logger.warning(f"[插件配置] {self.name} 值 {value!r} 不是 HH:MM, 回退默认 {self.default!r}")
                     return self.default
                 return text
             # string / path / textarea 统一按字符串
@@ -216,11 +231,50 @@ def parse_config_schema(meta: dict[str, Any]) -> dict[str, ConfigField]:
                 label=str(spec_dict.get("label") or ""),
                 option_labels=labels,
                 strict=spec_dict.get("strict") is True,
+                group=str(spec_dict.get("group") or ""),
+                visible_when=parse_visible_when(name, spec_dict.get("visible_when")),
             )
         else:
             fields[name] = ConfigField(name=name, type="string", default=spec)
             # 简写: key: 默认值 (类型按 string)
+    for fname, fld in fields.items():
+        if fld.visible_when is None:
+            continue
+        for ref in fld.visible_when:
+            if ref not in fields:
+                raise ValueError(f"配置字段 {fname} 的 visible_when 引用了不存在的字段 {ref}")
     return fields
+
+
+def parse_visible_when(field_name: str, raw: object) -> dict[str, Any | list[Any]] | None:
+    """
+    解析 visible_when 显示条件, 每项为 {字段: 值} 或 {字段: [值, ...]}
+
+    参数:
+    - field_name: 声明该条件的配置字段名, 仅用于报错定位
+    - raw: meta.yaml 中的 visible_when 原始值
+
+    返回:
+    - 规范化后的条件映射; 未声明返回 None, 非法结构抛出 ValueError
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"配置字段 {field_name} 的 visible_when 必须是非空映射")
+    parsed: dict[str, Any] = {}
+    for key, value in cast(dict[object, object], raw).items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"配置字段 {field_name} 的 visible_when 引用了非法字段名")
+        if isinstance(value, list):
+            items = cast(list[object], value)
+            if not items or any(not isinstance(item, (str, int, float)) for item in items):
+                raise ValueError(f"配置字段 {field_name} 的 visible_when.{key} 列表必须是非空标量数组")
+            parsed[key] = list(items)
+        elif isinstance(value, (str, int, float)):
+            parsed[key] = value
+        else:
+            raise ValueError(f"配置字段 {field_name} 的 visible_when.{key} 必须是标量或标量数组")
+    return parsed
 
 
 class PluginConfigManager:
@@ -569,6 +623,8 @@ def schema_to_payload(schema: dict[str, ConfigField]) -> dict[str, dict[str, Any
             "scope": fld.scope,
             **({"label": fld.label} if fld.label else {}),
             **({"option_labels": fld.option_labels} if fld.option_labels else {}),
+            **({"group": fld.group} if fld.group else {}),
+            **({"visible_when": dict(fld.visible_when)} if fld.visible_when else {}),
         }
         for key, fld in schema.items()
     }

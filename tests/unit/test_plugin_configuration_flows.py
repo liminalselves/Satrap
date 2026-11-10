@@ -958,3 +958,55 @@ def test_factory_declarations_do_not_survive_missing_meta_yaml(monkeypatch: pyte
         bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
     # 文件消失后仍走真实读取并抛出既有错误, 不返回缓存声明
     assert loads == [str(plugin_dir)] * 2
+
+def test_config_field_time_group_and_visible_when():
+    """time 校验 HH:MM, group/visible_when 解析校验并进入 payload"""
+    meta: dict[str, Any] = {
+        "config_schema": {
+            "start": {"type": "time", "label": "开始", "default": "22:00"},
+            "end": {"type": "time", "label": "结束", "default": "07:00", "group": "时段"},
+            "mask_char": {
+                "type": "string", "default": "*", "group": "遮盖",
+                "visible_when": {"mode": "mask"},
+            },
+            "mode": {"type": "select", "default": "drop", "options": ["drop", "mask"]},
+            "allow": {
+                "type": "textarea", "default": "",
+                "visible_when": {"mode": ["drop", "mask"], "level": 2},
+            },
+            "level": {"type": "number", "default": 1},
+        }
+    }
+    schema = parse_config_schema(meta)
+    assert schema["start"].type == "time"
+    assert schema["end"].group == "时段"
+    assert schema["mask_char"].visible_when == {"mode": "mask"}
+    assert schema["allow"].visible_when == {"mode": ["drop", "mask"], "level": 2}
+
+    time_field = schema["start"]
+    assert time_field.validate("23:30") == "23:30"
+    assert time_field.validate("24:00") == "24:00"
+    assert time_field.validate("24:30") == "22:00"   # 非法值回退默认
+    assert time_field.validate("9:00") == "22:00"    # 必须两位小时
+    assert time_field.validate_strict("00:00") == "00:00"
+    with pytest.raises(ValueError, match="HH:MM"):
+        time_field.validate_strict("25:00")
+    with pytest.raises(ValueError, match="字符串"):
+        time_field.validate_strict(900)
+
+    payload = schema_to_payload(schema)
+    assert payload["end"]["group"] == "时段"
+    assert payload["mask_char"]["visible_when"] == {"mode": "mask"}
+    assert "group" not in payload["start"] and "visible_when" not in payload["start"]
+    json.dumps(payload)
+
+def test_parse_config_schema_visible_when_errors():
+    """visible_when 引用未知字段或结构非法时报错"""
+    with pytest.raises(ValueError, match="不存在的字段"):
+        parse_config_schema({"config_schema": {"a": {"type": "string", "visible_when": {"ghost": "x"}}}})
+    with pytest.raises(ValueError, match="非空映射"):
+        parse_config_schema({"config_schema": {"a": {"type": "string", "visible_when": {}}}})
+    with pytest.raises(ValueError, match="标量或标量数组"):
+        parse_config_schema({"config_schema": {"a": {"type": "string", "b": {"type": "string"}, "visible_when": {"b": {"x": 1}}}}})
+    with pytest.raises(ValueError, match="标量数组"):
+        parse_config_schema({"config_schema": {"a": {"type": "string", "b": {"type": "string"}, "visible_when": {"b": []}}}})
