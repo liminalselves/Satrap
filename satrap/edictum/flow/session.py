@@ -12,6 +12,7 @@ from satrap.edictum.flow.definition import FlowDefinition, FlowNodeInstance, par
 from satrap.edictum.flow.registry import FlowNodeRegistry
 from satrap.edictum.flow.store import FlowStore
 from satrap.edictum.flow.validate import validate
+from satrap.edictum.flow.budget import FlowCallBudget, BudgetExceeded
 
 from typing import Any
 import contextvars
@@ -73,6 +74,7 @@ class AsyncFlowSession(AsyncSession):
         self._tile_last_at: dict[str, float] = {}
         self._failure_notified: dict[str, bool] = {}
         self._wake_count: dict[str, int] = {}
+        self._budget: FlowCallBudget | None = None
 
     async def _async_init(self) -> None:
         """解析定义, 静态检查, 按 WF 节点装配 AsyncModelWorkflowFramework"""
@@ -85,6 +87,14 @@ class AsyncFlowSession(AsyncSession):
         if any(i.level == "error" for i in self._issues):
             raise ValueError("流程定义存在错误, 请先通过 /config/edictum/flow/validate 检查")
         self._definition = definition
+        if definition.budget is not None:
+            self._budget = FlowCallBudget(
+                max_calls=definition.budget.max_calls,
+                window_minutes=definition.budget.window_minutes,
+                count=definition.budget.count,
+            )
+        else:
+            self._budget = FlowCallBudget(max_calls=0)
         for node in definition.nodes.values():
             node_type = registry.get(node.type)
             if node_type is None or node_type.role != "workflow":
@@ -247,6 +257,12 @@ class AsyncFlowSession(AsyncSession):
             wf = self._workflows[wf_id]
             # 拉取输入 (P1-7 的共享求值在事件内生效)
             pulled = await self._pull_inputs(wf_id, run_id, event)
+            per_run = int(self._config(wf_id).get("max_calls_per_run") or 0)
+            if self._budget is not None:
+                self._budget.check_and_spend(
+                    source="wf", node_id=wf_id, event_id=event.event_id,
+                    run_id=run_id, per_run_limit=per_run,
+                )
             # 运行 WF
             token = current_flow_workflow.set(wf)
             try:
@@ -272,8 +288,12 @@ class AsyncFlowSession(AsyncSession):
         except Exception as error:
             record_debug("flow_run", "end", metadata={"wf": wf_id, "run_id": run_id, "status": "failed"})
             logger.error(f"[流程会话] WF {wf_id} 本次运行失败 run={run_id}: {error}")
+            if isinstance(error, BudgetExceeded):
+                record_debug("flow_budget", "exceeded", metadata={"wf": wf_id, "run_id": run_id})
             await self._notify_failure(wf_id, str(error))
         finally:
+            if self._budget is not None:
+                self._budget.end_run(run_id)
             next_event = await self._engine.finish(wf_id, event)
             if next_event is not None:
                 await self._on_wf_trigger(wf_id, next_event)
