@@ -1408,6 +1408,23 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 400, {"error": str(e)}
         # 接口: POST /api/config/edictum/sessions
 
+        if (
+            method == "POST"
+            and path == "/api/config/edictum/flow/validate"
+            and backend.edictum_config_manager
+            and backend.edictum_type_registry
+        ):
+            try:
+                service = EdictumConfigService(
+                    backend.edictum_config_manager,
+                    backend.edictum_type_registry,
+                    models=backend.model_config_manager,
+                )
+                return 200, service.validate_flow(_parse_json_object(body))
+            except Exception as e:
+                return 400, {"error": str(e)}
+        # 接口: POST /api/config/edictum/flow/validate
+
         edictum_prefix = "/api/config/edictum/sessions/"
         if (
             path.startswith(edictum_prefix)

@@ -253,6 +253,9 @@ class EdictumProvider:
         payload = {**definition.params, **(session_config.session_config or {})}
         if type_name in {"simple", "async_simple"}:
             payload = normalize_session_settings(payload)
+        elif type_name == "flow":
+            # 流程会话不走 simple 的参数归一化; params.flow 由工厂按节点解析
+            pass
         payload.pop("model_name", None)
         payload.pop("plugins", None)
         payload.pop("plugin_environment", None)

@@ -3766,6 +3766,17 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
+    if ctx.method == "POST" and ctx.path == "/config/edictum/flow/validate":
+        try:
+            service = _edictum_config_service()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            return 200, await RAG_WORKERS.run(lambda: service.validate_flow(payload))
+        except WorkerBusyError as e:
+            logger.warning(f"[Edictum 流程校验] 工作队列已满: {e}")
+            return 503, {"error": str(e)}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
     if ctx.method == "GET" and ctx.path == "/config/edictum/plugins":
         try:
             catalog = await PluginCatalog().snapshot_async()

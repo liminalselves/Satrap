@@ -62,12 +62,101 @@ class EdictumConfigService:
 
     def list_types(self) -> list[dict[str, Any]]:
         """
-        列出可创建的 Edictum 类型
+        列出可创建的 Edictum 类型, flow 类型附带节点注册表与端口类型表
 
         返回:
-        - list[dict[str, Any]]: 类型能力与配置元数据
+        - list[dict[str, Any]]: 类型能力与配置元数据; flow 项包含
+          node_types (内置+插件), port_types, defaults, models
         """
-        return self.type_registry.list_types()
+        types = self.type_registry.list_types()
+        for item in types:
+            if item.get("name") == "flow":
+                item["flow"] = self._flow_type_metadata()
+        return types
+
+    def _flow_type_metadata(self) -> dict[str, Any]:
+        """
+        组装 flow 类型的前端元数据: 节点类型, 端口类型表, 各层默认值, 模型能力
+
+        返回:
+        - dict[str, Any]: 编辑器需要的完整契约
+        """
+        from satrap.edictum.flow.registry import FlowNodeRegistry
+        from satrap.edictum.flow.types import DATA_PORT_TYPES, PORT_TYPE_LABELS, SIGNAL_PORT_TYPES
+
+        registry = FlowNodeRegistry()
+        plugin_catalog = {e.name: e for e in self.plugin_catalog.scan()}
+        for entry in plugin_catalog.values():
+            if entry.flow_nodes:
+                registry.register_plugin_nodes(entry.name, list(entry.flow_nodes))
+        node_types = [t.to_payload() for t in registry.all_types()]
+        port_types = {
+            t: {"label": PORT_TYPE_LABELS[t], "signal": t in SIGNAL_PORT_TYPES}
+            for t in DATA_PORT_TYPES
+        }
+        defaults = {
+            "flow": {},   # 流程默认, 编辑器初始为空
+            "plugin": {   # 插件全局默认 (P0-7 接口读写, 当前返回当前值)
+                name: {node.type.rsplit(".", 1)[-1]: {} for node in entry.flow_nodes}
+                for name, entry in plugin_catalog.items() if entry.flow_nodes
+            },
+        }
+        models = []
+        if self.models is not None:
+            try:
+                for name, cfg in self.models.list_models().items():
+                    models.append({
+                        "name": name,
+                        "ctx": getattr(cfg, "context_window", 0) or 0,
+                        "tools": getattr(cfg, "supports_tools", True),
+                    })
+            except Exception:
+                models = []   # 模型管理器接口差异时不阻断类型表
+        return {
+            "node_types": node_types,
+            "port_types": port_types,
+            "defaults": defaults,
+            "models": models,
+        }
+
+    def validate_flow(self, payload: object) -> dict[str, Any]:
+        """
+        只校验不保存: 解析 + 迁移 + 静态检查, 返回问题列表
+
+        参数:
+        - payload: {flow: params.flow, conversation_kinds?: ["group","private"]}
+
+        返回:
+        - dict[str, Any]: {"ok": bool, "issues": [...]}
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("校验请求必须是对象")
+        body = dict(cast(dict[str, Any], payload))
+        raw_flow = body.get("flow")
+        if raw_flow is None:
+            raise ValueError("缺少 flow 字段")
+        kinds = body.get("conversation_kinds")
+        if kinds is not None and not (isinstance(kinds, list) and all(k in ("group", "private") for k in kinds)):
+            raise ValueError("conversation_kinds 只能是 group/private 列表")
+        from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition
+        from satrap.edictum.flow.registry import FlowNodeRegistry
+        from satrap.edictum.flow.validate import validate
+
+        registry = FlowNodeRegistry()
+        plugin_catalog = {e.name: e for e in self.plugin_catalog.scan()}
+        for entry in plugin_catalog.values():
+            if entry.flow_nodes:
+                registry.register_plugin_nodes(entry.name, list(entry.flow_nodes))
+        try:
+            definition, _, errors = migrate_flow_definition(parse_flow_definition(raw_flow), registry)
+        except Exception as error:
+            return {"ok": False, "issues": [{"code": "flow_parse_error", "level": "error", "category": "结构", "message": str(error)}]}
+        issues = [i.to_payload() for i in validate(
+            definition, registry, plugin_catalog=plugin_catalog,
+            conversation_kinds=[str(k) for k in kinds] if kinds else None,
+        )]
+        issues = [{"code": e.code, "level": "error", "category": "结构", "message": str(e), "node": e.node, "field": e.field} for e in errors] + issues
+        return {"ok": not any(i["level"] == "error" for i in issues), "issues": issues}
 
     def list_configs(self) -> dict[str, dict[str, Any]]:
         """

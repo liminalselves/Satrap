@@ -34,6 +34,12 @@ EdictumPluginUninstaller = Callable[
 from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
 
 
+def _flow_factory(**kwargs: Any) -> AsyncSession:
+    """延迟导入流程会话工厂, 避免 registry 层直接依赖运行时装配"""
+    from satrap.edictum.flow.session import AsyncFlowSession
+    return AsyncFlowSession(**kwargs)
+
+
 @dataclass(frozen=True)
 class EdictumTypeDefinition:
     """一个可注册的 Edictum 会话实现定义"""
@@ -258,6 +264,24 @@ def create_default_edictum_type_registry() -> EdictumTypeRegistry:
             config_schema=schema,
             plugin_installer=install_plugin,
             plugin_uninstaller=uninstall_plugin,
+        )
+    )
+    registry.register(
+        EdictumTypeDefinition(
+            name="flow",
+            factory=_flow_factory,
+            is_async=True,
+            description="流程会话: 多个 workflow 由节点图编排 (issue #4)",
+            config_schema={
+                "type": "object",
+                "additionalProperties": True,
+                "properties": {
+                    "flow": {"type": "object"},
+                },
+            },
+            supports_plugins=True,
+            supports_mcp=False,
+            supports_stream=False,
         )
     )
     return registry

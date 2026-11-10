@@ -96,6 +96,39 @@ class EdictumConfigManager:
             raise ValueError("Edictum 配置名称不能包含路径分隔符")
         return name
 
+    def _normalize_flow_params(self, params: dict[str, Any], catalog: PluginCatalog | None) -> dict[str, Any]:
+        """
+        校验流程会话的 params.flow: 解析定义并做静态检查, 有错误即拒绝
+
+        参数:
+        - params: 原始 params
+        - catalog: 插件目录, 用于检查节点插件是否存在/停用
+
+        返回:
+        - dict[str, Any]: 校验通过的 params
+        """
+        raw_flow = params.get("flow")
+        if raw_flow is None:
+            raise ValueError("flow 类型必须提供 params.flow")
+        from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition
+        from satrap.edictum.flow.registry import FlowNodeRegistry
+        from satrap.edictum.flow.validate import validate
+
+        registry = FlowNodeRegistry()
+        catalog_obj = catalog or self.plugin_catalog
+        plugin_catalog = {entry.name: entry for entry in catalog_obj.scan()}
+        for entry in plugin_catalog.values():
+            if entry.flow_nodes:
+                registry.register_plugin_nodes(entry.name, list(entry.flow_nodes))
+        definition, _, errors = migrate_flow_definition(parse_flow_definition(raw_flow), registry)
+        if errors:
+            raise ValueError(f"流程定义迁移失败: {'; '.join(str(e) for e in errors)}")
+        issues = validate(definition, registry, plugin_catalog=plugin_catalog)
+        if any(i.level == "error" for i in issues):
+            raise ValueError(
+                "流程静态检查未通过: " + "; ".join(f"{i.code} @{i.node or '-'}" for i in issues if i.level == "error"))
+        return dict(params)
+
     def _normalize_plugins(self, value: object, catalog: PluginCatalog | None = None) -> list[dict[str, Any]]:
         """
         校验插件配置列表并复制为 JSON 安全结构
@@ -137,6 +170,10 @@ class EdictumConfigManager:
             raise ValueError("params 必须是对象")
         if type_name in {"simple", "async_simple"}:
             params = normalize_session_settings(params)
+        elif type_name == "flow":
+            # 流程会话不做 simple 的参数归一化, 也不注入默认插件;
+            # 保存时的合法性由 _normalize_entry 之后的流程静态检查保证
+            params = self._normalize_flow_params(params, catalog)
         model_name = str(raw.get("model_name", "")).strip()
         updated = raw.get("_updated_at")
         if updated is not None and (not isinstance(updated, (int, float)) or isinstance(updated, bool) or not math.isfinite(updated) or updated < 0):
