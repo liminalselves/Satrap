@@ -804,3 +804,44 @@ async def test_misskey_frozen_account_and_native_timestamp(tmp_path: Path) -> No
     item = _platform_message_outgoing_item(adapter, MessageScope("mk", "bot", "group", "r"), "confirmed")
     assert item["sender_id"] == "bot" and item["time_source"] == "platform"
     assert _platform_message_outgoing_store(adapter).get(MessageScope("mk", "replacement", "group", "r"), "confirmed") is None
+
+def test_message_seq_is_monotonic_per_scope(tmp_path: Path) -> None:
+    """同一 scope 内 seq 单调递增, 删除/撤回/恢复不改变其他消息序号"""
+    store = _platform_messages_store(tmp_path)
+    scope = SCOPE
+    for i in range(5):
+        store.record(scope, _message(f"m{i}", text=f"msg{i}"))
+    items = store.after(scope, 0)
+    seqs = [item["seq"] for item in items]
+    assert seqs == sorted(seqs) and len(seqs) == 5
+    assert seqs[-1] == store.latest_seq(scope)
+
+    # 撤回一条不影响别人的序号
+    store.recall(scope, "m2")
+    after = store.after(scope, seqs[1])
+    assert {item["message_id"] for item in after} >= {"m3", "m4"}
+    assert all(item["seq"] > seqs[1] for item in after)
+
+    # 新消息继续递增
+    store.record(scope, _message("m5", text="新"))
+    assert store.latest_seq(scope) > seqs[-1]
+
+    # latest 倒序取再正序返回
+    latest = store.latest(scope, 3)
+    assert len(latest) == 3 and latest[-1]["message_id"] == "m5"
+
+def test_message_seq_survives_delete_restore(tmp_path: Path) -> None:
+    """删除恢复写回保留原 seq, 不会插到新位置"""
+    store = _platform_messages_store(tmp_path)
+    scope = SCOPE
+    store.record(scope, _message("a"))
+    store.record(scope, _message("b"))
+    state = store.management_state(scope)
+    backup = store.delete(scope, message_ids=["a", "b"], expected_revision=state["revision"])
+    store.record(scope, _message("c"))
+    seq_c = store.after(scope, 0)[-1]["seq"]
+    state2 = store.management_state(scope)
+    store.restore(scope, backup["backup_id"], expected_revision=state2["revision"])
+    items = {item["message_id"]: item["seq"] for item in store.after(scope, 0)}
+    assert items["a"] < items["b"] < items["c"]
+    assert items["c"] == seq_c   # c 的 seq 不变, 没有被恢复顶掉

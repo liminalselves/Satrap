@@ -311,12 +311,23 @@ class PlatformMessageStore:
             if chat["delete_before"] is not None and message.message_time <= chat["delete_before"]:
                 return False
             now = self._clock()
+            # 同事务分配单调递增的 seq: 恢复删除的消息写回后 rowid 会变, 序号必须独立
+            seq = int(connection.execute(
+                "UPDATE platform_message_chats SET next_seq=next_seq+1 WHERE scope_key=? RETURNING next_seq-1",
+                (scope.key,),
+            ).fetchone()[0])
             result = connection.execute(
                 "INSERT INTO platform_messages(scope_key, message_id, sender_id, nickname, card, message_time, received_at, "
-                "direction, text, components_json, reply_to_message_id, mentions_json, media_json, source, truncated, time_source) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(scope_key, message_id) DO NOTHING",
-                (scope.key, *values[:5], received, *values[5:]),
+                "direction, text, components_json, reply_to_message_id, mentions_json, media_json, source, truncated, time_source, seq) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(scope_key, message_id) DO NOTHING",
+                (scope.key, *values[:5], received, *values[5:], seq),
             )
+            if result.rowcount == 0:
+                # 重复上报不消耗序号: 回滚 pre-allocated seq, 避免空洞 (单调但不要求连续)
+                connection.execute(
+                    "UPDATE platform_message_chats SET next_seq=next_seq-1 WHERE scope_key=? AND next_seq=?",
+                    (scope.key, seq + 1),
+                )
             if result.rowcount == 0:
                 previous = connection.execute(
                     "SELECT sender_id, status FROM platform_messages WHERE scope_key=? AND message_id=?",
@@ -338,6 +349,83 @@ class PlatformMessageStore:
             if message.message_time < now - self.retention_days * 86400:
                 self._erase(connection, scope.key, [message.message_id], "expired", "retention")
             return True
+
+    def after(self, scope: MessageScope, seq: int, limit: int = 500) -> list[dict[str, Any]]:
+        """
+        按单调序号读取某位置之后的消息, 供阈值磁贴取批次
+
+        参数:
+        - scope: 已准入的对话身份
+        - seq: 已提交位置, 返回 seq 更大的消息; 0 表示从头读
+        - limit: 单批上限, 1 到 1000
+
+        返回:
+        - 按 seq 升序的消息列表 (active + recalled, 含删除占位以保证序号连续可读)
+        """
+        self._check_scope(scope)
+        if type(seq) is not int or seq < 0:
+            raise ValueError("seq 必须是非负整数")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit 必须在 1 到 1000 之间")
+        connection = self._connect()
+        if connection is None:
+            return []
+        with closing(connection):
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                "SELECT * FROM platform_messages WHERE scope_key=? AND seq>? ORDER BY seq LIMIT ?",
+                (scope.key, seq, limit),
+            ).fetchall()
+            return [self._item(row) for row in rows]
+
+    def latest(self, scope: MessageScope, n: int = 20) -> list[dict[str, Any]]:
+        """
+        读取最新 n 条消息 (按 seq 倒序取前 n 再正序返回)
+
+        参数:
+        - scope: 已准入的对话身份
+        - n: 条数, 0 到 500; 0 返回空
+
+        返回:
+        - 按 seq 升序的消息列表
+        """
+        self._check_scope(scope)
+        if type(n) is not int or n < 0 or n > 500:
+            raise ValueError("n 必须在 0 到 500 之间")
+        if n == 0:
+            return []
+        connection = self._connect()
+        if connection is None:
+            return []
+        with closing(connection):
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                "SELECT * FROM platform_messages WHERE scope_key=? AND seq IS NOT NULL "
+                "ORDER BY seq DESC LIMIT ?",
+                (scope.key, n),
+            ).fetchall()
+            return [self._item(row) for row in reversed(rows)]
+
+    def latest_seq(self, scope: MessageScope) -> int:
+        """
+        当前最大的 seq, 供 /new 的 drop 直接把位置跳到最新
+
+        参数:
+        - scope: 已准入的对话身份
+
+        返回:
+        - 最大 seq; 无消息或档案不存在时返回 0
+        """
+        self._check_scope(scope)
+        connection = self._connect()
+        if connection is None:
+            return 0
+        with closing(connection):
+            connection.execute("BEGIN")
+            row = connection.execute(
+                "SELECT MAX(seq) FROM platform_messages WHERE scope_key=?", (scope.key,),
+            ).fetchone()
+            return int(row[0] or 0)
 
     def get(self, scope: MessageScope, message_id: str, *, history_window: HistoryWindow | None = None) -> dict[str, Any] | None:
         """
@@ -393,7 +481,8 @@ class PlatformMessageStore:
                     or not isinstance(media, list) or not all(isinstance(item, dict) for item in media)
                     or not isinstance(mentions, list) or not all(isinstance(item, str) and item.strip() for item in mentions)):
                 raise MessageArchiveError("archive_unavailable", "消息档案组件结构损坏")
-        return {"message_id": row["message_id"], "sender_id": row["sender_id"] if active else "",
+        return {"message_id": row["message_id"], "seq": row["seq"] if "seq" in row.keys() else None,
+                "sender_id": row["sender_id"] if active else "",
                 "nickname": row["nickname"] if active else "", "card": row["card"] if active else "",
                 "message_time": row["message_time"], "time_source": row["time_source"],
                 "received_at": row["received_at"], "direction": row["direction"],
@@ -577,11 +666,22 @@ class PlatformMessageStore:
             connection.execute("BEGIN IMMEDIATE")
             self._chat(connection, scope)
             now = self._clock()
-            connection.execute(
-                "INSERT INTO platform_messages(scope_key, message_id, message_time, received_at, direction, source, status, time_source) "
-                "VALUES(?, ?, ?, ?, 'inbound', 'platform_recall', 'recalled', 'local') ON CONFLICT(scope_key, message_id) DO NOTHING",
-                (scope.key, message_id, now, now),
+            # 撤回标记也分配 seq, 保证它插在消息流末尾而不是挤进已分配区间
+            seq = int(connection.execute(
+                "UPDATE platform_message_chats SET next_seq=next_seq+1 WHERE scope_key=? RETURNING next_seq-1",
+                (scope.key,),
+            ).fetchone()[0])
+            result = connection.execute(
+                "INSERT INTO platform_messages(scope_key, message_id, message_time, received_at, direction, source, status, time_source, seq) "
+                "VALUES(?, ?, ?, ?, 'inbound', 'platform_recall', 'recalled', 'local', ?) "
+                "ON CONFLICT(scope_key, message_id) DO NOTHING",
+                (scope.key, message_id, now, now, seq),
             )
+            if result.rowcount == 0:
+                connection.execute(
+                    "UPDATE platform_message_chats SET next_seq=next_seq-1 WHERE scope_key=? AND next_seq=?",
+                    (scope.key, seq + 1),
+                )
             self._erase(connection, scope.key, [message_id], "recalled", "recall")
             connection.execute("UPDATE platform_message_chats SET revision=revision+1 WHERE scope_key=?", (scope.key,))
 
@@ -638,11 +738,21 @@ class PlatformMessageStore:
             self._erase(connection, scope.key, ids, "deleted", token)
             if message_ids is not None:
                 for message_id in message_ids:
-                    connection.execute(
+                    # 删除占位也分配 seq, 排在当前末尾, 让阈值位置按单调顺序推进
+                    seq = int(connection.execute(
+                        "UPDATE platform_message_chats SET next_seq=next_seq+1 WHERE scope_key=? RETURNING next_seq-1",
+                        (scope.key,),
+                    ).fetchone()[0])
+                    result = connection.execute(
                         "INSERT INTO platform_messages(scope_key, message_id, message_time, received_at, direction, source, "
-                        "status, delete_token, time_source) VALUES(?, ?, ?, ?, 'inbound', 'local_delete', 'deleted', ?, 'local') "
-                        "ON CONFLICT(scope_key, message_id) DO NOTHING", (scope.key, message_id, now, now, token),
+                        "status, delete_token, time_source, seq) VALUES(?, ?, ?, ?, 'inbound', 'local_delete', 'deleted', ?, 'local', ?) "
+                        "ON CONFLICT(scope_key, message_id) DO NOTHING", (scope.key, message_id, now, now, token, seq),
                     )
+                    if result.rowcount == 0:
+                        connection.execute(
+                            "UPDATE platform_message_chats SET next_seq=next_seq-1 WHERE scope_key=? AND next_seq=?",
+                            (scope.key, seq + 1),
+                        )
             else:
                 connection.execute(
                     "UPDATE platform_message_chats SET delete_before=MAX(COALESCE(delete_before, ?), ?), delete_token=? "
