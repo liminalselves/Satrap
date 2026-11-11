@@ -148,7 +148,7 @@ applicability:
 
 interop:
   requires:
-    group_chat: true
+    group_chat: {optional: true}
 
 flow:
   workflow:

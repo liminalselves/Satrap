@@ -44,7 +44,7 @@ def test_default_registry_exposes_builtin_types_and_accepts_future_type() -> Non
     names = [item["name"] for item in registry.list_types()]
     created = registry.create("future", session_id="future-1", feature=True)
 
-    assert names == ["async_simple", "future", "simple"]
+    assert names == ["async_simple", "flow", "future", "simple"]
     assert isinstance(created, _FutureEdictumSession)
     assert created.kwargs["feature"] is True
 

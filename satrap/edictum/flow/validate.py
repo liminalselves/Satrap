@@ -700,10 +700,13 @@ def validate(
                 add(Issue(code="flow_plugin_placement", level="error", category="workflow", node=w.id, field="plugins",
                           message=f"{entry.display_name or p} 只能装在前台 WF 上, {name(w.id)} 只会在后台运行"))
             requires = entry.interop.get("requires") if isinstance(entry.interop, dict) else None
-            for req in ([r for r, need in requires.items() if need] if isinstance(requires, dict) else []):
-                if req not in plugins:
-                    add(Issue(code="flow_plugin_dependency", level="error", category="workflow", node=w.id, field="plugins",
-                              message=f"{entry.display_name or p} 依赖 {req}, 需要装在同一个 WF 上"))
+            if isinstance(requires, dict):
+                for req, decl in requires.items():
+                    # 流程里 optional 依赖也要同装才有用: 发图这类能力没装 group_chat 就走不通
+                    needed = decl is True or (isinstance(decl, dict) and decl) or (decl is not True and not isinstance(decl, dict))
+                    if needed and req not in plugins:
+                        add(Issue(code="flow_plugin_dependency", level="error", category="workflow", node=w.id, field="plugins",
+                                  message=f"{entry.display_name or p} 依赖 {req}, 需要装在同一个 WF 上"))
             for tname in _workflow_plugin_tools(entry):
                 owner = tool_owner.get(tname)
                 if owner:
