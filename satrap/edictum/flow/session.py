@@ -104,6 +104,8 @@ class AsyncFlowSession(AsyncSession):
         self._tile_last_at: dict[str, float] = {}
         self._failure_notified: dict[str, bool] = {}
         self._wake_count: dict[str, int] = {}
+        self._idle_task: Any = None
+        """idle_seconds 阈值的定时检查任务 (P1-4); 消息不来也照样触发"""
         self._budget: FlowCallBudget | None = None
         self._instances = FlowNodeInstancePool()
         """插件节点实例池 (P2-2); 类写法按生效配置指纹重建"""
@@ -159,6 +161,34 @@ class AsyncFlowSession(AsyncSession):
             self._bind_snapshot_tools(node, wf)
             self._bind_reply_tool(node, wf)
         await self._refresh_instances()
+        self._start_idle_timer()
+
+    def _start_idle_timer(self) -> None:
+        """按最小 idle_seconds 起后台定时检查; 消息不来时阈值也照常触发 (P1-4)"""
+        if self._definition is None:
+            return
+        idles = [
+            int(node.config.get("idle_seconds") or 0)
+            for node in self._definition.nodes.values() if node.type == "threshold"
+        ]
+        period = min((x for x in idles if x > 0), default=0)
+        if period <= 0:
+            return
+        import asyncio
+        interval = max(5.0, period / 2)
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self._ensure_engine()
+                    await self._check_thresholds()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    logger.warning(f"[流程会话] idle 检查异常: {error}")
+
+        self._idle_task = asyncio.create_task(_loop(), name=f"flow-idle-{self.session_id}")
 
     # ---------- 插件节点实现与实例 (P2-2) ----------
 
@@ -853,6 +883,9 @@ class AsyncFlowSession(AsyncSession):
 
     async def close_flow_nodes(self) -> None:
         """会话释放时关闭全部插件节点实例 (edictum provider 释放路径调用)"""
+        if self._idle_task is not None:
+            self._idle_task.cancel()
+            self._idle_task = None
         await self._instances.close_all()
 
     def runtime_status(self) -> dict[str, Any]:

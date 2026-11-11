@@ -1,6 +1,6 @@
-# 流程节点契约: 配置示例 (简化版草案)
+# 流程节点契约: 配置示例
 
-issue #4 讨论用, 未定稿。每个示例逐行注释。
+issue #4 已实现的节点契约 (P0–P3 完成于 issue-4 分支)。每个示例逐行注释。
 
 这一版按"能推断的不写, 交给宿主的不写, 首版用不上的先不做"简化, 并合入了两轮第三方审计确认成立的修正。第二轮的改动: 插件全局默认改为单独文件 (示例 K), 各层默认值带版本并先迁移后校验 (示例 N), passthrough 只按必填输入推断 (第 2 节), visible_when 只管显示, 预算分软硬两层 (示例 E)。
 
@@ -582,7 +582,9 @@ flow:
 # image_generation/meta.yaml (节选)
 interop:                                 # 依赖关系继续用现有字段
   requires:
-    group_chat: true                     # 同一个 WF 上没装 group_chat → flow_plugin_dependency
+    group_chat: {optional: true}         # 同一个 WF 上没装 group_chat → flow_plugin_dependency;
+                                         # optional 让普通会话里 image_generation 单独可装,
+                                         # 但流程编辑时仍按"需要同装"检查 (发图依赖 group_chat 富消息通道)
 flow:
   workflow:
     foreground_only: true

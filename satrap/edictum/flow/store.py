@@ -194,6 +194,15 @@ class FlowStore:
             connection.execute("BEGIN IMMEDIATE")
             for wf_id in wf_ids:
                 out[wf_id] = self.ensure_position(connection, self._current_scope_key, tile_id, wf_id)
+            # 不再由该磁贴驱动的 WF 清掉它的位置记录 (运行时契约 3.6)
+            driven = set(wf_ids)
+            rows = connection.execute(
+                "SELECT wf_id FROM flow_threshold_positions WHERE scope_key=? AND flow_name=? AND tile_id=?",
+                (self._current_scope_key, self.flow_name, tile_id),
+            ).fetchall()
+            for (wf_id,) in rows:
+                if str(wf_id) not in driven:
+                    self.delete_position(connection, self._current_scope_key, tile_id, str(wf_id))
         return out
 
     @property
