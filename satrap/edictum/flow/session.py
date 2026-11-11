@@ -157,6 +157,7 @@ class AsyncFlowSession(AsyncSession):
             self._track_workflow_context(wf_id, wf.ctx)
             self._workflows[node.id] = wf
             self._bind_snapshot_tools(node, wf)
+            self._bind_reply_tool(node, wf)
         await self._refresh_instances()
 
     # ---------- 插件节点实现与实例 (P2-2) ----------
@@ -260,6 +261,50 @@ class AsyncFlowSession(AsyncSession):
         for tool in get_tools(self):
             wf.tools_manager.register_tool(tool)
 
+    def _bind_reply_tool(self, node: FlowNodeInstance, wf: AsyncModelWorkflowFramework) -> None:
+        """
+        给连着平台回复节点的 WF 注入 flow_reply 工具 (P1-8)
+
+        参数:
+        - node: WF 节点实例
+        - wf: 已装配的工作流
+        """
+        assert self._definition is not None
+        quote = False
+        connected = False
+        for e in self._definition.edges:
+            if e.source != node.id or e.source_port != "text":
+                continue
+            target = self._definition.nodes.get(e.target)
+            if target is None or target.type != "output":
+                continue
+            connected = True
+            if str(target.config.get("send_mode") or "flow_reply") == "flow_reply":
+                quote = bool(target.config.get("quote", False))
+        if not connected:
+            return
+        from satrap.edictum.flow.reply_tool import AsyncFlowReplyTool
+        async def _send(text: str, quote_trigger: bool) -> bool:
+            return await self._reply_send(text, quote_trigger)
+        wf.tools_manager.register_tool(AsyncFlowReplyTool(_send, quote=quote))
+
+    async def _reply_send(self, text: str, quote_trigger: bool) -> bool:
+        """flow_reply 的实际发送: 有触发消息走前台 ReplyTurn, 否则走后台发送"""
+        from satrap.edictum.flow.reply_tool import send_flow_reply
+        foreground = getattr(self, "_foreground_event", None)
+        sender = None
+        if foreground is not None:
+            async def sender(text: str) -> bool:
+                # 经平台事件直接发: quote_trigger 时用事件自带 decorate_reply
+                from satrap.core.platform.event import MessageChain
+                receipt = await foreground.send(MessageChain.from_text(text), explicit_reply=not quote_trigger)
+                return getattr(receipt, "status", "") == "success"
+        return await send_flow_reply(
+            send_scheduled=self._send_scheduled_scope,
+            scope=self._foreground_scope, text=text,
+            foreground_sender=sender, quote_trigger=quote_trigger,
+        )
+
     def _flow_name(self) -> str:
         """流程配置名, 用作持久化分组的第二维; 缺省退化为 session_id"""
         return self._named_flow or self.session_id
@@ -311,6 +356,15 @@ class AsyncFlowSession(AsyncSession):
         event.set_extra("flow_observed", True)
         # 档案来源: 首次 observe 从事件适配器补入消息库与对话键
         self._bind_archive(event)
+        # 前台回复通道: 触发 WF 的那条真实消息绑作发送身份
+        self._foreground_event = event
+        self._foreground_scope = None
+        try:
+            adapter = getattr(event, "adapter", None)
+            if adapter is not None:
+                self._foreground_scope = adapter.message_archive_scope(event.platform_message)
+        except Exception:
+            self._foreground_scope = None
         # SessionManager 经属性注入的 /new 边界在构造后到达, 首个 observe 才读
         if not self._new_checked:
             self._new_checked = True
@@ -447,9 +501,11 @@ class AsyncFlowSession(AsyncSession):
 
     def _bind_archive(self, event: Any) -> None:
         """从事件适配器补入消息档案库与 scope 键; 已注入或已绑定时跳过"""
+        adapter = getattr(event, "adapter", None)
+        if adapter is not None:
+            self._bound_adapter = adapter
         if self._message_store is not None and self._scope_key != self.session_id:
             return
-        adapter = getattr(event, "adapter", None)
         if adapter is None:
             return
         if self._message_store is None:
@@ -645,9 +701,32 @@ class AsyncFlowSession(AsyncSession):
             # flow_reply: 模型已通过工具发过了, 不做兜底
             # group_chat_reply: 由 group_chat 插件自己发, 不干预
 
+    async def _send_scheduled_scope(self, scope: Any, text: str) -> Any:
+        """
+        后台发送 (无来源消息路径): 由注入的适配器或宿主回调执行
+
+        参数:
+        - scope: 冻结的 MessageScope
+        - text: 发送文本
+
+        返回:
+        - SendReceipt | None; 未接入通道返回 None
+        """
+        adapter_send = getattr(getattr(self, "_bound_adapter", None), "group_chat_send_scheduled", None)
+        if callable(adapter_send) and scope is not None:
+            from satrap.core.platform.event import MessageChain
+            from satrap.core.platform.scheduled import ScheduledTarget
+            from satrap.edictum.flow.reply_tool import _FlowScheduledRecorder
+            target = ScheduledTarget(scope=scope, connection_token=(), policy_revision="",
+                                     reminder_id="", attempt_id="", guard=lambda: True)
+            recorder = _FlowScheduledRecorder()
+            return await adapter_send(target, MessageChain.from_text(text), recorder)
+        return None
+
     async def _send_scheduled_text(self, text: str) -> bool:
-        """后台发送文本 (无来源消息路径), 由 P1-8 的发送通道负责"""
-        return False   # 适配器发送通道由会话创建时注入, 当前未接入时按未发出处理
+        """后台发送文本 (final_text 路径), 由 _send_scheduled_scope 负责"""
+        receipt = await self._send_scheduled_scope(getattr(self, "_foreground_scope", None), text)
+        return getattr(receipt, "status", "") == "success"
 
     def _wake_custom_hit(self, node: FlowNodeInstance, event: Any) -> bool:
         """自定义唤醒规则: @ / 唤醒词 / 新消息数, 任一满足"""
