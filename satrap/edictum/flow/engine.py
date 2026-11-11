@@ -285,6 +285,8 @@ class _WfState:
     busy: bool = False
     queued: list[FlowEvent] = field(default_factory=list)
     merged: FlowEvent | None = None
+    last_batch_to: int = 0
+    """已下发未完成的批次事件最大 batch_to; 防止同一批重复入队"""
 
 
 class TriggerEngine:
@@ -566,19 +568,25 @@ class TriggerEngine:
         wf_node = self.definition.nodes[wf_id]
         on_busy = str(self._config(wf_id).get("on_busy") or "queue")
         if not state.busy:
+            if event.kind == "batch":
+                state.last_batch_to = max(state.last_batch_to, event.batch_to)
             state.busy = True
             self._diag("flow_trigger", "fire", bodies={"output": {
                 "wf": wf_id, "why": event.why, "event_id": event.event_id}})
             for handler in self._handlers:
                 result = handler(wf_id, event)
                 if inspect.isawaitable(result):
-                    task = asyncio.create_task(result)
+                    task = asyncio.create_task(self._run_handler(result, wf_id))
                     self._tasks.add(task)
                     task.add_done_callback(self._tasks.discard)
             return
-        if on_busy == "drop":
+        if on_busy == "drop" or event.kind == "batch" and event.batch_to <= state.last_batch_to:
+            # drop 策略丢弃; 或: 已下发过的批次 (batch_to 不超过在飞上限) 不重复入队,
+            # 失败重试按未推进的 committed 位置重新读批, batch_to 会变 (新到的消息),
+            # 同一批数据不会再排第二遍
+            reason = "busy_drop" if on_busy == "drop" else "batch_already_pending"
             self._diag("flow_trigger", "blocked", bodies={"output": {
-                "wf": wf_id, "reason": "busy_drop", "why": event.why}})
+                "wf": wf_id, "reason": reason, "why": event.why}})
             return
         if on_busy == "merge":
             previous = state.merged
@@ -592,8 +600,24 @@ class TriggerEngine:
                 source_wf=event.source_wf or previous.source_wf,
                 source_event=event.source_event or previous.source_event,
             )
+            if event.kind == "batch":
+                state.last_batch_to = max(state.last_batch_to, event.batch_to)
             return
+        if event.kind == "batch":
+            state.last_batch_to = max(state.last_batch_to, event.batch_to)
         state.queued.append(event)
+
+    async def _run_handler(self, coro: Any, wf_id: str) -> None:
+        """跑一个 WF 触发任务; 异常吞掉由调用方流程负责, 引擎只保证 busy 复位"""
+        try:
+            await coro
+        except Exception as error:
+            logger.error(f"[流程引擎] WF {wf_id} 运行任务未处理异常: {error}")
+            # 引擎层兜底复位 busy 与在飞上限; 正常路径由 session._run_workflow 的 finish 负责
+            state = self._wf.get(wf_id)
+            if state is not None:
+                state.busy = False
+                state.last_batch_to = 0
 
     def running_workflows(self) -> list[str]:
         """当前正忙的 WF 节点 id 列表, 供运行状态接口读"""
@@ -630,6 +654,8 @@ class TriggerEngine:
             next_event = state.queued.pop(0)
         else:
             state.busy = False
+            # 空闲时在飞上限回落: 已推进位置覆盖或等下次检查重新读批
+            state.last_batch_to = 0
             return None
         if isinstance(self._evaluator, ConditionEvaluator):
             self._evaluator.forget(event.event_id)

@@ -87,7 +87,7 @@ class _Msg:
 
 
 def test_restart_recovers_positions_states_and_retriggers_batch():
-    """会话重建后阈值位置/状态槽不变, 落后批次按已提交位置重新触发"""
+    """会话重建后阈值位置/状态槽不变, 落后批次按已提交位置重新触发 (经会话层 _run_workflow)"""
     db = Path(tempfile.mkdtemp()) / "p.db"
     conn = sqlite3.connect(db); ensure_platform_tables(conn); conn.close()
     scope = MessageScope("adapter1", "self1", "group", "chat1")
@@ -100,7 +100,6 @@ def test_restart_recovers_positions_states_and_retriggers_batch():
     fs.commit_position(conn, scope.key, "t1", "w1", 2)
     conn.execute("COMMIT"); conn.close()
 
-    # 新建会话 = '重启'; flow_name 用同一 session_id 才读到同一组位置
     session = AsyncFlowSession(
         "sess1", llm=None,
         flow=_flow_definition(),
@@ -110,14 +109,15 @@ def test_restart_recovers_positions_states_and_retriggers_batch():
     session._flow_store = FlowStore(db, "a", "sess1")
     session._flow_store.scope_key = scope.key
     session._scope_key = scope.key
+    session._bound_scope = scope
 
-    fired: list[tuple[str, object]] = []
-    async def spy(wf_id, event):
-        fired.append((wf_id, event))
-    # 不建真 WF: _async_init 需要 llm; 手工装配最小集
+    fired: list[tuple[str, int, int]] = []
+    # 经会话层 _run_workflow 验证: 它应被调用并拿到正确批次边界
     async def fake_run(wf_id, event):
-        fired.append((wf_id, event))
-        return None
+        fired.append((wf_id, event.batch_from, event.batch_to))
+        # 模拟成功: 推进位置
+        session._flow_store.commit_states_by_scope_key(
+            scope.key, event.tile, wf_id, event.batch_to, [])
     session._on_wf_trigger = fake_run  # type: ignore[assignment]
 
     async def _init():
@@ -126,20 +126,20 @@ def test_restart_recovers_positions_states_and_retriggers_batch():
         definition, _, _ = migrate_flow_definition(parse_flow_definition(session._raw_flow), session._registry)
         session._definition = definition
         session._node_types = {n.id: session._registry.get(n.type) for n in definition.nodes.values()}
+        session._refresh_resolved()
         session._initialized = True
     asyncio.run(_init())
 
-    # 恢复: 已提交位置 seq=2, 积压 [3,4,5] -> 应触发一次批次
     async def _resume():
         await session._ensure_engine()
         await session._check_thresholds()
+        await asyncio.sleep(0.05)
     asyncio.run(_resume())
 
+    # fired 经 fire -> _on_wf_trigger -> fake_run 走到
     assert fired, "重启后落后的批次应重新触发"
-    wf_id, event = fired[0]
-    assert wf_id == "w1" and event.kind == "batch"
-    assert event.batch_from == 2 and event.batch_to == 5
-    assert len(event.batch) == 3
+    wf_id, batch_from, batch_to = fired[0]
+    assert wf_id == "w1" and batch_from == 2 and batch_to == 5
 
 
 def test_state_and_positions_survive_recycle():

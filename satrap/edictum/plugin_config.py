@@ -20,7 +20,7 @@ from satrap.core.storage.persist import atomic_write_json
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, Callable, TypedDict, cast
 import hashlib
 import threading
 import time
@@ -669,6 +669,40 @@ class PluginConfigManager:
                 return {}
             self._dir.mkdir(parents=True, exist_ok=True)
             atomic_write_json(path, {"format": 1, "nodes": nodes}, indent=2)
+        return self.load_flow_nodes_global(name)
+
+    def migrate_flow_nodes_global(
+        self,
+        name: str,
+        migrate: Callable[[dict[str, dict[str, Any]]], dict[str, dict[str, Any]]],
+    ) -> dict[str, dict[str, Any]]:
+        """
+        插件升级后首次加载时迁移节点默认并原子写回, 写前备份原文件 (P0-7)
+
+        参数:
+        - name: 插件稳定名称
+        - migrate: {节点名: {version, config}} -> 迁移后表; 抛异常则保留原样并写警告
+
+        返回:
+        - 迁移后的节点默认表; 迁移失败返回原表
+        """
+        path = self.flow_nodes_path(name)
+        current = self.load_flow_nodes_global(name)
+        if not current:
+            return {}
+        try:
+            migrated = migrate(current)
+        except Exception as error:
+            logger.warning(f"[插件配置] {name} 节点默认迁移失败, 保留原文件: {error}")
+            return current
+        if migrated == current:
+            return current
+        with FileLock(path.with_suffix(".lock")):
+            if path.is_file():
+                # 写前备份: 与原子写同目录, 保留最近一次原文件
+                backup = path.with_suffix(path.suffix + ".bak")
+                backup.write_bytes(path.read_bytes())
+            atomic_write_json(path, {"format": 1, "nodes": migrated}, indent=2)
         return self.load_flow_nodes_global(name)
 
     def resolve(

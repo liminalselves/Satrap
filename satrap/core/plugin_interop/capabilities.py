@@ -1053,7 +1053,7 @@ class PluginInterop:
             service = (binding.services or {}).get(name)
             return service is not None and service.is_enabled()
         if kind == "tools":
-            workflow = self.session()._wf
+            workflow = self._bound_workflow(self.session())
             tool = workflow.tools_manager.tools.get(name) if workflow is not None else None
             return tool is not None and tool.owner_plugin == provider and tool.is_enabled()
         if kind == "handlers":
@@ -1417,7 +1417,7 @@ class PluginInterop:
             if self.async_:
                 raise PluginInteractionError("dependency_unavailable", "异步会话不提供隐式同步适配")
             if reference._kind in ("tools", "mcp"):
-                workflow = self.session()._wf
+                workflow = self._bound_workflow(self.session())
                 if workflow is None:
                     raise PluginInteractionError("dependency_unavailable", "工作流尚未初始化")
                 from satrap.core.utils.TCBuilder.manager import ToolsManager
@@ -1461,7 +1461,7 @@ class PluginInterop:
             if not self.async_:
                 raise PluginInteractionError("dependency_unavailable", "同步会话不提供隐式异步适配")
             if reference._kind in ("tools", "mcp"):
-                workflow = self.session()._wf
+                workflow = self._bound_workflow(self.session())
                 if workflow is None:
                     raise PluginInteractionError("dependency_unavailable", "工作流尚未初始化")
                 from satrap.core.utils.TCBuilder.async_manager import AsyncToolsManager
@@ -1504,7 +1504,7 @@ class PluginInterop:
         binding = self.bindings[reference._plugin]
         plugin = binding.plugin
         adapters = plugin._mcp_clients.get(reference._name, (None, []))[1] if plugin else []
-        workflow = self.session()._wf
+        workflow = self._bound_workflow(self.session())
         if (not reference._adapter or workflow is None
                 or not any(adapter.get_tool_name() == reference._adapter
                            and workflow.tools_manager.tools.get(reference._adapter) is adapter

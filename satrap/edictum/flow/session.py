@@ -225,13 +225,43 @@ class AsyncFlowSession(AsyncSession):
         from satrap.edictum.flow.definition import migrate_flow_definition
         self._refresh_registry()
         # 迁移: 节点实例/流程默认/连线/插件全局默认各自按版本走 (P0-7)
-        plugin_defaults = {
-            name: self._plugin_defaults(name)
-            for name in {t.plugin for t in self._registry.all_types() if t.plugin}
-        }
+        # 插件升级后首次加载: 迁移 <插件名>.flow_nodes.json 并写回 (写前备份, P0-7)
+        from satrap.edictum.flow.definition import _migrate_config_dict
+        migrate_funcs: dict[str, Any] = {}
+        plugin_names = {t.plugin for t in self._registry.all_types() if t.plugin}
+        for name in plugin_names:
+            impls = self._plugin_impls.get(name) or {}
+            migrate = impls.get("migrate") or getattr(impls.get("Migrate"), "migrate", None)
+            if callable(migrate):
+                migrate_funcs[name] = migrate
+        plugin_defaults: dict[str, dict[str, dict[str, Any]]] = {}
+        for name in plugin_names:
+            raw = self._plugin_defaults(name)
+            if not raw:
+                continue
+            plugin_defaults[name] = raw
+            if self._plugin_config is not None and name in migrate_funcs:
+                def _migrate(saved: dict[str, dict[str, Any]], _name: str = name) -> dict[str, dict[str, Any]]:
+                    out: dict[str, dict[str, Any]] = {}
+                    for node_name, entry in saved.items():
+                        type_name = f"{_name}.{node_name}"
+                        node_type = self._registry.get(type_name)
+                        if node_type is None:
+                            out[node_name] = entry
+                            continue
+                        version, config = _migrate_config_dict(
+                            node_type, int(entry.get("version", 1)),
+                            dict(entry.get("config") or {}), migrate_funcs.get(_name), node_name,
+                        )
+                        out[node_name] = {"version": version, "config": config}
+                    return out
+                try:
+                    plugin_defaults[name] = self._plugin_config.migrate_flow_nodes_global(name, _migrate)
+                except Exception as error:
+                    logger.warning(f"[流程会话] {name} 节点默认迁移写回失败: {error}")
         definition, migrated_defaults, _ = migrate_flow_definition(
             parse_flow_definition(self._raw_flow), self._registry,
-            plugin_defaults=plugin_defaults,
+            plugin_defaults=plugin_defaults, migrate_funcs=migrate_funcs,
         )
         self._issues = validate(definition, self._registry)
         if any(i.level == "error" for i in self._issues):
@@ -295,12 +325,14 @@ class AsyncFlowSession(AsyncSession):
 
     def _config(self, node_id: str) -> dict[str, Any]:
         """节点生效配置 (四层合并); 未解析到时退回实例 config"""
+        if node_id in self._resolved:
+            return self._resolved[node_id]
         if self._definition is None:
             return {}
         if not self._resolved:
             self._refresh_resolved()
-        if node_id in self._resolved:
-            return self._resolved[node_id]
+            if node_id in self._resolved:
+                return self._resolved[node_id]
         node = self._definition.nodes.get(node_id)
         return dict(node.config) if node is not None else {}
 
@@ -976,16 +1008,16 @@ class AsyncFlowSession(AsyncSession):
             await self._notify_failure(wf_id, str(error))
         finally:
             if tile:
-                # 本次批次结束: 在飞上限回落到剩余排队批次的末尾 (没有排队就回到已提交位置)
-                remaining = self._engine.pending_batch_max(wf_id, tile)
+                # 本次批次结束: 位置未推进时 inflight 回落到 committed (允许重试);
+                # 推进成功时位置已覆盖, inflight 同步清掉;
+                # last_batch_to 同步回落, 失败批次的"在飞上限"不再阻止重试
                 committed = await asyncio.to_thread(
                     lambda: self._flow_store.positions_for_tile_by_scope_key(
                         self._scope_key, tile).get(wf_id, 0))
-                floor = max(committed, remaining)
-                if floor > committed:
-                    self._inflight[(tile, wf_id)] = floor
-                else:
-                    self._inflight.pop((tile, wf_id), None)
+                self._inflight[(tile, wf_id)] = committed
+                state = self._engine._wf.get(wf_id) if self._engine is not None else None
+                if state is not None:
+                    state.last_batch_to = max(committed, state.last_batch_to)
             if self._budget is not None:
                 self._budget.end_run(run_id)
             if self._transform is not None:
@@ -1227,11 +1259,16 @@ class AsyncFlowSession(AsyncSession):
             if node.type != "threshold":
                 continue
             wf_ids = self._threshold_wfs(node.id)
+            if self._flow_store.scope_key != self._scope_key:
+                self._flow_store.scope_key = self._scope_key
             positions = await asyncio.to_thread(
                 self._flow_store.ensure_positions_for_tile, node.id, wf_ids)
             config = self._config(node.id)
+            # 首个有消息的 seq: 新驱动的 WF 从桶末尾开始, 不回放历史
+            # 但会话首次接管时桶里可能已有消息 (重启/首轮), 这些消息属于"积压"
             for wf_id, committed in positions.items():
-                # 已下发未提交的批次不再重复入队: 在飞上限 = 已提交位置 与 排队批次末尾 的较大者
+                # 已下发未提交的批次不再重复入队: inflight 阻止运行中同一批再入队;
+                # 失败/结束后 inflight 清掉, 位置未推进的按 committed 重新读批
                 floor = max(committed, self._inflight.get((node.id, wf_id), committed))
                 pending = await asyncio.to_thread(
                     self._message_store.after_by_scope_key,
@@ -1242,18 +1279,23 @@ class AsyncFlowSession(AsyncSession):
                 hit = self._threshold_hit(node.id, config, committed, pending)
                 if not hit:
                     continue
+                batch_to = pending[-1]["seq"] if pending else committed
+                # committed 位置没推进说明上次运行失败: busy 仍挂说明上次任务没走到
+                # finish (测试桩/崩溃路径), 复位 busy 让批次能重试
+                state = self._engine._wf.get(wf_id)
+                if state is not None and state.busy and committed < batch_to:
+                    state.busy = False
+                    state.last_batch_to = committed
                 from satrap.edictum.flow.engine import FlowEvent
                 event = FlowEvent(
                     event_id=uuid.uuid4().hex, kind="batch", tile=node.id,
                     why=f"{node.title}: {hit}",
                     batch=tuple(self._to_flow_message(m) for m in pending),
-                    batch_from=floor, batch_to=pending[-1]["seq"] if pending else floor,
+                    batch_from=committed, batch_to=batch_to,
                 )
-                # 只触发这一个 WF; targets 限定传播终点 (经逻辑门也一样)
+                # 只触发这一个 WF; targets 限定传播终点 (经逻辑门也一样);
+                # 忙碌时按 on_busy 入队/合并/丢弃, 不重复记 inflight
                 await self._engine.fire(node.id, event, targets={wf_id})
-                # 在飞上限按已下发批次末尾记: 排队中的事件还没进 _run_workflow
-                self._inflight[(node.id, wf_id)] = max(
-                    self._inflight.get((node.id, wf_id), 0), event.batch_to)
                 self._tile_last_at[node.id] = time.time()
 
     def _threshold_wfs(self, tile_id: str) -> list[str]:

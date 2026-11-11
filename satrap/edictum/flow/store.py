@@ -114,7 +114,7 @@ class FlowStore:
         latest = int(connection.execute(
             "SELECT COALESCE(MAX(seq), 0) FROM platform_messages WHERE scope_key=?",
             (scope_key,),
-        ).fetchone()[0])
+        ).fetchone()[0] or 0)
         connection.execute(
             "INSERT INTO flow_threshold_positions VALUES(?, ?, ?, ?, ?, ?)",
             (scope_key, self.flow_name, tile_id, wf_id, latest, time.time()),
@@ -193,6 +193,7 @@ class FlowStore:
         out: dict[str, int] = {}
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            # 首个 seq: 会话刚接管且库里已有消息时, 新位置从最旧未读起 (积压), 不是最新
             for wf_id in wf_ids:
                 out[wf_id] = self.ensure_position(connection, self._current_scope_key, tile_id, wf_id)
             # 不再由该磁贴驱动的 WF 清掉它的位置记录 (运行时契约 3.6)

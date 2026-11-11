@@ -382,6 +382,8 @@ def validate(
     resolved_map: dict[str, dict[str, Any]] | None = None,
     conversation_kinds: list[str] | None = None,
     analysis: Analysis | None = None,
+    scheduled_send_group: bool | None = None,
+    scheduled_send_private: bool | None = None,
 ) -> list[Issue]:
     """
     对流程定义做静态检查
@@ -394,6 +396,8 @@ def validate(
     - resolved_map: 可选的预计算生效配置 {节点 id: {字段: 值}}; 缺省按 defaults 解析
     - conversation_kinds: 绑定的会话类型 ["group","private"], 用于私聊相关检查
     - analysis: 可选的预计算分析
+    - scheduled_send_group / scheduled_send_private: 平台适配器的后台发送能力;
+      None 表示未检测 (跳过 flow_background_send_unsupported 检查)
 
     返回:
     - list[Issue]: 全部问题, 顺序与 demo validate 对齐
@@ -702,8 +706,9 @@ def validate(
             requires = entry.interop.get("requires") if isinstance(entry.interop, dict) else None
             if isinstance(requires, dict):
                 for req, decl in requires.items():
-                    # 流程里 optional 依赖也要同装才有用: 发图这类能力没装 group_chat 就走不通
-                    needed = decl is True or (isinstance(decl, dict) and decl) or (decl is not True and not isinstance(decl, dict))
+                    # optional: true 的依赖不强制同装 (只生图不发送时不需要 group_chat);
+                    # dict 声明必须显式 optional:false 才按必须算
+                    needed = decl is True or (isinstance(decl, dict) and decl.get("optional") is False)
                     if needed and req not in plugins:
                         add(Issue(code="flow_plugin_dependency", level="error", category="workflow", node=w.id, field="plugins",
                                   message=f"{entry.display_name or p} 依赖 {req}, 需要装在同一个 WF 上"))
@@ -808,6 +813,25 @@ def validate(
                   node=sources[0].id if sources else "",
                   message="绑定的平台没有启用消息档案, 桶无法读取消息",
                   hint="在平台管理中开启消息档案"))
+    # 后台发送通道: 有 WF 可能被阈值/交接/完成驱动且连着平台回复,
+    # 需要适配器支持后台发送; 不支持时给个提示 (不阻塞保存, 运行时该次发送失败)
+    replying_background = [
+        w for w in wfs.values()
+        if w.replies_directly and (w.background or "threshold" in w.roots)
+    ]
+    if replying_background:
+        kinds_list = sorted(kinds)
+        unsupported = (
+            ("group" in kinds_list and scheduled_send_group is False)
+            or ("private" in kinds_list and scheduled_send_private is False)
+        )
+        if unsupported:
+            w = replying_background[0]
+            add(Issue(code="flow_background_send_unsupported", level="warning", category="环境",
+                      node=w.id, field="send_mode",
+                      message=f"{name(w.id)} 等 {len(replying_background)} 个 WF 可能被后台触发并发送, "
+                              f"但当前平台适配器不支持后台主动发送",
+                      hint="用 wake 磁贴驱动前台回复, 或换支持 scheduled send 的适配器"))
     for node in nodes.values():
         t = get_type(node.type)
         if t is None or not t.plugin:

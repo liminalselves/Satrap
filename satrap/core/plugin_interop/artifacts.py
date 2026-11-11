@@ -126,7 +126,9 @@ class ArtifactAccess:
             while scope is not None:
                 entry: object = None
                 if scope.kind == "tools":
-                    entry_workflow = scope.runtime.session()._wf
+                    # 流程会话里"当前 WF"经 contextvar 传递; simple 会话回退 session._wf
+                    from satrap.edictum.flow.session import current_flow_workflow
+                    entry_workflow = current_flow_workflow.get() or getattr(scope.runtime.session(), "_wf", None)
                     entry = entry_workflow.tools_manager.tools.get(scope.name) if entry_workflow is not None else None
                 elif scope.kind == "services":
                     entry = (scope.runtime.bindings[scope.plugin].services or {}).get(scope.name)
