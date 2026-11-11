@@ -1,0 +1,12 @@
+name: quiet_hours
+version: 0.3.0
+description: 提供"在免打扰时段内"条件
+
+flow_nodes:
+  - name: in_hours
+    label: 免打扰时段内
+    description: 触发时刻在时段内为真, 通常接 NOT 使用
+    out: condition
+    config_schema:
+      start: {type: time, label: 开始, default: "22:00"}
+      end: {type: time, label: 结束, default: "07:00", description: 早于开始时间表示跨零点}

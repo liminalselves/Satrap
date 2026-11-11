@@ -145,3 +145,11 @@ compatibility:
 applicability:
   session_types: [chat, platform, embedded]
   platforms: "*"
+
+interop:
+  requires:
+    group_chat: true
+
+flow:
+  workflow:
+    foreground_only: true

@@ -1,0 +1,28 @@
+name: llm_budget
+version: 0.2.0
+description: 提供"调用预算内"条件; 计数由宿主维护, 节点只读
+
+flow_nodes:
+  - name: within
+    label: 调用预算内
+    description: 最近一段时间的模型调用次数低于上限时为真
+    out: condition
+    config_schema:
+      max_calls: {type: number, label: 上限, default: 30, minimum: 1, integer: true}
+      window_minutes: {type: number, label: 统计窗口, default: 60, minimum: 1, maximum: 1440, integer: true}
+      count:
+        type: select
+        label: 计入
+        default: all
+        options: [wf, all]
+        option_labels:
+          wf: 只算 WF 调用
+          all: WF 和插件模型调用
+      scope:
+        type: select
+        label: 统计范围
+        default: target
+        options: [target, flow]
+        option_labels:
+          target: 本次将被触发的 WF
+          flow: 整个流程
