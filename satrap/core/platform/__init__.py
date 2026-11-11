@@ -374,10 +374,22 @@ class PlatformAdapter(ABC):
                 return False
             snapshot = archive_snapshot(message, direction=direction)
             label = message.group.group_name or "" if message.group else ""
-            return await asyncio.to_thread(store.record, identity, snapshot, label=label)
+            recorded = await asyncio.to_thread(store.record, identity, snapshot, label=label)
         except Exception as exc:
             logger.error(f"[消息档案] 采集失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
             return False
+        if recorded and direction == "outbound":
+            # 出站已确认消息也喂给流程会话的 observe (阈值磁贴按 seq 推进)
+            observers = getattr(self, "_flow_observers", None)
+            if observers:
+                for observe in tuple(observers):
+                    try:
+                        result = observe(identity, snapshot)
+                        if inspect.isawaitable(result):
+                            await result
+                    except Exception as exc:
+                        logger.warning(f"[消息档案] 出站观察回调失败: {exc}")
+        return recorded
 
     def queue_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage) -> bool:
         """
@@ -434,6 +446,17 @@ class PlatformAdapter(ABC):
             raise
         except Exception as exc:
             logger.error(f"[消息档案] 出站写入失败, 平台={scope.adapter_id}, 原因={type(exc).__name__}: {exc}")
+            return
+        # 出站已确认消息也喂给流程会话的 observe (阈值磁贴按 seq 推进)
+        observers = getattr(self, "_flow_observers", None)
+        if observers:
+            for observe in tuple(observers):
+                try:
+                    result = observe(scope, snapshot)
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    logger.warning(f"[消息档案] 出站观察回调失败: {exc}")
 
     async def drain_message_archive(self, timeout: float = 5.0) -> None:
         """

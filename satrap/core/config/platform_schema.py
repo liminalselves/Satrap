@@ -323,4 +323,10 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
             "covers_to INTEGER NOT NULL DEFAULT 0, committed_at REAL NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '', "
             "PRIMARY KEY(scope_key, flow_name, state_id))"
         )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS flow_send_log ("
+            "attempt_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, "
+            "status TEXT NOT NULL, segments_json TEXT NOT NULL DEFAULT '[]', "
+            "created_at REAL NOT NULL, updated_at REAL NOT NULL)"
+        )
         connection.execute("PRAGMA user_version = 13")

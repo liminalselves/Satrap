@@ -2085,7 +2085,7 @@ class OneBotAdapter(PlatformAdapter):
         在现有出站队列中发送固定提醒, 不替换普通回复的共享记录器
 
         参数:
-        - target: 同一平台实例, 账号, 群和连接代次的冻结目标
+        - target: 同一平台实例, 账号, 群或私聊和连接代次的冻结目标
         - chain: 仅含文字和成员提及的固定消息
         - recorder: 本次提醒独享的发送记录器
 
@@ -2093,11 +2093,16 @@ class OneBotAdapter(PlatformAdapter):
         - 实际回执, 必要证据未落盘时停止网络发送
         """
         scope = target.scope
-        if (scope.adapter_id != self.config.id or scope.conversation_kind != "group"
+        if (scope.adapter_id != self.config.id
+                or scope.conversation_kind not in {"group", "private"}
                 or not chain.components or any(not isinstance(item, (Plain, At)) for item in chain.components)
                 or any(isinstance(item, At) and str(item.qq) == "all" for item in chain.components)):
             return SendReceipt("failed", reason="invalid_scheduled_target")
-        session_id = group_session_id(scope.chat_id)
+        # 私聊目标不接受 @ 成员组件
+        if scope.conversation_kind == "private" and any(isinstance(item, At) for item in chain.components):
+            return SendReceipt("failed", reason="invalid_scheduled_target")
+        session_id = (group_session_id(scope.chat_id) if scope.conversation_kind == "group"
+                      else private_session_id(scope.chat_id))
 
         async def operation() -> SendReceipt:
             """
@@ -2160,6 +2165,8 @@ class OneBotAdapter(PlatformAdapter):
             else self.allows_group(extract_group_id(session_id))
         ):
             raise PermissionError("目标群不在当前适配器允许范围内")
+        if is_private_session(session_id) and not self.config.settings.get("enable_private", True):
+            raise PermissionError("当前适配器未允许私聊发送")
 
         connection = self.group_chat_connection_token()
         segments = await message_chain_to_onebot_segments(message.components)
@@ -2168,9 +2175,14 @@ class OneBotAdapter(PlatformAdapter):
             return SendReceipt("failed", reason="empty_message")
 
         if scheduled_target is not None:
+            scope_allowed = (
+                self.allows_group(scheduled_target.scope.chat_id)
+                if scheduled_target.scope.conversation_kind == "group"
+                else bool(self.config.settings.get("enable_private", True))
+            )
             if (not await scheduled_target.guard() or scheduled_target.scope.self_id != self.bot_self_id
                     or scheduled_target.connection_token != self.group_chat_connection_token()
-                    or not self.config.enable or not self.allows_group(scheduled_target.scope.chat_id)):
+                    or not self.config.enable or not scope_allowed):
                 return SendReceipt("failed", reason="scheduled_target_changed")
 
         origin = current_call_origin()

@@ -220,6 +220,28 @@ def create_default_edictum_type_registry() -> EdictumTypeRegistry:
             return False
         return cast(bool | Awaitable[bool], uninstaller(name))
 
+    def install_plugin_to_workflow(
+        session: Session | AsyncSession,
+        path: str,
+        config: dict[str, Any] | None,
+    ) -> object | Awaitable[object]:
+        """
+        流程会话的插件安装委托: WF 节点维度的安装由会话的 install_plugin_to_workflow 完成
+
+        参数:
+        - session: Edictum 会话实例
+        - path: 插件目录
+        - config: 会话级插件配置
+
+        返回:
+        - object | Awaitable[object]: 插件对象或异步安装任务
+        """
+        installer = getattr(session, "install_plugin_to_workflow", None)
+        if not callable(installer):
+            raise TypeError(f"Edictum 类型不支持 WF 维度插件安装: {type(session).__name__}")
+        # reconcile 路径不指定目标 WF; 具体节点 plugins 由会话在 _async_init 里逐个安装
+        raise TypeError("流程会话的插件按 WF 节点安装, 请把插件名写进 WF 节点的 plugins 配置")
+
     schema: dict[str, Any] = {
         "type": "object",
         "additionalProperties": True,
@@ -282,6 +304,7 @@ def create_default_edictum_type_registry() -> EdictumTypeRegistry:
             supports_plugins=True,
             supports_mcp=False,
             supports_stream=False,
+            plugin_installer=install_plugin_to_workflow,
         )
     )
     return registry

@@ -552,6 +552,14 @@ class PipelineScheduler:
                     manual_detail = reason_code
                     return
 
+            # Step.1.9 flow 类型旁路: 每条入站消息都先交给流程会话的 observe,
+            # 由会话内部决定唤醒谁; 不占 _session_turn 锁, 不受唤醒/空正文/限流影响
+            session_id_hint = event.session_id
+            flow_session = await self._flow_session_for(session_manager, session_id_hint, event, None, None)
+            if flow_session is not None:
+                await flow_session.observe(event)
+                return
+
             # Step.2 评估独立唤醒规则并记录命中原因
             if deadline_ticket is not None and not self._automatic_policy_current(event):
                 deadline_ticket.cancelled = True
@@ -693,12 +701,7 @@ class PipelineScheduler:
                         logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
                         return
                     session_id = resolved
-                # flow 类型旁路: 不占 _session_turn 锁, 每条消息都交给流程会话的 observe;
-                # 会话内部自行决定唤醒谁, 唤醒后再走正常执行路径绑定回复轮次
-                flow_session = await self._flow_session_for(session_manager, session_id, event, route, extra_params)
-                if flow_session is not None:
-                    await flow_session.observe(event)
-                    return
+                # flow 会话已在 Step.1.9 提前接管; 走到这里一定不是 flow
                 await turn.enter_async_context(self._session_turn(session_manager, session_id))
                 if not await self._queued_source_current(event, session_manager):
                     return
@@ -936,16 +939,22 @@ class PipelineScheduler:
             entries = {}
         entry = entries.get(session_id)
         if entry is not None and isinstance(entry.session, AsyncFlowSession):
+            self._adopt_flow_session(entry.session)
             return entry.session
-        # 会话还没激活或不是 flow: 通过 provider 判定类型, 是 flow 就走正常创建激活后再取
+        # 会话还没激活或不是 flow: 通过 provider 判定类型 (定义缓存避免逐条消息重复读)
         session_type = event.session_type or ""
         provider_get = getattr(getattr(manager, "provider_registry", None), "get", None)
         definition = None
-        if provider_get is not None and not asyncio.iscoroutinefunction(provider_get):
+        cache_key = (id(manager), event.session_provider or "edictum", session_type)
+        cached = self._flow_type_cache.get(cache_key)
+        if cached is not None:
+            definition = cached
+        elif provider_get is not None and not asyncio.iscoroutinefunction(provider_get):
             try:
                 provider = provider_get(event.session_provider or "edictum")
             except Exception as error:
                 logger.debug(f"[PipelineScheduler] flow 类型判定失败 session={session_id}: {error}")
+                self._flow_type_cache[cache_key] = None
                 return None
             candidate = getattr(provider, "get_definition", None)
             if candidate is not None and not asyncio.iscoroutinefunction(candidate):
@@ -953,10 +962,13 @@ class PipelineScheduler:
                     definition = candidate(session_type)
                 except Exception as error:
                     logger.debug(f"[PipelineScheduler] flow 定义读取失败 session={session_id}: {error}")
+                    self._flow_type_cache[cache_key] = None
                     return None
+            self._flow_type_cache[cache_key] = definition
         metadata = getattr(definition, "metadata", None)
         if not isinstance(metadata, dict) or metadata.get("edictum_type") != "flow":
             return None
+        entry = None
         try:
             config = manager._resolve_or_create_session_config(UserCall(
                 session_id=session_id or None,
@@ -968,13 +980,25 @@ class PipelineScheduler:
                 received_at=event.queued_at,
                 received_wall_at=event.platform_message.received_at,
             ))
-            await manager._acquire_or_create_entry_async(config)
+            entry = await manager._acquire_or_create_entry_async(config)
         except Exception as error:
             logger.error(f"[PipelineScheduler] flow 会话创建失败 session={session_id}: {error}")
             return None
-        entries = entries_fn() if callable(entries_fn) and not asyncio.iscoroutinefunction(entries_fn) else {}
-        entry = entries.get(session_id) if isinstance(entries, dict) else None
-        return entry.session if entry is not None and isinstance(entry.session, AsyncFlowSession) else None
+        try:
+            if entry is None or not isinstance(entry.session, AsyncFlowSession):
+                return None
+            self._adopt_flow_session(entry.session)
+            return entry.session
+        finally:
+            # 旁路不占会话租约: observe 由流程会话自己管理生命周期
+            if entry is not None:
+                manager.pool.release(entry)
+
+    def _adopt_flow_session(self, session: Any) -> None:
+        """把调度器的 error_feedback 开关同步给流程会话"""
+        session.error_feedback = bool(self.error_feedback)
+
+    _flow_type_cache: dict[tuple[int, str, str], Any] = {}
 
     async def _queued_source_current(self, event: MessageEvent, manager: SessionManager) -> bool:
         """

@@ -123,7 +123,7 @@ class FlowStore:
 
     def commit_position(self, connection: sqlite3.Connection, scope_key: str, tile_id: str, wf_id: str, seq: int) -> None:
         """
-        推进一个 WF 的已提交位置 (与状态槽提交同事务)
+        推进一个 WF 的已提交位置 (与状态槽提交同事务), 只前进不回退
 
         参数:
         - connection: 已开事务的连接
@@ -134,7 +134,8 @@ class FlowStore:
         """
         connection.execute(
             "INSERT INTO flow_threshold_positions VALUES(?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(scope_key, flow_name, tile_id, wf_id) DO UPDATE SET committed_seq=excluded.committed_seq, updated_at=excluded.updated_at",
+            "ON CONFLICT(scope_key, flow_name, tile_id, wf_id) DO UPDATE SET "
+            "committed_seq=excluded.committed_seq, updated_at=excluded.updated_at",
             (scope_key, self.flow_name, tile_id, wf_id, seq, time.time()),
         )
 

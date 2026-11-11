@@ -46,6 +46,8 @@ class FlowEvent:
     """kind=call 时交接工具的参数或上游输出"""
     source_wf: str = ""
     """kind=call 时调用方 WF 节点 id"""
+    source_event: Any = None
+    """触发它的平台消息事件; 前台运行的回复轮次与身份来源, 后台触发为 None"""
     occurred_at: float = field(default_factory=time.monotonic)
 
 
@@ -121,13 +123,19 @@ class ConditionEvaluator:
         event: FlowEvent, state_view: StateView | None, calls_used: int,
     ) -> bool | str:
         """实际求值一次; 插件条件进线程池, 内置在事件循环里"""
-        if node_type.plugin and fn is not None:
+        if node_type.plugin:
+            if fn is None:
+                # setup 失败/实例缺失/被标记 failed: 判错误而不是落到内置表判真
+                record_debug("flow_trigger", "blocked", bodies={"output": {
+                    "node": node.id, "reason": "condition_impl_missing"}})
+                logger.warning(f"[流程引擎] 条件节点 {node.id} 没有可用实现, 判为错误")
+                return "error"
             # 插件条件函数: 同步函数进有界线程池, 超时/池满/异常判错误
             try:
                 ctx = self._build_ctx(node_type, config, event, state_view, calls_used)
                 args = self._cond_args(node_type, ctx, state_view)
                 return await asyncio.wait_for(
-                    FLOW_CONDITION_WORKERS.run(fn, *args),
+                    FLOW_CONDITION_WORKERS.run(fn, *args, wait_on_cancel=False),
                     timeout=self.timeout,
                 )
             except (WorkerBusyError, asyncio.TimeoutError, Exception) as error:
@@ -205,8 +213,12 @@ class ConditionEvaluator:
             check = str(config.get("check") or "nonempty")
             if check == "nonempty":
                 return bool(state_view.content)
-            return state_view.version >= int(config.get("min_version") or 1)
-        return True
+            if check == "version":
+                return state_view.version >= int(config.get("min_version") or 1)
+            return "error"
+        # 未知内置类型不能默认放行; not/or 逻辑门不会走到这里, 走到说明接线错误
+        logger.warning(f"[流程引擎] 未识别的内置条件类型 {node.type}, 判为错误")
+        return "error"
 
     def forget(self, event_id: str) -> None:
         """事件结束时清理该事件的缓存"""
@@ -292,6 +304,7 @@ class TriggerEngine:
         calls_used: Callable[[str], int] | None = None,
         resolve_condition: Callable[[FlowNodeInstance], Callable[..., Any] | None] | None = None,
         release_ref: Callable[[str, Any], Any] | None = None,
+        resolve_config: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
         """
         初始化引擎
@@ -302,8 +315,9 @@ class TriggerEngine:
         - evaluate_condition: 插件条件求值回调 (async), 缺省用内置 ConditionEvaluator
         - resolve_state: state 槽读取回调 {state_node_id: StateView}
         - calls_used: 调用计数回调 {wf_id: int}
-        - resolve_condition: 插件条件实现解析回调 {node: fn}; 来自 FlowNodeInstancePool.acquire
+        - resolve_condition: 插件条件实现解析解析回调 {node: fn}; 来自 FlowNodeInstancePool.acquire
         - release_ref: 归还实例引用回调 {node_id, instance}; 与 resolve_condition 成对
+        - resolve_config: 节点生效配置回调 {node_id: 合并后配置}; 缺省用节点实例 config
         """
         self.definition = definition
         self.node_types = node_types
@@ -311,27 +325,35 @@ class TriggerEngine:
         self._calls_used = calls_used or (lambda wf_id: 0)
         self._resolve_condition = resolve_condition or (lambda node: None)
         self._release_ref = release_ref
+        self._resolve_config = resolve_config
         self._evaluator = evaluate_condition or ConditionEvaluator(release_ref=release_ref)
         self._wf: dict[str, _WfState] = {n.id: _WfState() for n in definition.nodes.values()
                                          if (t := node_types.get(n.id)) and t.role == "workflow"}
         self._handlers: list[Callable[[str, FlowEvent], Any]] = []
         self._arrivals: dict[str, dict[str, float]] = {}
         """AND 门时间窗: {gate_id: {edge_key: 到达时刻}}"""
+        self._tasks: set[asyncio.Task[Any]] = set()
+        """进行中的 WF 触发任务; create_task 引用由引擎持有, 关闭时可取消"""
         self._diag = record_debug
 
     def on_trigger(self, handler: Callable[[str, FlowEvent], Any]) -> None:
-        """登记 WF 触发回调 handler(wf_id, event)"""
-        self._handlers.append(handler)
+        """登记 WF 触发回调 handler(wf_id, event); 重设时先清空"""
+        self._handlers = [handler]
 
     # ---------- 对外入口 ----------
 
-    async def fire(self, tile_id: str, event: FlowEvent) -> None:
+    async def fire(
+        self, tile_id: str, event: FlowEvent,
+        targets: frozenset[str] | set[str] | None = None,
+    ) -> None:
         """
         让一个磁贴/工具节点发出事件, 经 when 条件和逻辑门传播
 
         参数:
         - tile_id: 磁贴节点 id
         - event: 触发事件
+        - targets: 允许接收本事件的 WF 节点 id 集; None 不限制.
+          阈值磁贴按每个 WF 的已提交位置分别发批次时, 用 targets 只触发满足的那个
         """
         node = self.definition.nodes.get(tile_id)
         node_type = self.node_types.get(tile_id)
@@ -340,7 +362,7 @@ class TriggerEngine:
         if not await self._when_ok(tile_id, event):
             self._diag("flow_trigger", "blocked", bodies={"output": {"tile": tile_id, "reason": "when_false"}})
             return
-        await self._emit(tile_id, "event", event, depth=0)
+        await self._emit(tile_id, "event", event, depth=0, targets=targets)
 
     async def complete(self, wf_id: str, event: FlowEvent, output: str) -> None:
         """
@@ -354,6 +376,7 @@ class TriggerEngine:
         done = FlowEvent(
             event_id=event.event_id, kind="call", tile=wf_id,
             why=f"{self._title(wf_id)} 完成", payload=output, source_wf=wf_id,
+            source_event=getattr(event, "source_event", None),
         )
         await self._emit(wf_id, "done", done, depth=0)
 
@@ -376,7 +399,10 @@ class TriggerEngine:
 
     # ---------- 事件传播 ----------
 
-    async def _emit(self, source: str, port: str, event: FlowEvent, depth: int) -> None:
+    async def _emit(
+        self, source: str, port: str, event: FlowEvent, depth: int,
+        targets: frozenset[str] | set[str] | None = None,
+    ) -> None:
         """把事件沿 source.port 的输出边发出; 深度上限 20 防环"""
         if depth > 20:
             logger.error("[流程引擎] 事件传播超过 20 层, 已停止")
@@ -389,14 +415,19 @@ class TriggerEngine:
             if target_node is None or target_type is None:
                 continue
             if target_type.role == "workflow" and e.target_port == "trigger":
+                if targets is not None and e.target not in targets:
+                    continue
                 await self._trigger(e.target, event)
             elif target_type.type == "or":
                 # OR 直通: 任一输入都放行 (条件是条件, 事件是事件)
-                await self._emit(e.target, "out", event, depth + 1)
+                await self._emit(e.target, "out", event, depth + 1, targets)
             elif target_type.type == "and":
-                await self._gate_and(e.target, e, event, depth)
+                await self._gate_and(e.target, e, event, depth, targets)
 
-    async def _gate_and(self, gate_id: str, edge: FlowEdge, event: FlowEvent, depth: int) -> None:
+    async def _gate_and(
+        self, gate_id: str, edge: FlowEdge, event: FlowEvent, depth: int,
+        targets: frozenset[str] | set[str] | None = None,
+    ) -> None:
         """AND 门: 多触发按时间窗等待; 触发+条件按三值求值"""
         gate_node = self.definition.nodes[gate_id]
         in_edges = [e for e in self.definition.edges if e.target == gate_id]
@@ -433,7 +464,7 @@ class TriggerEngine:
             self._diag("flow_trigger", "blocked", bodies={"output": {
                 "gate": gate_id, "reason": "condition_false", "edge": _edge_key(edge)}})
             return
-        await self._emit(gate_id, "out", event, depth + 1)
+        await self._emit(gate_id, "out", event, depth + 1, targets)
 
     async def _when_ok(self, tile_id: str, event: FlowEvent) -> bool:
         """磁贴/节点的 when 口: 多个条件按 AND 计算, 不是真就不发"""
@@ -452,13 +483,36 @@ class TriggerEngine:
 
     async def _eval_condition(
         self, node: FlowNodeInstance, node_type: FlowNodeType, event: FlowEvent,
+        _seen: frozenset[str] = frozenset(),
     ) -> bool | str:
-        """对一个条件节点求值 (内置或插件), 带 needs 上下文与 state 输入"""
+        """对一个条件节点求值 (内置/插件/逻辑门), 带 needs 上下文与 state 输入"""
+        # 逻辑门作为条件输入时按三值规则递归求值; 环防御返回错误
+        if node_type.role == "logic":
+            if node.id in _seen:
+                return "error"
+            seen = _seen | {node.id}
+            values: list[bool | str] = []
+            for e in self.definition.edges:
+                if e.target != node.id or self._edge_type(e) != "condition":
+                    continue
+                source_node = self.definition.nodes[e.source]
+                source_type = self.node_types[e.source]
+                if source_type is None:
+                    continue
+                values.append(await self._eval_condition(source_node, source_type, event, seen))
+            if node.type == "not":
+                return gate_not(values[0]) if len(values) == 1 else "error"
+            if node.type == "or":
+                return gate_or(values)
+            if node.type == "and":
+                return gate_and(values)
+            return "error"
         if node_type.needs and node_type.needs != event.kind:
             return "error"   # needs 要求的上下文不存在
         state_view: StateView | None = None
+        state_ports = {p.name for p in node_type.inputs if p.types == ("state",)}
         for e in self.definition.edges:
-            if e.target == node.id and e.target_port == "state":
+            if e.target == node.id and e.target_port in state_ports:
                 state_view = self._resolve_state(e.source)
         config = self._config(node.id)
         fn = self._resolve_condition(node) if node_type.plugin else None
@@ -493,7 +547,9 @@ class TriggerEngine:
         return port.types[0]
 
     def _config(self, node_id: str) -> dict[str, Any]:
-        """节点的生效配置 (调用方注入已解析值; 这里只取实例 config, 实际生效值由 session 层合成)"""
+        """节点的生效配置: 宿主注入四层合并结果时用它, 否则退回节点实例 config"""
+        if self._resolve_config is not None:
+            return self._resolve_config(node_id)
         node = self.definition.nodes.get(node_id)
         return dict(node.config) if node is not None else {}
 
@@ -516,7 +572,9 @@ class TriggerEngine:
             for handler in self._handlers:
                 result = handler(wf_id, event)
                 if inspect.isawaitable(result):
-                    asyncio.create_task(result)
+                    task = asyncio.create_task(result)
+                    self._tasks.add(task)
+                    task.add_done_callback(self._tasks.discard)
             return
         if on_busy == "drop":
             self._diag("flow_trigger", "blocked", bodies={"output": {
@@ -532,6 +590,7 @@ class TriggerEngine:
                 batch_to=max(previous.batch_to or 0, event.batch_to or 0) if event.batch or previous.batch else 0,
                 payload=event.payload or previous.payload,
                 source_wf=event.source_wf or previous.source_wf,
+                source_event=event.source_event or previous.source_event,
             )
             return
         state.queued.append(event)
@@ -539,6 +598,17 @@ class TriggerEngine:
     def running_workflows(self) -> list[str]:
         """当前正忙的 WF 节点 id 列表, 供运行状态接口读"""
         return [wf_id for wf_id, state in self._wf.items() if state.busy]
+
+    def pending_batch_max(self, wf_id: str, tile_id: str) -> int:
+        """该 WF 排队/合并中尚未运行的批次事件的最大 batch_to (在飞上限)"""
+        state = self._wf.get(wf_id)
+        if state is None:
+            return 0
+        out = 0
+        for e in (*state.queued, state.merged):
+            if e is not None and e.kind == "batch" and e.tile == tile_id:
+                out = max(out, e.batch_to)
+        return out
 
     async def finish(self, wf_id: str, event: FlowEvent) -> FlowEvent | None:
         """
@@ -564,6 +634,15 @@ class TriggerEngine:
         if isinstance(self._evaluator, ConditionEvaluator):
             self._evaluator.forget(event.event_id)
         return next_event
+
+    async def shutdown(self) -> None:
+        """会话释放: 取消全部进行中的 WF 触发任务并清理 AND 时间窗"""
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._arrivals.clear()
 
 
 def _edge_key(e: FlowEdge) -> str:
