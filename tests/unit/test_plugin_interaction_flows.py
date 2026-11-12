@@ -5,6 +5,8 @@ from pathlib import Path
 from contextvars import copy_context
 import asyncio
 import inspect
+import subprocess
+import sys
 import textwrap
 
 import pytest
@@ -14,6 +16,64 @@ from satrap.core.call_context import CallOrigin, bind_call_origin
 from satrap.core.plugin_interop.contracts import PluginInteractionError, parse_interop
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap import AsyncLLM, LLM
+
+
+def test_interop_workflow_context_without_importing_flow(tmp_path):
+    """隔离进程中验证 simple 回退、嵌套绑定和三个互操作模块无需加载 flow"""
+    script = textwrap.dedent('''
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from satrap import LLM
+        from satrap.edictum import SimpleSession
+        from satrap.core.call_context import current_flow_workflow, current_flow_run
+        from satrap.core.plugin_interop.capabilities import PluginInterop
+        from satrap.core.plugin_interop.skills import SkillHostAccess
+        from satrap.core.plugin_interop import artifacts
+
+        assert "satrap.edictum.flow.session" not in sys.modules
+        simple = SimpleSession("no-flow", MagicMock(spec=LLM), db_path=sys.argv[1])
+        assert PluginInterop._bound_workflow(simple) is simple._wf
+        assert SkillHostAccess._bound_workflow(simple) is simple._wf
+        assert "satrap.edictum.flow.session" not in sys.modules
+        assert artifacts.current_flow_workflow is current_flow_workflow
+        fallback, outer, inner = object(), object(), object()
+        session = SimpleNamespace(_wf=fallback)
+        for resolver in (PluginInterop._bound_workflow, SkillHostAccess._bound_workflow):
+            assert resolver(session) is fallback
+        wf_token = current_flow_workflow.set(outer)
+        run_token = current_flow_run.set(("outer", "event", "run"))
+        try:
+            for resolver in (PluginInterop._bound_workflow, SkillHostAccess._bound_workflow):
+                assert resolver(session) is outer
+            inner_token = current_flow_workflow.set(inner)
+            try:
+                for resolver in (PluginInterop._bound_workflow, SkillHostAccess._bound_workflow):
+                    assert resolver(session) is inner
+            finally:
+                current_flow_workflow.reset(inner_token)
+            assert current_flow_workflow.get() is outer
+            assert current_flow_run.get() == ("outer", "event", "run")
+        finally:
+            current_flow_workflow.reset(wf_token)
+            current_flow_run.reset(run_token)
+        assert current_flow_workflow.get() is None and current_flow_run.get() is None
+        assert "satrap.edictum.flow.session" not in sys.modules
+    ''')
+    subprocess.run([sys.executable, "-c", script, str(tmp_path / "chat.db")],
+                   check=True, cwd=Path(__file__).resolve().parents[2])
+
+
+def test_flow_public_contextvars_share_core_objects():
+    """flow 公共入口与 core 指向同一对象, 包括历史名称及默认值"""
+    from satrap.core.call_context import current_flow_run, current_flow_workflow
+    from satrap.edictum.flow import session as flow_session
+
+    assert flow_session.current_flow_workflow is current_flow_workflow
+    assert flow_session.current_flow_run is current_flow_run
+    assert current_flow_workflow.name == "satrap_flow_current_workflow"
+    assert current_flow_run.name == "satrap_flow_current_run"
+    assert current_flow_workflow.get() is None and current_flow_run.get() is None
 
 
 async def _await(value):

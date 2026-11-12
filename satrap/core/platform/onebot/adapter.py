@@ -2164,9 +2164,12 @@ class OneBotAdapter(PlatformAdapter):
             self.allows_management_target(extract_group_id(session_id)) if management
             else self.allows_group(extract_group_id(session_id))
         ):
+            if scheduled_target is not None:
+                return SendReceipt("failed", reason="scheduled_target_changed")
             raise PermissionError("目标群不在当前适配器允许范围内")
-        if is_private_session(session_id) and not self.config.settings.get("enable_private", True):
-            raise PermissionError("当前适配器未允许私聊发送")
+        if (scheduled_target is not None and is_private_session(session_id)
+                and not self.config.settings.get("enable_private", True)):
+            return SendReceipt("failed", reason="scheduled_target_changed")
 
         connection = self.group_chat_connection_token()
         segments = await message_chain_to_onebot_segments(message.components)

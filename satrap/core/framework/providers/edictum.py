@@ -246,6 +246,8 @@ class EdictumProvider:
 
         type_name = str(definition.metadata.get("edictum_type", ""))
         type_definition = self.type_registry.require(type_name)
+        if type_name == "flow" and (definition.metadata.get("plugins") or (session_config.session_config or {}).get("plugins")):
+            raise ValueError("流程会话不支持顶层 plugins, 请将插件配置到 WF 节点")
         factory = type_definition.factory
         signature = inspect.signature(factory)
         parameters = signature.parameters
@@ -261,6 +263,8 @@ class EdictumProvider:
             payload.setdefault("plugin_catalog", self.plugin_catalog)
             from satrap.edictum.plugin_config import PluginConfigManager
             payload.setdefault("plugin_config", PluginConfigManager())
+            from satrap.edictum.simple_session.async_plugins import install_workflow_plugin
+            payload["plugin_installer"] = install_workflow_plugin
         payload.pop("model_name", None)
         payload.pop("plugins", None)
         payload.pop("plugin_environment", None)
@@ -354,6 +358,11 @@ class EdictumProvider:
         - apply_snapshot: 可选完整应用目标, 默认保持正常会话准备流程
         """
         state = self._get_runtime_state(session)
+        if state is not None and state.type_definition.name == "flow":
+            config = (apply_snapshot.config_for(state.config_name) if apply_snapshot is not None
+                      else self.config_manager.get_config(state.config_name)) or {}
+            if config.get("plugins") or getattr(session, "_satrap_group_plugins", None):
+                raise ValueError("流程会话不支持顶层 plugins, 请将插件配置到 WF 节点")
         if state is None or state.type_definition.plugin_installer is None:
             return
         if apply_snapshot is not None:
@@ -408,6 +417,11 @@ class EdictumProvider:
         - apply_snapshot: 可选完整应用目标, 默认保持正常会话准备流程
         """
         state = self._get_runtime_state(session)
+        if state is not None and state.type_definition.name == "flow":
+            config = (apply_snapshot.config_for(state.config_name) if apply_snapshot is not None
+                      else self.config_manager.get_config(state.config_name)) or {}
+            if config.get("plugins") or getattr(session, "_satrap_group_plugins", None):
+                raise ValueError("流程会话不支持顶层 plugins, 请将插件配置到 WF 节点")
         if state is None or state.type_definition.plugin_installer is None:
             return
         if apply_snapshot is not None:
@@ -494,6 +508,9 @@ class EdictumProvider:
                     await result
             except Exception as error:
                 logger.warning(f"[EdictumProvider] 流程节点实例关闭失败: {error}")
+        if state is not None and state.type_definition.name == "flow":
+            from satrap.edictum.simple_session.async_plugins import close_workflow_plugin_hosts
+            await close_workflow_plugin_hosts(session)
         if state is None or state.type_definition.plugin_uninstaller is None:
             return
         for plugin_state in reversed(state.plugins):

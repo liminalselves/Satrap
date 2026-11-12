@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 import json
 import sqlite3
 import pytest
@@ -617,7 +618,6 @@ async def test_actual_chain_and_private_peer_archive(tmp_path: Path, session: st
                                                      chat_id: str, message_id: str) -> None:
     adapter = _onebot(tmp_path)
     receipt = await adapter.send_message(session, MessageChain([Reply(id="99"), Plain("你好"), At(qq="789")]))
-    await adapter.drain_message_archive()
     item = _platform_message_outgoing_item(adapter, MessageScope("ob", "10000", kind, chat_id), message_id)
     assert receipt.status == "success"
     assert item["text"] == "你好" and item["mentions"] == ["789"]
@@ -673,13 +673,76 @@ async def test_forward_archives_root_not_fabricated_node_messages(tmp_path: Path
 @pytest.mark.asyncio
 async def test_confirmed_message_deduplicates_own_echo(tmp_path: Path) -> None:
     adapter = _onebot(tmp_path)
+    observer = Mock()
+    adapter._flow_observers = [observer]
     await adapter._send_chunk("group%456", MessageChain.from_text("同一条"))
     await adapter.drain_message_archive()
     await adapter._handle_group_message({"message_type": "group", "self_id": 10000, "user_id": 10000,
                                          "group_id": 456, "message_id": 1, "time": time(),
                                          "message": [{"type": "text", "data": {"text": "同一条"}}]})
+    await adapter.drain_message_archive()
     assert len(_platform_message_outgoing_store(adapter).query(MessageScope("ob", "10000", "group", "456"))["items"]) == 1
+    observer.assert_called_once()
     assert adapter._event_queue.empty()
+
+@pytest.mark.asyncio
+async def test_onebot_echo_observer_does_not_block_and_queue_drains(tmp_path: Path, caplog) -> None:
+    adapter = _onebot(tmp_path, event_queue_capacity=1)
+    adapter.note_connection(True)
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed = []
+
+    async def observe(scope, snapshot) -> None:
+        observed.append((scope, snapshot.message_id))
+        entered.set()
+        await release.wait()
+
+    adapter._flow_observers = [observe]
+    event = {"message_type": "group", "self_id": 10000, "user_id": 10000,
+             "group_id": 456, "message_id": 42, "time": time(),
+             "message": [{"type": "text", "data": {"text": "回显"}}]}
+    try:
+        await asyncio.wait_for(adapter._handle_group_message(event), 1)
+        await asyncio.wait_for(entered.wait(), 1)
+        assert adapter._event_queue.empty() and len(adapter._archive_tasks) == 1
+        assert _platform_message_outgoing_item(adapter, MessageScope("ob", "10000", "group", "456"), "42")["text"] == "回显"
+        await adapter._handle_group_message({**event, "message_id": 43})
+        assert _platform_message_outgoing_item(adapter, MessageScope("ob", "10000", "group", "456"), "43")["text"] == "回显"
+        assert "队列已满" in caplog.text
+        await adapter.drain_message_archive(timeout=0)
+        assert "停止等待超时" in caplog.text
+    finally:
+        release.set()
+        await adapter.drain_message_archive()
+    assert observed == [(MessageScope("ob", "10000", "group", "456"), "42")]
+    assert not adapter._archive_tasks
+    await adapter._handle_group_message(event)
+    await adapter.drain_message_archive()
+    assert len(observed) == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_outbound_rejects_mismatched_identity_and_inbound_precedes_dispatch(tmp_path: Path) -> None:
+    adapter = _onebot(tmp_path)
+    adapter.note_connection(True)
+    event = {"message_type": "group", "self_id": 10000, "user_id": 10000,
+             "group_id": 456, "message_id": 44, "time": time(),
+             "message": [{"type": "text", "data": {"text": "回显"}}]}
+    message = await adapter.convert_message(event)
+    assert not await adapter.archive_message(message, direction="outbound", scope=MessageScope("other", "10000", "group", "456"))
+    assert not await adapter.archive_message(message, direction="outbound", scope=MessageScope("ob", "20000", "group", "456"))
+    message.sender.user_id = "someone-else"
+    assert not await adapter.archive_message(message, direction="outbound", scope=MessageScope("ob", "10000", "group", "456"))
+    assert not adapter._archive_tasks
+
+    inbound = {**event, "user_id": 123, "message_id": 45}
+    scope = MessageScope("ob", "10000", "group", "456")
+    await adapter._handle_group_message(inbound)
+    # 真实入站方法返回时档案已提交, 事件也才进入调度队列; 不替换内部提交方法。
+    assert _platform_message_outgoing_store(adapter).get(scope, "45") is not None
+    queued = adapter._event_queue.get_nowait()
+    assert queued.platform_message.message_id == "45"
+
 
 @pytest.mark.asyncio
 async def test_archive_failure_does_not_change_success_receipt(tmp_path: Path, caplog) -> None:
@@ -722,34 +785,62 @@ async def test_stream_archives_actual_emitted_chunks(tmp_path: Path, fallback: b
     assert [item["text"] for item in items] == (["第一段", "第二段"] if fallback else ["第一段第二段"])
 
 @pytest.mark.asyncio
-async def test_queue_bound_and_cancelled_sender_do_not_drop_owned_write(tmp_path: Path, caplog) -> None:
-    adapter = _onebot(tmp_path, event_queue_capacity=1)
-    started, release = asyncio.Event(), asyncio.Event()
-    original = adapter._write_confirmed_message
-
-    async def delayed_write(store, scope, snapshot) -> None:
-        started.set()
-        await release.wait()
-        await original(store, scope, snapshot)
-
-    adapter._write_confirmed_message = delayed_write
+async def test_send_waits_for_sqlite_commit_off_event_loop(tmp_path: Path) -> None:
+    adapter = _onebot(tmp_path)
+    store = _platform_message_outgoing_store(adapter)
     scope = MessageScope("ob", "10000", "group", "456")
+    store.record(scope, ArchiveMessage("seed", "10000", time(), "种子", direction="outbound"))
+    lock = sqlite3.connect(store.database, timeout=5)
+    lock.execute("BEGIN IMMEDIATE")
+    try:
+        task = asyncio.create_task(adapter._send_chunk("group%456", MessageChain.from_text("等待提交")))
+        for _ in range(100):
+            if adapter._bot.send_group_msg.await_count:
+                break
+            await asyncio.sleep(0.01)
+        assert adapter._bot.send_group_msg.await_count == 1
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        assert store.get(scope, "1") is None
+    finally:
+        lock.rollback()
+        lock.close()
+    receipt = await asyncio.wait_for(task, 5)
+    assert receipt.status == "success" and receipt.message_ids == ("1",)
+    assert _platform_message_outgoing_item(adapter, scope, "1")["text"] == "等待提交"
 
-    async def sender() -> None:
-        await adapter._send_chunk("group%456", MessageChain.from_text("确认后取消"))
-        await asyncio.Event().wait()
 
-    task = asyncio.create_task(sender())
-    await started.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert not adapter.queue_confirmed_message(scope, ArchiveMessage("2", "10000", time(), "新消息", direction="outbound"))
-    await adapter.drain_message_archive(timeout=0)
-    assert "队列已满" in caplog.text and "停止等待超时" in caplog.text
-    release.set()
-    await adapter.drain_message_archive()
-    assert _platform_message_outgoing_item(adapter, scope, "1")["text"] == "确认后取消"
+@pytest.mark.asyncio
+async def test_send_waits_for_archive_but_not_observer_when_queue_full(tmp_path: Path, caplog) -> None:
+    adapter = _onebot(tmp_path, event_queue_capacity=1)
+    adapter._bot.send_group_msg = AsyncMock(side_effect=[{"message_id": 1}, {"message_id": 2}])
+    scope = MessageScope("ob", "10000", "group", "456")
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed = []
+
+    async def observe(identity, snapshot) -> None:
+        observed.append((identity, snapshot.message_id))
+        entered.set()
+        await release.wait()
+
+    adapter._flow_observers = [observe]
+    try:
+        first = await asyncio.wait_for(adapter._send_chunk("group%456", MessageChain.from_text("第一条")), 2)
+        assert first.status == "success" and first.message_ids == ("1",)
+        assert _platform_message_outgoing_item(adapter, scope, "1")["text"] == "第一条"
+        await asyncio.wait_for(entered.wait(), 2)
+        second = await asyncio.wait_for(adapter._send_chunk("group%456", MessageChain.from_text("第二条")), 2)
+        assert second.status == "success" and second.message_ids == ("2",)
+        assert _platform_message_outgoing_item(adapter, scope, "2")["text"] == "第二条"
+        # 观察通知丢弃后, 仍可从持久序号恢复扫描遗漏消息。
+        assert [item["message_id"] for item in _platform_message_outgoing_store(adapter).after(scope, 0)] == ["1", "2"]
+        assert "队列已满" in caplog.text
+        await adapter.drain_message_archive(timeout=0)
+        assert "停止等待超时" in caplog.text
+    finally:
+        release.set()
+        await adapter.drain_message_archive()
+    assert observed == [(scope, "1")]
 
 def _misskey(tmp_path: Path) -> MisskeyAdapter:
     """装配 Misskey 原生回包和实际档案存储"""
@@ -771,7 +862,6 @@ async def test_misskey_actual_clipped_text_and_sent_files(tmp_path: Path, sessio
     adapter.max_message_length = 4
     adapter._collect_file_ids = AsyncMock(return_value=["file-1", "file-2"])
     result = await adapter.send_message(session, MessageChain.from_text("abcdefgh"))
-    await adapter.drain_message_archive()
     item = _platform_message_outgoing_item(adapter, MessageScope("mk", "bot", kind, chat_id), message_id)
     assert result.status == "success" and result.message_ids == (message_id,) and item["text"].endswith("abcd...")
     assert item["media"] == [{"type": "File", "native_id": "file-1"},
@@ -795,7 +885,7 @@ async def test_misskey_frozen_account_and_native_timestamp(tmp_path: Path) -> No
 
     async def send(payload: Any) -> dict[str, Any]:
         adapter.bot_self_id = "replacement"
-        return {"id": "confirmed", "fromUserId": "bot", "createdAt": "2026-10-03T12:00:00+08:00"}
+        return {"id": "confirmed", "fromUserId": "bot", "createdAt": datetime.now(timezone.utc).isoformat()}
 
     cast(Any, adapter._client).send_room_message = AsyncMock(side_effect=send)
     receipt = await adapter.send_message("room%r", MessageChain.from_text("原账号"))

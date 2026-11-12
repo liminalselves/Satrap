@@ -1419,6 +1419,9 @@ class BackendHTTPServer(MiniHTTPServer):
                     backend.edictum_config_manager,
                     backend.edictum_type_registry,
                     models=backend.model_config_manager,
+                    adapter_resolver=lambda platform_id: (
+                        backend.adapter_manager.get_adapter(platform_id) if backend.adapter_manager else None
+                    ),
                 )
                 return 200, service.validate_flow(_parse_json_object(body))
             except Exception as e:
@@ -1441,7 +1444,7 @@ class BackendHTTPServer(MiniHTTPServer):
                 from satrap.edictum.flow.session import AsyncFlowSession
                 if not isinstance(entry.session, AsyncFlowSession):
                     return 400, {"error": f"会话不是流程类型: {session_id}"}
-                return 200, entry.session.runtime_status()
+                return 200, await entry.session.runtime_status()
             except Exception as error:
                 return 400, {"error": str(error)}
         # 接口: GET /api/config/edictum/flow/runtime?platform_id&session_id

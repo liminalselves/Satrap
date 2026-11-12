@@ -626,6 +626,14 @@ class PluginConfigManager:
             nodes[str(node_name)] = {"version": version, "config": dict(cast(dict[str, Any], config))}
         return nodes
 
+    def flow_nodes_file_stamp(self, name: str) -> tuple[int, int] | None:
+        """运行期变更检测只读 stat, 不在每条消息上读取并哈希默认文件"""
+        try:
+            stat = self.flow_nodes_path(name).stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
     def flow_nodes_revision(self, name: str) -> str:
         """
         节点默认文件的并发版本, 缺失时为 "missing"

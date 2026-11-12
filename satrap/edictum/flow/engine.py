@@ -26,6 +26,15 @@ ConditionResult = Literal[True, False, "error"]
 """条件求值三值"""
 
 
+def _release_completed(future: Any) -> None:
+    """接收工作线程归还任务的结果, 防止异常静默丢失"""
+    if future.cancelled():
+        return
+    error = future.exception()
+    if error is not None:
+        logger.warning(f"[流程引擎] 条件实例异步归还失败: {error}")
+
+
 @dataclass(frozen=True)
 class FlowEvent:
     """一次触发事件"""
@@ -72,6 +81,7 @@ class ConditionEvaluator:
         timeout: float = 0.15,
         *,
         release_ref: Callable[[str, Any], Any] | None = None,
+        diagnostic: Callable[..., Any] = record_debug,
     ) -> None:
         """
         初始化求值器
@@ -82,8 +92,13 @@ class ConditionEvaluator:
         """
         self.timeout = timeout
         self._release_ref = release_ref
+        self._diag = diagnostic
         self._cache: dict[tuple[str, str], bool | str] = {}
         """(event_id, 节点 id) -> 结果缓存; 每个事件对每个条件节点最多求值一次"""
+
+    def cached(self, event_id: str, node_id: str) -> bool:
+        """是否已有当前事件的条件结果; 命中时调用方不得再 acquire 实例"""
+        return (event_id, node_id) in self._cache
 
     async def evaluate(
         self,
@@ -93,7 +108,8 @@ class ConditionEvaluator:
         config: dict[str, Any],
         event: FlowEvent,
         state_view: StateView | None = None,
-        calls_used: int = 0,
+        calls_used: Callable[..., int] | None = None,
+        targets: tuple[str, ...] = (),
     ) -> bool | str:
         """
         对一个条件节点求值, 结果在同一事件内复用
@@ -105,7 +121,7 @@ class ConditionEvaluator:
         - config: 生效配置
         - event: 当前触发事件
         - state_view: state 输入连到的只读视图 (cond_state 用)
-        - calls_used: 宿主调用计数 (llm_budget 类条件用)
+        - calls_used: 宿主调用计数查询 (kind, scope, window_seconds, target), 按需调用
 
         返回:
         - True / False / "error"; 每个事件最多求值一次, 结果在事件内复用
@@ -113,41 +129,89 @@ class ConditionEvaluator:
         key = (event.event_id, node.id)
         if key in self._cache:
             return self._cache[key]
-        result = await self._evaluate_once(node, node_type, fn, config, event, state_view, calls_used)
+        started_at = time.monotonic()
+        self._diag("flow_node", "start", metadata={
+            "node": node.id, "node_type": node.type, "event_id": event.event_id,
+            "targets": list(targets),
+        })
+        try:
+            result = await self._evaluate_once(
+                node, node_type, fn, config, event, state_view, calls_used, targets)
+        except BaseException as error:
+            self._diag("flow_node", "end", status="failed", metadata={
+                "node": node.id, "node_type": node.type, "event_id": event.event_id,
+                "result": "error", "error_type": type(error).__name__,
+                "duration_ms": round((time.monotonic() - started_at) * 1000, 3),
+            })
+            raise
         self._cache[key] = result
+        self._diag("flow_node", "end", status="failed" if result == "error" else "completed", metadata={
+            "node": node.id, "node_type": node.type, "event_id": event.event_id,
+            "result": "error" if result == "error" else str(result).lower(),
+            "duration_ms": round((time.monotonic() - started_at) * 1000, 3),
+        })
         return result
 
     async def _evaluate_once(
         self, node: FlowNodeInstance, node_type: FlowNodeType,
         fn: Callable[..., Any] | None, config: dict[str, Any],
-        event: FlowEvent, state_view: StateView | None, calls_used: int,
+        event: FlowEvent, state_view: StateView | None, calls_used: Callable[..., int] | None,
+        targets: tuple[str, ...] = (),
     ) -> bool | str:
         """实际求值一次; 插件条件进线程池, 内置在事件循环里"""
         if node_type.plugin:
             if fn is None:
                 # setup 失败/实例缺失/被标记 failed: 判错误而不是落到内置表判真
-                record_debug("flow_trigger", "blocked", bodies={"output": {
+                self._diag("flow_trigger", "blocked", bodies={"output": {
                     "node": node.id, "reason": "condition_impl_missing"}})
                 logger.warning(f"[流程引擎] 条件节点 {node.id} 没有可用实现, 判为错误")
                 return "error"
             # 插件条件函数: 同步函数进有界线程池, 超时/池满/异常判错误
-            try:
-                ctx = self._build_ctx(node_type, config, event, state_view, calls_used)
-                args = self._cond_args(node_type, ctx, state_view)
-                return await asyncio.wait_for(
-                    FLOW_CONDITION_WORKERS.run(fn, *args, wait_on_cancel=False),
-                    timeout=self.timeout,
-                )
-            except (WorkerBusyError, asyncio.TimeoutError, Exception) as error:
-                record_debug("flow_trigger", "blocked", bodies={"output": {
-                    "node": node.id, "reason": type(error).__name__}})
-                logger.warning(f"[流程引擎] 条件节点 {node.id} 求值失败 ({type(error).__name__}), 判为错误")
-                return "error"
-            finally:
+            loop = asyncio.get_running_loop()
+            started = False
+
+            async def release() -> None:
                 if self._release_ref is not None:
                     result = self._release_ref(node.id, fn)
                     if inspect.isawaitable(result):
                         await result
+
+            def guarded(*args: Any) -> Any:
+                nonlocal started
+                started = True
+                try:
+                    return fn(*args)
+                finally:
+                    # 工作线程不得反向等待事件循环: loop 停止时 .result() 会永久挂住。
+                    # 运行中的 loop 异步归还; 已停止/关闭或调度竞态失败时在线程内限时兜底。
+                    scheduled = False
+                    if loop.is_running():
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(release(), loop)
+                            future.add_done_callback(_release_completed)
+                            scheduled = True
+                        except RuntimeError:
+                            pass
+                    if not scheduled:
+                        try:
+                            asyncio.run(asyncio.wait_for(release(), timeout=1.0))
+                        except Exception as error:
+                            logger.warning(f"[流程引擎] 条件实例后台归还失败: {error}")
+
+            try:
+                ctx = self._build_ctx(node_type, config, event, state_view, calls_used, targets)
+                args = self._cond_args(node_type, ctx, state_view)
+                return await asyncio.wait_for(
+                    FLOW_CONDITION_WORKERS.run(guarded, *args, wait_on_cancel=False),
+                    timeout=self.timeout,
+                )
+            except (WorkerBusyError, asyncio.TimeoutError, Exception) as error:
+                if isinstance(error, WorkerBusyError) or (not started and not isinstance(error, asyncio.TimeoutError)):
+                    await release()
+                self._diag("flow_trigger", "blocked", bodies={"output": {
+                    "node": node.id, "reason": type(error).__name__}})
+                logger.warning(f"[流程引擎] 条件节点 {node.id} 求值失败 ({type(error).__name__}), 判为错误")
+                return "error"
         # 内置条件节点直接在事件循环求值
         try:
             return self._builtin(node, node_type, config, event, state_view)
@@ -157,17 +221,33 @@ class ConditionEvaluator:
 
     def _build_ctx(
         self, node_type: FlowNodeType, config: dict[str, Any],
-        event: FlowEvent, state_view: StateView | None, calls_used: int,
+        event: FlowEvent, state_view: StateView | None, calls_used: Callable[..., int] | None,
+        targets: tuple[str, ...] = (),
     ) -> Any:
-        """组装条件函数的只读 ctx"""
+        """组装条件函数的只读 ctx; 默认 target 预算是本次传播可达的全部 WF"""
         from types import SimpleNamespace
+
+        def default_calls(
+            kind: str = "all", scope: str = "flow", window_seconds: float = 3600, target: str = "",
+        ) -> int:
+            if calls_used is None:
+                return 0
+            if scope != "target" or target:
+                return calls_used(kind=kind, scope=scope, window_seconds=window_seconds, target=target)
+            # 多目标取最大已用量, 使 within 等阈值条件采用最严格结果。
+            return max((calls_used(
+                kind=kind, scope=scope, window_seconds=window_seconds, target=candidate,
+            ) for candidate in targets), default=0)
+
         ns = SimpleNamespace(
             config=config,
             now=time.time(),
             kind=event.kind,
             message=event.message,
             batch=event.batch,
-            calls=lambda kind, scope, window_seconds: calls_used,
+            calls=default_calls,
+            target=targets[0] if len(targets) == 1 else "",
+            targets=targets,
             local_time_between=lambda start, end: _local_time_between(start, end, ns.now),
         )
         return ns
@@ -176,7 +256,7 @@ class ConditionEvaluator:
     def _cond_args(node_type: FlowNodeType, ctx: Any, state_view: StateView | None) -> tuple[Any, ...]:
         """按输入端口顺序组装调用参数; ctx 固定第一, state 输入给 StateView"""
         args: list[Any] = [ctx]
-        for port in node_type.inputs:
+        for port in node_type.inputs or ():
             if port.name == "when":
                 continue
             if port.types == ("state",):
@@ -303,10 +383,11 @@ class TriggerEngine:
         *,
         evaluate_condition: Callable[..., Any] | None = None,
         resolve_state: Callable[[str], StateView] | None = None,
-        calls_used: Callable[[str], int] | None = None,
+        calls_used: Callable[..., int] | None = None,
         resolve_condition: Callable[[FlowNodeInstance], Callable[..., Any] | None] | None = None,
         release_ref: Callable[[str, Any], Any] | None = None,
         resolve_config: Callable[[str], dict[str, Any]] | None = None,
+        forget_event: Callable[[str], Any] | None = None,
     ) -> None:
         """
         初始化引擎
@@ -316,25 +397,30 @@ class TriggerEngine:
         - node_types: {节点 id: 节点契约}
         - evaluate_condition: 插件条件求值回调 (async), 缺省用内置 ConditionEvaluator
         - resolve_state: state 槽读取回调 {state_node_id: StateView}
-        - calls_used: 调用计数回调 {wf_id: int}
+        - calls_used: 调用计数查询回调 (kind, scope, window_seconds, target)
         - resolve_condition: 插件条件实现解析解析回调 {node: fn}; 来自 FlowNodeInstancePool.acquire
         - release_ref: 归还实例引用回调 {node_id, instance}; 与 resolve_condition 成对
         - resolve_config: 节点生效配置回调 {node_id: 合并后配置}; 缺省用节点实例 config
+        - forget_event: 事件最后一个 WF 引用结束时清理共享 transform 缓存
         """
         self.definition = definition
         self.node_types = node_types
         self._resolve_state = resolve_state or (lambda state_id: StateView.empty())
-        self._calls_used = calls_used or (lambda wf_id: 0)
+        self._calls_used = calls_used or (lambda *args, **kwargs: 0)
         self._resolve_condition = resolve_condition or (lambda node: None)
         self._release_ref = release_ref
         self._resolve_config = resolve_config
+        self._forget_event = forget_event
         self._evaluator = evaluate_condition or ConditionEvaluator(release_ref=release_ref)
         self._wf: dict[str, _WfState] = {n.id: _WfState() for n in definition.nodes.values()
                                          if (t := node_types.get(n.id)) and t.role == "workflow"}
         self._handlers: list[Callable[[str, FlowEvent], Any]] = []
         self._arrivals: dict[str, dict[str, float]] = {}
         """AND 门时间窗: {gate_id: {edge_key: 到达时刻}}"""
+        self._event_refs: dict[str, int] = {}
+        """事件在 WF 在飞/队列中的引用数; 归零后清理条件与 transform 缓存"""
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._task_wfs: dict[asyncio.Task[Any], str] = {}
         """进行中的 WF 触发任务; create_task 引用由引擎持有, 关闭时可取消"""
         self._diag = record_debug
 
@@ -343,6 +429,26 @@ class TriggerEngine:
         self._handlers = [handler]
 
     # ---------- 对外入口 ----------
+
+    async def _cleanup_event(self, event_id: str) -> None:
+        """仅在事件没有 WF 引用时清理事件级共享缓存"""
+        if self._event_refs.get(event_id, 0) > 0:
+            return
+        if isinstance(self._evaluator, ConditionEvaluator):
+            self._evaluator.forget(event_id)
+        if self._forget_event is not None:
+            result = self._forget_event(event_id)
+            if inspect.isawaitable(result):
+                await result
+
+    async def _release_event(self, event_id: str) -> None:
+        """运行结束释放一个 WF 引用, 最后一个引用负责清理"""
+        remaining = self._event_refs.get(event_id, 0) - 1
+        if remaining > 0:
+            self._event_refs[event_id] = remaining
+            return
+        self._event_refs.pop(event_id, None)
+        await self._cleanup_event(event_id)
 
     async def fire(
         self, tile_id: str, event: FlowEvent,
@@ -361,10 +467,14 @@ class TriggerEngine:
         node_type = self.node_types.get(tile_id)
         if node is None or node_type is None or node_type.role != "trigger":
             return
-        if not await self._when_ok(tile_id, event):
-            self._diag("flow_trigger", "blocked", bodies={"output": {"tile": tile_id, "reason": "when_false"}})
+        verdict = await self._when_ok(tile_id, event, targets)
+        if verdict is not True:
+            reason = "when_error" if verdict == "error" else "when_false"
+            self._diag("flow_trigger", "blocked", bodies={"output": {"tile": tile_id, "reason": reason}})
+            await self._cleanup_event(event.event_id)
             return
         await self._emit(tile_id, "event", event, depth=0, targets=targets)
+        await self._cleanup_event(event.event_id)
 
     async def complete(self, wf_id: str, event: FlowEvent, output: str) -> None:
         """
@@ -381,6 +491,7 @@ class TriggerEngine:
             source_event=getattr(event, "source_event", None),
         )
         await self._emit(wf_id, "done", done, depth=0)
+        await self._cleanup_event(done.event_id)
 
     async def handoff(self, tool_tile: str, event: FlowEvent) -> bool:
         """
@@ -393,10 +504,14 @@ class TriggerEngine:
         返回:
         - True 表示已交给下游 WF; False 表示条件为假未触发
         """
-        if not await self._when_ok(tool_tile, event):
-            self._diag("flow_trigger", "blocked", bodies={"output": {"tile": tool_tile, "reason": "when_false"}})
+        verdict = await self._when_ok(tool_tile, event)
+        if verdict is not True:
+            reason = "when_error" if verdict == "error" else "when_false"
+            self._diag("flow_trigger", "blocked", bodies={"output": {"tile": tool_tile, "reason": reason}})
+            await self._cleanup_event(event.event_id)
             return False
         await self._emit(tool_tile, "event", event, depth=0)
+        await self._cleanup_event(event.event_id)
         return True
 
     # ---------- 事件传播 ----------
@@ -451,12 +566,13 @@ class TriggerEngine:
                 return
             self._arrivals[gate_id] = {}
 
-        # 条件输入按三值求值
+        # 条件输入按三值求值; targets 参数是允许 WF 过滤器, 先解析成实际候选集合
+        candidates = self._candidate_targets(gate_id, targets)
         values: list[bool | str] = []
         for e in cond_edges:
             source_node = self.definition.nodes[e.source]
             source_type = self.node_types[e.source]
-            values.append(await self._eval_condition(source_node, source_type, event))
+            values.append(await self._eval_condition(source_node, source_type, event, targets=candidates))
         verdict = gate_and(values)
         if verdict == "error":
             self._diag("flow_trigger", "blocked", bodies={"output": {
@@ -468,8 +584,37 @@ class TriggerEngine:
             return
         await self._emit(gate_id, "out", event, depth + 1, targets)
 
-    async def _when_ok(self, tile_id: str, event: FlowEvent) -> bool:
-        """磁贴/节点的 when 口: 多个条件按 AND 计算, 不是真就不发"""
+    def _candidate_targets(
+        self, tile_id: str, allowed: frozenset[str] | set[str] | None,
+    ) -> tuple[str, ...]:
+        """求本次事件沿触发图可达的 WF; 条件默认 target 以此集合为准"""
+        found: set[str] = set()
+        pending = [tile_id]
+        seen: set[str] = set()
+        while pending:
+            source = pending.pop()
+            if source in seen:
+                continue
+            seen.add(source)
+            for edge in self.definition.edges:
+                if edge.source != source:
+                    continue
+                node_type = self.node_types.get(edge.target)
+                if node_type is None:
+                    continue
+                if node_type.role == "workflow" and edge.target_port == "trigger":
+                    if allowed is None or edge.target in allowed:
+                        found.add(edge.target)
+                elif node_type.role != "workflow":
+                    pending.append(edge.target)
+        return tuple(sorted(found))
+
+    async def _when_ok(
+        self, tile_id: str, event: FlowEvent,
+        targets: frozenset[str] | set[str] | None = None,
+    ) -> bool | str:
+        """磁贴/节点的 when 口: 多个条件按 AND 计算, 保留 false/error 区别"""
+        candidates = self._candidate_targets(tile_id, targets)
         values: list[bool | str] = []
         for e in self.definition.edges:
             if e.target != tile_id or e.target_port != "when":
@@ -478,14 +623,15 @@ class TriggerEngine:
             source_type = self.node_types[e.source]
             if source_type is None:
                 continue
-            values.append(await self._eval_condition(source_node, source_type, event))
+            values.append(await self._eval_condition(
+                source_node, source_type, event, targets=candidates))
         if not values:
             return True
-        return gate_and(values) is True
+        return gate_and(values)
 
     async def _eval_condition(
         self, node: FlowNodeInstance, node_type: FlowNodeType, event: FlowEvent,
-        _seen: frozenset[str] = frozenset(),
+        _seen: frozenset[str] = frozenset(), *, targets: tuple[str, ...] = (),
     ) -> bool | str:
         """对一个条件节点求值 (内置/插件/逻辑门), 带 needs 上下文与 state 输入"""
         # 逻辑门作为条件输入时按三值规则递归求值; 环防御返回错误
@@ -501,7 +647,7 @@ class TriggerEngine:
                 source_type = self.node_types[e.source]
                 if source_type is None:
                     continue
-                values.append(await self._eval_condition(source_node, source_type, event, seen))
+                values.append(await self._eval_condition(source_node, source_type, event, seen, targets=targets))
             if node.type == "not":
                 return gate_not(values[0]) if len(values) == 1 else "error"
             if node.type == "or":
@@ -512,19 +658,22 @@ class TriggerEngine:
         if node_type.needs and node_type.needs != event.kind:
             return "error"   # needs 要求的上下文不存在
         state_view: StateView | None = None
-        state_ports = {p.name for p in node_type.inputs if p.types == ("state",)}
+        state_ports = {p.name for p in node_type.inputs or () if p.types == ("state",)}
         for e in self.definition.edges:
             if e.target == node.id and e.target_port in state_ports:
                 state_view = self._resolve_state(e.source)
+                if inspect.isawaitable(state_view):
+                    state_view = await state_view
         config = self._config(node.id)
-        fn = self._resolve_condition(node) if node_type.plugin else None
         try:
             evaluator = self._evaluator
+            cached = isinstance(evaluator, ConditionEvaluator) and evaluator.cached(event.event_id, node.id)
+            fn = self._resolve_condition(node) if node_type.plugin and not cached else None
             if isinstance(evaluator, ConditionEvaluator):
                 result = await evaluator.evaluate(node, node_type, fn, config, event, state_view,
-                                                  calls_used=self._calls_used(node.id))
+                                                  calls_used=self._calls_used, targets=targets)
             else:
-                result = await evaluator(node, node_type, config, event, state_view, self._calls_used(node.id))
+                result = await evaluator(node, node_type, config, event, state_view, self._calls_used)
             if result not in (True, False, "error"):
                 return "error"
             return result
@@ -571,14 +720,18 @@ class TriggerEngine:
             if event.kind == "batch":
                 state.last_batch_to = max(state.last_batch_to, event.batch_to)
             state.busy = True
+            self._event_refs[event.event_id] = self._event_refs.get(event.event_id, 0) + 1
             self._diag("flow_trigger", "fire", bodies={"output": {
                 "wf": wf_id, "why": event.why, "event_id": event.event_id}})
             for handler in self._handlers:
                 result = handler(wf_id, event)
                 if inspect.isawaitable(result):
-                    task = asyncio.create_task(self._run_handler(result, wf_id))
+                    # 直接调度 handler, 避免任务尚未启动就取消时包装协程遗留未 await 的参数
+                    task = asyncio.create_task(result)
                     self._tasks.add(task)
-                    task.add_done_callback(self._tasks.discard)
+                    self._task_wfs[task] = wf_id
+                    task.add_done_callback(
+                        lambda done, wid=wf_id: self._handler_done(done, wid))
             return
         if on_busy == "drop" or event.kind == "batch" and event.batch_to <= state.last_batch_to:
             # drop 策略丢弃; 或: 已下发过的批次 (batch_to 不超过在飞上限) 不重复入队,
@@ -590,6 +743,7 @@ class TriggerEngine:
             return
         if on_busy == "merge":
             previous = state.merged
+            self._event_refs[event.event_id] = self._event_refs.get(event.event_id, 0) + 1
             state.merged = event if previous is None else FlowEvent(
                 event_id=event.event_id, kind=event.kind, tile=event.tile,
                 why="合并重跑", message=event.message or previous.message,
@@ -602,22 +756,28 @@ class TriggerEngine:
             )
             if event.kind == "batch":
                 state.last_batch_to = max(state.last_batch_to, event.batch_to)
+            if previous is not None:
+                await self._release_event(previous.event_id)
             return
         if event.kind == "batch":
             state.last_batch_to = max(state.last_batch_to, event.batch_to)
+        self._event_refs[event.event_id] = self._event_refs.get(event.event_id, 0) + 1
         state.queued.append(event)
 
-    async def _run_handler(self, coro: Any, wf_id: str) -> None:
-        """跑一个 WF 触发任务; 异常吞掉由调用方流程负责, 引擎只保证 busy 复位"""
-        try:
-            await coro
-        except Exception as error:
-            logger.error(f"[流程引擎] WF {wf_id} 运行任务未处理异常: {error}")
-            # 引擎层兜底复位 busy 与在飞上限; 正常路径由 session._run_workflow 的 finish 负责
-            state = self._wf.get(wf_id)
-            if state is not None:
-                state.busy = False
-                state.last_batch_to = 0
+    def _handler_done(self, task: asyncio.Task[Any], wf_id: str) -> None:
+        """接收 handler 异常并兜底复位; 正常结束由 session._run_workflow 的 finish 负责"""
+        self._tasks.discard(task)
+        self._task_wfs.pop(task, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is None:
+            return
+        logger.error(f"[流程引擎] WF {wf_id} 运行任务未处理异常: {error}")
+        state = self._wf.get(wf_id)
+        if state is not None:
+            state.busy = False
+            state.last_batch_to = 0
 
     def running_workflows(self) -> list[str]:
         """当前正忙的 WF 节点 id 列表, 供运行状态接口读"""
@@ -648,6 +808,7 @@ class TriggerEngine:
         state = self._wf.get(wf_id)
         if state is None:
             return None
+        await self._release_event(event.event_id)
         if state.merged is not None:
             next_event, state.merged = state.merged, None
         elif state.queued:
@@ -657,9 +818,28 @@ class TriggerEngine:
             # 空闲时在飞上限回落: 已推进位置覆盖或等下次检查重新读批
             state.last_batch_to = 0
             return None
-        if isinstance(self._evaluator, ConditionEvaluator):
-            self._evaluator.forget(event.event_id)
         return next_event
+
+    async def cancel_workflow(self, wf_id: str) -> None:
+        """取消指定 WF 的在飞与排队运行, 用于 /new drain 超时后禁止晚提交/晚发送"""
+        state = self._wf.get(wf_id)
+        pending_events: list[str] = []
+        if state is not None:
+            pending_events.extend(event.event_id for event in state.queued)
+            if state.merged is not None:
+                pending_events.append(state.merged.event_id)
+            state.queued.clear()
+            state.merged = None
+        tasks = [task for task, owner in self._task_wfs.items() if owner == wf_id]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for event_id in pending_events:
+            await self._release_event(event_id)
+        if state is not None:
+            state.busy = False
+            state.last_batch_to = 0
 
     async def shutdown(self) -> None:
         """会话释放: 取消全部进行中的 WF 触发任务并清理 AND 时间窗"""
@@ -668,6 +848,7 @@ class TriggerEngine:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        self._task_wfs.clear()
         self._arrivals.clear()
 
 

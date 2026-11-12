@@ -60,6 +60,34 @@ class TestSourceAndBucket:
         assert "x3" in joined and "x2" in joined
 
     @pytest.mark.asyncio
+    async def test_only_assemble_source_path_uses_bounded_query(self):
+        """source 直连 WF 保留全量; source→assemble 才传明确的有界窗口"""
+        nodes = [
+            {"id": "src", "type": "source", "title": "s", "config": {}},
+            {"id": "asm", "type": "assemble", "title": "a",
+             "config": {"latest_n": 1, "after_coverage": True, "max_pending": 2}},
+            {"id": "w1", "type": "react_workflow", "title": "w1", "config": {}},
+            {"id": "w2", "type": "react_workflow", "title": "w2", "config": {}},
+        ]
+        edges = [
+            {"from": "src.out", "to": "w1.input"},
+            {"from": "src.out", "to": "asm.messages"},
+            {"from": "asm.out", "to": "w2.input"},
+        ]
+        definition, node_types = _def(nodes, edges)
+        calls = []
+
+        def source(*args):
+            calls.append(args)
+            return (_msg(1), _msg(2), _msg(3))
+
+        ev = TransformEvaluator(definition, node_types, resolve_source=source)
+        assert len(await ev.pull("w1", "src", "r1", _event())) == 3
+        await ev.pull("w2", "asm", "r2", _event())
+        assert calls[0] == ()
+        assert calls[1] == ({"after": 0, "pending_limit": 2, "latest_n": 1},)
+
+    @pytest.mark.asyncio
     async def test_bucket_filters_outbound(self):
         nodes = [
             {"id": "b1", "type": "bucket", "title": "b", "config": {"include_outbound": False}},
@@ -184,3 +212,106 @@ class TestTimeout:
         with pytest.raises(asyncio.TimeoutError):
             await t1
         assert await t2 == "done"
+
+
+class TestLifecycle:
+    @staticmethod
+    def _async_node():
+        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        nodes = [
+            {"id": "p1", "type": "plug.fn", "title": "p", "config": {}},
+            {"id": "w1", "type": "react_workflow", "title": "w1", "config": {}},
+            {"id": "w2", "type": "react_workflow", "title": "w2", "config": {}},
+        ]
+        edges = [{"from": "p1.out", "to": "w1.input"}, {"from": "p1.out", "to": "w2.input"}]
+        registry = FlowNodeRegistry()
+        registry.register_plugin_nodes("plug", [FlowNodeType(
+            type="plug.fn", version=1, label="fn", description="", role="transform",
+            outputs=(PortSpec(name="out", types=("text",)),), plugin="plug")])
+        definition, _, _ = migrate_flow_definition(
+            parse_flow_definition({"version": 3, "nodes": nodes, "edges": edges}), registry)
+        return definition, {node.id: registry.get(node.type) for node in definition.nodes.values()}
+
+    @pytest.mark.asyncio
+    async def test_computation_cancelled_only_after_all_waiters_cancel(self):
+        """取消一个等待者不打断共享计算, 最后一个取消才取消任务"""
+        definition, node_types = self._async_node()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def slow(ctx):
+            started.set()
+            try:
+                await asyncio.sleep(10)
+                return "done"
+            finally:
+                if asyncio.current_task().cancelling():
+                    cancelled.set()
+
+        evaluator = TransformEvaluator(definition, node_types, resolve_transform=lambda node, run_id: slow)
+        event = _event()
+        first = asyncio.create_task(evaluator.pull("w1", "p1", "r1", event))
+        second = asyncio.create_task(evaluator.pull("w2", "p1", "r2", event))
+        await started.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await asyncio.sleep(0)
+        assert not cancelled.is_set() and not evaluator._cells[(event.event_id, "p1")].task.done()
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        await asyncio.wait_for(cancelled.wait(), 1)
+
+    @pytest.mark.asyncio
+    async def test_argument_failure_releases_acquired_instance(self):
+        """acquire 后上游参数拉取异常也归还实例引用"""
+        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        nodes = [
+            {"id": "up", "type": "plug.up", "title": "up", "config": {}},
+            {"id": "p1", "type": "plug.fn", "title": "p", "config": {}},
+            {"id": "w1", "type": "react_workflow", "title": "w", "config": {}},
+        ]
+        edges = [{"from": "up.out", "to": "p1.in"}, {"from": "p1.out", "to": "w1.input"}]
+        registry = FlowNodeRegistry()
+        registry.register_plugin_nodes("plug", [
+            FlowNodeType(type="plug.up", version=1, label="up", description="", role="transform",
+                         outputs=(PortSpec(name="out", types=("text",)),), plugin="plug"),
+            FlowNodeType(type="plug.fn", version=1, label="fn", description="", role="transform",
+                         inputs=(PortSpec(name="in", types=("text",), required=True),),
+                         outputs=(PortSpec(name="out", types=("text",)),), plugin="plug"),
+        ])
+        definition, _, _ = migrate_flow_definition(
+            parse_flow_definition({"version": 3, "nodes": nodes, "edges": edges}), registry)
+        node_types = {node.id: registry.get(node.type) for node in definition.nodes.values()}
+        released = []
+
+        def fail(ctx):
+            raise RuntimeError("upstream")
+
+        evaluator = TransformEvaluator(
+            definition, node_types,
+            resolve_transform=lambda node, run_id: fail if node.id == "up" else lambda ctx, in_: in_,
+            release_ref=lambda node_id, fn: released.append(node_id))
+        with pytest.raises(RuntimeError, match="upstream"):
+            await evaluator.pull("w1", "p1", "r1", _event())
+        assert sorted(released) == ["p1", "up"]
+
+    @pytest.mark.asyncio
+    async def test_completed_cell_survives_first_run_until_event_forget(self):
+        """首个 WF 完成不删共享结果, 事件 forget 后才清缓存"""
+        definition, node_types = self._async_node()
+        calls = []
+
+        async def compute(ctx):
+            calls.append(1)
+            return "value"
+
+        evaluator = TransformEvaluator(definition, node_types, resolve_transform=lambda node, run_id: compute)
+        event = _event()
+        assert await evaluator.pull("w1", "p1", "r1", event) == "value"
+        evaluator.forget_run("r1")
+        assert await evaluator.pull("w2", "p1", "r2", event) == "value"
+        assert calls == [1]
+        evaluator.forget(event.event_id)
+        assert evaluator._cells == {}

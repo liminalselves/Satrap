@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from satrap.core.call_context import bind_call_origin
+from satrap.core.call_context import bind_call_origin, current_flow_run, current_flow_workflow
 from satrap.core.framework.Base import AsyncModelWorkflowFramework, AsyncSession
 from satrap.core.log.debug.hooks import record_debug
 from satrap.core.platform.event import MessageChain
@@ -15,7 +15,7 @@ from satrap.core.utils.TCBuilder import AsyncToolsManager
 from satrap.edictum.flow.definition import FlowDefinition, FlowNodeInstance, parse_flow_definition
 from satrap.edictum.flow.instances import FlowNodeInstancePool, config_fingerprint
 from satrap.edictum.flow.registry import FlowNodeRegistry
-from satrap.edictum.flow.store import FlowStore
+from satrap.edictum.flow.store import FlowConflictError, FlowStore
 from satrap.edictum.flow.validate import analyze, validate
 from satrap.edictum.flow.budget import FlowCallBudget, BudgetExceeded
 
@@ -30,20 +30,13 @@ import uuid
 from satrap.core.log import logger
 
 
-current_flow_workflow: contextvars.ContextVar[AsyncModelWorkflowFramework | None] = contextvars.ContextVar(
-    "satrap_flow_current_workflow", default=None,
-)
-"""流程会话正在运行的 WF; 回复绑定/工具归属检查等先读这里, 读不到再回退 session._wf"""
-
-current_flow_run: contextvars.ContextVar[tuple[str, str, str] | None] = contextvars.ContextVar(
-    "satrap_flow_current_run", default=None,
-)
-"""正在运行的 (wf_id, event_id, run_id); 计量归属与前台来源都从这里取"""
-
 current_flow_event: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "satrap_flow_current_event", default=None,
 )
 """触发本次运行的平台消息事件 (MessageEvent); 后台触发为 None"""
+
+NEW_EVENT_QUEUE_LIMIT = 256
+NEW_DRAIN_TIMEOUT_SECONDS = 120.0
 
 
 class _MeteredClient:
@@ -211,12 +204,17 @@ class AsyncFlowSession(AsyncSession):
         """{插件名: {节点名: 实现}}; 插件重载时重新加载"""
         self._plugin_impl_stamp: dict[str, int] = {}
         """{插件名: flow_nodes.py mtime 纳秒}; 变化时重载实现"""
-        self._catalog_stamp: tuple[int, ...] = ()
-        """插件目录快照标识 (各 meta.yaml mtime), 变化时重建注册表"""
+        self._catalog_stamp: tuple[Any, ...] | None = None
+        """插件目录, 节点声明, 实现与全局默认的快照标识; None 表示尚未扫描"""
         self._registry = FlowNodeRegistry()
         self._node_types: dict[str, Any] = {}
         self._events: deque[dict[str, Any]] = deque(maxlen=50)
-        """最近 50 条触发/运行事件, 供运行状态接口; 重启即丢弃 (瞬态)"""
+        """诊断不可用时的运行事件降级视图; 正常状态接口优先读诊断记录"""
+        self._observer_tasks: set[asyncio.Task[Any]] = set()
+        """出站观察与 /new 结算任务; 入档和消息回调只投递, 不等待流程逻辑"""
+        self._settle_task: asyncio.Task[Any] | None = None
+        self._new_events: deque[Any] = deque()
+        """/new 结算期间暂存的消息, 完成后按到达顺序处理"""
 
     async def _async_init(self) -> None:
         """解析定义, 静态检查, 按 WF 节点装配 AsyncModelWorkflowFramework"""
@@ -263,7 +261,17 @@ class AsyncFlowSession(AsyncSession):
             parse_flow_definition(self._raw_flow), self._registry,
             plugin_defaults=plugin_defaults, migrate_funcs=migrate_funcs,
         )
-        self._issues = validate(definition, self._registry)
+        catalog = {entry.name: entry for entry in self._plugin_catalog.scan()} if self._plugin_catalog is not None else None
+        scope = self._bound_scope
+        adapter = self._bound_adapter
+        group_capability = getattr(adapter, "supports_scheduled_group_send", None)
+        private_capability = getattr(adapter, "supports_scheduled_private_send", None)
+        self._issues = validate(
+            definition, self._registry, plugin_catalog=catalog,
+            conversation_kinds=[scope.conversation_kind] if scope is not None else None,
+            scheduled_send_group=group_capability if type(group_capability) is bool else None,
+            scheduled_send_private=private_capability if type(private_capability) is bool else None,
+        )
         if any(i.level == "error" for i in self._issues):
             raise ValueError("流程定义存在错误, 请先通过 /config/edictum/flow/validate 检查")
         self._definition = definition
@@ -278,7 +286,11 @@ class AsyncFlowSession(AsyncSession):
             self._budget = FlowCallBudget(max_calls=0)
         # 阈值位置与状态槽的持久化存取, 任何流程都需要 (不只装 flow_snapshot 的)
         self._flow_store = FlowStore(self.session_ctx.db_path, "", self._flow_name())
-        self._scope_key = self.session_id
+        if not self._scope_key:
+            self._scope_key = self.session_id
+        self._flow_store.scope_key = self._scope_key
+        if self._bound_scope is not None:
+            self._flow_store.adapter_id = self._bound_scope.adapter_id
         self._refresh_resolved()
         for node in definition.nodes.values():
             node_type = self._registry.get(node.type)
@@ -371,16 +383,21 @@ class AsyncFlowSession(AsyncSession):
 
     # ---------- 插件节点实现与实例 (P2-2) ----------
 
-    def _refresh_registry(self) -> None:
-        """扫插件目录刷新节点类型注册表与 flow_nodes.py 实现; 目录或文件变化时重载"""
+    def _refresh_registry(self) -> bool:
+        """配置, 声明或实现变化时重建注册表; 未变化时不做节点解析和磁盘默认读取"""
         entries = [] if self._plugin_catalog is None else list(self._plugin_catalog.scan())
         stamp = tuple(sorted(
-            (entry.path / "flow_nodes.py").stat().st_mtime_ns
-            if (entry.path / "flow_nodes.py").is_file() else 0
+            (
+                entry.name, str(entry.path), entry.version, repr(entry.flow_nodes),
+                (entry.path / "flow_nodes.py").stat().st_mtime_ns
+                if (entry.path / "flow_nodes.py").is_file() else 0,
+                self._plugin_config.flow_nodes_file_stamp(entry.name)
+                if self._plugin_config is not None and entry.flow_nodes else None,
+            )
             for entry in entries if entry.flow_nodes
         ))
-        if stamp == self._catalog_stamp and self._catalog_stamp:
-            return
+        if stamp == self._catalog_stamp and self._catalog_stamp is not None:
+            return False
         self._catalog_stamp = stamp
         self._registry = FlowNodeRegistry()
         self._plugin_impls = {}
@@ -398,6 +415,7 @@ class AsyncFlowSession(AsyncSession):
                 logger.warning(f"[流程会话] 插件 {entry.name} flow_nodes.py 加载失败: {error}")
                 impls = {}
             self._plugin_impls[entry.name] = impls
+        return True
 
     def _node_impl(self, node_id: str) -> Any:
         """取插件节点的实现 (函数或 FlowNode 子类); 内置/未知返回 None"""
@@ -521,15 +539,15 @@ class AsyncFlowSession(AsyncSession):
 
         session = self
         tile_cfg = self._config(tile_id)
-        tool_name = str(tile_cfg.get("tool_name") or f"handoff_{tile_id}")
-        description = str(tile_cfg.get("tool_description") or "把任务交接给下游工作流")
+        resolved_tool_name = str(tile_cfg.get("tool_name") or f"handoff_{tile_id}")
+        resolved_description = str(tile_cfg.get("tool_description") or "把任务交接给下游工作流")
         max_calls = int(tile_cfg.get("max_calls") or 1)
         tile_node = self._definition.nodes.get(tile_id)
         tile_title = tile_node.title if tile_node is not None else tile_id
 
         class _HandoffTool(AsyncTool):
-            tool_name = tool_name
-            description = description
+            tool_name = resolved_tool_name
+            description = resolved_description
             params_dict = {"payload": ("string", "交给下游的内容")}
 
             def __init__(self) -> None:
@@ -563,9 +581,12 @@ class AsyncFlowSession(AsyncSession):
 
     async def _install_node_plugins(self, node: FlowNodeInstance, wf: AsyncModelWorkflowFramework) -> None:
         """把 WF 节点 plugins 列表里的目录插件装进该 WF (P1-1)"""
-        if self._plugin_installer is None:
-            return
         plugins = [p.strip() for p in str(self._config(node.id).get("plugins") or "").splitlines() if p.strip()]
+        external = [name for name in plugins if name != "flow_snapshot"]
+        if self._plugin_installer is None:
+            if external:
+                raise RuntimeError(f"WF {node.id} 需要插件 {', '.join(external)}, 但会话没有插件安装器")
+            return
         catalog = self._plugin_catalog
         for name in plugins:
             if name == "flow_snapshot":
@@ -643,12 +664,12 @@ class AsyncFlowSession(AsyncSession):
         参数:
         - event: 平台消息事件 (MessageEvent)
         """
+        # 先绑定真实对话与适配器, 初始化校验才能使用实际会话类型和后台发送能力
+        self._bind_archive(event)
         await self._ensure_initialized()
         if self._definition is None or self._closed:
             return
         event.set_extra("flow_observed", True)
-        # 档案来源: 首次 observe 从事件适配器补入消息库与对话键
-        self._bind_archive(event)
         # SessionManager 经属性注入的 /new 边界在构造后到达, 首个 observe 才读
         if not self._new_checked:
             self._new_checked = True
@@ -657,19 +678,83 @@ class AsyncFlowSession(AsyncSession):
             if self._history_start is None:
                 self._history_start = getattr(self, "_flow_history_start", None)
             self._new_done = self._new_from is None
-        # /new 接管: 先按各节点 on_new 结算 (drain 会跑完积压批次), 再处理新消息
+        # /new 结算可能运行多个批次; 消息入口只排队, 由独立任务结算后按序处理
         if not self._new_done:
-            self._new_done = True
-            await self._settle_new()
-        # 配置/插件变化时重建插件节点实例; 频率低, 变化才产生开销
-        self._refresh_registry()
-        await self._refresh_instances()
-        self._refresh_resolved()
-        # 重启恢复: 首个事件先补触发未完成批次 (瞬态队列丢弃, 位置未推进的批次重新触发)
-        if not self._resumed:
+            if len(self._new_events) >= NEW_EVENT_QUEUE_LIMIT:
+                dropped = self._new_events.popleft()
+                await self._drop_new_backlog()
+                record_debug("flow_new", "queue_drop", metadata={
+                    "session": self.session_id, "reason": "queue_capacity",
+                    "capacity": NEW_EVENT_QUEUE_LIMIT,
+                    "dropped_message_id": getattr(dropped.platform_message, "message_id", ""),
+                })
+            self._new_events.append(event)
+            if self._settle_task is None:
+                self._settle_task = self._spawn_observer_task(
+                    self._settle_new_observations(), name=f"flow-new-{self.session_id}")
+            return
+        await self._observe_ready(event)
+
+    async def _observe_ready(self, event: Any) -> None:
+        """处理已完成 /new 结算的消息; 仅配置变化时重建节点状态"""
+        if self._refresh_registry():
+            if self._definition is not None:
+                self._node_types = {
+                    n.id: self._registry.get(n.type) for n in self._definition.nodes.values()
+                }
+            self._refresh_resolved()
+            await self._refresh_instances()
+        resumed = not self._resumed
+        if resumed:
             self._resumed = True
             await self._resume_unfinished()
-        await self._handle_observed(event)
+        await self._handle_observed(event, check_thresholds=not resumed)
+
+    async def _drop_new_backlog(self) -> None:
+        """/new 暂存溢出时按 drop 推进所有阈值位置, 后续回放不会重复触发旧批"""
+        if self._definition is None or self._flow_store is None or self._message_store is None:
+            return
+        latest = await asyncio.to_thread(
+            self._message_store.latest_seq_by_scope_key, self._scope_key)
+        for node in self._definition.nodes.values():
+            if node.type != "threshold":
+                continue
+            for wf_id in self._threshold_wfs(node.id):
+                await asyncio.to_thread(
+                    self._flow_store.drop_position_by_scope_key,
+                    self._scope_key, node.id, wf_id, latest)
+
+    async def _settle_new_observations(self) -> None:
+        """后台完成 /new 结算并回放暂存消息; 失败时保留边界供下次重试"""
+        try:
+            await self._settle_new()
+            self._new_done = True
+            while self._new_events and not self._closed:
+                # 成功处理后才出队; 异常保留下次 /new 结算重试, 不丢首条待回放消息。
+                await self._observe_ready(self._new_events[0])
+                self._new_events.popleft()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.error(f"[流程会话] /new 后台结算失败: {error}")
+        finally:
+            self._settle_task = None
+
+    def _spawn_observer_task(self, coro: Any, *, name: str) -> asyncio.Task[Any]:
+        """创建有引用的观察任务并接收异常, 不让入档路径等待流程执行"""
+        task = asyncio.create_task(coro, name=name)
+        self._observer_tasks.add(task)
+
+        def finished(done: asyncio.Task[Any]) -> None:
+            self._observer_tasks.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if error is not None:
+                logger.error(f"[流程会话] 后台观察任务失败: {error}")
+
+        task.add_done_callback(finished)
+        return task
 
     async def observe_outbound(self, scope: Any, snapshot: Any) -> None:
         """
@@ -679,15 +764,17 @@ class AsyncFlowSession(AsyncSession):
         - scope: 对话身份 (MessageScope)
         - snapshot: 已入档的消息 (ArchiveMessage)
         """
-        if self._closed or self._definition is None:
+        if (self._closed or self._definition is None or self._bound_scope is None
+                or scope.key != self._scope_key):
+            return
+        self._spawn_observer_task(
+            self._observe_outbound(scope, snapshot), name=f"flow-outbound-{self.session_id}")
+
+    async def _observe_outbound(self, scope: Any, snapshot: Any) -> None:
+        """在独立任务中处理本 scope 的出站消息; 其他对话的通知直接忽略"""
+        if scope.key != self._scope_key or self._closed:
             return
         try:
-            if self._scope_key != scope.key:
-                self._scope_key = scope.key
-                self._bound_scope = scope
-                if self._flow_store is not None:
-                    self._flow_store.scope_key = scope.key
-                    self._flow_store.adapter_id = scope.adapter_id
             await self._ensure_initialized()
             await self._ensure_engine()
             await self._check_thresholds()
@@ -759,7 +846,7 @@ class AsyncFlowSession(AsyncSession):
         - positions: {wf_id: 已提交位置}
         - latest: 档案当前最新 seq
         """
-        deadline = time.monotonic() + 120.0
+        deadline = time.monotonic() + NEW_DRAIN_TIMEOUT_SECONDS
         await self._ensure_engine()
         for wf_id in wf_ids:
             committed = positions.get(wf_id, 0)
@@ -790,9 +877,20 @@ class AsyncFlowSession(AsyncSession):
                     batch_from=committed, batch_to=pending[-1]["seq"],
                 )
                 try:
-                    # 单次运行也受 120 秒总上限约束
-                    await asyncio.wait_for(self._run_workflow(wf_id, event), timeout=remaining)
-                except (asyncio.TimeoutError, Exception) as error:
+                    # 经引擎统一调度, 与常规触发共享 busy/queue, 不直接并发调用 _run_workflow
+                    await self._engine.fire(node.id, event, targets={wf_id})
+                    await asyncio.wait_for(self._wait_wf_idle(wf_id), timeout=remaining)
+                except asyncio.TimeoutError:
+                    # 先取消并收殓旧 WF, 再 drop; 否则旧任务可能在位置跳变后晚提交或晚发送。
+                    await self._engine.cancel_workflow(wf_id)
+                    await asyncio.to_thread(
+                        self._flow_store.drop_position_by_scope_key,
+                        self._scope_key, node.id, wf_id, latest)
+                    record_debug("flow_new", "drain_timeout", metadata={
+                        "tile": node.id, "wf": wf_id, "dropped_to": latest})
+                    logger.warning(f"[流程会话] {node.title} 对 {wf_id} 的 /new drain 超过 120 秒, 按 drop 跳到最新")
+                    break
+                except Exception as error:
                     logger.warning(f"[流程会话] drain 运行失败 {wf_id}: {error}")
                 committed = await asyncio.to_thread(
                     lambda: self._flow_store.positions_for_tile_by_scope_key(
@@ -804,6 +902,11 @@ class AsyncFlowSession(AsyncSession):
                         self._scope_key, node.id, wf_id, latest)
                     break
 
+    async def _wait_wf_idle(self, wf_id: str) -> None:
+        """等待指定 WF 的在飞与排队事件全部结束"""
+        while self._engine is not None and self._engine._wf[wf_id].busy:
+            await asyncio.sleep(0.01)
+
     async def _ensure_engine(self) -> None:
         """触发引擎惰性装配 (恢复与常规 observe 共用)"""
         if self._engine is not None:
@@ -812,16 +915,38 @@ class AsyncFlowSession(AsyncSession):
         self._engine = TriggerEngine(
             self._definition,
             self._node_types,
-            evaluate_condition=ConditionEvaluator(release_ref=self._instances.release_ref),
-            resolve_state=lambda sid: self._state_view(sid),
+            evaluate_condition=ConditionEvaluator(
+                release_ref=self._instances.release_ref,
+                diagnostic=self._record_flow_diagnostic,
+            ),
+            resolve_state=self._state_view_async,
             calls_used=self._calls_used,
             resolve_condition=lambda node: self._instances.acquire(node.id),
             release_ref=self._instances.release_ref,
             resolve_config=self._config,
+            forget_event=self._forget_event,
         )
+        self._engine._diag = self._record_flow_diagnostic
         self._engine.on_trigger(self._on_wf_trigger)
 
-    def _calls_used(self, kind: str, scope: str, window_seconds: float, target: str) -> int:
+    def _record_flow_diagnostic(self, category: str, phase: str, **kwargs: Any) -> None:
+        """给触发摘要补持久化查询维度; 正文仍由诊断正文的既有策略管理"""
+        bodies = kwargs.get("bodies") or {}
+        output = bodies.get("output") or {}
+        metadata = dict(kwargs.get("metadata") or {})
+        metadata.update(flow_name=self._flow_name(), scope_key=self._scope_key)
+        for key in ("tile", "gate", "wf", "event_id", "run_id", "why", "reason"):
+            if key in output:
+                metadata[key] = output[key]
+        kwargs["metadata"] = metadata
+        record_debug(category, phase, **kwargs)
+
+    def _forget_event(self, event_id: str) -> None:
+        """事件全部 WF 引用结束后清理共享 transform 结果"""
+        if self._transform is not None:
+            self._transform.forget(event_id)
+
+    def _calls_used(self, kind: str, scope: str, window_seconds: float, target: str = "") -> int:
         """条件节点 ctx.calls() 的实际查询: 按参数过滤调用计数"""
         if self._budget is None:
             return 0
@@ -863,7 +988,7 @@ class AsyncFlowSession(AsyncSession):
                     observers = set()
                     adapter._flow_observers = observers
                 observers.add(self.observe_outbound)
-        if self._message_store is not None and self._scope_key != self.session_id:
+        if self._bound_scope is not None:
             return
         if adapter is None:
             return
@@ -882,11 +1007,12 @@ class AsyncFlowSession(AsyncSession):
                 self._flow_store.scope_key = scope.key
                 self._flow_store.adapter_id = scope.adapter_id
 
-    async def _handle_observed(self, event: Any) -> None:
-        """分发一条已观察的消息给触发引擎 (唤醒/阈值判定由引擎做)"""
+    async def _handle_observed(self, event: Any, *, check_thresholds: bool = True) -> None:
+        """分发一条已观察的消息; 首次恢复已检查最新阈值时不重复检查"""
         await self._ensure_engine()
         # 每条消息都过阈值磁贴 (按 seq); 唤醒磁贴只在唤醒判定通过时发事件
-        await self._check_thresholds()
+        if check_thresholds:
+            await self._check_thresholds()
         is_private = bool(getattr(event, "is_private_chat", lambda: False)())
         try:
             from satrap.core.pipeline.wake_policy import evaluate_wake
@@ -894,7 +1020,7 @@ class AsyncFlowSession(AsyncSession):
         except Exception:
             decision = None
         if is_private:
-            decision_triggered = decision is None or decision.triggered
+            decision_triggered = True
         else:
             decision_triggered = decision is not None and decision.triggered
         for node in self._definition.nodes.values():
@@ -928,7 +1054,9 @@ class AsyncFlowSession(AsyncSession):
                 is_self_mention(c, event.call_origin.self_id) for c in event.get_messages()
             )
         except Exception:
-            mentions = "@" in text
+            mentions = False
+        if bool(getattr(event, "is_private_chat", lambda: False)()):
+            mentions = True
         return FlowMessage(
             message_id=str(event.call_origin.source_message_id or ""),
             position=0,
@@ -954,11 +1082,13 @@ class AsyncFlowSession(AsyncSession):
         if tile:
             self._inflight[(tile, wf_id)] = event.batch_to
         # 运行开始时的状态槽版本快照: CAS 要对比这个起点, 不是运行结束时的版本
-        base_versions = self._snapshot_base_versions(wf_id)
+        base_versions = await asyncio.to_thread(self._snapshot_base_versions, wf_id)
+        deadline = time.monotonic() + float(self._config(wf_id).get("timeout_seconds") or 60)
         try:
             wf = self._workflows[wf_id]
-            # 拉取输入 (P1-7 的共享求值在事件内生效)
-            pulled = await self._pull_inputs(wf_id, run_id, event)
+            # 拉取输入 (P1-7 的共享求值在事件内生效), 使用本次 WF 的剩余时间
+            pulled = await self._pull_inputs(
+                wf_id, run_id, event, timeout=max(0.001, deadline - time.monotonic()))
             run_token = current_flow_run.set((wf_id, event.event_id, run_id))
             event_token = current_flow_event.set(getattr(event, "source_event", None))
             wf_token = current_flow_workflow.set(wf)
@@ -968,16 +1098,22 @@ class AsyncFlowSession(AsyncSession):
                     # 前台运行: 绑定来源消息的回复轮次与调用身份 (P1-11)
                     from satrap.core.group_chat.reply import bind_reply_turn
                     with bind_reply_turn(source_event), bind_call_origin(source_event.call_origin):
-                        output = await self._wf_run(wf, wf_id, pulled, event)
+                        output = await asyncio.wait_for(
+                            self._wf_run(wf, wf_id, pulled, event),
+                            timeout=max(0.001, deadline - time.monotonic()),
+                        )
                 else:
                     with bind_call_origin(None):
-                        output = await self._wf_run(wf, wf_id, pulled, event)
+                        output = await asyncio.wait_for(
+                            self._wf_run(wf, wf_id, pulled, event),
+                            timeout=max(0.001, deadline - time.monotonic()),
+                        )
             finally:
                 current_flow_workflow.reset(wf_token)
                 current_flow_event.reset(event_token)
                 current_flow_run.reset(run_token)
             # 状态槽提交与阈值位置推进 (同事务); CAS 用运行开始时的版本
-            commits = self._pending_commits(wf_id, event, run_id, base_versions)
+            commits = await self._pending_commits(wf_id, event, run_id, base_versions)
             if commits or tile:
                 committed_seq = await asyncio.to_thread(
                     self._flow_store.commit_states_by_scope_key,
@@ -1005,7 +1141,11 @@ class AsyncFlowSession(AsyncSession):
             if isinstance(error, BudgetExceeded):
                 record_debug("flow_budget", "exceeded", metadata={
                     "wf": wf_id, "run_id": run_id, "error": str(error)[:200]})
-            await self._notify_failure(wf_id, str(error))
+            if isinstance(error, FlowConflictError):
+                record_debug("flow_state", "conflict", status="failed", metadata={
+                    "wf": wf_id, "run_id": run_id, "code": error.code,
+                    "flow_name": self._flow_name(), "scope_key": self._scope_key})
+            await self._notify_failure(wf_id, str(error), getattr(event, "source_event", None))
         finally:
             if tile:
                 # 本次批次结束: 位置未推进时 inflight 回落到 committed (允许重试);
@@ -1028,8 +1168,9 @@ class AsyncFlowSession(AsyncSession):
 
     async def _wf_run(self, wf: Any, wf_id: str, pulled: list[Any], event: Any) -> str:
         """运行一次 full_agent; 包装便于前后台路径共用"""
+        user_input = await self._compose_input(wf_id, pulled, event)
         return await wf.full_agent(
-            user_input=self._compose_input(wf_id, pulled, event),
+            user_input=user_input,
             callback=False,
             max_iterations=int(self._config(wf_id).get("max_steps") or 8),
         )
@@ -1066,45 +1207,77 @@ class AsyncFlowSession(AsyncSession):
                 except Exception:
                     pass
 
-    async def _pull_inputs(self, wf_id: str, run_id: str, event: Any) -> list[Any]:
-        """按 WF.input 口连线拉取上游数据节点"""
+    async def _pull_inputs(
+        self, wf_id: str, run_id: str, event: Any, timeout: float | None = None,
+    ) -> list[Any]:
+        """按 WF.input 口连线拉取上游数据节点, 传递本次运行的剩余超时"""
         from satrap.edictum.flow.transform import TransformEvaluator
         if self._transform is None:
             self._transform = TransformEvaluator(
                 self._definition,
                 self._node_types,
                 resolve_transform=lambda node, run_id: self._instances.acquire(node.id),
-                resolve_state=self._state_view,
+                resolve_state=self._state_view_async,
                 release_ref=self._instances.release_ref,
-                resolve_source=self._source_messages,
+                resolve_source=self._source_messages_async,
                 resolve_config=self._config,
                 build_ctx=lambda node, resolved: self._node_ctx(
                     node, self._node_types.get(node.id), resolved),
+                diagnostic=self._record_flow_diagnostic,
             )
         inputs: list[Any] = []
         for e in self._definition.edges:
             if e.target == wf_id and e.target_port == "input":
                 try:
-                    inputs.append(await self._transform.pull(wf_id, e.source, run_id, event))
+                    inputs.append(await self._transform.pull(
+                        wf_id, e.source, run_id, event, timeout=timeout))
                 except Exception as error:
                     logger.warning(f"[流程会话] 拉取 {e.source} 失败: {error}")
                     raise
         return inputs
 
-    def _source_messages(self) -> tuple[Any, ...]:
-        """source 节点供给: 档案视图 (同步, 由 transform 在求值任务里调用)"""
+    async def _source_messages_async(self, query: dict[str, Any] | None = None) -> tuple[Any, ...]:
+        """在线程中读取完整视图或 assemble 明确请求的有界窗口"""
+        return await asyncio.to_thread(self._source_messages, query)
+
+    def _source_messages(self, query: dict[str, Any] | None = None) -> tuple[Any, ...]:
+        """source 节点供给: 完整视图按 seq 分页, 有界窗口只查未覆盖段和 latest_n"""
         if self._message_store is None or not self._scope_key:
             return ()
+        if query is not None:
+            try:
+                rows = self._message_store.flow_window_by_scope_key(
+                    self._scope_key, after=int(query.get("after") or 0),
+                    pending_limit=int(query.get("pending_limit") or 0),
+                    latest_n=int(query.get("latest_n") or 0),
+                    received_from=self._history_start,
+                    include_outbound=bool(query.get("include_outbound", True)),
+                )
+                return tuple(self._to_flow_message(m) for m in rows)
+            except Exception as error:
+                logger.warning(f"[流程会话] source 窗口读取档案失败: {error}")
+                return ()
+        rows: list[Any] = []
+        cursor = 0
         try:
-            rows = self._message_store.after_by_scope_key(
-                self._scope_key, 0, limit=500, received_from=self._history_start,
-            )
+            while True:
+                page = self._message_store.after_by_scope_key(
+                    self._scope_key, cursor, limit=1000, received_from=self._history_start,
+                )
+                rows.extend(page)
+                if len(page) < 1000:
+                    break
+                next_cursor = int(page[-1].get("seq") or 0)
+                if next_cursor <= cursor:
+                    logger.warning(f"[流程会话] source 分页序号未前进: {cursor}")
+                    break
+                cursor = next_cursor
         except Exception as error:
             logger.warning(f"[流程会话] source 读取档案失败: {error}")
             return ()
         return tuple(self._to_flow_message(m) for m in rows)
 
-    def _compose_input(self, wf_id: str, pulled: list[Any], event: Any) -> str:
+    async def _compose_input(self, wf_id: str, pulled: list[Any], event: Any) -> str:
         """把拉取结果和触发负载拼成 WF 的 user_input; writer_reads_previous 自动带上上一版"""
         parts: list[str] = []
         if event.kind == "batch" and event.batch:
@@ -1127,12 +1300,12 @@ class AsyncFlowSession(AsyncSession):
                     continue
                 if not self._config(e.target).get("writer_reads_previous", True):
                     continue
-                view = self._state_view(e.target)
+                view = await self._state_view_async(e.target)
                 if view.content:
                     parts.append(f"上一版快照 ({e.target}):\n{view.content}")
         return "\n\n".join(parts) or "(空)"
 
-    def _pending_commits(
+    async def _pending_commits(
         self, wf_id: str, event: Any, run_id: str, base_versions: dict[str, int],
     ) -> list[Any]:
         """收集 snapshot_write 的待提交内容, 转成 StateCommit; CAS 起点用运行开始时的版本"""
@@ -1143,14 +1316,21 @@ class AsyncFlowSession(AsyncSession):
             if not callable(pending):
                 continue
             for state_id, content in pending().items():
-                covers_to = (event.batch_to if event.kind == "batch"
-                             else self._flow_store.state_by_scope_key(self._scope_key, state_id)["covers_to"])
+                covers_to = event.batch_to
+                if event.kind != "batch":
+                    row = await asyncio.to_thread(
+                        self._flow_store.state_by_scope_key, self._scope_key, state_id)
+                    covers_to = row["covers_to"]
                 commits.append(StateCommit(
                     state_id=state_id, content=content,
                     base_version=base_versions.get(state_id, 0),
                     covers_to=covers_to, run_id=run_id))
             tool.clear()
         return commits
+
+    async def _state_view_async(self, state_id: str) -> Any:
+        """在线程中读取状态槽, 避免同步 SQLite 阻塞事件循环"""
+        return await asyncio.to_thread(self._state_view, state_id)
 
     def _state_view(self, state_id: str) -> Any:
         """state 槽的只读视图"""
@@ -1226,18 +1406,22 @@ class AsyncFlowSession(AsyncSession):
         now = time.monotonic()
         hit = False
         if config.get("mention", True):
-            try:
-                from satrap.core.pipeline.wake_policy import is_self_mention
-                hit = any(is_self_mention(c, event.call_origin.self_id)
-                          for c in event.get_messages())
-            except Exception:
-                hit = "@" in text
+            if bool(getattr(event, "is_private_chat", lambda: False)()):
+                hit = True
+            else:
+                try:
+                    from satrap.core.pipeline.wake_policy import is_self_mention
+                    hit = any(is_self_mention(c, event.call_origin.self_id)
+                              for c in event.get_messages())
+                except Exception:
+                    hit = False
         if not hit:
             words = [x.strip() for x in str(config.get("wake_words") or "").splitlines() if x.strip()]
             hit = any(word in text for word in words)
         new_messages = int(config.get("new_messages") or 0)
         if not hit and new_messages > 0:
-            count = self._wake_count.setdefault(node.id, 0) + 1
+            count = self._wake_count.get(node.id, 0) + 1
+            self._wake_count[node.id] = count
             if count >= new_messages:
                 hit = True
         if not hit:
@@ -1266,6 +1450,7 @@ class AsyncFlowSession(AsyncSession):
             config = self._config(node.id)
             # 首个有消息的 seq: 新驱动的 WF 从桶末尾开始, 不回放历史
             # 但会话首次接管时桶里可能已有消息 (重启/首轮), 这些消息属于"积压"
+            fired = False
             for wf_id, committed in positions.items():
                 # 已下发未提交的批次不再重复入队: inflight 阻止运行中同一批再入队;
                 # 失败/结束后 inflight 清掉, 位置未推进的按 committed 重新读批
@@ -1280,12 +1465,7 @@ class AsyncFlowSession(AsyncSession):
                 if not hit:
                     continue
                 batch_to = pending[-1]["seq"] if pending else committed
-                # committed 位置没推进说明上次运行失败: busy 仍挂说明上次任务没走到
-                # finish (测试桩/崩溃路径), 复位 busy 让批次能重试
-                state = self._engine._wf.get(wf_id)
-                if state is not None and state.busy and committed < batch_to:
-                    state.busy = False
-                    state.last_batch_to = committed
+                # busy 只由引擎在运行结束时清除; 位置落后不能作为复位依据
                 from satrap.edictum.flow.engine import FlowEvent
                 event = FlowEvent(
                     event_id=uuid.uuid4().hex, kind="batch", tile=node.id,
@@ -1296,6 +1476,9 @@ class AsyncFlowSession(AsyncSession):
                 # 只触发这一个 WF; targets 限定传播终点 (经逻辑门也一样);
                 # 忙碌时按 on_busy 入队/合并/丢弃, 不重复记 inflight
                 await self._engine.fire(node.id, event, targets={wf_id})
+                fired = True
+            if fired:
+                # 同一磁贴的所有 WF 共用同一轮 idle 基准, 不在循环中提前刷新
                 self._tile_last_at[node.id] = time.time()
 
     def _threshold_wfs(self, tile_id: str) -> list[str]:
@@ -1324,10 +1507,15 @@ class AsyncFlowSession(AsyncSession):
                 return f"距上次触发 {int((time.time() - last) / 60)} 分钟"
         return None
 
-    @staticmethod
-    def _to_flow_message(item: Any) -> Any:
-        """档案消息转 FlowMessage"""
+    def _to_flow_message(self, item: Any) -> Any:
+        """档案消息转 FlowMessage; @ 只读结构化 mentions, 私聊恒为 True"""
         from satrap.edictum.flow.types import FlowMessage
+        scope = self._bound_scope
+        mentions = bool(scope and str(scope.self_id) in {
+            str(value) for value in (item.get("mentions") or ())
+        })
+        if scope is not None and scope.conversation_kind == "private":
+            mentions = True
         return FlowMessage(
             message_id=str(item.get("message_id") or ""),
             position=int(item.get("seq") or 0),
@@ -1335,14 +1523,19 @@ class AsyncFlowSession(AsyncSession):
             nickname=str(item.get("nickname") or ""),
             text=str(item.get("text") or ""),
             is_bot=item.get("direction") == "outbound",
-            mentions_bot="@" in str(item.get("text") or ""),
+            mentions_bot=mentions,
             time=float(item.get("message_time") or 0.0),
         )
 
-    async def _notify_failure(self, wf_id: str, reason: str) -> None:
+    async def _notify_failure(self, wf_id: str, reason: str, source_event: Any = None) -> None:
         """
         按运行时契约 10.1: 同一 WF 连续失败只告知一次, 成功后复位;
         前台失败回复到来源消息, 后台走发送通道; 跟随 error_feedback 开关
+
+        参数:
+        - wf_id: 失败的 WF 节点 id
+        - reason: 简短失败原因
+        - source_event: 本次运行的来源消息; None 表示后台运行, 不再读取已重置的上下文
         """
         if self._failure_notified.get(wf_id):
             return
@@ -1354,7 +1547,6 @@ class AsyncFlowSession(AsyncSession):
             return
         text = f"{title} 本次运行失败: {reason[:120]}"
         try:
-            source_event = current_flow_event.get()
             if source_event is not None:
                 await source_event.send(MessageChain.from_text(text), purpose="error_feedback")
             else:
@@ -1386,24 +1578,30 @@ class AsyncFlowSession(AsyncSession):
     async def close_flow_nodes(self) -> None:
         """会话释放: 停 idle 任务, 取消运行中的 WF, 关闭全部插件节点实例"""
         self._closed = True
+        adapter = self._bound_adapter
+        observers = getattr(adapter, "_flow_observers", None) if adapter is not None else None
+        if observers is not None:
+            observers.discard(self.observe_outbound)
         if self._idle_task is not None:
             self._idle_task.cancel()
             self._idle_task = None
+        for task in tuple(self._observer_tasks):
+            task.cancel()
+        if self._observer_tasks:
+            await asyncio.gather(*tuple(self._observer_tasks), return_exceptions=True)
+        self._observer_tasks.clear()
+        self._settle_task = None
         if self._engine is not None:
             try:
                 await self._engine.shutdown()
             except Exception as error:
                 logger.warning(f"[流程会话] 引擎关闭异常: {error}")
         await self._instances.close_all()
+        from satrap.edictum.simple_session.async_plugins import close_workflow_plugin_hosts
+        await close_workflow_plugin_hosts(self)
 
-    def runtime_status(self) -> dict[str, Any]:
-        """
-        流程会话运行状态: 阈值位置与积压, 状态槽版本, 正在运行的 WF
-
-        返回:
-        - dict: {flow_name, scope_key, tiles, states, running_wfs, node_status};
-          未绑档案或未初始化时尽力返回已持久化部分
-        """
+    async def runtime_status(self) -> dict[str, Any]:
+        """异步读取流程运行状态; 所有同步 SQLite 访问均离开事件循环"""
         out: dict[str, Any] = {
             "flow_name": self._flow_name(),
             "session_id": self.session_id,
@@ -1411,24 +1609,43 @@ class AsyncFlowSession(AsyncSession):
             "history_start": self._history_start,
             "tiles": {},
             "states": {},
-            "running_wfs": [],
-            "events": list(self._events),
+            "running_wfs": self._engine.running_workflows() if self._engine is not None else [],
+            "events": [],
+            "events_source": "debug_store",
             "node_status": self._instances.status(),
         }
-        if self._engine is not None:
-            out["running_wfs"] = self._engine.running_workflows()
+
+        def read_events() -> list[Any]:
+            from satrap.core.log.debug.capture import debug_store
+            store = debug_store()
+            return store.recent_flow_triggers(
+                self._flow_name(), self._scope_key) if store is not None else []
+
+        try:
+            out["events"] = await asyncio.to_thread(read_events)
+            if not out["events"]:
+                out["events"] = list(self._events)
+                out["events_source"] = "memory_fallback"
+        except Exception as error:
+            logger.warning(f"[流程会话] 读取持久化触发摘要失败: {error}")
+            out["events"] = list(self._events)
+            out["events_source"] = "memory_fallback"
         if self._flow_store is None or self._definition is None:
             return out
-        # 阈值磁贴: 每个 WF 的已提交位置与积压数
-        positions = self._flow_store.positions_for_scope_key(self._scope_key)
-        latest = self._message_store.latest_seq_by_scope_key(self._scope_key) if self._message_store else 0
+
+        def read_persistent() -> tuple[dict[Any, int], int, dict[str, Any]]:
+            positions = self._flow_store.positions_for_scope_key(self._scope_key)
+            latest = self._message_store.latest_seq_by_scope_key(
+                self._scope_key) if self._message_store else 0
+            states = self._flow_store.states_for_scope_key(self._scope_key)
+            return positions, latest, states
+
+        positions, latest, out["states"] = await asyncio.to_thread(read_persistent)
         tiles: dict[str, dict[str, Any]] = {}
         for (tile_id, wf_id), committed in positions.items():
             entry = tiles.setdefault(tile_id, {"title": self._title_of(tile_id), "wfs": {}})
             entry["wfs"][wf_id] = {"committed": committed, "backlog": max(0, latest - committed)}
         out["tiles"] = tiles
-        # 状态槽
-        out["states"] = self._flow_store.states_for_scope_key(self._scope_key)
         return out
 
     def _title_of(self, node_id: str) -> str:

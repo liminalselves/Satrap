@@ -622,6 +622,89 @@ async def test_restart_deduplicates_persisted_skill_instructions(tmp_path, async
     assert {"alpha_bundle", "alpha_mcp", "beta_bundle", "beta_mcp"} <= new._wf.tools_manager.tools.keys()
 
 @pytest.mark.asyncio
+async def test_flow_provider_installs_directory_plugins_per_workflow(tmp_path):
+    """真实目录插件只进入配置了它的 WF, 相同插件可在多个 WF 独立安装和释放"""
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    plugin = plugins / "flow_probe"
+    plugin.mkdir()
+    (plugin / "meta.yaml").write_text(
+        "name: flow_probe\ntools:\n  flow_probe_tool: 测试工具\n", encoding="utf-8",
+    )
+    (plugin / "tools.py").write_text(
+        "from satrap.core.utils.TCBuilder import AsyncTool\n"
+        "class Probe(AsyncTool):\n"
+        "    tool_name = 'flow_probe_tool'\n"
+        "    description = '测试工具'\n"
+        "    params_dict = {}\n"
+        "    async def execute(self):\n"
+        "        return 'installed'\n", encoding="utf-8",
+    )
+    catalog = PluginCatalog(plugins, tmp_path / "user")
+    registry = create_default_edictum_type_registry()
+    configs = EdictumConfigManager(registry, tmp_path / "edictum.json", plugin_catalog=catalog)
+    flow = {"version": 3, "nodes": [
+        {"id": "src", "type": "source", "title": "消息", "config": {}},
+        {"id": "wake", "type": "wake", "title": "唤醒", "config": {}},
+        *[{"id": node, "type": "react_workflow", "title": node,
+           "config": {"plugins": selected, "model_name": "test"}}
+          for node, selected in [("a", "flow_snapshot\nflow_probe"), ("b", ""), ("c", "flow_probe")]],
+        {"id": "snapshot", "type": "state", "title": "快照", "config": {}},
+    ], "edges": [{"from": "src.out", "to": "wake.messages"},
+                  *[{"from": "wake.event", "to": f"{node}.trigger"} for node in ("a", "b", "c")],
+                  {"from": "a.text", "to": "snapshot.write"}]}
+    configs.create("flow", {"edictum_type": "flow", "params": {"flow": flow}})
+    provider = EdictumProvider(configs, registry, default_checkpoint_db=str(tmp_path / "context.db"))
+    provider.plugin_catalog = catalog
+    session: Any = provider.create_session(
+        SessionConfig(session_id="flow-test", session_type_name="flow", provider_name="edictum"),
+        cast(Any, object()),
+    )
+    try:
+        await provider.prepare_session_async(session)
+        await session.initialize()
+        for node in ("a", "c"):
+            manager = session._workflows[node].tools_manager
+            assert "flow_probe_tool" in manager.tools
+            assert await manager.execute_tool("flow_probe_tool", {}) == "installed"
+        visible = {
+            row["function"]["name"]
+            for row in session._workflows["a"].tools_manager.get_tools_definitions()
+        }
+        assert {"snapshot_read", "snapshot_write", "flow_probe_tool"} <= visible
+        assert "flow_probe_tool" not in session._workflows["b"].tools_manager.tools
+        assert session._workflow_plugin_hosts[session._workflows["a"]] is not session._workflow_plugin_hosts[session._workflows["c"]]
+        with pytest.raises(ValueError, match="已安装"):
+            await session.install_plugin_to_workflow("a", str(plugin))
+        assert await session._workflows["a"].tools_manager.execute_tool("flow_probe_tool", {}) == "installed"
+    finally:
+        await provider.release_session_async(session)
+    assert all("flow_probe_tool" not in wf.tools_manager.tools for wf in session._workflows.values())
+
+
+@pytest.mark.parametrize("instance_override", [False, True])
+def test_flow_provider_rejects_top_level_plugins(tmp_path, instance_override):
+    """流程顶层插件缺少 WF 目标, 创建时明确拒绝"""
+    registry = create_default_edictum_type_registry()
+    configs = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    configs.create("flow", {"edictum_type": "flow", "params": {"flow": {
+        "version": 3, "nodes": [
+            {"id": "src", "type": "source", "title": "消息", "config": {}},
+            {"id": "wake", "type": "wake", "title": "唤醒", "config": {}},
+            {"id": "a", "type": "react_workflow", "title": "a", "config": {"model_name": "test"}},
+        ], "edges": [{"from": "src.out", "to": "wake.messages"},
+                     {"from": "wake.event", "to": "a.trigger"}],
+    }}, "plugins": [] if instance_override else ["missing"]})
+    provider = EdictumProvider(configs, registry)
+    with pytest.raises(ValueError, match="顶层 plugins.*WF 节点"):
+        provider.create_session(
+            SessionConfig(session_id="flow-test", session_type_name="flow", provider_name="edictum",
+                          session_config={"plugins": ["missing"]} if instance_override else {}),
+            cast(Any, object()),
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_platform_prompt_override_preserves_active_skills_and_history(tmp_path, asynchronous):
     """真实平台提示词覆盖保留活跃技能, 清空基础提示词也不删除技能和对话"""

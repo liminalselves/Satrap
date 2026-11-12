@@ -11,6 +11,21 @@ from contextvars import ContextVar
 from collections.abc import Iterator, Mapping, Sequence
 import copy
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from satrap.core.framework.Base import AsyncModelWorkflowFramework
+
+
+current_flow_workflow: ContextVar[AsyncModelWorkflowFramework | None] = ContextVar(
+    "satrap_flow_current_workflow", default=None,
+)
+"""流程会话当前运行的 WF; 未绑定时回退到 session._wf"""
+
+current_flow_run: ContextVar[tuple[str, str, str] | None] = ContextVar(
+    "satrap_flow_current_run", default=None,
+)
+"""当前运行的 (wf_id, event_id, run_id), 用于计量和来源归属"""
 
 
 @dataclass(frozen=True)

@@ -768,6 +768,306 @@ async def test_deadline_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyP
     assert "旧副本" not in user_call.message
 
 
+# ================= flow 路由与定义变更测试 =================
+
+
+class _FlowSchedulerManager(_FakeSessionManager):
+    """使用真实 UserManager 路由、可变定义和轻量流程会话的调度测试替身。"""
+
+    def __init__(self) -> None:
+        from unittest.mock import AsyncMock
+        from satrap.edictum.flow.session import AsyncFlowSession
+
+        super().__init__()
+        self.kind = "flow"
+        self.enabled = True
+        self.created_calls: list[Any] = []
+        self.entries: dict[str, Any] = {}
+        self.observed: list[tuple[str, MessageEvent]] = []
+        self.provider_registry = SimpleNamespace(binding_status=self.binding_status, get=lambda _: self)
+        self.pool = SimpleNamespace(list_entries=lambda: self.entries, release=lambda entry: None)
+        self.flow_class = AsyncFlowSession
+        self.async_mock = AsyncMock
+
+    def binding_status(self, *_args: Any) -> BindingStatus:
+        return BindingStatus(BindingState.RUNNABLE if self.enabled else BindingState.DISABLED)
+
+    def get_definition(self, _name: str) -> Any:
+        return SimpleNamespace(metadata={"edictum_type": self.kind})
+
+    def register_session_from_provider_context(self, **kwargs: Any) -> Any:
+        return SimpleNamespace(session_id=f"mapped:{kwargs['session_identity'] or kwargs['context_value']}")
+
+    def _resolve_or_create_session_config(self, call: Any) -> Any:
+        self.created_calls.append(call)
+        return call
+
+    async def _acquire_or_create_entry_async(self, call: Any) -> Any:
+        session = self.flow_class(call.session_id, llm=None)
+
+        async def observe(event: MessageEvent) -> None:
+            self.observed.append((call.session_id, event))
+
+        session.observe = self.async_mock(side_effect=observe)
+        entry = SimpleNamespace(session=session)
+        self.entries[call.session_id] = entry
+        return entry
+
+    async def drain_observations(self) -> None:
+        tasks = [entry.session._scheduler_observer_task for entry in self.entries.values()
+                 if getattr(entry.session, "_scheduler_observer_task", None) is not None]
+        if tasks:
+            await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+async def test_flow_scheduler_observes_unwoken_scoped_and_switched_mapping(tmp_path: Path):
+    """实际调度器在未唤醒时使用真实 UserManager 的群范围和更新后映射。"""
+    from satrap.core.framework.UserManager import UserManager
+
+    manager = _FlowSchedulerManager()
+    users = UserManager(_as_session_manager(manager), db_path=tmp_path / "users.db")
+    adapter = RecorderAdapter(settings={"context_scope": "group_member", "wake_mode": "mention"})
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=users)
+    first = _group_event(adapter)
+    second_group = _group_event(adapter, group_id="g2")
+    await scheduler.execute(first)
+    await scheduler.execute(second_group)
+    await manager.drain_observations()
+    first_id, second_id = [row[0] for row in manager.observed]
+    assert first_id != second_id and first_id != first.session_id
+    call = manager.created_calls[0]
+    assert call.route is not None and call.route.scope == "group_member"
+    assert call.session_id == first_id
+    users.store.upsert_context_session(call.route.owner, call.route.platform, call.route.session_type,
+                                       "mapped:after-new", call.route.provider, context_key=call.route.key)
+    after_new = _group_event(adapter)
+    await scheduler.execute(after_new)
+    await manager.drain_observations()
+    assert manager.observed[-1] == ("mapped:after-new", after_new)
+    assert manager.created_calls[-1].route == call.route
+    assert not first.is_wake_up() and not after_new.is_wake_up()
+    assert manager.calls == []
+
+
+@pytest.mark.asyncio
+async def test_flow_scheduler_enqueues_before_mapping_switch_without_holding_route_lock(tmp_path: Path):
+    """真实调度锁中只投递; 慢观察不阻塞切换, 同一会话按投递顺序消费。"""
+    from satrap.core.framework.UserManager import UserManager
+
+    manager = _FlowSchedulerManager()
+    users = UserManager(_as_session_manager(manager), db_path=tmp_path / "users.db")
+    adapter = RecorderAdapter(settings={"context_scope": "group_member", "wake_mode": "mention"})
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=users)
+    first, second, switched = (_group_event(adapter) for _ in range(3))
+    route, _ = scheduler._conversation_route(first, users)
+    assert route is not None
+    started, release = asyncio.Event(), asyncio.Event()
+    original_create = manager._acquire_or_create_entry_async
+    seen: list[tuple[str, MessageEvent]] = []
+
+    async def create(call: Any) -> Any:
+        entry = await original_create(call)
+
+        async def observe(event: MessageEvent) -> None:
+            lock_entry = scheduler._session_turns.get((id(manager), "route", route.lock_key))
+            assert lock_entry is None or not lock_entry[0].locked()
+            seen.append((call.session_id, event))
+            if event is first:
+                started.set()
+                await release.wait()
+
+        entry.session.observe = observe
+        return entry
+
+    manager._acquire_or_create_entry_async = create
+    await scheduler.execute(first)
+    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.wait_for(scheduler.execute(second), 1)
+    assert seen == [(manager.created_calls[0].session_id, first)]
+    async with scheduler._session_turn(_as_session_manager(manager), route.lock_key, namespace="route"):
+        users.store.upsert_context_session(route.owner, route.platform, route.session_type,
+                                           "mapped:next", route.provider, context_key=route.key)
+    await asyncio.wait_for(scheduler.execute(switched), 1)
+    old_id = manager.created_calls[0].session_id
+    release.set()
+    await asyncio.wait_for(manager.drain_observations(), 1)
+    assert [event for session_id, event in seen if session_id == old_id] == [first, second]
+    assert [(session_id, event) for session_id, event in seen if event is switched] == [("mapped:next", switched)]
+
+
+@pytest.mark.asyncio
+async def test_flow_scheduler_settlement_preserves_order_and_event_cleanup(tmp_path: Path):
+    """后台 /new 结算完成之前不得处理下一条或清理上一条的临时文件。"""
+    from satrap.core.framework.UserManager import UserManager
+
+    manager = _FlowSchedulerManager()
+    users = UserManager(_as_session_manager(manager), db_path=tmp_path / "users.db")
+    adapter = RecorderAdapter(settings={"context_scope": "group_member", "wake_mode": "mention"})
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=users)
+    first, second = _group_event(adapter), _group_event(adapter)
+    started, release = asyncio.Event(), asyncio.Event()
+    seen: list[MessageEvent] = []
+    cleaned: list[MessageEvent] = []
+    first.cleanup_temporary_local_files = lambda: cleaned.append(first)
+    second.cleanup_temporary_local_files = lambda: cleaned.append(second)
+    original_create = manager._acquire_or_create_entry_async
+
+    async def create(call: Any) -> Any:
+        entry = await original_create(call)
+        session = entry.session
+
+        async def settle() -> None:
+            started.set()
+            await release.wait()
+            seen.append(first)
+            session._settle_task = None
+
+        async def observe(event: MessageEvent) -> None:
+            if event is first:
+                session._settle_task = session._spawn_observer_task(settle(), name="test-settle")
+            else:
+                seen.append(event)
+
+        session.observe = observe
+        return entry
+
+    manager._acquire_or_create_entry_async = create
+    await scheduler.execute(first)
+    await asyncio.wait_for(started.wait(), 1)
+    await scheduler.execute(second)
+    assert not seen and not cleaned
+    release.set()
+    await asyncio.wait_for(manager.drain_observations(), 1)
+    assert seen == [first, second]
+    assert cleaned == [first, second]
+
+
+@pytest.mark.asyncio
+async def test_flow_scheduler_observation_queue_is_bounded_and_cleans_drop(tmp_path: Path, monkeypatch):
+    """持续慢观察时上游队列也有界, 溢出事件按 drop 清理而不转移无界积压"""
+    from satrap.core.framework.UserManager import UserManager
+    from satrap.core.pipeline import scheduler as scheduler_module
+
+    monkeypatch.setattr(scheduler_module, "_FLOW_OBSERVATION_QUEUE_LIMIT", 1)
+    manager = _FlowSchedulerManager()
+    users = UserManager(_as_session_manager(manager), db_path=tmp_path / "users.db")
+    adapter = RecorderAdapter(settings={"context_scope": "group_member", "wake_mode": "mention"})
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=users)
+    first, second, third = (_group_event(adapter) for _ in range(3))
+    started, release = asyncio.Event(), asyncio.Event()
+    cleaned: list[MessageEvent] = []
+    for event in (first, second, third):
+        event.cleanup_temporary_local_files = lambda event=event: cleaned.append(event)
+    original_create = manager._acquire_or_create_entry_async
+    seen: list[MessageEvent] = []
+
+    async def create(call: Any) -> Any:
+        entry = await original_create(call)
+
+        async def observe(event: MessageEvent) -> None:
+            seen.append(event)
+            if event is first:
+                started.set()
+                await release.wait()
+
+        entry.session.observe = observe
+        return entry
+
+    manager._acquire_or_create_entry_async = create
+    await scheduler.execute(first)
+    await asyncio.wait_for(started.wait(), 1)
+    await scheduler.execute(second)
+    await scheduler.execute(third)
+    session = next(iter(manager.entries.values())).session
+    assert list(session._scheduler_observations) == [third]
+    assert cleaned == [second]
+    release.set()
+    await asyncio.wait_for(manager.drain_observations(), 1)
+    assert seen == [first, third]
+    assert cleaned == [second, first, third]
+
+
+@pytest.mark.asyncio
+async def test_flow_scheduler_close_cleans_unstarted_observation(tmp_path: Path):
+    """会话在投递后、任务首轮执行前关闭时仍释放事件资源。"""
+    from satrap.core.framework.UserManager import UserManager
+
+    manager = _FlowSchedulerManager()
+    users = UserManager(_as_session_manager(manager), db_path=tmp_path / "users.db")
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=users)
+    event = _group_event(RecorderAdapter(settings={"context_scope": "group_member"}))
+    cleaned: list[MessageEvent] = []
+    event.cleanup_temporary_local_files = lambda: cleaned.append(event)
+    await scheduler.execute(event)
+    session = next(iter(manager.entries.values())).session
+    await session.close_flow_nodes()
+    await asyncio.sleep(0)
+    assert cleaned == [event]
+    assert not manager.observed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["mapping", "disabled", "simple"])
+async def test_flow_scheduler_rechecks_after_route_lock_wait(tmp_path: Path, change: str):
+    """等待稳定路由锁期间切换映射或撤销绑定后, 不得接管旧会话。"""
+    from satrap.core.framework.UserManager import UserManager
+
+    manager = _FlowSchedulerManager()
+    users = UserManager(_as_session_manager(manager), db_path=tmp_path / "users.db")
+    adapter = RecorderAdapter(settings={"context_scope": "group_member", "wake_mode": "mention"})
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=users)
+    event = _group_event(adapter)
+    route, _ = scheduler._conversation_route(event, users)
+    assert route is not None
+    async with scheduler._session_turn(_as_session_manager(manager), route.lock_key, namespace="route"):
+        task = asyncio.create_task(scheduler.execute(event))
+        await asyncio.sleep(0)
+        assert not task.done()
+        if change == "mapping":
+            users.store.upsert_context_session(route.owner, route.platform, route.session_type,
+                                               "mapped:switched", route.provider, context_key=route.key)
+        elif change == "disabled":
+            manager.enabled = False
+        else:
+            manager.kind = "simple"
+    await task
+    await manager.drain_observations()
+    if change == "mapping":
+        assert manager.observed == [("mapped:switched", event)]
+    else:
+        assert not manager.observed and not manager.created_calls
+
+
+@pytest.mark.asyncio
+async def test_flow_scheduler_rechecks_definition_and_disabled_binding(tmp_path: Path):
+    """simple 与 flow 双向切换及禁用后均使用当前配置, 不复用旧类型。"""
+    from satrap.core.framework.UserManager import UserManager
+
+    manager = _FlowSchedulerManager()
+    users = UserManager(_as_session_manager(manager), db_path=tmp_path / "users.db")
+    adapter = RecorderAdapter()
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=users)
+    manager.kind = "simple"
+    await scheduler.execute(_message_event(adapter))
+    assert len(manager.calls) == 1 and not manager.observed
+    manager.kind = "flow"
+    await scheduler.execute(_message_event(adapter))
+    await manager.drain_observations()
+    assert len(manager.observed) == 1
+    manager.enabled = False
+    await scheduler.execute(_message_event(adapter))
+    assert len(manager.observed) == 1 and len(manager.calls) == 1
+    manager.enabled = True
+    manager.kind = "simple"
+    await scheduler.execute(_message_event(adapter))
+    assert len(manager.observed) == 1 and len(manager.calls) == 2
+    manager.kind = "flow"
+    await scheduler.execute(_message_event(adapter))
+    await manager.drain_observations()
+    assert len(manager.observed) == 2
+
+
 # ================= 会话绑定闸门测试 =================
 
 

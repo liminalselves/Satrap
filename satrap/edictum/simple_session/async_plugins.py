@@ -51,6 +51,74 @@ if TYPE_CHECKING:
     from .async_ import AsyncSimpleSession
 
 
+async def install_workflow_plugin(
+    session: Any, wf: Any, path: str, config: dict[str, Any] | None = None,
+) -> Plugin:
+    """
+    复用异步目录插件安装器, 为每个流程 WF 保留独立插件宿主
+
+    参数:
+    - session: 流程会话, 提供插件环境与实例配置
+    - wf: 已初始化的目标工作流
+    - path: 插件目录
+    - config: 可选插件配置覆盖
+
+    返回:
+    - 安装后的插件句柄, 安装失败时传播原异常
+    """
+    from .async_ import AsyncSimpleSession
+
+    hosts = getattr(session, "_workflow_plugin_hosts", None)
+    if hosts is None:
+        hosts = {}
+        session._workflow_plugin_hosts = hosts
+    host = hosts.get(wf)
+    if host is None:
+        host = AsyncSimpleSession(
+            session.session_id, session._init_llm, db_path=session.session_ctx.db_path,
+            enable_checkpoint=False, plugin_environment=getattr(session, "plugin_environment", None),
+        )
+        host._wf = wf
+        host.plugin_override_store = session.plugin_override_store
+        host.plugin_model_manager = session.plugin_model_manager
+        host.storage_layout = session.storage_layout
+        host.storage_platform_id = session.storage_platform_id
+        for attr in ("_plugin_environment", "memory_db", "memory_scope", "_user_manager"):
+            if hasattr(session, attr):
+                setattr(host, attr, getattr(session, attr))
+        previous_guard = wf.tools_manager.effectiveness_guard
+
+        def workflow_tool_effective(tool_name: str) -> bool:
+            tool = wf.tools_manager.tools.get(tool_name)
+            # flow_snapshot 等 WF 内置工具不属于目录插件宿主; owner_plugin 只是其能力命名,
+            # 不能要求宿主 _plugins 里存在同名目录插件。目录插件工具仍走完整启停/权限判定。
+            if tool is not None and tool.owner_plugin == "flow_snapshot":
+                return previous_guard(tool_name) if previous_guard is not None else True
+            return host._tool_effective(tool_name)
+
+        host._workflow_tool_guard = workflow_tool_effective
+        host._previous_workflow_tool_guard = previous_guard
+        wf.tools_manager.effectiveness_guard = workflow_tool_effective
+        hosts[wf] = host
+    return await install_plugin(host, path, config)
+
+
+async def close_workflow_plugin_hosts(session: Any) -> None:
+    """
+    卸载流程各 WF 的目录插件并释放其资源
+
+    参数:
+    - session: 持有插件宿主的流程会话, 重复调用安全
+    """
+    hosts = getattr(session, "_workflow_plugin_hosts", {})
+    for wf, host in list(hosts.items()):
+        for plugin in reversed(host.list_plugins()):
+            await uninstall_plugin(host, plugin.name)
+        if wf.tools_manager.effectiveness_guard is getattr(host, "_workflow_tool_guard", None):
+            wf.tools_manager.effectiveness_guard = getattr(host, "_previous_workflow_tool_guard", None)
+        del hosts[wf]
+
+
 async def install_plugin(
     self: AsyncSimpleSession, path: str, config: dict[str, Any] | None = None
 ) -> Plugin:

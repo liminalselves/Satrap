@@ -260,6 +260,31 @@ class DebugStore:
             raise ValueError("高级诊断分页条数必须为 1 至 100")
         return limit
 
+    def recent_flow_triggers(self, flow_name: str, scope_key: str) -> list[dict[str, object]]:
+        """
+        只读查询流程作用域最近 50 条持久化触发摘要, 不读取正文
+
+        参数:
+        - flow_name: 流程名称
+        - scope_key: 会话作用域键
+
+        返回:
+        - 按记录时间和事件 ID 降序排列的摘要; 诊断库不存在时为空
+        """
+        if not isinstance(flow_name, str) or not flow_name or not isinstance(scope_key, str) or not scope_key:
+            raise ValueError("流程名称和作用域不能为空")
+        if not self.path.is_file():
+            return []
+        with self.connect() as db:
+            rows = db.execute("""SELECT event_id,request_id,sequence,phase,status,recorded_at,metadata_json
+                               FROM debug_events WHERE category='flow_trigger'
+                               AND json_valid(metadata_json)
+                               AND json_extract(metadata_json,'$.flow_name')=?
+                               AND json_extract(metadata_json,'$.scope_key')=?
+                               ORDER BY recorded_at DESC,event_id DESC LIMIT 50""", (flow_name, scope_key)).fetchall()
+            return [{**{key: row[key] for key in row.keys() if key != "metadata_json"},
+                     "metadata": json.loads(row["metadata_json"])} for row in rows]
+
     def find_link(self, kind: str, key: str) -> str:
         """
         读取已记录业务身份对应的最近诊断请求, 不复制来源正文

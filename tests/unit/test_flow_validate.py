@@ -80,6 +80,36 @@ def test_agent_rp_template_zero_errors():
     assert {i.code for i in issues} == {"flow_state_read_before_write"}
 
 
+def test_validate_service_uses_only_resolved_adapter_capabilities():
+    """仅在明确平台实例可用时按真实布尔能力提示后台发送。"""
+    from copy import deepcopy
+    from satrap.core.config.edictum_service import EdictumConfigService
+
+    flow = deepcopy(AGENT_RP)
+    flow["edges"].append({"from": "agent.text", "to": "reply.reply"})
+    adapters = {
+        "unsupported": SimpleNamespace(supports_scheduled_group_send=False, supports_scheduled_private_send=True),
+        "supported": SimpleNamespace(supports_scheduled_group_send=True, supports_scheduled_private_send=False),
+        "unknown": SimpleNamespace(supports_scheduled_group_send=0),
+    }
+    service = EdictumConfigService(None, None, adapter_resolver=adapters.get)
+    service.plugin_catalog = SimpleNamespace(scan=lambda: [])
+
+    def warned(platform=None, kinds=None):
+        payload = {"flow": flow, "conversation_kinds": kinds or ["group"]}
+        if platform is not None:
+            payload["platform_id"] = platform
+        return any(i["code"] == "flow_background_send_unsupported" for i in service.validate_flow(payload)["issues"])
+
+    assert warned("unsupported")
+    assert not warned("supported")
+    assert warned("supported", ["private"])
+    assert not warned("unsupported", ["private"])
+    assert not warned("unknown") and not warned("missing") and not warned()
+    with pytest.raises(ValueError):
+        service.validate_flow({"flow": flow, "platform_id": 123})
+
+
 def test_unknown_type_and_source_count():
     """flow_unknown_node_type / flow_source_count"""
     bad = {

@@ -1,273 +1,419 @@
-"""端到端验收: agent_rp 模板 - 阈值→Agent 写快照→RP 读快照+未覆盖消息+最新n条→回复 (P1 总验收)
+"""端到端验收: 真实 MessageEvent -> observe -> _async_init -> 引擎 -> WF"""
+from __future__ import annotations
 
-复现 demo Simulator 的数字: 17 条消息对应 5/6/6 次调用
-"""
-import asyncio
+import json
 import sqlite3
-import tempfile
-import time
 from pathlib import Path
 from typing import Any
 
+from satrap.edictum.plugin_catalog import PluginCatalog
+
 import pytest
 
-from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
-from satrap.core.config.platform_schema import ensure_platform_tables
-from satrap.core.type import LLMCallResponse
+from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.edictum.flow.session import AsyncFlowSession
 from satrap.edictum.flow.store import FlowStore
+from tests.support.flow_runtime import (
+    FlowAdapter, MockLLM, archive_event, database, make_event, response, tool_call, wait_until,
+)
 
-
-# ---------- mock LLM ----------
-
-class MockLLM:
-    """按 WF 角色脚本化返回的 AsyncLLM 替身; 记录每次调用"""
-
-    def __init__(self, script: Any) -> None:
-        """
-        参数:
-        - script: callable(messages, tools) -> LLMCallResponse; 或 list[LLMCallResponse] 队列
-        """
-        self.script = script
-        self.calls: list[dict[str, Any]] = []
-
-    async def call(self, messages, **kwargs):
-        self.calls.append({"messages": messages, "kwargs": kwargs})
-        if callable(self.script):
-            return self.script(messages, kwargs.get("tools"))
-        if isinstance(self.script, list):
-            return self.script[min(len(self.calls) - 1, len(self.script) - 1)]
-        return self.script
-
-    async def stream_call(self, messages, **kwargs):
-        raise NotImplementedError
-
-
-def _llm_call_response(content: str, tool_calls=None):
-    return LLMCallResponse(type="tools_call" if tool_calls else "text",
-                           content=content, tool_calls=tool_calls)
-
-
-def _tool_call(name: str, arguments: dict):
-    return {"id": f"call-{name}", "name": name, "arguments": arguments}
-
-
-# ---------- 场景装配 ----------
 
 SCOPE = MessageScope("adapter1", "self1", "group", "chat1")
+SCRIPT = [
+    "周末有人去看展吗, 798 那个光影展", "我去过了, 人巨多, 建议工作日", "工作日请不了假啊",
+    "周六早上开门就进呢", "9 点开门, 我可以 8:40 到", "那我再去一次, 上次没看完二楼",
+    "算我一个, 我带相机", "要不要提前买票", "小程序就能买, 我等下发链接",
+    "顺便中午吃什么, 附近有家云南菜", "云南菜可以, 我想吃汽锅鸡",
+    "@小萨 汽锅鸡要提前多久订? 帮我查一下", "对了, 下周三是老周生日", "别说出来啊",
+    "那周六顺便给老周过生日?", "好主意, 蛋糕我来订", "@小萨 帮我记一下: 周六 8:40 798 门口集合",
+]
 
 
-def _archive(db: Path, n: int, scope=SCOPE) -> PlatformMessageStore:
-    store = PlatformMessageStore(db, "adapter1")
-    for i in range(n):
-        store.record(scope, ArchiveMessage(
-            message_id=f"m{i + 1}", sender_id=f"user{i}", message_time=1000.0 + i,
-            text=f"消息 {i + 1}", direction="inbound",
-        ))
-    return store
+def _node(node_id: str, kind: str, title: str, **config: Any) -> dict[str, Any]:
+    return {"id": node_id, "type": kind, "title": title, "config": config}
 
 
-def _agent_rp_flow() -> dict:
-    """
-    桶 → 阈值 → Agent (写快照) → RP (读快照+未覆盖消息+最新n条 → flow_reply)
+def _edge(source: str, target: str) -> dict[str, str]:
+    return {"from": source, "to": target}
 
-    source → bucket → assemble → RP.input
-    threshold → Agent.trigger
-    wake → RP.trigger
-    Agent.text → state.write / output.reply (flow_reply)
-    RP.text → output.reply
-    """
+
+def agent_rp_flow() -> dict[str, Any]:
+    """与 Simulator agent_rp 模板同构图; 回复使用流程内置工具"""
     return {
         "version": 3,
         "nodes": [
-            {"id": "src", "type": "source", "title": "群消息", "config": {}},
-            {"id": "b1", "type": "bucket", "title": "桶", "config": {"include_outbound": True}},
-            {"id": "t1", "type": "threshold", "title": "阈值",
-             "config": {"messages": 3, "chars": 0, "idle_seconds": 0, "min_messages": 1,
-                        "max_batch": 50, "on_new": "drop"}},
-            {"id": "s1", "type": "state", "title": "快照", "config": {"writer_reads_previous": True}},
-            {"id": "asm", "type": "assemble", "title": "拼装",
-             "config": {"after_coverage": True, "latest_n": 5, "dedupe": True,
-                        "max_pending": 80, "max_pending_chars": 8000}},
-            {"id": "agent", "type": "react_workflow", "title": "Agent",
-             "config": {"model_name": "", "max_steps": 2, "max_calls_per_run": 0,
-                        "on_busy": "queue", "prompt": "", "plugins": "flow_snapshot",
-                        "keep_history": False}},
-            {"id": "rp", "type": "react_workflow", "title": "RP",
-             "config": {"model_name": "", "max_steps": 2, "max_calls_per_run": 0,
-                        "on_busy": "queue", "prompt": "", "plugins": "",
-                        "keep_history": False}},
-            {"id": "out", "type": "output", "title": "回复", "config": {"send_mode": "flow_reply"}},
+            _node("source", "source", "消息到达"),
+            _node("bucket", "bucket", "桶", include_outbound=True),
+            _node("th", "threshold", "Agent 阈值", messages=12, chars=0, idle_seconds=0,
+                  max_batch=200, on_new="drop"),
+            _node("agent", "react_workflow", "Agent", model_name="agent", max_steps=4,
+                  plugins="flow_snapshot", on_busy="merge", timeout_seconds=10),
+            _node("snapshot", "state", "Agent 输出快照", writer_reads_previous=True),
+            _node("rp_input", "assemble", "RP 输入", after_coverage=True, latest_n=8,
+                  max_pending=80, max_pending_chars=8000, dedupe=True),
+            _node("wake", "wake", "RP 唤醒", use_platform_policy=False, mention=True,
+                  new_messages=5, cooldown=0),
+            _node("rp", "react_workflow", "RP", model_name="rp", max_steps=4,
+                  on_busy="queue", timeout_seconds=10),
+            _node("reply", "output", "最后回复", send_mode="flow_reply"),
         ],
         "edges": [
-            {"from": "src.out", "to": "b1.in"},
-            {"from": "b1.out", "to": "asm.messages"},
-            {"from": "s1.read", "to": "asm.snapshot"},
-            {"from": "asm.out", "to": "rp.input"},
-            {"from": "t1.event", "to": "agent.trigger"},
-            {"from": "t1.event", "to": "rp.trigger"},
-            {"from": "agent.text", "to": "s1.write"},
-            {"from": "agent.text", "to": "out.reply"},
-            {"from": "rp.text", "to": "out.reply"},
+            _edge("source.out", "bucket.in"), _edge("bucket.out", "th.messages"),
+            _edge("th.event", "agent.trigger"), _edge("agent.text", "snapshot.write"),
+            _edge("snapshot.read", "rp_input.snapshot"), _edge("bucket.out", "rp_input.messages"),
+            _edge("bucket.out", "wake.messages"), _edge("wake.event", "rp.trigger"),
+            _edge("rp_input.context", "rp.input"), _edge("rp.text", "reply.reply"),
         ],
     }
 
 
-def _make_session(db: Path, store: PlatformMessageStore, agent_llm, rp_llm) -> AsyncFlowSession:
-    """按节点 model_name 选 LLM: agent 与 rp 各拿一个 mock"""
-    def resolver(name: str):
-        # 约定: 节点 model_name "agent-model" -> agent_llm, 其他 -> rp_llm
-        return agent_llm if name == "agent-model" else rp_llm
+def _run_ids(client: MockLLM) -> set[str]:
+    return {call["run"][2] for call in client.calls if call["run"] is not None}
 
-    session = AsyncFlowSession(
-        "e2e", llm=rp_llm, flow=_agent_rp_flow(),
-        model_resolver=resolver,
-        message_store=store,
-        flow_name="e2e",
-    )
-    # 把两个节点的 model_name 写进流程定义
-    session._raw_flow["nodes"][5]["config"]["model_name"] = "agent-model"
-    session._raw_flow["nodes"][6]["config"]["model_name"] = "rp-model"
-    session._flow_store = FlowStore(db, "a", "e2e")
-    session._flow_store.scope_key = SCOPE.key
-    session._scope_key = SCOPE.key
-    session._bound_scope = SCOPE
-    session._message_store = store
-    # 模拟"已驱动过且落后"的位置; 新增驱动会从 MAX(seq) 开始
-    conn = sqlite3.connect(db); conn.execute("BEGIN")
-    session._flow_store.commit_position(conn, SCOPE.key, "t1", "agent", 0)
-    session._flow_store.commit_position(conn, SCOPE.key, "t1", "rp", 0)
-    conn.execute("COMMIT"); conn.close()
-    return session
+
+def _user_input(call: dict[str, Any]) -> str:
+    """取该次模型调用的当前用户输入，不查历史或系统提示。"""
+    return next(message["content"] for message in reversed(call["messages"])
+                if message.get("role") == "user")
+
+
+def _first_calls(client: MockLLM) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    result = []
+    for call in client.calls:
+        run_id = call["run"][2]
+        if run_id not in seen:
+            seen.add(run_id)
+            result.append(call)
+    return result
 
 
 @pytest.mark.asyncio
-async def test_agent_writes_snapshot_rp_reads_and_replies():
-    """Agent 被阈值触发写快照; RP 被唤醒触发, 输入含快照+未覆盖消息+最新n条, 回复经 flow_reply 发出"""
-    db = Path(tempfile.mkdtemp()) / "p.db"
-    conn = sqlite3.connect(db)
-    ensure_platform_tables(conn)
-    conn.close()
-    store = _archive(db, 4)   # seq 1..4; 阈值 messages=3 -> 触发 1 次 (seq1-3)
+async def test_agent_rp_17_messages_real_observe_snapshot_and_reply_turn(tmp_path):
+    """17 条消息产生 Agent 1 次 + RP 4 次; RP 最后一轮读齐三类输入"""
+    db = database(tmp_path / "flow.db")
+    store = PlatformMessageStore(db, SCOPE.adapter_id)
+    adapter = FlowAdapter(store)
+    # 与生产 Simulator 同图的既有驱动: Agent 在本段消息前已从位置 0 开始。
+    # 新驱动首条建立历史边界是另一种生命周期, 由下方后台 e2e 单独验证。
+    flow_store = FlowStore(db, SCOPE.adapter_id, "agent-rp")
+    with sqlite3.connect(db) as connection:
+        connection.execute("BEGIN")
+        flow_store.commit_position(connection, SCOPE.key, "th", "agent", 0)
+        connection.execute("COMMIT")
 
-    sent: list[str] = []
-    snapshot_writes: list[str] = []
-    rp_inputs: list[list[dict]] = []
+    def agent_script(messages: list[dict[str, Any]], tools: Any, count: int):
+        if count % 2 == 1:
+            return response("", [tool_call("snapshot_write", {
+                "state_id": "snapshot", "content": "快照 v1: 周六 8:40 798 集合"})])
+        return response("快照已更新")
 
-    # Agent 脚本: 第 1 次调用写快照, 第 2 次调用收尾
-    agent_calls = {"n": 0}
-    def agent_script(messages, tools):
-        agent_calls["n"] += 1
-        if agent_calls["n"] == 1:
-            return _llm_call_response("", [_tool_call("snapshot_write",
-                                                      {"state_id": "s1", "content": "快照 v1 覆盖前 3 条"})])
-        return _llm_call_response("agent done")
+    def rp_script(messages: list[dict[str, Any]], tools: Any, count: int):
+        if count % 2 == 1:
+            return response("", [tool_call("flow_reply", {"text": f"RP 回复 {count // 2 + 1}"})])
+        return response("")
 
-    # RP 脚本: 记录收到的 messages, 调 flow_reply
-    rp_calls = {"n": 0}
-    def rp_script(messages, tools):
-        rp_calls["n"] += 1
-        rp_inputs.append(messages)
-        if rp_calls["n"] == 1:
-            return _llm_call_response("", [_tool_call("flow_reply", {"text": "rp 回复"})])
-        return _llm_call_response("rp done")
-
-    agent_llm = MockLLM(agent_script)
-    rp_llm = MockLLM(rp_script)
-    session = _make_session(db, store, agent_llm, rp_llm)
-
-    # flow_reply 实际发送截获: 后台路径走 FlowSendRecorder + ScheduledTarget
-    from satrap.core.platform.scheduled import execute_scheduled_segments, ScheduledTarget
-    from satrap.edictum.flow.reply_tool import FlowSendRecorder
-    from satrap.core.platform.receipt import SendReceipt
-
-    async def fake_send(scope, text):
-        sent.append(text)
-        recorder = FlowSendRecorder(db, scope.key)
-        target = ScheduledTarget(
-            scope=scope, connection_token=(object(), 1), policy_revision="",
-            reminder_id="flow", attempt_id=recorder.attempt_id,
-            guard=lambda: asyncio.sleep(0, result=True),
-        )
-        # 走分段发送管线拿真实回执 (证据落 flow_send_log)
-        return await execute_scheduled_segments(
-            target, recorder, [{"text": text}],
-            [lambda: asyncio.sleep(0, result=SendReceipt("success", ["msg1"]))],
-        )
-    session._send_scheduled_scope = fake_send  # type: ignore[assignment]
-
-    async def init():
-        from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition
-        session._refresh_registry()
-        d, _, _ = migrate_flow_definition(parse_flow_definition(session._raw_flow), session._registry)
-        session._definition = d
-        session._node_types = {n.id: session._registry.get(n.type) for n in d.nodes.values()}
-        session._refresh_resolved()
-        session._initialized = True
-    await init()
-
-    # 手工完成 WF 装配 (绕开 _async_init 里对 llm 的依赖)
-    from satrap.core.framework.Base import AsyncModelWorkflowFramework
-    from satrap.core.utils.TCBuilder import AsyncToolsManager
-    for nid, llm in (("agent", agent_llm), ("rp", rp_llm)):
-        wf = AsyncModelWorkflowFramework(llm, context_id=f"e2e_{nid}",
-                                         tools_manager=AsyncToolsManager(), db_path=str(db))
-        await wf.initialize()
-        session._workflows[nid] = wf
-        node = session._definition.nodes[nid]
-        session._bind_snapshot_tools(node, wf)
-        session._bind_reply_tool(node, wf)
-    # _MeteredClient 包装: 测试直接调用不经计量包装路径 (预算另一套测试覆盖)
-
-        # Step.1 阈值触发 agent (rp 也在驱动名单, 但本测试把 rp 从驱动表摘掉,
-        # 只让 agent 跑阈值批次; rp 的唤醒路径在 Step.2 单独验)
-        session._drives["t1"].discard("rp")
-        await session._ensure_engine()
-        await session._check_thresholds()
-        # engine.fire 经 create_task 分发, 运行完成前 state 是瞬态; 轮询等它落地
-        for _ in range(50):
-            await asyncio.sleep(0.02)
-            state = session._flow_store.state_by_scope_key(SCOPE.key, "s1")
-            if state["version"] >= 1:
-                break
-        else:
-            state = session._flow_store.state_by_scope_key(SCOPE.key, "s1")
-        # rp 的 threshold 批次仍在跑或刚结束: 等它完成, 后续唤醒的 rp 才是干净路径
-        for _ in range(50):
-            await asyncio.sleep(0.02)
-            if not session._engine._wf["rp"].busy:
-                break
-    assert state["version"] == 1, f"Agent 应已提交快照 v1, 实际 {state}"
-    assert "快照 v1" in state["content"]
-    # covers_to 是本批末尾 seq (积压按 max_batch 截断, 库里有 4 条但首批只到 3)
-    assert state["covers_to"] == 4, f"covers_to 应为本批末尾, 实际 {state['covers_to']}"
-    # Agent 的 threshold 位置应推进到本批末尾
-    pos = session._flow_store.positions_for_tile_by_scope_key(SCOPE.key, "t1")
-    assert pos.get("agent") == 4
-
-    # Step.2 RP 前台触发 (wake 事件带 source_event=None -> 后台发送路径)
-    # 直接模拟一条消息唤醒: observe 需要 MessageEvent, 手工构造事件触发 RP
-    from satrap.edictum.flow.engine import FlowEvent
-    from satrap.edictum.flow.types import FlowMessage
-    wake_event = FlowEvent(
-        event_id="wake1", kind="message", tile="w1", why="test wake",
-        message=FlowMessage(message_id="m4", position=4, sender_id="u", nickname="",
-                            text="最新消息", is_bot=False, mentions_bot=True, time=1004.0),
+    agent = MockLLM(agent_script)
+    rp = MockLLM(rp_script)
+    session = AsyncFlowSession(
+        "unused-route-id", rp, flow=agent_rp_flow(), db_path=str(db),
+        model_resolver=lambda name: agent if name == "agent" else rp,
+        message_store=store, flow_name="agent-rp",
     )
-    await session._run_workflow("rp", wake_event)
+    try:
+        for index, text in enumerate(SCRIPT, 1):
+            event = make_event(adapter, SCOPE, text, index, mention=index in (12, 17))
+            archive_event(store, SCOPE, event)
+            await session.observe(event)
+            await wait_until(lambda: not session._engine.running_workflows())
+        await wait_until(lambda: len(_run_ids(agent)) == 1 and len(_run_ids(rp)) == 4)
+        await wait_until(lambda: not session._engine.running_workflows())
 
-    # RP 的输入应包含快照 (assemble snapshot 块) + 未覆盖消息 + 最新 n 条
-    assert rp_inputs, "RP 应被调用"
-    last_messages = rp_inputs[-1]
-    flat = "\n".join(str(m.get("content", "")) for m in last_messages)
-    assert "快照 v1" in flat, f"RP 输入应含快照, 实际: {flat[:400]}"
+        # Simulator 的 5 次是 WF 运行, 一次运行里工具调用与最终收尾各有模型请求
+        assert len(_run_ids(agent)) + len(_run_ids(rp)) == 5
+        state = session._flow_store.state_by_scope_key(SCOPE.key, "snapshot")
+        assert state["version"] == 1
+        # 既有驱动从位置 0 运行, 与生产 Simulator 同图一样在 seq 12 提交。
+        assert state["covers_to"] == 12
+        assert "周六 8:40 798" in state["content"]
 
-    # RP 调了 flow_reply -> 后台发送记录
-    assert sent == ["rp 回复"], f"flow_reply 应发送到后台通道, 实际 {sent}"
+        snapshot, pending, latest = _user_input(_first_calls(rp)[-1]).split("\n\n")
+        assert snapshot == "快照 v1: 周六 8:40 798 集合"
+        assert pending.splitlines() == SCRIPT[12:17]
+        assert latest.splitlines() == SCRIPT[9:17]
+        source_view = session._source_messages()
+        assert [(message.position, message.text) for message in source_view] == list(enumerate(SCRIPT, 1))
+        assert len(adapter.sent) == 4
+        assert all(turn is not None and event is not None for turn, event in adapter.reply_turns)
+        assert all(item["purpose"] == "business" for item in adapter.sent)
 
-    # 发送证据落库: flow_send_log 应有这次后台发送的记录
-    conn = sqlite3.connect(db)
-    rows = conn.execute("SELECT status, segments_json FROM flow_send_log").fetchall()
-    conn.close()
-    assert rows, "后台发送应有落库证据"
-    assert rows[-1][0] == "success"
+        # 后台发送由 test_background... 覆盖, 本条保持 demo 原图不额外输出 Agent 文本
+    finally:
+        await session.close_flow_nodes()
+
+
+def logic_flow() -> dict[str, Any]:
+    flow = agent_rp_flow()
+    nodes = flow["nodes"]
+    nodes.extend([
+        _node("daytime", "cond_time", "白天", start="00:00", end="24:00"),
+        _node("remind", "tool", "提醒群里", tool_name="remind_group",
+              tool_description="交接提醒内容"),
+        _node("quiet", "quiet_hours.in_hours", "免打扰时段内", start="00:00", end="00:00"),
+        _node("not_quiet", "not", "不在免打扰"),
+        _node("mention", "cond_message", "被 @"),
+        _node("or_ok", "or", "可以开口"),
+        _node("budget", "llm_budget.within", "调用预算内", max_calls=100),
+        _node("and_ok", "and", "可开口且有预算"),
+        _node("and_wake", "and", "唤醒放行"),
+        _node("or_trigger", "or", "RP 触发"),
+    ])
+    flow["edges"].remove(_edge("wake.event", "rp.trigger"))
+    flow["edges"].extend([
+        _edge("daytime.out", "th.when"), _edge("agent.tool", "remind.caller"),
+        _edge("quiet.out", "not_quiet.in"), _edge("not_quiet.out", "or_ok.a"),
+        _edge("mention.out", "or_ok.b"), _edge("or_ok.out", "and_ok.a"),
+        _edge("budget.out", "and_ok.b"), _edge("wake.event", "and_wake.a"),
+        _edge("and_ok.out", "and_wake.b"), _edge("and_wake.out", "or_trigger.a"),
+        _edge("remind.event", "or_trigger.b"), _edge("or_trigger.out", "rp.trigger"),
+    ])
+    return flow
+
+
+def handoff_flow() -> dict[str, Any]:
+    return {
+        "version": 3,
+        "nodes": [
+            _node("source", "source", "消息到达"),
+            _node("bucket", "bucket", "桶", include_outbound=True),
+            _node("ctx", "assemble", "接待输入", after_coverage=False, latest_n=30),
+            _node("wake", "wake", "接待唤醒", use_platform_policy=False,
+                  mention=True, new_messages=5, cooldown=0),
+            _node("host", "react_workflow", "接待", model_name="host", max_steps=4,
+                  on_busy="queue", timeout_seconds=10),
+            _node("ask", "tool", "问专家", tool_name="ask_expert", tool_description="交接问题"),
+            _node("expert", "react_workflow", "专家", model_name="expert", max_steps=4,
+                  on_busy="queue", timeout_seconds=10),
+            _node("polish", "react_workflow", "润色", model_name="polish", max_steps=4,
+                  on_busy="queue", timeout_seconds=10),
+            _node("reply", "output", "群回复", send_mode="flow_reply"),
+        ],
+        "edges": [
+            _edge("source.out", "bucket.in"), _edge("bucket.out", "ctx.messages"),
+            _edge("bucket.out", "wake.messages"), _edge("wake.event", "host.trigger"),
+            _edge("ctx.context", "host.input"), _edge("host.tool", "ask.caller"),
+            _edge("ask.event", "expert.trigger"), _edge("expert.done", "polish.trigger"),
+            _edge("host.text", "reply.reply"), _edge("polish.text", "reply.reply"),
+        ],
+    }
+
+
+async def _observe_script(session: AsyncFlowSession, adapter: FlowAdapter,
+                          store: PlatformMessageStore) -> list[Any]:
+    events = []
+    for index, text in enumerate(SCRIPT, 1):
+        event = make_event(adapter, SCOPE, text, index, mention=index in (12, 17))
+        events.append(event)
+        archive_event(store, SCOPE, event)
+        await session.observe(event)
+        await wait_until(lambda: not session._engine.running_workflows())
+    return events
+
+
+@pytest.mark.asyncio
+async def test_logic_17_messages_handoff_and_foreground_reply_turn(tmp_path):
+    store = PlatformMessageStore(database(tmp_path / "flow.db"), SCOPE.adapter_id)
+    adapter = FlowAdapter(store)
+    reminder = "提醒：周六 8:40 798 门口集合"
+
+    def agent_script(messages, tools, count):
+        if count == 1:
+            return response("", [tool_call("snapshot_write", {
+                "state_id": "snapshot", "content": "周六集合快照"}),
+                tool_call("remind_group", {"payload": reminder})])
+        return response("快照已更新")
+
+    def rp_script(messages, tools, count):
+        if count % 2:
+            return response("", [tool_call("flow_reply", {"text": f"RP 回复 {count}"})])
+        return response("")
+
+    agent, rp = MockLLM(agent_script), MockLLM(rp_script)
+    catalog = PluginCatalog(Path(__file__).resolve().parents[2] / "satrap/expend/plugins",
+                            tmp_path / "user-plugins")
+    session = AsyncFlowSession(
+        "logic", rp, flow=logic_flow(), db_path=str(store.database),
+        model_resolver=lambda name: agent if name == "agent" else rp,
+        plugin_catalog=catalog, message_store=store, flow_name="logic",
+    )
+    try:
+        events = await _observe_script(session, adapter, store)
+        await wait_until(lambda: len(_run_ids(agent)) == 1 and len(_run_ids(rp)) == 5)
+        await wait_until(lambda: not session._engine.running_workflows())
+        assert len(_run_ids(agent) | _run_ids(rp)) == 6
+        reminder_calls = [call for call in _first_calls(rp) if reminder in _user_input(call)]
+        assert len(reminder_calls) >= 1
+        assert len(adapter.sent) == 4
+        assert all(turn is not None and event in events for turn, event in adapter.reply_turns)
+        # 阈值本身没有 source_event, 其提醒交接仍应经过后台通道。
+        assert len(adapter.scheduled) == 1
+    finally:
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_logic_reminder_handoff_preserves_foreground_source_event(tmp_path):
+    store = PlatformMessageStore(database(tmp_path / "flow.db"), SCOPE.adapter_id)
+    adapter = FlowAdapter(store)
+    reminder = "请记得周六集合"
+    flow = logic_flow()
+    # 额外的前台入口用于验证 Agent 携带来源消息交接时的身份传播。
+    flow["edges"].append(_edge("wake.event", "agent.trigger"))
+
+    def agent_script(messages, tools, count):
+        if count == 1:
+            return response("", [tool_call("remind_group", {"payload": reminder})])
+        return response("")
+
+    def rp_script(messages, tools, count):
+        if count % 2:
+            return response("", [tool_call("flow_reply", {"text": f"前台回复 {count}"})])
+        return response("")
+
+    agent, rp = MockLLM(agent_script), MockLLM(rp_script)
+    catalog = PluginCatalog(Path(__file__).resolve().parents[2] / "satrap/expend/plugins",
+                            tmp_path / "user-plugins")
+    session = AsyncFlowSession(
+        "logic-foreground", rp, flow=flow, db_path=str(store.database),
+        model_resolver=lambda name: agent if name == "agent" else rp,
+        plugin_catalog=catalog, message_store=store, flow_name="logic-foreground",
+    )
+    try:
+        event = make_event(adapter, SCOPE, "请提醒大家", 1, mention=True)
+        archive_event(store, SCOPE, event)
+        await session.observe(event)
+        await wait_until(lambda: len(_run_ids(agent)) == 1 and len(_run_ids(rp)) == 2)
+        await wait_until(lambda: not session._engine.running_workflows())
+        reminder_call = next(call for call in _first_calls(rp) if reminder in _user_input(call))
+        reminder_number = rp.calls.index(reminder_call) + 1
+        sent_index = next(i for i, sent in enumerate(adapter.sent)
+                          if sent["text"] == f"前台回复 {reminder_number}")
+        turn, source = adapter.reply_turns[sent_index]
+        assert turn is not None and source is event
+        assert not adapter.scheduled
+    finally:
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_handoff_17_messages_expert_payload_and_done_polish(tmp_path):
+    store = PlatformMessageStore(database(tmp_path / "flow.db"), SCOPE.adapter_id)
+    adapter = FlowAdapter(store)
+    question = "汽锅鸡需要提前多久订？"
+    answer = "专家结论：建议提前一天预订。"
+
+    def host_script(messages, tools, count):
+        if count == 5:
+            return response("", [tool_call("ask_expert", {"payload": question})])
+        if count % 2:
+            return response("", [tool_call("flow_reply", {"text": f"接待回复 {count}"})])
+        return response("")
+
+    def polish_script(messages, tools, count):
+        if count == 1:
+            return response("", [tool_call("flow_reply", {"text": "建议提前一天预订"})])
+        return response("")
+
+    host, expert, polish = MockLLM(host_script), MockLLM(response(answer)), MockLLM(polish_script)
+    models = {"host": host, "expert": expert, "polish": polish}
+    session = AsyncFlowSession(
+        "handoff", host, flow=handoff_flow(), db_path=str(store.database),
+        model_resolver=models.__getitem__, message_store=store, flow_name="handoff",
+    )
+    try:
+        events = await _observe_script(session, adapter, store)
+        await wait_until(lambda: len(_run_ids(host)) == 4 and len(_run_ids(expert)) == 1
+                         and len(_run_ids(polish)) == 1)
+        await wait_until(lambda: not session._engine.running_workflows())
+        assert len(_run_ids(host) | _run_ids(expert) | _run_ids(polish)) == 6
+        assert question in repr(_first_calls(expert)[0]["messages"])
+        assert answer in repr(_first_calls(polish)[0]["messages"])
+        assert len(adapter.sent) == 4
+        assert all(turn is not None and event in events for turn, event in adapter.reply_turns)
+        assert not adapter.scheduled
+    finally:
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["final_text", "flow_reply"])
+async def test_background_threshold_scheduled_send_is_recorded(tmp_path, mode):
+    store = PlatformMessageStore(database(tmp_path / "flow.db"), SCOPE.adapter_id)
+    adapter = FlowAdapter(store)
+    text = f"后台消息 {mode}"
+    flow = {
+        "version": 3,
+        "nodes": [
+            _node("source", "source", "消息到达"), _node("bucket", "bucket", "桶"),
+            _node("th", "threshold", "阈值", messages=1, chars=0, idle_seconds=0,
+                  max_batch=200, on_new="drop"),
+            # 混合触发的 WF 可通过校验；本次消息不命中唤醒，仅阈值触发。
+            _node("wake", "wake", "唤醒", use_platform_policy=False, mention=True,
+                  new_messages=0, cooldown=0),
+            _node("agent", "react_workflow", "Agent", model_name="agent", max_steps=4,
+                  timeout_seconds=10),
+            _node("reply", "output", "发送", send_mode=mode),
+        ],
+        "edges": [_edge("source.out", "bucket.in"), _edge("bucket.out", "th.messages"),
+                  _edge("bucket.out", "wake.messages"), _edge("wake.event", "agent.trigger"),
+                  _edge("th.event", "agent.trigger"), _edge("agent.text", "reply.reply")],
+    }
+
+    def script(messages, tools, count):
+        if mode == "final_text":
+            return response(text)
+        if count == 1:
+            return response("", [tool_call("flow_reply", {"text": text})])
+        return response("")
+
+    llm = MockLLM(script)
+    session = AsyncFlowSession("background", llm, flow=flow,
+                               db_path=str(store.database),
+                               message_store=store, flow_name="background")
+    try:
+        event = make_event(adapter, SCOPE, "触发后台", 1)
+        archive_event(store, SCOPE, event)
+        await session.observe(event)
+        await wait_until(lambda: not session._engine.running_workflows())
+        assert not llm.calls and not adapter.scheduled
+        with sqlite3.connect(store.database) as connection:
+            position = connection.execute(
+                "SELECT committed_seq FROM flow_threshold_positions "
+                "WHERE scope_key=? AND flow_name=? AND tile_id=? AND wf_id=?",
+                (SCOPE.key, "background", "th", "agent"),
+            ).fetchone()
+        assert position == (1,)
+        # 首条已在初始化阈值时作为历史边界，第二条才触发。
+        event = make_event(adapter, SCOPE, "触发后台第二条", 2)
+        archive_event(store, SCOPE, event)
+        await session.observe(event)
+        await wait_until(lambda: len(adapter.scheduled) == 1)
+        await wait_until(lambda: not session._engine.running_workflows())
+        assert len(_run_ids(llm)) == 1
+        assert not adapter.sent and not adapter.reply_turns
+        scheduled = adapter.scheduled[0]
+        assert scheduled["text"] == text
+        assert scheduled["target"].scope == SCOPE
+        with sqlite3.connect(store.database) as connection:
+            row = connection.execute(
+                "SELECT scope_key, status, segments_json FROM flow_send_log WHERE attempt_id=?",
+                (scheduled["target"].attempt_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == SCOPE.key and row[1] == "success"
+        segments = json.loads(row[2])
+        assert len(segments) == 1
+        assert segments[0]["status"] == "success"
+        assert segments[0]["message_ids"] == ["back-1"]
+    finally:
+        await session.close_flow_nodes()

@@ -3790,8 +3790,16 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "POST" and ctx.path == "/config/edictum/flow/validate":
         try:
-            service = _edictum_config_service()
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            if isinstance(payload, dict) and payload.get("platform_id"):
+                from satrap.core.telemetry.api import SourceUnavailable
+                try:
+                    return await asyncio.wait_for(
+                        _action_backend_request("/api/config/edictum/flow/validate", payload), timeout=3
+                    )
+                except (OSError, TimeoutError, SourceUnavailable):
+                    pass  # 后端不可用时仍允许冷校验, 能力未知
+            service = _edictum_config_service()
             return 200, await RAG_WORKERS.run(lambda: service.validate_flow(payload))
         except WorkerBusyError as e:
             logger.warning(f"[Edictum 流程校验] 工作队列已满: {e}")

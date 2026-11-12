@@ -35,6 +35,7 @@ class EdictumConfigService:
         type_registry: EdictumTypeRegistry,
         *, models: Any = None, rag: Any = None,
         reference_checker: Callable[[str], list[dict[str, str]]] | None = None,
+        adapter_resolver: Callable[[str], Any] | None = None,
     ) -> None:
         """
         初始化 Edictum 冷配置服务
@@ -49,6 +50,7 @@ class EdictumConfigService:
         self.models = models
         self.rag = rag
         self.reference_checker = reference_checker
+        self.adapter_resolver = adapter_resolver
 
     def _guard_reference(self, name: str) -> None:
         """
@@ -124,7 +126,7 @@ class EdictumConfigService:
         只校验不保存: 解析 + 迁移 + 静态检查, 返回问题列表
 
         参数:
-        - payload: {flow: params.flow, conversation_kinds?: ["group","private"]}
+        - payload: {flow: params.flow, conversation_kinds?: ["group","private"], platform_id?: 平台实例}
 
         返回:
         - dict[str, Any]: {"ok": bool, "issues": [...]}
@@ -138,6 +140,12 @@ class EdictumConfigService:
         kinds = body.get("conversation_kinds")
         if kinds is not None and not (isinstance(kinds, list) and all(k in ("group", "private") for k in kinds)):
             raise ValueError("conversation_kinds 只能是 group/private 列表")
+        platform_id = body.get("platform_id")
+        if platform_id is not None and (not isinstance(platform_id, str) or not platform_id.strip()):
+            raise ValueError("platform_id 必须是非空字符串")
+        adapter = self.adapter_resolver(platform_id.strip()) if platform_id and self.adapter_resolver else None
+        group = getattr(adapter, "supports_scheduled_group_send", None)
+        private = getattr(adapter, "supports_scheduled_private_send", None)
         from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition
         from satrap.edictum.flow.registry import FlowNodeRegistry
         from satrap.edictum.flow.validate import validate
@@ -154,6 +162,8 @@ class EdictumConfigService:
         issues = [i.to_payload() for i in validate(
             definition, registry, plugin_catalog=plugin_catalog,
             conversation_kinds=[str(k) for k in kinds] if kinds else None,
+            scheduled_send_group=group if type(group) is bool else None,
+            scheduled_send_private=private if type(private) is bool else None,
         )]
         issues = [{"code": e.code, "level": "error", "category": "结构", "message": str(e), "node": e.node, "field": e.field} for e in errors] + issues
         return {"ok": not any(i["level"] == "error" for i in issues), "issues": issues}

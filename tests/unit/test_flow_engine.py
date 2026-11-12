@@ -115,6 +115,162 @@ class TestConditionEvaluator:
         assert result == "error"
 
     @pytest.mark.asyncio
+    async def test_calls_callback_uses_real_budget_arguments_and_tri_state(self):
+        """ctx.calls 按需调用真实 _calls_used, 不预求值; 真/假都正常返回"""
+        from satrap.edictum.flow.budget import FlowCallBudget
+        from satrap.edictum.flow.session import AsyncFlowSession
+
+        session = AsyncFlowSession("s", llm=None, flow={"version": 3, "nodes": [], "edges": []})
+        session._budget = FlowCallBudget(max_calls=0)
+        session._budget.check_and_spend(source="wf", node_id="w1", event_id="e", run_id="r")
+        seen = []
+
+        def within(ctx):
+            value = ctx.calls(kind="wf", scope="target", window_seconds=123, target="w1")
+            seen.append(value)
+            return value >= 1
+
+        evaluator = ConditionEvaluator()
+        node, node_type = self._node(), self._type(plugin="p")
+        assert await evaluator.evaluate(
+            node, node_type, within, {}, _event(), calls_used=session._calls_used) is True
+        assert await evaluator.evaluate(
+            node, node_type, within, {}, FlowEvent(event_id="e2", kind="message", tile="t1", why="x"),
+            calls_used=lambda kind, scope, window_seconds, target: 0) is False
+        assert seen == [1, 0]
+
+    @pytest.mark.asyncio
+    async def test_default_target_budget_uses_current_wf_and_strictest_target(self):
+        """llm_budget 默认配置不传 target, 按本次候选 WF 计用量且多目标取最严格值"""
+        from satrap.edictum.flow.budget import FlowCallBudget
+        from satrap.expend.plugins.llm_budget.flow_nodes import within
+
+        budget = FlowCallBudget(max_calls=0)
+        for node_id, count in (("w1", 1), ("w2", 2)):
+            for index in range(count):
+                budget.check_and_spend(
+                    source="wf", node_id=node_id, event_id=f"e-{node_id}-{index}", run_id="")
+        config = {"scope": "target", "count": "wf", "window_minutes": 60, "max_calls": 2}
+        evaluator = ConditionEvaluator()
+        node, node_type = self._node(), self._type(plugin="llm_budget")
+        assert await evaluator.evaluate(
+            node, node_type, within, config, _event(), calls_used=budget.calls,
+            targets=("w1",)) is True
+        assert await evaluator.evaluate(
+            node, node_type, within, config,
+            FlowEvent(event_id="e2", kind="message", tile="t1", why="x"),
+            calls_used=budget.calls, targets=("w1", "w2")) is False
+        config["max_calls"] = 1
+        assert await evaluator.evaluate(
+            node, node_type, within, config,
+            FlowEvent(event_id="e3", kind="message", tile="t1", why="x"),
+            calls_used=budget.calls, targets=("w1",)) is False
+
+    @pytest.mark.asyncio
+    async def test_condition_flow_node_diagnostics_include_result_and_duration(self):
+        """条件节点真/假/错误都有 start/end, 耗时与三值结果"""
+        events = []
+        evaluator = ConditionEvaluator(
+            diagnostic=lambda *args, **kwargs: events.append((args, kwargs)))
+        node, node_type = self._node(), self._type(plugin="p")
+        for index, fn in enumerate((lambda ctx: True, lambda ctx: False, lambda ctx: 1 / 0)):
+            result = await evaluator.evaluate(
+                node, node_type, fn, {},
+                FlowEvent(event_id=f"diag-{index}", kind="message", tile="t1", why="x"))
+            assert result == (True if index == 0 else False if index == 1 else "error")
+        starts = [item for item in events if item[0][:2] == ("flow_node", "start")]
+        ends = [item for item in events if item[0][:2] == ("flow_node", "end")]
+        assert len(starts) == len(ends) == 3
+        assert [item[1]["metadata"]["result"] for item in ends] == ["true", "false", "error"]
+        assert all(item[1]["metadata"]["duration_ms"] >= 0 for item in ends)
+        assert [item[1]["status"] for item in ends] == ["completed", "completed", "failed"]
+
+    @pytest.mark.asyncio
+    async def test_condition_pool_full_is_error_and_releases_acquire(self):
+        """真实 32 槽池满后不执行条件函数, 已 acquire 的实例引用立即归还"""
+        import threading
+
+        gate = threading.Event()
+        blocker = ConditionEvaluator(timeout=5)
+        node, node_type = self._node(), self._type(plugin="p")
+
+        def wait(ctx):
+            gate.wait(4)
+            return True
+
+        tasks = []
+        try:
+            for index in range(32):
+                tasks.append(asyncio.create_task(blocker.evaluate(
+                    node, node_type, wait, {},
+                    FlowEvent(event_id=f"fill-{index}", kind="message", tile="t1", why="x"))))
+                await asyncio.sleep(0)
+            called, released = [], []
+            evaluator = ConditionEvaluator(release_ref=lambda node_id, fn: released.append(node_id))
+            result = await evaluator.evaluate(
+                node, node_type, lambda ctx: called.append(1), {}, _event())
+            assert result == "error"
+            assert called == [] and released == ["c1"]
+        finally:
+            gate.set()
+            if tasks:
+                await asyncio.gather(*tasks)
+
+    @pytest.mark.asyncio
+    async def test_timeout_worker_release_survives_loop_close_and_runs_once(self):
+        """超时工作线程在原 loop 停止并关闭后归还, 不反等 future 且只 release 一次"""
+        import threading
+
+        started = threading.Event()
+        allow_return = threading.Event()
+        evaluation_done = threading.Event()
+        released = []
+        errors = []
+        loop = asyncio.new_event_loop()
+        evaluator = ConditionEvaluator(
+            timeout=0.05, release_ref=lambda node_id, fn: released.append(node_id))
+        node, node_type = self._node(), self._type(plugin="p")
+
+        def condition(ctx):
+            started.set()
+            allow_return.wait(3)
+            return True
+
+        def run_loop():
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(evaluator.evaluate(
+                    node, node_type, condition, {}, _event()))
+                assert result == "error"
+                evaluation_done.set()
+                loop.run_forever()
+            except BaseException as error:
+                errors.append(error)
+                evaluation_done.set()
+
+        thread = threading.Thread(target=run_loop)
+        thread.start()
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            assert await asyncio.to_thread(evaluation_done.wait, 2)
+            loop.call_soon_threadsafe(loop.stop)
+            await asyncio.to_thread(thread.join, 2)
+            assert not thread.is_alive() and not errors
+            loop.close()
+            allow_return.set()
+            deadline = time.monotonic() + 2
+            while not released and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            assert released == ["c1"]
+        finally:
+            allow_return.set()
+            if thread.is_alive():
+                loop.call_soon_threadsafe(loop.stop)
+                await asyncio.to_thread(thread.join, 2)
+            if not loop.is_closed():
+                loop.close()
+
+    @pytest.mark.asyncio
     async def test_plugin_fn_result_cached_per_event(self):
         """同一事件内同一条件只求值一次"""
         calls = []
@@ -219,6 +375,47 @@ class TestTriggerEngineTargets:
         await engine.fire("t1", _event())
         # cond_time 00:00-00:00 为假 -> 不放行
         assert fired == []
+
+    @pytest.mark.asyncio
+    async def test_cached_condition_does_not_acquire_again(self):
+        """同一事件经 when 与逻辑门复用条件, 第二次不再 acquire"""
+        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        registry = FlowNodeRegistry()
+        registry.register_plugin_nodes("p", [FlowNodeType(
+            type="p.ok", version=1, label="ok", description="", role="condition",
+            outputs=(PortSpec(name="out", types=("condition",)),), plugin="p")])
+        definition, _, _ = migrate_flow_definition(parse_flow_definition({
+            "version": 3,
+            "nodes": [
+                {"id": "t1", "type": "wake", "title": "t", "config": {}},
+                {"id": "c1", "type": "p.ok", "title": "c", "config": {}},
+                {"id": "g1", "type": "and", "title": "g", "config": {}},
+                {"id": "w1", "type": "react_workflow", "title": "w", "config": {}},
+            ],
+            "edges": [
+                {"from": "c1.out", "to": "t1.when"}, {"from": "t1.event", "to": "g1.a"},
+                {"from": "c1.out", "to": "g1.b"}, {"from": "g1.out", "to": "w1.trigger"},
+            ],
+        }), registry)
+        node_types = {node.id: registry.get(node.type) for node in definition.nodes.values()}
+        acquired, released, fired = [], [], []
+
+        def condition(ctx):
+            return True
+
+        def acquire(node):
+            acquired.append(node.id)
+            return condition
+
+        engine = TriggerEngine(
+            definition, node_types, resolve_condition=acquire,
+            release_ref=lambda node_id, fn: released.append(node_id))
+        engine.on_trigger(lambda wf_id, event: fired.append(wf_id))
+        event = _event()
+        await engine.fire("t1", event)
+        assert acquired == ["c1"] and released == ["c1"] and fired == ["w1"]
+        await engine.finish("w1", event)
+        assert not engine._evaluator._cache and not engine._event_refs
 
     @pytest.mark.asyncio
     async def test_when_port_blocks_tile(self):

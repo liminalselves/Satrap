@@ -398,6 +398,48 @@ class PlatformMessageStore:
             ).fetchall()
             return [self._item(row) for row in rows]
 
+    def flow_window_by_scope_key(
+        self, scope_key: str, *, after: int = 0, pending_limit: int = 0,
+        latest_n: int = 0, received_from: float | None = None,
+        include_outbound: bool = True,
+    ) -> list[dict[str, Any]]:
+        """按 assemble 的实际需要取最新未覆盖段与最新 n 条, 在同一事务内按 seq 去重"""
+        if type(after) is not int or after < 0:
+            raise ValueError("after 必须是非负整数")
+        if type(pending_limit) is not int or not 0 <= pending_limit <= 1000:
+            raise ValueError("pending_limit 必须在 0 到 1000 之间")
+        if type(latest_n) is not int or not 0 <= latest_n <= 500:
+            raise ValueError("latest_n 必须在 0 到 500 之间")
+        connection = self._connect()
+        if connection is None or (pending_limit == 0 and latest_n == 0):
+            return []
+        boundary = " AND received_at>=?" if received_from is not None else ""
+        direction = "" if include_outbound else " AND direction<>'outbound'"
+        rows_by_seq: dict[int, dict[str, Any]] = {}
+        with closing(connection):
+            connection.execute("BEGIN")
+            if pending_limit:
+                args: tuple[Any, ...] = (scope_key, after)
+                if received_from is not None:
+                    args += (received_from,)
+                args += (pending_limit,)
+                rows = connection.execute(
+                    f"SELECT * FROM platform_messages WHERE scope_key=? AND seq>?{boundary}{direction} "
+                    "ORDER BY seq DESC LIMIT ?", args,
+                ).fetchall()
+                rows_by_seq.update((int(row["seq"]), self._item(row)) for row in rows)
+            if latest_n:
+                args = (scope_key,)
+                if received_from is not None:
+                    args += (received_from,)
+                args += (latest_n,)
+                rows = connection.execute(
+                    f"SELECT * FROM platform_messages WHERE scope_key=? AND seq IS NOT NULL{boundary}{direction} "
+                    "ORDER BY seq DESC LIMIT ?", args,
+                ).fetchall()
+                rows_by_seq.update((int(row["seq"]), self._item(row)) for row in rows)
+        return [rows_by_seq[seq] for seq in sorted(rows_by_seq)]
+
     def latest(self, scope: MessageScope, n: int = 20) -> list[dict[str, Any]]:
         """
         读取最新 n 条消息 (按 seq 倒序取前 n 再正序返回)

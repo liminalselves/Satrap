@@ -11,6 +11,9 @@ from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, P
 from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.edictum.flow.session import AsyncFlowSession
 from satrap.edictum.flow.store import FlowStore, StateCommit
+from tests.support.flow_runtime import (
+    FlowAdapter, MockLLM, archive_event, database, make_event, response, tool_call, wait_until,
+)
 
 
 def _flow_definition() -> dict:
@@ -22,12 +25,14 @@ def _flow_definition() -> dict:
             {"id": "t1", "type": "threshold", "title": "阈值",
              "config": {"messages": 2, "chars": 0, "idle_seconds": 0, "min_messages": 1, "max_batch": 50, "on_new": "drop"}},
             {"id": "w1", "type": "react_workflow", "title": "后台",
-             "config": {"model_name": "", "max_steps": 1, "max_calls_per_run": 0, "on_busy": "queue",
-                        "prompt": "", "plugins": "", "keep_history": False}},
+             "config": {"model_name": "test", "max_steps": 4, "max_calls_per_run": 0, "on_busy": "queue",
+                        "prompt": "", "plugins": "flow_snapshot", "keep_history": False}},
+            {"id": "s1", "type": "state", "title": "快照", "config": {}},
         ],
         "edges": [
             {"from": "src.out", "to": "t1.messages"},
             {"from": "t1.event", "to": "w1.trigger"},
+            {"from": "w1.text", "to": "s1.write"},
         ],
     }
 
@@ -86,60 +91,44 @@ class _Msg:
         self.sender = S()
 
 
-def test_restart_recovers_positions_states_and_retriggers_batch():
-    """会话重建后阈值位置/状态槽不变, 落后批次按已提交位置重新触发 (经会话层 _run_workflow)"""
-    db = Path(tempfile.mkdtemp()) / "p.db"
-    conn = sqlite3.connect(db); ensure_platform_tables(conn); conn.close()
+@pytest.mark.asyncio
+async def test_restart_recovers_positions_states_and_retriggers_batch(tmp_path):
+    """真实 observe 完成 _async_init, 重启后的落后批次运行真实 WF 并提交"""
+    db = database(tmp_path / "messages.db")
+    session_db = database(tmp_path / "session.db")
     scope = MessageScope("adapter1", "self1", "group", "chat1")
     store = _archive(db, scope, 5)
+    adapter = FlowAdapter(store)
+    fs = FlowStore(session_db, scope.adapter_id, "sess1")
+    with sqlite3.connect(session_db) as connection:
+        connection.execute("BEGIN")
+        fs.commit_position(connection, scope.key, "t1", "w1", 2)
+        connection.execute("COMMIT")
 
-    # 模拟重启前: t1 驱动 w1 的位置停在 seq=2 (还有 3 条未消费)
-    fs = FlowStore(db, "a", "sess1"); fs.scope_key = scope.key
-    conn = sqlite3.connect(db); conn.execute("BEGIN")
-    fs.ensure_position(conn, scope.key, "t1", "w1")
-    fs.commit_position(conn, scope.key, "t1", "w1", 2)
-    conn.execute("COMMIT"); conn.close()
+    def script(messages, tools, count):
+        if count == 1:
+            return response("", [tool_call("snapshot_write", {
+                "state_id": "s1", "content": "重启后快照"})])
+        return response("done")
 
-    session = AsyncFlowSession(
-        "sess1", llm=None,
-        flow=_flow_definition(),
-        plugin_catalog=None,
-        message_store=store,
-    )
-    session._flow_store = FlowStore(db, "a", "sess1")
-    session._flow_store.scope_key = scope.key
-    session._scope_key = scope.key
-    session._bound_scope = scope
-
-    fired: list[tuple[str, int, int]] = []
-    # 经会话层 _run_workflow 验证: 它应被调用并拿到正确批次边界
-    async def fake_run(wf_id, event):
-        fired.append((wf_id, event.batch_from, event.batch_to))
-        # 模拟成功: 推进位置
-        session._flow_store.commit_states_by_scope_key(
-            scope.key, event.tile, wf_id, event.batch_to, [])
-    session._on_wf_trigger = fake_run  # type: ignore[assignment]
-
-    async def _init():
-        from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition
-        session._refresh_registry()
-        definition, _, _ = migrate_flow_definition(parse_flow_definition(session._raw_flow), session._registry)
-        session._definition = definition
-        session._node_types = {n.id: session._registry.get(n.type) for n in definition.nodes.values()}
-        session._refresh_resolved()
-        session._initialized = True
-    asyncio.run(_init())
-
-    async def _resume():
-        await session._ensure_engine()
-        await session._check_thresholds()
-        await asyncio.sleep(0.05)
-    asyncio.run(_resume())
-
-    # fired 经 fire -> _on_wf_trigger -> fake_run 走到
-    assert fired, "重启后落后的批次应重新触发"
-    wf_id, batch_from, batch_to = fired[0]
-    assert wf_id == "w1" and batch_from == 2 and batch_to == 5
+    llm = MockLLM(script)
+    session = AsyncFlowSession("sess1", llm=llm, flow=_flow_definition(),
+                               db_path=str(session_db), message_store=store, flow_name="sess1")
+    session.error_feedback = False
+    try:
+        event = make_event(adapter, scope, "new", 6)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        await wait_until(lambda: len(llm.calls) == 2)
+        await wait_until(lambda: not session._engine.running_workflows())
+        user_input = repr(llm.calls[0]["messages"])
+        assert "本批消息 #3–#6" in user_input
+        assert "text2" in user_input and "new" in user_input
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 6
+        state = session._flow_store.state_by_scope_key(scope.key, "s1")
+        assert state["version"] == 1 and state["covers_to"] == 6
+    finally:
+        await session.close_flow_nodes()
 
 
 def test_state_and_positions_survive_recycle():
@@ -170,7 +159,7 @@ def _flow_with_state_and_threshold() -> dict:
             {"id": "s1", "type": "state", "title": "槽",
              "config": {"on_new": "keep", "max_chars": 6000, "schema": "text"}},
             {"id": "w1", "type": "react_workflow", "title": "后台",
-             "config": {"model_name": "", "max_steps": 1, "max_calls_per_run": 0, "on_busy": "queue",
+             "config": {"model_name": "test", "max_steps": 4, "max_calls_per_run": 0, "on_busy": "queue",
                         "prompt": "", "plugins": "flow_snapshot", "keep_history": False}},
         ],
         "edges": [
@@ -224,71 +213,234 @@ def test_new_settle_clear_state_and_drop_position():
     assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 4
 
 
-def test_new_settle_keep_state_and_drain():
-    """/new: state keep 保留; threshold drain 把积压批次跑完再推进位置"""
-    db = Path(tempfile.mkdtemp()) / "p.db"
-    conn = sqlite3.connect(db); ensure_platform_tables(conn); conn.close()
+@pytest.mark.asyncio
+async def test_new_settle_keep_state_and_drain(tmp_path):
+    """真实 observe 后台 drain 积压; state keep 保留旧版本, 位置由真实完成路径推进"""
+    db = database(tmp_path / "messages.db")
+    session_db = database(tmp_path / "session.db")
     scope = MessageScope("a", "s", "group", "c")
     store = _archive(db, scope, 4)
-
-    fs = FlowStore(db, "a", "f1"); fs.scope_key = scope.key
-    conn = sqlite3.connect(db); conn.execute("BEGIN")
-    fs.ensure_position(conn, scope.key, "t1", "w1")
-    fs.commit_position(conn, scope.key, "t1", "w1", 2)
-    conn.execute("COMMIT"); conn.close()
-    fs.commit_states_by_scope_key(scope.key, "t1", "w1", 2,
-                                  [StateCommit("s1", "旧快照", base_version=0, covers_to=2, run_id="r")])
+    adapter = FlowAdapter(store)
+    fs = FlowStore(session_db, scope.adapter_id, "f1")
+    with sqlite3.connect(session_db) as connection:
+        connection.execute("BEGIN")
+        fs.commit_position(connection, scope.key, "t1", "w1", 2)
+        connection.execute("COMMIT")
+    fs.commit_states_by_scope_key(scope.key, "t1", "w1", 2, [
+        StateCommit("s1", "旧快照", base_version=0, covers_to=2, run_id="r")])
 
     flow = _flow_with_state_and_threshold()
     flow["nodes"][1]["config"]["on_new"] = "drain"
     flow["nodes"][2]["config"]["on_new"] = "keep"
-    session = AsyncFlowSession("s2", llm=None, flow=flow, message_store=store, flow_name="f1")
-    _bind_session(session, db, scope, store, new_from="s1")
-    asyncio.run(_init_def(session))
-
-    ran: list[tuple[str, int, int]] = []
-    async def fake_run(wf_id, event):
-        ran.append((wf_id, event.batch_from, event.batch_to))
-        # 模拟成功运行: 位置推进到批次末尾
-        session._flow_store.commit_states_by_scope_key(
-            session._scope_key, event.tile, wf_id, event.batch_to, [])
-    session._run_workflow = fake_run  # type: ignore[assignment]
-    asyncio.run(session._settle_new())
-
-    # drain: 积压 [3,4] 应触发批次, 位置推进到 4
-    assert ran == [("w1", 2, 4)]
-    assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 4
-    # state keep: 版本不变
-    assert session._flow_store.state_by_scope_key(scope.key, "s1")["version"] == 1
+    llm = MockLLM(response("done"))
+    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(session_db),
+                               message_store=store, flow_name="f1", new_from="s1")
+    session.error_feedback = False
+    try:
+        event = make_event(adapter, scope, "new", 5)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        await wait_until(lambda: len(llm.calls) == 1)
+        await wait_until(lambda: session._new_done and not session._engine.running_workflows())
+        assert "本批消息 #3–#5" in repr(llm.calls[0]["messages"])
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 5
+        assert session._flow_store.state_by_scope_key(scope.key, "s1")["version"] == 1
+    finally:
+        await session.close_flow_nodes()
 
 
-def test_new_drain_timeout_falls_back_to_drop():
-    """/new drain 超过 120s 或批次不推进位置时, 剩余按 drop 结算"""
-    db = Path(tempfile.mkdtemp()) / "p.db"
-    conn = sqlite3.connect(db); ensure_platform_tables(conn); conn.close()
+@pytest.mark.asyncio
+async def test_new_drain_failure_falls_back_to_drop(tmp_path):
+    """真实 WF 失败位置不推进, drain 随后按 drop 结算到最新"""
+    db = database(tmp_path / "messages.db")
+    session_db = database(tmp_path / "session.db")
     scope = MessageScope("a", "s", "group", "c")
     store = _archive(db, scope, 4)
-
-    fs = FlowStore(db, "a", "f1"); fs.scope_key = scope.key
-    conn = sqlite3.connect(db); conn.execute("BEGIN")
-    fs.ensure_position(conn, scope.key, "t1", "w1")
-    fs.commit_position(conn, scope.key, "t1", "w1", 2)
-    conn.execute("COMMIT"); conn.close()
-
+    adapter = FlowAdapter(store)
+    fs = FlowStore(session_db, scope.adapter_id, "f1")
+    with sqlite3.connect(session_db) as connection:
+        connection.execute("BEGIN")
+        fs.commit_position(connection, scope.key, "t1", "w1", 2)
+        connection.execute("COMMIT")
     flow = _flow_with_state_and_threshold()
     flow["nodes"][1]["config"]["on_new"] = "drain"
-    session = AsyncFlowSession("s2", llm=None, flow=flow, message_store=store, flow_name="f1")
-    _bind_session(session, db, scope, store, new_from="s1")
-    asyncio.run(_init_def(session))
+    llm = MockLLM(lambda messages, tools, count: (_ for _ in ()).throw(RuntimeError("offline")))
+    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(session_db),
+                               message_store=store, flow_name="f1", new_from="s1")
+    session.error_feedback = False
+    try:
+        event = make_event(adapter, scope, "new", 5)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        await wait_until(lambda: session._new_done)
+        assert len(llm.calls) == 1
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 5
+    finally:
+        await session.close_flow_nodes()
 
-    async def failing_run(wf_id, event):
-        # 运行"失败": 不推进位置 -> 下一轮 while 检测到 committed<=batch_from 转 drop
-        return None
-    session._run_workflow = failing_run  # type: ignore[assignment]
-    asyncio.run(session._settle_new())
 
-    # 跑不动 -> 位置被 drop 到最新
-    assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 4
+@pytest.mark.asyncio
+async def test_new_observe_nonblocking_and_replay_respects_busy(tmp_path):
+    """observe 不等待 drain; 结算期间消息暂存, 回放与 drain 不并发"""
+    db = database(tmp_path / "messages.db")
+    session_db = database(tmp_path / "session.db")
+    scope = MessageScope("a", "s", "group", "c")
+    store = _archive(db, scope, 2)
+    adapter = FlowAdapter(store)
+    fs = FlowStore(session_db, scope.adapter_id, "f1")
+    with sqlite3.connect(session_db) as connection:
+        connection.execute("BEGIN")
+        fs.commit_position(connection, scope.key, "t1", "w1", 0)
+        connection.execute("COMMIT")
+    flow = _flow_with_state_and_threshold()
+    flow["nodes"][1]["config"]["on_new"] = "drain"
+    started, release = asyncio.Event(), asyncio.Event()
+    active, max_active = 0, 0
+
+    async def script(messages, tools, count):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            if count == 1:
+                started.set()
+                await release.wait()
+            return response("done")
+        finally:
+            active -= 1
+
+    llm = MockLLM(script)
+    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(session_db),
+                               message_store=store, flow_name="f1", new_from="s1")
+    session.error_feedback = False
+    try:
+        first = make_event(adapter, scope, "third", 3)
+        archive_event(store, scope, first)
+        before = time.monotonic()
+        await session.observe(first)
+        assert time.monotonic() - before < 1.0
+        await started.wait()
+        second = make_event(adapter, scope, "fourth", 4)
+        archive_event(store, scope, second)
+        before = time.monotonic()
+        await session.observe(second)
+        assert time.monotonic() - before < 0.2
+        assert len(llm.calls) == 1 and list(session._new_events) == [first, second]
+        release.set()
+        await wait_until(lambda: len(llm.calls) == 2 and session._new_done)
+        await wait_until(lambda: not session._engine.running_workflows())
+        assert max_active == 1
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 4
+    finally:
+        release.set()
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_new_drain_deadline_cancels_old_workflow_then_drops(tmp_path, monkeypatch):
+    """120 秒 drain deadline 到期后取消旧 WF, drop 位置, 不允许晚发送或晚提交"""
+    from satrap.edictum.flow import session as session_module
+
+    assert session_module.NEW_DRAIN_TIMEOUT_SECONDS == 120.0
+    monkeypatch.setattr(session_module, "NEW_DRAIN_TIMEOUT_SECONDS", 0.05)
+    db = database(tmp_path / "single.db")
+    scope = MessageScope("a", "s", "group", "c")
+    store = _archive(db, scope, 4)
+    adapter = FlowAdapter(store)
+    fs = FlowStore(db, scope.adapter_id, "f1")
+    with sqlite3.connect(db) as connection:
+        connection.execute("BEGIN")
+        fs.commit_position(connection, scope.key, "t1", "w1", 2)
+        connection.execute("COMMIT")
+    flow = _flow_with_state_and_threshold()
+    flow["nodes"][1]["config"]["on_new"] = "drain"
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow(messages, tools, count):
+        started.set()
+        await release.wait()
+        return response("", [tool_call("snapshot_write", {
+            "state_id": "s1", "content": "不允许晚提交"})])
+
+    llm = MockLLM(slow)
+    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(db),
+                               message_store=store, flow_name="f1", new_from="s1")
+    session.error_feedback = False
+    diagnostics = []
+    original_record = session_module.record_debug
+
+    def record(category, phase, **kwargs):
+        diagnostics.append((category, phase, kwargs))
+        return original_record(category, phase, **kwargs)
+
+    monkeypatch.setattr(session_module, "record_debug", record)
+    try:
+        event = make_event(adapter, scope, "new", 5)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        await wait_until(lambda: started.is_set())
+        await wait_until(lambda: session._new_done)
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 5
+        assert any(phase == "drain_timeout" for _, phase, _ in diagnostics)
+        assert not session._engine.running_workflows()
+        release.set()
+        await asyncio.sleep(0.1)
+        assert adapter.scheduled == [] and adapter.sent == []
+        assert session._flow_store.state_by_scope_key(scope.key, "s1")["version"] == 0
+        assert len(llm.calls) == 1
+    finally:
+        release.set()
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_new_observation_queue_overflow_drops_and_stays_bounded(tmp_path, monkeypatch):
+    """持续结算期间暂存到达容量后, 最旧事件按 drop 结算并写诊断"""
+    from satrap.edictum.flow import session as session_module
+
+    assert session_module.NEW_EVENT_QUEUE_LIMIT == 256
+    monkeypatch.setattr(session_module, "NEW_EVENT_QUEUE_LIMIT", 2)
+    db = database(tmp_path / "single.db")
+    scope = MessageScope("a", "s", "group", "c")
+    store = _archive(db, scope, 2)
+    adapter = FlowAdapter(store)
+    flow = _flow_with_state_and_threshold()
+    flow["nodes"][1]["config"]["on_new"] = "drain"
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow(messages, tools, count):
+        started.set()
+        await release.wait()
+        return response("done")
+
+    llm = MockLLM(slow)
+    session = AsyncFlowSession("bounded", llm=llm, flow=flow, db_path=str(db),
+                               message_store=store, flow_name="f1", new_from="s1")
+    session.error_feedback = False
+    diagnostics = []
+    original_record = session_module.record_debug
+
+    def record(category, phase, **kwargs):
+        diagnostics.append((category, phase, kwargs))
+        return original_record(category, phase, **kwargs)
+
+    monkeypatch.setattr(session_module, "record_debug", record)
+    try:
+        for index in range(3, 8):
+            event = make_event(adapter, scope, f"m{index}", index)
+            archive_event(store, scope, event)
+            await session.observe(event)
+            if index == 3:
+                await started.wait()
+        assert len(session._new_events) == 2
+        assert sum(phase == "queue_drop" for _, phase, _ in diagnostics) == 3
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 7
+    finally:
+        release.set()
+        await wait_until(lambda: session._new_done)
+        await session.close_flow_nodes()
 
 
 async def _init_def(session: AsyncFlowSession) -> None:

@@ -72,6 +72,36 @@ def test_advanced_debug_object_policy_survives_context_replacement_and_reload(tm
         second_process.read()
 
 
+def test_recent_flow_triggers_reads_persisted_summaries_only(tmp_path):
+    """跨存储实例读取并隔离流程和作用域, 限制条数及同刻排序。"""
+    from dataclasses import replace
+    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.log.debug.store import DebugStore
+
+    path = tmp_path / "debug" / "backend.sqlite"
+    store = DebugStore(path, "backend")
+    assert store.recent_flow_triggers("flow", "scope") == []
+    assert not path.exists()
+    event = DebugEvent("request", DebugObject("qq", "bot", "group", "room"), "context", "",
+                       "event-00", 0, "flow_trigger", "fire", "", "", 100.0, "",
+                       {"flow_name": "flow", "scope_key": "scope", "tile": "tile"},
+                       {"output": {"secret": "not in summary"}}, "revision")
+    events = [replace(event, event_id=f"event-{i:02}", sequence=i, recorded_at=float(i // 2)) for i in range(55)]
+    events += [replace(event, event_id="wrong-flow", sequence=55, recorded_at=1000,
+                       metadata={"flow_name": "other", "scope_key": "scope"}),
+               replace(event, event_id="wrong-scope", sequence=56, recorded_at=1000,
+                       metadata={"flow_name": "flow", "scope_key": "other"}),
+               replace(event, event_id="wrong-category", sequence=57, recorded_at=1000, category="flow_run")]
+    store.append(events)
+    result = DebugStore(path, "backend").recent_flow_triggers("flow", "scope")
+    assert len(result) == 50
+    assert [item["event_id"] for item in result] == [f"event-{i:02}" for i in range(54, 4, -1)]
+    assert result[0]["metadata"]["tile"] == "tile"
+    assert "secret" not in str(result) and "bodies" not in result[0]
+    with pytest.raises(ValueError):
+        store.recent_flow_triggers("", "scope")
+
+
 def test_advanced_debug_chain_store_preserves_shared_bodies_and_event_ownership(tmp_path):
     """诊断链路分页不解码正文, 多请求共享及清理保留活跃引用, 损坏内容明确拒绝"""
     from dataclasses import replace

@@ -135,7 +135,8 @@ class FlowStore:
         connection.execute(
             "INSERT INTO flow_threshold_positions VALUES(?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(scope_key, flow_name, tile_id, wf_id) DO UPDATE SET "
-            "committed_seq=excluded.committed_seq, updated_at=excluded.updated_at",
+            "committed_seq=MAX(flow_threshold_positions.committed_seq, excluded.committed_seq), "
+            "updated_at=excluded.updated_at",
             (scope_key, self.flow_name, tile_id, wf_id, seq, time.time()),
         )
 

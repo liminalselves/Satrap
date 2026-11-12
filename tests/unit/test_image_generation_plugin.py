@@ -210,6 +210,19 @@ def test_range_schema_and_runtime_share_bounds_steps_and_pixel_limit():
             policy.resolve(arguments)
 
 
+async def test_optional_group_chat_absent_does_not_block_real_install_or_generation(image_host):
+    """未安装群聊插件时, 同步和异步 simple 会话仍能安装并实际生图"""
+    session, install, execute, requests, received, _, _ = image_host
+    assert not session.list_plugins()
+    plugin_meta = load_plugin_meta(PLUGIN)
+    assert plugin_meta["interop"]["requires"]["group_chat"]["optional"] is True
+    await install()
+    assert {plugin.name for plugin in session.list_plugins()} == {"image_generation"}
+    result = await execute(prompt="an orange cat")
+    assert result["ok"] and result["generation_status"] == "succeeded"
+    assert result["delivery_status"] == "succeeded" and len(requests) == len(received) == 1
+
+
 async def test_generate_uses_model_defaults_policy_overrides_and_current_receiver(image_host):
     session, install, execute, requests, received, body, _ = image_host
     client = await install({"count_mode": "range", "count_default": 2, "allow_negative_prompt": True,

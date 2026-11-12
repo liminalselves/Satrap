@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from contextvars import ContextVar
+from functools import wraps
 import asyncio
 import inspect
 import sqlite3
@@ -41,6 +43,10 @@ if TYPE_CHECKING:
 
 
 EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
+# 兼容现有适配器的同步确认转换入口, 将写入任务绑定到当前发送动作。
+_confirmed_writes: ContextVar[tuple[object, list[asyncio.Task[bool]]] | None] = ContextVar(
+    "platform_confirmed_writes", default=None
+)
 # 统一事件回调签名:
 # - 输入: PlatformEvent
 # - 输出: 可等待对象或 None (均可)
@@ -118,6 +124,30 @@ class PlatformAdapter(ABC):
     conversation_kinds: dict[str, str] = {"private": "私聊", "group": "群聊"}
     supports_scheduled_group_send: bool = False
     supports_scheduled_private_send: bool = False
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # 已有适配器的确认转换函数是同步的; 在其异步发送边界等待收集到的写入。
+        for name in ("send_message", "_send_message", "_send_chunk", "_send_forward"):
+            method = cls.__dict__.get(name)
+            if method is None or not inspect.iscoroutinefunction(method):
+                continue
+
+            @wraps(method)
+            async def await_confirmed_writes(self: PlatformAdapter, *args: Any,
+                                             __method: Any = method, **kwargs: Any) -> Any:
+                writes: list[asyncio.Task[bool]] = []
+                token = _confirmed_writes.set((self, writes))
+                try:
+                    return await __method(self, *args, **kwargs)
+                finally:
+                    try:
+                        if writes:
+                            await asyncio.shield(asyncio.gather(*writes))
+                    finally:
+                        _confirmed_writes.reset(token)
+
+            setattr(cls, name, await_confirmed_writes)
 
     @staticmethod
     def normalize_user_identifier(value: str) -> str:
@@ -352,7 +382,7 @@ class PlatformAdapter(ABC):
         - scope: 适配器为自身私聊回显等情况核验的实际对话身份
 
         返回:
-        - 新消息成功入档时返回 True, 未装配存储或失败时返回 False
+        - 新消息成功入档时返回 True, 未装配存储、重复或失败时返回 False
         """
         store = self.message_archive
         from satrap.core.telemetry.capture import current_writer, record_message
@@ -366,42 +396,46 @@ class PlatformAdapter(ABC):
             identity = scope or self.message_archive_scope(message)
             if identity.self_id != message.self_id or identity.adapter_id != self.config.id:
                 raise ValueError("消息档案身份与原始消息不一致")
+            if direction == "outbound":
+                snapshot = archive_snapshot(message, direction=direction)
+                label = message.group.group_name or "" if message.group else ""
+                return await self._record_confirmed_message(identity, snapshot, label=label)
             if writer is not None:
                 record_message(MetricScope(platform_id=identity.adapter_id, self_id=identity.self_id, conversation_kind=identity.conversation_kind,
                                             target_id=identity.chat_id), str(message.message_id),
-                               received_at=message.received_at, outbound=direction == "outbound")
+                               received_at=message.received_at, outbound=False)
             if store is None:
                 return False
             snapshot = archive_snapshot(message, direction=direction)
             label = message.group.group_name or "" if message.group else ""
-            recorded = await asyncio.to_thread(store.record, identity, snapshot, label=label)
+            return await asyncio.to_thread(store.record, identity, snapshot, label=label)
         except Exception as exc:
             logger.error(f"[消息档案] 采集失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
             return False
-        if recorded and direction == "outbound":
-            # 出站已确认消息也喂给流程会话的 observe (阈值磁贴按 seq 推进)
-            observers = getattr(self, "_flow_observers", None)
-            if observers:
-                for observe in tuple(observers):
-                    try:
-                        result = observe(identity, snapshot)
-                        if inspect.isawaitable(result):
-                            await result
-                    except Exception as exc:
-                        logger.warning(f"[消息档案] 出站观察回调失败: {exc}")
-        return recorded
 
-    def queue_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage) -> bool:
+    def queue_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage, *, label: str = "") -> bool:
         """
-        将已确认的实际发送快照交给有界写入任务, 不改变发送回执
+        兼容同步发送确认转换入口, 由当前异步发送边界等待实际写入
 
         参数:
         - scope: 提交平台动作时冻结的账号和目标身份
         - snapshot: 平台确认消息 ID 后生成的实际内容, 不含待发送草稿
+        - label: 采集时可用的对话名称, 默认为空
 
         返回:
-        - 已排入写入任务时返回 True, 未配置档案或拒绝采集时返回 False
+        - 已交给当前发送边界时返回 True, 无发送边界时返回 False
         """
+        context = _confirmed_writes.get()
+        if context is None or context[0] is not self:
+            logger.error(f"[消息档案] 出站采集缺少发送边界, 平台={self.config.id}")
+            return False
+        task = asyncio.create_task(self._record_confirmed_message(scope, snapshot, label=label))
+        context[1].append(task)
+        return True
+
+    async def _record_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage,
+                                        *, label: str = "") -> bool:
+        """等待已确认的实际消息入档, 再异步通知流程观察者。"""
         store = self.message_archive
         from satrap.core.telemetry.capture import current_writer, record_message
         from satrap.core.telemetry.contracts import MetricScope
@@ -419,48 +453,37 @@ class PlatformAdapter(ABC):
                                             target_id=scope.chat_id), snapshot.message_id, received_at=snapshot.received_at, outbound=True)
             if store is None:
                 return False
-            if len(self._archive_tasks) >= self._archive_capacity:
-                raise ValueError("已确认发送的档案写入队列已满")
-            task = asyncio.create_task(self._write_confirmed_message(store, scope, snapshot))
-            self._archive_tasks.add(task)
-            task.add_done_callback(self._archive_tasks.discard)
-            return True
-        except Exception as exc:
-            logger.error(f"[消息档案] 出站采集未入队, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
-            return False
-
-    async def _write_confirmed_message(self, store: PlatformMessageStore, scope: MessageScope,
-                                       snapshot: ArchiveMessage) -> None:
-        """
-        在发送任务之外写入确认消息, 保留提交时的存储和身份
-
-        参数:
-        - store: 入队时所属平台的档案存储
-        - scope: 已冻结的真实发送范围
-        - snapshot: 已确认消息快照
-        """
-        try:
-            await asyncio.to_thread(store.record, scope, snapshot)
+            recorded = await asyncio.to_thread(store.record, scope, snapshot, label=label)
+            observers = tuple(getattr(self, "_flow_observers", ()))
+            if recorded and observers:
+                if len(self._archive_tasks) >= self._archive_capacity:
+                    logger.warning(f"[消息档案] 出站观察队列已满, 平台={scope.adapter_id}, 消息={snapshot.message_id}")
+                else:
+                    task = asyncio.create_task(self._notify_confirmed_message(observers, scope, snapshot))
+                    self._archive_tasks.add(task)
+                    task.add_done_callback(self._archive_tasks.discard)
+            return recorded
         except asyncio.CancelledError:
             logger.warning(f"[消息档案] 出站写入等待被取消, 平台={scope.adapter_id}, 消息={snapshot.message_id}")
             raise
         except Exception as exc:
             logger.error(f"[消息档案] 出站写入失败, 平台={scope.adapter_id}, 原因={type(exc).__name__}: {exc}")
-            return
-        # 出站已确认消息也喂给流程会话的 observe (阈值磁贴按 seq 推进)
-        observers = getattr(self, "_flow_observers", None)
-        if observers:
-            for observe in tuple(observers):
-                try:
-                    result = observe(scope, snapshot)
-                    if inspect.isawaitable(result):
-                        await result
-                except Exception as exc:
-                    logger.warning(f"[消息档案] 出站观察回调失败: {exc}")
+            return False
+
+    async def _notify_confirmed_message(self, observers: tuple[Any, ...], scope: MessageScope,
+                                        snapshot: ArchiveMessage) -> None:
+        """仅对成功新增的消息异步执行流程观察回调。"""
+        for observe in observers:
+            try:
+                result = observe(scope, snapshot)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                logger.warning(f"[消息档案] 出站观察回调失败: {exc}")
 
     async def drain_message_archive(self, timeout: float = 5.0) -> None:
         """
-        停止时有限等待已确认消息写入, 超时任务仍自行完成或记录失败
+        停止时有限等待已确认消息的观察回调, 超时任务仍自行完成
 
         参数:
         - timeout: 最多等待的秒数

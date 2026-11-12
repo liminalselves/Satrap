@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
@@ -62,6 +63,7 @@ from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
 from satrap.core.APICall.LLMCall.errors import model_error_info
 from satrap.core.log import logger
+from satrap.core.log.debug.hooks import record_debug
 from satrap.core.utils.validation import positive_timeout
 
 
@@ -72,6 +74,8 @@ _SETTLEMENT_WAIT_SECONDS = 1.5
 """发送收尾等待上限: 超时先按当时证据归并, 记录保持未确认可被后续确认精化"""
 _SETTLEMENT_POLL_SECONDS = 0.05
 """发送收尾等待轮询间隔"""
+_FLOW_OBSERVATION_QUEUE_LIMIT = 256
+"""单会话串行观察队列上限, 防止 /new 持续结算失败时在上游转移无界积压"""
 
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 
@@ -495,6 +499,7 @@ class PipelineScheduler:
         - event: 消息事件
         """
         manual_detail: str | None = None
+        flow_owns_cleanup = False
         try:
             manual_ticket = self.manual_wakes.tickets.get(event)
             if manual_ticket is not None and manual_ticket.cancelled:
@@ -552,13 +557,32 @@ class PipelineScheduler:
                     manual_detail = reason_code
                     return
 
-            # Step.1.9 flow 类型旁路: 每条入站消息都先交给流程会话的 observe,
-            # 由会话内部决定唤醒谁; 不占 _session_turn 锁, 不受唤醒/空正文/限流影响
-            session_id_hint = event.session_id
-            flow_session = await self._flow_session_for(session_manager, session_id_hint, event, None, None)
-            if flow_session is not None:
-                await flow_session.observe(event)
-                return
+            # flow 自行决定唤醒, 但必须在稳定路由锁内解析并复核当前会话。
+            # 不持有会话执行锁, 以免阻塞流程中的其他消息。
+            if self._is_flow_definition(session_manager, event):
+                route, extra_params = self._conversation_route(event, user_manager)
+                async with AsyncExitStack() as turn:
+                    session_id = event.session_id
+                    if route is not None and user_manager is not None:
+                        await turn.enter_async_context(self._session_turn(session_manager, route.lock_key, namespace="route"))
+                        if not await self._queued_source_current(event, session_manager):
+                            return
+                        session_id = self._resolve_session(user_manager, session_manager, event, route, extra_params)
+                        if not session_id:
+                            return
+                    if not await self._queued_source_current(event, session_manager):
+                        return
+                    flow_session = await self._flow_session_for(session_manager, session_id, event, route, extra_params)
+                    if not await self._queued_source_current(event, session_manager):
+                        return
+                    if not self._is_flow_definition(session_manager, event):
+                        return
+                    if (manual_ticket is not None and manual_ticket.cancelled) or (deadline_ticket is not None and deadline_ticket.cancelled):
+                        return
+                    if flow_session is not None:
+                        self._enqueue_flow_observation(flow_session, event)
+                        flow_owns_cleanup = True
+                        return
 
             # Step.2 评估独立唤醒规则并记录命中原因
             if deadline_ticket is not None and not self._automatic_policy_current(event):
@@ -666,41 +690,15 @@ class PipelineScheduler:
 
             # Step.5 先取得稳定路由执行权, 再解析当前会话并取得目标会话执行权
             session_id = event.session_id
-            route: ConversationRoute | None = None
-            settings = event.policy_settings
-            scope = str(settings.get("context_scope", "legacy_user")) if not event.is_private_chat() else "legacy_user"
-            if event.agent_route_generation:
-                scope = event.agent_context_scope
-            generation = event.group_route_generation if not event.is_private_chat() else 0
-            extra_params: dict[str, str] | None = None
-            if (scope != "legacy_user" or generation > 0 or event.agent_route_generation) and (not user_manager or not event.session_type):
-                raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
-            if user_manager and event.session_type:
-                platform_id, extra_params = self._resolve_route_adapter(event)
-                route = ConversationRoute(
-                    user_id=event.get_sender_id(), platform=platform_id,
-                    session_type=event.session_type, provider=event.session_provider,
-                    scope=scope, self_id=event.get_self_id(), group_id=event.get_group_id(),
-                    generation=generation,
-                    conversation_kind=event.conversation_kind, conversation_id=event.conversation_id,
-                    binding_generation=event.agent_route_generation,
-                )
+            route, extra_params = self._conversation_route(event, user_manager)
             async with AsyncExitStack() as turn:
                 if route is not None and user_manager is not None:
                     await turn.enter_async_context(self._session_turn(session_manager, route.lock_key, namespace="route"))
                     if not await self._queued_source_current(event, session_manager):
                         return
-                    route_args = {"route": route} if route.key is not None else {}
-                    resolved = user_manager.resolve_session(
-                        user_id=event.get_sender_id(), platform=route.platform,
-                        session_provider=event.session_provider, session_type=event.session_type or "",
-                        class_cfg_mgr=safe_getattr(session_manager, 'class_cfg_mgr'),
-                        extra_params=extra_params, **route_args,
-                    )
-                    if not resolved:
-                        logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
+                    session_id = self._resolve_session(user_manager, session_manager, event, route, extra_params)
+                    if not session_id:
                         return
-                    session_id = resolved
                 # flow 会话已在 Step.1.9 提前接管; 走到这里一定不是 flow
                 await turn.enter_async_context(self._session_turn(session_manager, session_id))
                 if not await self._queued_source_current(event, session_manager):
@@ -878,7 +876,8 @@ class PipelineScheduler:
                 if self.manual_wake_store is not None:
                     final_status, final_detail = await self._adjudicate_manual_request(event, ticket, manual_detail)
                     await self._update_manual_request(event, ticket, final_status, final_detail, refine=True)
-            event.cleanup_temporary_local_files()
+            if not flow_owns_cleanup:
+                event.cleanup_temporary_local_files()
 
     # ---------- 可覆写钩子 ----------
 
@@ -913,6 +912,58 @@ class PipelineScheduler:
             else:
                 self._session_turns[key] = (lock, users - 1)
 
+    def _conversation_route(self, event: MessageEvent, user_manager: Any) -> tuple[ConversationRoute | None, dict[str, str] | None]:
+        """按事件的有效绑定和上下文范围构造稳定路由。"""
+        scope = str(event.policy_settings.get("context_scope", "legacy_user")) if not event.is_private_chat() else "legacy_user"
+        if event.agent_route_generation:
+            scope = event.agent_context_scope
+        generation = event.group_route_generation if not event.is_private_chat() else 0
+        if (scope != "legacy_user" or generation > 0 or event.agent_route_generation) and (not user_manager or not event.session_type):
+            raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
+        if not user_manager or not event.session_type:
+            return None, None
+        platform_id, extra_params = self._resolve_route_adapter(event)
+        return ConversationRoute(
+            user_id=event.get_sender_id(), platform=platform_id,
+            session_type=event.session_type, provider=event.session_provider,
+            scope=scope, self_id=event.get_self_id(), group_id=event.get_group_id(),
+            generation=generation, conversation_kind=event.conversation_kind,
+            conversation_id=event.conversation_id, binding_generation=event.agent_route_generation,
+        ), extra_params
+
+    def _resolve_session(
+        self, user_manager: Any, manager: SessionManager, event: MessageEvent,
+        route: ConversationRoute, extra_params: dict[str, str] | None,
+    ) -> str:
+        """在路由锁内解析当前映射; 无映射时记录并拒绝。"""
+        route_args = {"route": route} if route.key is not None else {}
+        resolved = user_manager.resolve_session(
+            user_id=event.get_sender_id(), platform=route.platform,
+            session_provider=event.session_provider, session_type=event.session_type or "",
+            class_cfg_mgr=safe_getattr(manager, "class_cfg_mgr"),
+            extra_params=extra_params, **route_args,
+        )
+        if not resolved:
+            logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
+        return resolved
+
+    def _is_flow_definition(self, manager: SessionManager, event: MessageEvent) -> bool:
+        """每次读取当前定义, 避免配置变更后沿用旧类型。"""
+        provider_get = getattr(getattr(manager, "provider_registry", None), "get", None)
+        if not callable(provider_get) or asyncio.iscoroutinefunction(provider_get):
+            return False
+        try:
+            provider = provider_get(event.session_provider or "edictum")
+            candidate = getattr(provider, "get_definition", None)
+            if not callable(candidate) or asyncio.iscoroutinefunction(candidate):
+                return False
+            definition = candidate(event.session_type or "")
+        except Exception as error:
+            logger.debug(f"[PipelineScheduler] flow 定义读取失败 session={event.session_id}: {error}")
+            return False
+        metadata = getattr(definition, "metadata", None)
+        return isinstance(metadata, dict) and metadata.get("edictum_type") == "flow"
+
     async def _flow_session_for(
         self, manager: SessionManager, session_id: str, event: MessageEvent,
         route: ConversationRoute | None, extra_params: dict[str, str] | None,
@@ -932,6 +983,8 @@ class PipelineScheduler:
         """
         from satrap.edictum.flow.session import AsyncFlowSession
 
+        if not self._is_flow_definition(manager, event):
+            return None
         pool = getattr(manager, "pool", None)
         entries_fn = getattr(pool, "list_entries", None)
         entries = entries_fn() if callable(entries_fn) and not asyncio.iscoroutinefunction(entries_fn) else {}
@@ -941,33 +994,8 @@ class PipelineScheduler:
         if entry is not None and isinstance(entry.session, AsyncFlowSession):
             self._adopt_flow_session(entry.session)
             return entry.session
-        # 会话还没激活或不是 flow: 通过 provider 判定类型 (定义缓存避免逐条消息重复读)
+        # 等待路由锁期间定义可能变化, 即使已有活跃会话也必须按当前定义判定。
         session_type = event.session_type or ""
-        provider_get = getattr(getattr(manager, "provider_registry", None), "get", None)
-        definition = None
-        cache_key = (id(manager), event.session_provider or "edictum", session_type)
-        cached = self._flow_type_cache.get(cache_key)
-        if cached is not None:
-            definition = cached
-        elif provider_get is not None and not asyncio.iscoroutinefunction(provider_get):
-            try:
-                provider = provider_get(event.session_provider or "edictum")
-            except Exception as error:
-                logger.debug(f"[PipelineScheduler] flow 类型判定失败 session={session_id}: {error}")
-                self._flow_type_cache[cache_key] = None
-                return None
-            candidate = getattr(provider, "get_definition", None)
-            if candidate is not None and not asyncio.iscoroutinefunction(candidate):
-                try:
-                    definition = candidate(session_type)
-                except Exception as error:
-                    logger.debug(f"[PipelineScheduler] flow 定义读取失败 session={session_id}: {error}")
-                    self._flow_type_cache[cache_key] = None
-                    return None
-            self._flow_type_cache[cache_key] = definition
-        metadata = getattr(definition, "metadata", None)
-        if not isinstance(metadata, dict) or metadata.get("edictum_type") != "flow":
-            return None
         entry = None
         try:
             config = manager._resolve_or_create_session_config(UserCall(
@@ -994,11 +1022,70 @@ class PipelineScheduler:
             if entry is not None:
                 manager.pool.release(entry)
 
+    def _enqueue_flow_observation(self, session: Any, event: MessageEvent) -> None:
+        """锁内只向目标会话投递; 会话拥有的单个任务按投递顺序观察。"""
+        queue = getattr(session, "_scheduler_observations", None)
+        if queue is None:
+            queue = deque()
+            session._scheduler_observations = queue
+        if len(queue) >= _FLOW_OBSERVATION_QUEUE_LIMIT:
+            dropped = queue.popleft()
+            dropped.cleanup_temporary_local_files()
+            record_debug("flow_new", "queue_drop", metadata={
+                "session": session.session_id, "reason": "scheduler_queue_capacity",
+                "capacity": _FLOW_OBSERVATION_QUEUE_LIMIT,
+                "dropped_message_id": dropped.platform_message.message_id,
+            })
+            if not getattr(session, "_new_done", True):
+                # 与溢出入队同序执行持久化 drop, 不让阈值稍后重放已丢弃的旧批。
+                session._spawn_observer_task(
+                    session._drop_new_backlog(), name=f"flow-new-overflow-{session.session_id}")
+        queue.append(event)
+        if getattr(session, "_scheduler_observer_task", None) is None:
+            async def drain() -> None:
+                try:
+                    while queue:
+                        current = queue.popleft()
+                        try:
+                            await session.observe(current)
+                            # /new 的 observe 会将当前消息交给独立结算任务;
+                            # 等待它完成再消费后续消息, 避免回放期间插队或提前清理文件。
+                            settle_task = getattr(session, "_settle_task", None)
+                            if settle_task is not None:
+                                await settle_task
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as error:
+                            logger.error(f"[PipelineScheduler] flow 消息观察失败: {error}")
+                        finally:
+                            current.cleanup_temporary_local_files()
+                finally:
+                    # 关闭会话时取消任务, 尚未观察的事件也必须释放临时文件。
+                    while queue:
+                        queue.popleft().cleanup_temporary_local_files()
+                    session._scheduler_observer_task = None
+
+            coro = drain()
+            try:
+                task = session._spawn_observer_task(coro, name=f"flow-scheduler-{session.session_id}")
+                session._scheduler_observer_task = task
+
+                def cleanup_unstarted(done: asyncio.Task[Any]) -> None:
+                    # 协程首次运行前被 close 取消时, drain 的 finally 不会执行。
+                    if session._scheduler_observer_task is done:
+                        while queue:
+                            queue.popleft().cleanup_temporary_local_files()
+                        session._scheduler_observer_task = None
+
+                task.add_done_callback(cleanup_unstarted)
+            except BaseException:
+                coro.close()
+                queue.pop()
+                raise
+
     def _adopt_flow_session(self, session: Any) -> None:
         """把调度器的 error_feedback 开关同步给流程会话"""
         session.error_feedback = bool(self.error_feedback)
-
-    _flow_type_cache: dict[tuple[int, str, str], Any] = {}
 
     async def _queued_source_current(self, event: MessageEvent, manager: SessionManager) -> bool:
         """

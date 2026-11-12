@@ -8,6 +8,7 @@ WF 运行开始时按拓扑顺序拉取上游数据节点; 同一触发事件驱
 from __future__ import annotations
 
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
+from satrap.core.log.debug.hooks import record_debug
 from satrap.edictum.flow.definition import FlowDefinition, FlowNodeInstance
 from satrap.edictum.flow.registry import FlowNodeType
 from satrap.edictum.flow.types import ContextBlock, FlowMessage, StateView
@@ -55,6 +56,7 @@ class TransformEvaluator:
         resolve_source: Callable[[], tuple[FlowMessage, ...]] | None = None,
         resolve_config: Callable[[str], dict[str, Any]] | None = None,
         build_ctx: Callable[[FlowNodeInstance, dict[str, Any]], Any] | None = None,
+        diagnostic: Callable[..., Any] = record_debug,
         timeout: float = 60.0,
     ) -> None:
         """
@@ -79,6 +81,7 @@ class TransformEvaluator:
         self._resolve_source = resolve_source or (lambda: ())
         self._resolve_config = resolve_config
         self._build_ctx = build_ctx
+        self._diag = diagnostic
         self.timeout = timeout
         self._cells: dict[tuple[str, str], _EvalCell] = {}
         """(event_id, 节点 id) -> 共享求值"""
@@ -105,12 +108,13 @@ class TransformEvaluator:
             cell.waiters.pop(run_id, None)
             if not cell.waiters and cell.task is not None and not cell.done:
                 cell.task.cancel()
-            if not cell.waiters and cell.done:
-                del self._cells[key]
+            # 已完成结果由事件最后一个 WF 引用结束时统一 forget(event_id),
+            # 不能在首个 WF 完成时删掉其他 WF 尚未拉取的共享结果
 
     async def pull(
         self, wf_id: str, node_id: str, run_id: str, event: Any,
         timeout: float | None = None,
+        source_query: dict[str, Any] | None = None,
     ) -> Any:
         """
         拉取一个数据节点, 同一事件内共享求值结果
@@ -130,10 +134,23 @@ class TransformEvaluator:
         if node is None or node_type is None:
             raise ValueError(f"数据节点不存在: {node_id}")
         if node_type.role == "state":
-            return self._resolve_state(node_id)
+            value = self._resolve_state(node_id)
+            return await value if inspect.isawaitable(value) else value
         if node.type == "source":
-            # source 由宿主直接供档案视图, 不走求值缓存 (每条拉取取最新)
-            return self._resolve_source()
+            # source 由宿主直接供档案视图, 不走求值缓存。仅 assemble 明确声明有界需求时传范围;
+            # 直连 WF/自定义 transform 仍取完整档案, 不改变其消息视图契约。
+            if source_query is not None:
+                try:
+                    accepts_query = len(inspect.signature(self._resolve_source).parameters) > 0
+                except (TypeError, ValueError):
+                    accepts_query = True
+                value = self._resolve_source(source_query) if accepts_query else self._resolve_source()
+            else:
+                value = self._resolve_source()
+            return await value if inspect.isawaitable(value) else value
+        if node.type == "bucket" and source_query is not None:
+            # 不同 assemble 的覆盖位置/窗口可能不同, 有界桶查询不能复用另一个请求的 cell。
+            return await self._eval_bucket(node, run_id, event, source_query)
         key = (event.event_id, node_id)
         cell = self._cells.get(key)
         if cell is None:
@@ -179,14 +196,24 @@ class TransformEvaluator:
         """实际求值一个节点; 完成时把结果写回 cell"""
         key = (event.event_id, node.id)
         cell = self._cells[key]
+        started_at = time.monotonic()
+        self._diag("flow_node", "start", metadata={
+            "node": node.id, "node_type": node.type, "event_id": event.event_id, "run_id": run_id})
         try:
             result = await self._call(node, node_type, run_id, event)
             cell.result = result
             cell.done = True
+            self._diag("flow_node", "end", status="completed", metadata={
+                "node": node.id, "node_type": node.type, "event_id": event.event_id, "run_id": run_id,
+                "duration_ms": round((time.monotonic() - started_at) * 1000, 3)})
             return result
         except BaseException as error:
             cell.error = error
             cell.done = True
+            self._diag("flow_node", "end", status="failed", metadata={
+                "node": node.id, "node_type": node.type, "event_id": event.event_id, "run_id": run_id,
+                "error_type": type(error).__name__,
+                "duration_ms": round((time.monotonic() - started_at) * 1000, 3)})
             raise
 
     async def _call(self, node: FlowNodeInstance, node_type: FlowNodeType, run_id: str, event: Any) -> Any:
@@ -200,8 +227,8 @@ class TransformEvaluator:
         fn = self._resolve_transform(node, run_id)
         if fn is None:
             raise ValueError(f"transform 节点 {node.id} 没有可调用实现")
-        args = await self._transform_args(node, node_type, run_id, event)
         try:
+            args = await self._transform_args(node, node_type, run_id, event)
             if inspect.iscoroutinefunction(fn):
                 return await fn(*args)
             if inspect.isclass(fn):
@@ -228,7 +255,7 @@ class TransformEvaluator:
                                   resources={}, service=lambda *a, **kw: None,
                                   replace_ignore_case=_replace_ignore_case)
         args: list[Any] = [ctx]
-        for port in node_type.inputs:
+        for port in node_type.inputs or ():
             if port.name == "when":
                 continue
             edges = [e for e in self._in_edges.get(node.id, []) if e.target_port == port.name]
@@ -241,22 +268,35 @@ class TransformEvaluator:
 
     # ---------- 内置 transform ----------
 
-    async def _eval_bucket(self, node: FlowNodeInstance, run_id: str, event: Any) -> tuple[FlowMessage, ...]:
+    async def _eval_bucket(
+        self, node: FlowNodeInstance, run_id: str, event: Any,
+        source_query: dict[str, Any] | None = None,
+    ) -> tuple[FlowMessage, ...]:
         """桶: 档案的只读视图, include_outbound 决定是否含机器人发言"""
-        source_messages = await self._pull_input(node, "in", run_id, event) or ()
         include_outbound = bool(self._config(node.id).get("include_outbound", True))
+        if source_query is not None:
+            source_query = {**source_query, "include_outbound": include_outbound}
+        source_messages = await self._pull_input(
+            node, "in", run_id, event, source_query=source_query) or ()
         return tuple(m for m in source_messages if include_outbound or not m.is_bot)
 
     async def _eval_assemble(self, node: FlowNodeInstance, run_id: str, event: Any) -> tuple[ContextBlock, ...]:
         """拼装: 快照覆盖后 + 最新 n 条 + 去重"""
         config = self._config(node.id)
         snapshot = await self._pull_input(node, "snapshot", run_id, event)
-        messages: tuple[FlowMessage, ...] = await self._pull_input(node, "messages", run_id, event) or ()
+        covers_to = snapshot.covers_to if isinstance(snapshot, StateView) else 0
+        source_query = {
+            "after": covers_to if config.get("after_coverage", True) else 0,
+            "pending_limit": int(config.get("max_pending") or 80)
+                if config.get("after_coverage", True) else 0,
+            "latest_n": int(config.get("latest_n") or 0),
+        }
+        messages: tuple[FlowMessage, ...] = await self._pull_input(
+            node, "messages", run_id, event, source_query=source_query) or ()
         blocks: list[ContextBlock] = []
         if isinstance(snapshot, StateView) and snapshot.content:
             blocks.append(ContextBlock(kind="snapshot", text=snapshot.content, source_node=node.id))
         if config.get("after_coverage", True):
-            covers_to = snapshot.covers_to if isinstance(snapshot, StateView) else 0
             pending = [m for m in messages if m.position > covers_to]
             max_pending = int(config.get("max_pending") or 80)
             max_chars = int(config.get("max_pending_chars") or 8000)
@@ -282,12 +322,15 @@ class TransformEvaluator:
                                            text="\n".join(m.text for m in extra), source_node=node.id))
         return tuple(blocks)
 
-    async def _pull_input(self, node: FlowNodeInstance, port: str, run_id: str, event: Any) -> Any:
+    async def _pull_input(
+        self, node: FlowNodeInstance, port: str, run_id: str, event: Any,
+        source_query: dict[str, Any] | None = None,
+    ) -> Any:
         """取一个输入口的值; 未连线返回 None"""
         for e in self._in_edges.get(node.id, []):
             if e.target_port != port:
                 continue
-            return await self.pull(node.id, e.source, run_id, event)
+            return await self.pull(node.id, e.source, run_id, event, source_query=source_query)
         return None
 
 

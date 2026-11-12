@@ -449,7 +449,7 @@ def validate_flow_node_pairing(
             continue
         params = [p for p in signature.parameters.values()
                   if p.name not in ("self", "ctx") and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
-        declared_inputs = {p.name: p for p in node_type.inputs if p.name != "when"}
+        declared_inputs = {p.name: p for p in node_type.inputs or () if p.name != "when"}
         param_names = {p.name for p in params}
         declared_names_set = set(declared_inputs)
         if param_names != declared_names_set:

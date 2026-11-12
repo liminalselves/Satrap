@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from satrap.core.call_context import current_flow_workflow
 from satrap.core.utils.skills import Skill
 from satrap.core.type import CommandAction, RequestContextBlock
 
@@ -85,14 +86,8 @@ class SkillHostAccess:
         返回:
         - 正在运行的 WF 或 None
         """
-        try:
-            from satrap.edictum.flow.session import current_flow_workflow
-            current = current_flow_workflow.get()
-            if current is not None:
-                return current
-        except ImportError:
-            pass
-        return getattr(session, "_wf", None)
+        current = current_flow_workflow.get()
+        return current if current is not None else getattr(session, "_wf", None)
 
     def catalog(self) -> list[tuple[str, str]]:
         """
