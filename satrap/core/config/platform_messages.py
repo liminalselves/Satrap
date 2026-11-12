@@ -408,8 +408,9 @@ class PlatformMessageStore:
             raise ValueError("after 必须是非负整数")
         if type(pending_limit) is not int or not 0 <= pending_limit <= 1000:
             raise ValueError("pending_limit 必须在 0 到 1000 之间")
-        if type(latest_n) is not int or not 0 <= latest_n <= 500:
-            raise ValueError("latest_n 必须在 0 到 500 之间")
+        # source/bucket 最多配置 5000 条, 直连查询多读一条识别截断。
+        if type(latest_n) is not int or not 0 <= latest_n <= 5001:
+            raise ValueError("latest_n 必须在 0 到 5001 之间")
         connection = self._connect()
         if connection is None or (pending_limit == 0 and latest_n == 0):
             return []

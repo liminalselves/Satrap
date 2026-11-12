@@ -613,6 +613,57 @@ class TestObservationBinding:
             await session.close_flow_nodes()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [499, 500, 5000])
+    async def test_direct_source_limit_boundaries_read_real_archive(self, tmp_path, limit):
+        """499/500/配置最大值都经真实 transform 和窗口查询读取直连输入。"""
+        db = database(tmp_path / "messages.db")
+        store = _archive(db, 1)
+        adapter = FlowAdapter(store)
+        flow = _wake_flow()
+        flow["nodes"][0]["config"]["max_messages"] = limit
+        flow["edges"].append({"from": "src.out", "to": "w1.input"})
+        session = AsyncFlowSession("source-limit", MockLLM(), flow=flow, db_path=str(db),
+                                   message_store=store, flow_name="source-limit")
+        try:
+            await session.observe(make_event(adapter, SCOPE, "绑定", 2))
+            from satrap.edictum.flow.engine import FlowEvent
+            event = FlowEvent(event_id="source-limit", kind="message", tile="", why="test")
+            pulled = await session._pull_inputs("w1", "source-limit", event)
+            assert [[message.text for message in value] for value in pulled] == [["t0"]]
+        finally:
+            await session.close_flow_nodes()
+
+    @pytest.mark.asyncio
+    async def test_source_window_read_failure_writes_diagnostic(self, tmp_path, monkeypatch):
+        """窗口读取异常仍返回空视图，但必须留下 flow_source.read_failed 诊断。"""
+        from satrap.edictum.flow import session as session_module
+
+        db = database(tmp_path / "messages.db")
+        store = _archive(db, 1)
+        session = _init_session(_wake_flow(), db, store)
+        diagnostics = []
+        original_record = session_module.record_debug
+
+        def record(category, phase, **kwargs):
+            diagnostics.append((category, phase, kwargs))
+            return original_record(category, phase, **kwargs)
+
+        def fail_read(*args, **kwargs):
+            raise RuntimeError("archive unavailable")
+
+        monkeypatch.setattr(session_module, "record_debug", record)
+        monkeypatch.setattr(store, "flow_window_by_scope_key", fail_read)
+        try:
+            assert session._source_messages({"latest_n": 1}) == ()
+            failure = next(item for item in diagnostics
+                           if item[:2] == ("flow_source", "read_failed"))
+            assert failure[2]["status"] == "failed"
+            assert failure[2]["metadata"]["latest_n"] == 1
+            assert "archive unavailable" in failure[2]["metadata"]["error"]
+        finally:
+            await session.close_flow_nodes()
+
+    @pytest.mark.asyncio
     async def test_source_assemble_window_reads_only_pending_and_latest(self, tmp_path):
         """assemble 的有界请求只取最新未覆盖段与 latest_n, 不翻页构造整段保留期档案"""
         store = _archive(database(tmp_path / "messages.db"), 20)

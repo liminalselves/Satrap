@@ -233,6 +233,15 @@ class FlowStore:
                 (scope_key, self.flow_name, run_id),
             )
 
+    def clear_run_tokens(self, scope_key: str) -> None:
+        """会话启动时清理本 scope、本流程的崩溃残留; 不影响其他流程。"""
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM flow_run_tokens WHERE scope_key=? AND flow_name=?",
+                (scope_key, self.flow_name),
+            )
+
     def run_token_active(self, scope_key: str, run_id: str) -> bool:
         """发送前检查运行代际; 缺失、已完成或已取消的令牌均不允许开始新发送。"""
         with closing(self._connect()) as connection:
@@ -325,6 +334,7 @@ class FlowStore:
     def commit_states(
         self, scope: MessageScope, tile_id: str, wf_id: str, seq: int,
         commits: list[StateCommit], *, run_token: str = "",
+        invalidated_run_ids: set[str] | None = None,
     ) -> None:
         """
         状态槽 CAS 提交与阈值位置推进在同一事务
@@ -340,11 +350,13 @@ class FlowStore:
         - 无; 任一槽 base_version 不匹配时整个事务回滚并抛 FlowConflictError
         """
         self.commit_states_by_scope_key(
-            scope.key, tile_id, wf_id, seq, commits, run_token=run_token)
+            scope.key, tile_id, wf_id, seq, commits, run_token=run_token,
+            invalidated_run_ids=invalidated_run_ids)
 
     def commit_states_by_scope_key(
         self, scope_key: str, tile_id: str, wf_id: str, seq: int,
         commits: list[StateCommit], *, run_token: str = "",
+        invalidated_run_ids: set[str] | None = None,
     ) -> None:
         """
         按已冻结的对话键提交状态槽与位置, 供工具在拿不到 MessageScope 时使用
@@ -360,6 +372,9 @@ class FlowStore:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 if run_token:
+                    if invalidated_run_ids is not None and run_token in invalidated_run_ids:
+                        raise FlowConflictError(
+                            "flow_run_invalidated", f"WF {wf_id} 的运行 {run_token} 已取消或结束")
                     token = connection.execute(
                         "SELECT 1 FROM flow_run_tokens "
                         "WHERE scope_key=? AND flow_name=? AND wf_id=? AND run_id=?",

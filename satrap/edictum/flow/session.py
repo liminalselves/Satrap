@@ -175,6 +175,8 @@ class AsyncFlowSession(AsyncSession):
         self._workflows: dict[str, AsyncModelWorkflowFramework] = {}
         """节点 id -> WF 实例"""
         self._flow_store: FlowStore | None = None
+        self._invalidated_run_ids: set[str] = set()
+        """持久化作废失败时的内存第二道防护; 提交线程与发送边界共同检查。"""
         self._scope_key: str = ""
         self._bound_scope: Any = None
         """当前对话的冻结 MessageScope; 后台发送目标"""
@@ -291,6 +293,8 @@ class AsyncFlowSession(AsyncSession):
         self._flow_store.scope_key = self._scope_key
         if self._bound_scope is not None:
             self._flow_store.adapter_id = self._bound_scope.adapter_id
+        # 新实例装配时尚不存在运行中的 WF, 上次进程崩溃留下的代际统一作废。
+        await asyncio.to_thread(self._flow_store.clear_run_tokens, self._scope_key)
         self._refresh_resolved()
         for node in definition.nodes.values():
             node_type = self._registry.get(node.type)
@@ -611,8 +615,14 @@ class AsyncFlowSession(AsyncSession):
                 receipt = await source_event.send(
                     MessageChain.from_text(text), explicit_reply=not quote_trigger)
                 return getattr(receipt, "status", "") == "success"
+        run = current_flow_run.get()
+        run_id = run[2] if run else ""
+
+        async def scheduled_sender(scope: Any, scheduled_text: str) -> Any:
+            return await self._send_scheduled_scope(scope, scheduled_text, run_id=run_id)
+
         return await send_flow_reply(
-            send_scheduled=self._send_scheduled_scope,
+            send_scheduled=scheduled_sender,
             scope=self._bound_scope, text=text,
             foreground_sender=sender, quote_trigger=quote_trigger,
         )
@@ -1125,7 +1135,7 @@ class AsyncFlowSession(AsyncSession):
                 committed_seq = await asyncio.to_thread(
                     self._flow_store.commit_states_by_scope_key,
                     self._scope_key, tile, wf_id, event.batch_to, commits,
-                    run_token=run_id,
+                    run_token=run_id, invalidated_run_ids=self._invalidated_run_ids,
                 )
                 for commit in commits:
                     record_debug("flow_state", "commit", metadata={
@@ -1153,12 +1163,16 @@ class AsyncFlowSession(AsyncSession):
                 record_debug("flow_state", "conflict", status="failed", metadata={
                     "wf": wf_id, "run_id": run_id, "code": error.code,
                     "flow_name": self._flow_name(), "scope_key": self._scope_key})
-            await self._notify_failure(wf_id, str(error), getattr(event, "source_event", None))
+            await self._notify_failure(
+                wf_id, str(error), getattr(event, "source_event", None), run_id=run_id)
         finally:
             try:
                 await asyncio.to_thread(
                     self._flow_store.finish_run_token, self._scope_key, run_id)
             except Exception as error:
+                # 持久化删除失败时不能放行尚未进入事务的提交线程。
+                # 已持锁的提交会先完成, finish 才可能在等待写锁时失败。
+                self._invalidated_run_ids.add(run_id)
                 logger.warning(f"[流程会话] 作废运行代际失败 run={run_id}: {error}")
             if tile:
                 # 本次批次结束: 位置未推进时 inflight 回落到 committed (允许重试);
@@ -1269,6 +1283,12 @@ class AsyncFlowSession(AsyncSession):
             return tuple(self._to_flow_message(m) for m in rows)
         except Exception as error:
             logger.warning(f"[流程会话] source 窗口读取档案失败: {error}")
+            record_debug("flow_source", "read_failed", status="failed", metadata={
+                "flow_name": self._flow_name(), "scope_key": self._scope_key,
+                "source_node": str(query.get("source_node") or ""),
+                "latest_n": query.get("latest_n") or 0,
+                "error": str(error)[:500],
+            })
             return ()
 
     async def _compose_input(self, wf_id: str, pulled: list[Any], event: Any) -> str:
@@ -1400,7 +1420,7 @@ class AsyncFlowSession(AsyncSession):
 
     async def _run_token_active(self, run_id: str) -> bool:
         """发送边界 fail closed: 无法确认代际有效时不开始新的网络 I/O"""
-        if self._flow_store is None:
+        if self._flow_store is None or run_id in self._invalidated_run_ids:
             return False
         try:
             return await asyncio.to_thread(
@@ -1536,7 +1556,9 @@ class AsyncFlowSession(AsyncSession):
             time=float(item.get("message_time") or 0.0),
         )
 
-    async def _notify_failure(self, wf_id: str, reason: str, source_event: Any = None) -> None:
+    async def _notify_failure(
+        self, wf_id: str, reason: str, source_event: Any = None, *, run_id: str = "",
+    ) -> None:
         """
         按运行时契约 10.1: 同一 WF 连续失败只告知一次, 成功后复位;
         前台失败回复到来源消息, 后台走发送通道; 跟随 error_feedback 开关
@@ -1545,6 +1567,7 @@ class AsyncFlowSession(AsyncSession):
         - wf_id: 失败的 WF 节点 id
         - reason: 简短失败原因
         - source_event: 本次运行的来源消息; None 表示后台运行, 不再读取已重置的上下文
+        - run_id: 失败运行的代际; 后台失败告知也遵守同一代际边界
         """
         if self._failure_notified.get(wf_id):
             return
@@ -1559,7 +1582,7 @@ class AsyncFlowSession(AsyncSession):
             if source_event is not None:
                 await source_event.send(MessageChain.from_text(text), purpose="error_feedback")
             else:
-                await self._send_scheduled_scope(self._bound_scope, text)
+                await self._send_scheduled_scope(self._bound_scope, text, run_id=run_id)
         except Exception as error:
             logger.warning(f"[流程会话] 失败告知发送失败: {error}")
 

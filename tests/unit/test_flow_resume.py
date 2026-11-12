@@ -395,8 +395,10 @@ async def test_new_drain_deadline_cancels_old_workflow_then_drops(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_new_drain_timeout_invalidates_commit_thread_before_drop(tmp_path, monkeypatch):
-    """提交线程已启动但未进入事务时, drain 作废运行后 drop, 线程恢复也不能写状态。"""
+@pytest.mark.parametrize("finish_fails", [False, True])
+async def test_new_drain_timeout_invalidates_commit_thread_before_drop(
+        tmp_path, monkeypatch, finish_fails):
+    """提交线程未进入事务时, 即使持久化作废失败, 恢复后也不能写状态。"""
     import threading
     from satrap.edictum.flow import session as session_module
 
@@ -432,6 +434,10 @@ async def test_new_drain_timeout_invalidates_commit_thread_before_drop(tmp_path,
             commit_finished.set()
 
     monkeypatch.setattr(FlowStore, "commit_states_by_scope_key", blocked_commit)
+    if finish_fails:
+        def failed_finish(self, *args, **kwargs):
+            raise RuntimeError("token store unavailable")
+        monkeypatch.setattr(FlowStore, "finish_run_token", failed_finish)
     try:
         event = make_event(adapter, scope, "new", 5)
         archive_event(store, scope, event)
@@ -470,6 +476,139 @@ async def test_invalidated_run_does_not_start_scheduled_send(tmp_path):
         assert receipt.status == "failed" and receipt.reason == "run_invalidated"
         assert adapter.scheduled == [] and adapter.sent == []
     finally:
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_invalidated_flow_reply_does_not_start_scheduled_send(tmp_path):
+    """flow_reply 的无来源消息路径也携带运行代际，作废后不得开始发送。"""
+    from satrap.core.call_context import current_flow_run
+    from satrap.edictum.flow.session import current_flow_event
+
+    db = database(tmp_path / "single.db")
+    scope = MessageScope("a", "s", "group", "c")
+    store = _archive(db, scope, 1)
+    adapter = FlowAdapter(store)
+    session = AsyncFlowSession("reply-generation", MockLLM(), flow=_flow_definition(),
+                               db_path=str(db), message_store=store, flow_name="f1")
+    run_token = event_token = None
+    try:
+        event = make_event(adapter, scope, "历史", 2)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        run_id = "cancelled-flow-reply"
+        await asyncio.to_thread(
+            session._flow_store.begin_run_token, scope.key, "w1", run_id)
+        await asyncio.to_thread(session._flow_store.finish_run_token, scope.key, run_id)
+        run_token = current_flow_run.set(("w1", "event", run_id))
+        event_token = current_flow_event.set(None)
+        assert not await session._reply_send("不得发送", False)
+        assert adapter.scheduled == [] and adapter.sent == []
+    finally:
+        if event_token is not None:
+            current_flow_event.reset(event_token)
+        if run_token is not None:
+            current_flow_run.reset(run_token)
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_session_startup_clears_stale_run_tokens(tmp_path):
+    """新会话初始化时清理本流程残留令牌，不影响同 scope 的其他流程。"""
+    db = database(tmp_path / "single.db")
+    scope = MessageScope("a", "s", "group", "c")
+    store = _archive(db, scope, 1)
+    adapter = FlowAdapter(store)
+    current = FlowStore(db, scope.adapter_id, "f1")
+    other = FlowStore(db, scope.adapter_id, "f2")
+    await asyncio.to_thread(current.begin_run_token, scope.key, "w1", "stale-run")
+    await asyncio.to_thread(other.begin_run_token, scope.key, "w1", "other-flow-run")
+    session = AsyncFlowSession("restart", MockLLM(), flow=_flow_definition(),
+                               db_path=str(db), message_store=store, flow_name="f1")
+    try:
+        event = make_event(adapter, scope, "重启", 2)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        assert not await asyncio.to_thread(current.run_token_active, scope.key, "stale-run")
+        assert await asyncio.to_thread(other.run_token_active, scope.key, "other-flow-run")
+    finally:
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_commit_holding_write_lock_finishes_before_drain_drop(tmp_path, monkeypatch):
+    """提交已持锁进入事务时取消 drain，提交先完成，drop 后状态不再变化。"""
+    import threading
+    from satrap.edictum.flow import session as session_module
+
+    monkeypatch.setattr(session_module, "NEW_DRAIN_TIMEOUT_SECONDS", 2.0)
+    db = database(tmp_path / "single.db")
+    scope = MessageScope("a", "s", "group", "c")
+    store = _archive(db, scope, 4)
+    adapter = FlowAdapter(store)
+    fs = FlowStore(db, scope.adapter_id, "f1")
+    with sqlite3.connect(db) as connection:
+        connection.execute("BEGIN")
+        fs.commit_position(connection, scope.key, "t1", "w1", 2)
+        connection.execute("COMMIT")
+    flow = _flow_with_state_and_threshold()
+    flow["nodes"][1]["config"]["on_new"] = "drain"
+    llm = MockLLM(lambda messages, tools, count: (
+        response("", [tool_call("snapshot_write", {
+            "state_id": "s1", "content": "已持锁提交的状态"})])
+        if count == 1 else response("done")))
+    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(db),
+                               message_store=store, flow_name="f1", new_from="s1")
+    session.error_feedback = False
+    lock_held = threading.Event()
+    finish_entered = threading.Event()
+    allow_commit = threading.Event()
+    commit_finished = threading.Event()
+    original_connect = FlowStore._connect
+    original_commit = FlowStore.commit_states_by_scope_key
+    original_finish = FlowStore.finish_run_token
+
+    def traced_connect(self):
+        connection = original_connect(self)
+
+        def trace(statement):
+            if "SELECT 1 FROM flow_run_tokens" in statement:
+                lock_held.set()
+                assert allow_commit.wait(5)
+
+        connection.set_trace_callback(trace)
+        return connection
+
+    def tracked_commit(self, *args, **kwargs):
+        try:
+            return original_commit(self, *args, **kwargs)
+        finally:
+            commit_finished.set()
+
+    def tracked_finish(self, *args, **kwargs):
+        finish_entered.set()
+        return original_finish(self, *args, **kwargs)
+
+    monkeypatch.setattr(FlowStore, "_connect", traced_connect)
+    monkeypatch.setattr(FlowStore, "commit_states_by_scope_key", tracked_commit)
+    monkeypatch.setattr(FlowStore, "finish_run_token", tracked_finish)
+    try:
+        event = make_event(adapter, scope, "new", 5)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        await wait_until(lock_held.is_set)
+        await wait_until(finish_entered.is_set)
+        assert not session._new_done
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 2
+        allow_commit.set()
+        await wait_until(lambda: session._new_done)
+        assert commit_finished.is_set()
+        assert session._flow_store.state_by_scope_key(scope.key, "s1")["version"] == 1
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 5
+        await asyncio.sleep(0.05)
+        assert session._flow_store.state_by_scope_key(scope.key, "s1")["version"] == 1
+    finally:
+        allow_commit.set()
         await session.close_flow_nodes()
 
 
