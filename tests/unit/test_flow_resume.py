@@ -342,7 +342,6 @@ async def test_new_drain_deadline_cancels_old_workflow_then_drops(tmp_path, monk
     from satrap.edictum.flow import session as session_module
 
     assert session_module.NEW_DRAIN_TIMEOUT_SECONDS == 120.0
-    monkeypatch.setattr(session_module, "NEW_DRAIN_TIMEOUT_SECONDS", 0.05)
     db = database(tmp_path / "single.db")
     scope = MessageScope("a", "s", "group", "c")
     store = _archive(db, scope, 4)
@@ -363,6 +362,17 @@ async def test_new_drain_deadline_cancels_old_workflow_then_drops(tmp_path, monk
         return response("", [tool_call("snapshot_write", {
             "state_id": "s1", "content": "不允许晚提交"})])
 
+    original_wait_for = session_module.asyncio.wait_for
+
+    async def drain_wait_for(awaitable, timeout):
+        # drain 的 remaining 在模型调用前计算; 等模型确实阻塞后再缩短本次等待,
+        # 不让代际登记和 WF 准备耗时抢先耗尽测试的 drain 窗口。
+        if timeout is not None and timeout > 60:
+            await started.wait()
+            timeout = 0.05
+        return await original_wait_for(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(session_module.asyncio, "wait_for", drain_wait_for)
     llm = MockLLM(slow)
     session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(db),
                                message_store=store, flow_name="f1", new_from="s1")
