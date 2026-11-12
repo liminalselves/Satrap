@@ -11,7 +11,7 @@ import sqlite3
 from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 
 
-PLATFORM_SCHEMA_VERSION = 13
+PLATFORM_SCHEMA_VERSION = 14
 
 _OVERRIDE_TABLE = SESSION_OVERRIDE_TABLE
 _GROUP_TABLES = frozenset({
@@ -53,7 +53,8 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     required = (({_OVERRIDE_TABLE} if version >= 1 else set()) | (_GROUP_TABLES if version >= 2 else set())
                 | (_MESSAGE_TABLES if version >= 4 else set())
                 | ({"platform_message_policy"} if version >= 5 else set())
-                | (_SUMMARY_TABLES if version >= 6 else set()))
+                | (_SUMMARY_TABLES if version >= 6 else set())
+                | ({"flow_run_tokens"} if version >= 14 else set()))
     required |= {"group_chat_assets"} if version >= 7 else set()
     required |= {"friend_actions", "friend_policies"} if version >= 8 else set()
     required |= {"memories", "memory_refs", "memory_proposals", "memory_operations", "memory_audit"} if version >= 9 else set()
@@ -330,3 +331,16 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
             "created_at REAL NOT NULL, updated_at REAL NOT NULL)"
         )
         connection.execute("PRAGMA user_version = 13")
+
+    if version < 14:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS flow_run_tokens ("
+            "scope_key TEXT NOT NULL, flow_name TEXT NOT NULL, run_id TEXT NOT NULL, "
+            "wf_id TEXT NOT NULL, created_at REAL NOT NULL, "
+            "PRIMARY KEY(scope_key, flow_name, run_id))"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_flow_run_tokens_wf "
+            "ON flow_run_tokens(scope_key, flow_name, wf_id)"
+        )
+        connection.execute("PRAGMA user_version = 14")

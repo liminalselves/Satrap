@@ -10,7 +10,7 @@ from __future__ import annotations
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
 from satrap.core.log.debug.hooks import record_debug
 from satrap.edictum.flow.definition import FlowDefinition, FlowNodeInstance
-from satrap.edictum.flow.registry import FlowNodeType
+from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES, FlowNodeType
 from satrap.edictum.flow.types import ContextBlock, FlowMessage, StateView
 
 import asyncio
@@ -96,6 +96,25 @@ class TransformEvaluator:
         node = self.definition.nodes.get(node_id)
         return dict(node.config) if node is not None else {}
 
+    def _direct_source_query(self, node: FlowNodeInstance) -> dict[str, Any]:
+        """直连视图只多读一条用于识别截断, 不把整个保留期载入内存。"""
+        limit = int(self._config(node.id).get("max_messages") or DEFAULT_SOURCE_MAX_MESSAGES)
+        return {"after": 0, "pending_limit": 0, "latest_n": limit + 1,
+                "truncate_to": limit, "source_node": node.id}
+
+    def _truncate_direct_messages(
+        self, node: FlowNodeInstance, messages: tuple[FlowMessage, ...], query: dict[str, Any],
+    ) -> tuple[FlowMessage, ...]:
+        """最终输出再次执行硬上限, 兼容不接收查询参数的旧 source resolver。"""
+        limit = int(query.get("truncate_to") or 0)
+        if limit <= 0 or len(messages) <= limit:
+            return messages
+        self._diag("flow_source", "truncated", metadata={
+            "node": node.id, "node_type": node.type, "max_messages": limit,
+            "read_messages": len(messages), "dropped_messages": len(messages) - limit,
+        })
+        return tuple(messages[-limit:])
+
     def forget(self, event_id: str) -> None:
         """事件相关的共享求值全部结束后清掉缓存, 避免跨事件累积"""
         for key in [key for key, cell in self._cells.items()
@@ -137,17 +156,19 @@ class TransformEvaluator:
             value = self._resolve_state(node_id)
             return await value if inspect.isawaitable(value) else value
         if node.type == "source":
-            # source 由宿主直接供档案视图, 不走求值缓存。仅 assemble 明确声明有界需求时传范围;
-            # 直连 WF/自定义 transform 仍取完整档案, 不改变其消息视图契约。
-            if source_query is not None:
-                try:
-                    accepts_query = len(inspect.signature(self._resolve_source).parameters) > 0
-                except (TypeError, ValueError):
-                    accepts_query = True
-                value = self._resolve_source(source_query) if accepts_query else self._resolve_source()
-            else:
-                value = self._resolve_source()
-            return await value if inspect.isawaitable(value) else value
+            # source 由宿主直接供档案视图, 不走求值缓存。assemble 传自己的覆盖窗口;
+            # 直连 WF/自定义 transform 使用节点 max_messages, 多读一条用于诊断截断。
+            bounded = source_query is None
+            if bounded:
+                source_query = self._direct_source_query(node)
+            try:
+                accepts_query = len(inspect.signature(self._resolve_source).parameters) > 0
+            except (TypeError, ValueError):
+                accepts_query = True
+            value = self._resolve_source(source_query) if accepts_query else self._resolve_source()
+            messages = await value if inspect.isawaitable(value) else value
+            result = tuple(messages or ())
+            return self._truncate_direct_messages(node, result, source_query) if bounded else result
         if node.type == "bucket" and source_query is not None:
             # 不同 assemble 的覆盖位置/窗口可能不同, 有界桶查询不能复用另一个请求的 cell。
             return await self._eval_bucket(node, run_id, event, source_query)
@@ -274,11 +295,14 @@ class TransformEvaluator:
     ) -> tuple[FlowMessage, ...]:
         """桶: 档案的只读视图, include_outbound 决定是否含机器人发言"""
         include_outbound = bool(self._config(node.id).get("include_outbound", True))
-        if source_query is not None:
-            source_query = {**source_query, "include_outbound": include_outbound}
+        bounded = source_query is None
+        if bounded:
+            source_query = self._direct_source_query(node)
+        source_query = {**source_query, "include_outbound": include_outbound}
         source_messages = await self._pull_input(
             node, "in", run_id, event, source_query=source_query) or ()
-        return tuple(m for m in source_messages if include_outbound or not m.is_bot)
+        messages = tuple(m for m in source_messages if include_outbound or not m.is_bot)
+        return self._truncate_direct_messages(node, messages, source_query) if bounded else messages
 
     async def _eval_assemble(self, node: FlowNodeInstance, run_id: str, event: Any) -> tuple[ContextBlock, ...]:
         """拼装: 快照覆盖后 + 最新 n 条 + 去重"""

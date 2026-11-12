@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from satrap.edictum.flow.definition import FlowDefinition, FlowEdge, validate_node_config
 from satrap.edictum.flow.definition import resolve_node_config as _resolve_node_config
-from satrap.edictum.flow.registry import FlowNodeRegistry, FlowNodeType
+from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES, FlowNodeRegistry, FlowNodeType
 from satrap.edictum.flow.types import PortType
 from satrap.edictum.plugin_catalog import PluginCatalogEntry
 
@@ -787,6 +787,28 @@ def validate(
             add(Issue(code="flow_coverage_no_snapshot", level="warning", category="配置",
                       node=asm.id, field="after_coverage",
                       message=f"{name(asm.id)} 勾选了\"快照未覆盖的消息\", 但没有连接快照, 会取到全部消息"))
+    # source/bucket 直连 WF 或自定义 transform 时必须有消息硬上限; 未显式配置时
+    # 运行使用默认值, 但编辑器明确提示该连接受默认窗口约束。
+    warned_source_limits: set[str] = set()
+    for edge in definition.edges:
+        source = nodes.get(edge.source)
+        target = nodes.get(edge.target)
+        if source is None or target is None or source.type not in {"source", "bucket"}:
+            continue
+        target_type = get_type(target.type)
+        direct_consumer = (
+            target.id in wfs and edge.target_port == "input"
+            or target_type is not None and target_type.role == "transform"
+            and target.type not in {"assemble", "bucket"}
+        )
+        if not direct_consumer or source.id in warned_source_limits:
+            continue
+        if "max_messages" not in source.config:
+            warned_source_limits.add(source.id)
+            add(Issue(code="flow_source_default_limit", level="warning", category="配置",
+                      node=source.id, edge=_edge_key(edge), field="max_messages",
+                      message=f"{name(source.id)} 直连输入未显式设置 max_messages, "
+                              f"运行时使用默认上限 {DEFAULT_SOURCE_MAX_MESSAGES} 条并截断较旧消息"))
     for o in of_type("output"):
         v = cfg(o.id)
         send_mode = str(v.get("send_mode") or "flow_reply")

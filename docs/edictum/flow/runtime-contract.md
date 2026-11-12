@@ -138,7 +138,7 @@ issue #4 已实现的行为约定 (P0–P3 完成于 issue-4 分支)。描述宿
 - WF 运行成功, 并且它要写的状态槽都提交成功后, 才把这个 WF 的已提交位置推进到批次末尾。状态槽提交和位置推进在同一个事务里完成
 - WF 失败: 它的位置不动, 下次满足阈值时只重试它; 其他已成功的 WF 不会因此重跑
 - 磁贴的展示游标 (编辑器和运行状态接口里显示的) 取各 WF 已提交位置的最小值, 只用于展示和判断积压
-- 磁贴新增驱动的 WF (用户改了流程) 从当前桶末尾开始, 不回放历史; 去掉的 WF 删除它的位置记录
+- 首次部署、新 scope 和磁贴新增驱动的 WF 都从当前桶末尾 (`MAX(seq)`) 开始, 不回放历史; 触发初始化的那条消息已经入档, 也属于历史。去掉的 WF 删除它的位置记录
 
 执行语义:
 
@@ -370,7 +370,7 @@ for v in (记录的版本 + 1) .. 当前版本:
 | 模型调用计数 | 丢弃 (第 5.4 节) |
 | 节点实例 | 重新创建, 调用 `setup` |
 
-`/new` 不是重启: 每个 WF 的对话历史清空, 档案起点 (`history_started_at`) 更新; 状态槽和阈值位置按各自的 `on_new` 配置处理 (状态槽 `keep` / `clear`, 默认 `keep`; 阈值磁贴 `drop` / `drain`, 默认 `drop`)。`drain` 在新会话接管时先按已提交位置把每个落后 WF 的积压批次跑完 (受 `max_batch` 限制, 等待上限 120 秒, 超时或位置不推进的按 `drop` 结算并写诊断), 因为档案起点更新后起点之前的消息对桶和阈值不可见。消息 `observe` 只暂存新事件并启动独立结算任务, 不内联等待这 120 秒; 调度器串行观察队列和会话内暂存均最多 256 条, 溢出时最旧事件按 `drop` 结算、清理临时文件并写 `flow_new.queue_drop`; 结算成功后按到达顺序回放, 单条回放异常时保留该事件供下次重试。`drain` 仍经引擎的 busy/queue/merge/drop 调度, 不直接并发运行 WF; drain 超时先取消并收殓旧 WF 及其排队事件, 再推进 drop 位置, 旧任务不得晚提交或晚发送。
+`/new` 不是重启: 每个 WF 的对话历史清空, 档案起点 (`history_started_at`) 更新; 状态槽和阈值位置按各自的 `on_new` 配置处理 (状态槽 `keep` / `clear`, 默认 `keep`; 阈值磁贴 `drop` / `drain`, 默认 `drop`)。`drain` 在新会话接管时先按已提交位置把每个落后 WF 的积压批次跑完 (受 `max_batch` 限制, 等待上限 120 秒, 超时或位置不推进的按 `drop` 结算并写诊断), 因为档案起点更新后起点之前的消息对桶和阈值不可见。消息 `observe` 只暂存新事件并启动独立结算任务, 不内联等待这 120 秒; 调度器前置观察队列最多 256 条; 经调度器入口时串行任务会等待 `/new` 结算, 因而会话内暂存实际最多 1 条, 直接并发调用 `observe` 时会话内暂存上限为 256 条。溢出时最旧事件按 `drop` 结算、清理临时文件并写 `flow_new.queue_drop`; 结算成功后按到达顺序回放, 单条回放异常时保留该事件供下次重试。`drain` 仍经引擎的 busy/queue/merge/drop 调度, 不直接并发运行 WF; drain 超时先取消并收殓旧 WF 及其排队事件, 运行 finally 作废持久化代际后再推进 drop 位置; 状态与位置提交在同一事务里校验代际, 已取消运行的 `to_thread` 工作线程即使随后恢复也不能写入。发送前及每个后台分段网络 I/O 前也检查代际, 已作废运行不得开始新发送; 已经进入平台发送或 `asyncio.shield` 保护的发送可能完成一次。
 
 ### 10.1 WF 运行失败的处理
 
@@ -408,9 +408,10 @@ WF 内部的模型调用和工具调用沿用现有的 `execution_run` 等类别
 
 - 入站消息仍由平台先入档再交给调度器; 已确认的出站回显和主动发送快照先 `await` 真实档案提交 (SQLite 经 `asyncio.to_thread`), 提交成功且为新记录后才异步通知 flow 观察者。通知队列满不会丢非 flow 档案, 发送返回时无需 drain 即可按消息 id 读取、去重和恢复
 - flow 消息在稳定路由锁内只复核映射并投递到会话自有的串行观察任务, 锁内不执行初始化、阈值检查或 WF; 映射代际复核与消息顺序保持有效
-- source 直连 WF 或自定义 transform 时保留完整档案视图; 仅 source→bucket→assemble (或 source 直连 assemble) 按下游需要查询: 最新 `max_pending` 条未覆盖消息与 `latest_n`, 在同一事务内按 seq 去重, 不翻页读取整个保留期
-- 运行状态异步读取 SQLite; 诊断关闭、诊断库无该流程事件或读取失败时回落进程内摘要, `events_source=memory_fallback`, 有持久化事件时才是 `debug_store`
-- 同一适配器可承载多个流程会话; 出站观察按冻结 `MessageScope.key` 精确分发, 不修改其他会话的绑定, 会话关闭时注销观察者
+- source/bucket 直连 WF 或自定义 transform 时按节点 `max_messages` 只读取最新 `上限+1` 条, 最终只保留最新上限条并写 `flow_source.truncated` 诊断; 默认上限 200 条, 静态检查对未显式设置上限的直连连接给 warning。source→bucket→assemble (或 source 直连 assemble) 使用 assemble 自己的窗口: 最新 `max_pending` 条未覆盖消息与 `latest_n`, 在同一事务内按 seq 去重; 所有路径都不翻页读取整个保留期
+- 运行状态异步读取 SQLite; 诊断开关只控制新采集, 关闭后仍可展示库里已有的 `debug_store` 事件。诊断库无该流程事件或读取失败时回落进程内摘要并标 `events_source=memory_fallback`; 两种来源统一为 `event_id/request_id/sequence/phase/status/recorded_at/metadata` 字段结构
+- 同一适配器可承载多个流程会话; 出站观察按冻结 `MessageScope.key` 精确分发, 不修改其他会话的绑定。出站通知各自独立执行, 与入站串行观察之间不保证顺序, 阈值由 `last_batch_to` 去重; 会话关闭时注销观察者
+- 会话 evict/reload/close 后拒绝创建新观察任务。旧会话尚未处理的入站事件会清理临时文件并写 `flow_observation.queue_drop` 诊断, 不转交新会话; 阈值能按档案位置补回, 只存在于平台事件中的唤醒判定不跨会话实例保留
 - `wake.use_platform_policy: true` 时使用平台唤醒判定; 私聊视为始终满足唤醒
 - `wake.use_platform_policy: false` 时只使用流程自己的 `@`、唤醒词、`new_messages` 和冷却规则, 不继承平台判定; 任一自定义规则命中都可触发, 命中后 `new_messages` 计数清零
 - `@` 只根据平台事件的结构化提及组件和归档的 `mentions` 判断, 不扫描文本里是否出现 `@`; 私聊消息的 `mentions_bot` 恒为真

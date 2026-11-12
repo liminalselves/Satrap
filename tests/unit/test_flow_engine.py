@@ -314,6 +314,61 @@ class TestTriggerEngineTargets:
     """fire(targets=...) 只触发指定 WF (阈值磁贴的 per-WF 分发)"""
 
     @pytest.mark.asyncio
+    async def test_graph_candidates_drive_default_budget_strictest_target(self):
+        """真实触发图推导候选 WF, 默认目标预算按最严格候选阻断。"""
+        from satrap.edictum.flow.budget import FlowCallBudget
+        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.expend.plugins.llm_budget.flow_nodes import within
+
+        registry = FlowNodeRegistry()
+        registry.register_plugin_nodes("llm_budget", [FlowNodeType(
+            type="llm_budget.within", version=1, label="budget", description="",
+            role="condition", outputs=(PortSpec(name="out", types=("condition",)),),
+            plugin="llm_budget")])
+        definition, _, _ = migrate_flow_definition(parse_flow_definition({
+            "version": 3,
+            "nodes": [
+                {"id": "t1", "type": "wake", "title": "t", "config": {}},
+                {"id": "c1", "type": "llm_budget.within", "title": "budget", "config": {
+                    "scope": "target", "count": "wf", "window_minutes": 60, "max_calls": 2}},
+                {"id": "g1", "type": "and", "title": "gate", "config": {}},
+                {"id": "w1", "type": "react_workflow", "title": "w1", "config": {}},
+                {"id": "w2", "type": "react_workflow", "title": "w2", "config": {}},
+                {"id": "unreachable", "type": "react_workflow", "title": "other", "config": {}},
+            ],
+            "edges": [
+                {"from": "t1.event", "to": "g1.a"},
+                {"from": "c1.out", "to": "g1.b"},
+                {"from": "g1.out", "to": "w1.trigger"},
+                {"from": "g1.out", "to": "w2.trigger"},
+            ],
+        }), registry)
+        node_types = {node.id: registry.get(node.type) for node in definition.nodes.values()}
+        budget = FlowCallBudget(max_calls=0)
+        for wf, count in (("w1", 1), ("w2", 2), ("unreachable", 3)):
+            for index in range(count):
+                budget.check_and_spend(source="wf", node_id=wf, event_id=f"{wf}-{index}", run_id="")
+        queried = []
+
+        def calls_used(**kwargs):
+            queried.append(kwargs["target"])
+            return budget.calls(**kwargs)
+
+        engine = TriggerEngine(definition, node_types, calls_used=calls_used,
+                               resolve_condition=lambda node: within)
+        fired = []
+        engine.on_trigger(lambda wf, event: fired.append(wf))
+        await engine.fire("t1", _event())
+        assert queried == ["w1", "w2"]
+        assert fired == []  # w1 尚有余量, w2 已达上限
+
+        queried.clear()
+        await engine.fire("t1", FlowEvent(event_id="e2", kind="message", tile="t1", why="test"),
+                          targets={"w1"})
+        assert queried == ["w1"]
+        assert fired == ["w1"]
+
+    @pytest.mark.asyncio
     async def test_targets_filter_limits_receivers(self):
         nodes = [
             {"id": "src", "type": "source", "title": "s", "config": {}},

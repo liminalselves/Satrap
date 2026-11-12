@@ -60,10 +60,10 @@ class TestSourceAndBucket:
         assert "x3" in joined and "x2" in joined
 
     @pytest.mark.asyncio
-    async def test_only_assemble_source_path_uses_bounded_query(self):
-        """source 直连 WF 保留全量; source→assemble 才传明确的有界窗口"""
+    async def test_direct_source_is_capped_and_assemble_uses_coverage_query(self):
+        """source 直连 WF 按 max_messages 截断; assemble 使用自己的覆盖窗口"""
         nodes = [
-            {"id": "src", "type": "source", "title": "s", "config": {}},
+            {"id": "src", "type": "source", "title": "s", "config": {"max_messages": 2}},
             {"id": "asm", "type": "assemble", "title": "a",
              "config": {"latest_n": 1, "after_coverage": True, "max_pending": 2}},
             {"id": "w1", "type": "react_workflow", "title": "w1", "config": {}},
@@ -81,11 +81,41 @@ class TestSourceAndBucket:
             calls.append(args)
             return (_msg(1), _msg(2), _msg(3))
 
-        ev = TransformEvaluator(definition, node_types, resolve_source=source)
-        assert len(await ev.pull("w1", "src", "r1", _event())) == 3
+        diagnostics = []
+        ev = TransformEvaluator(definition, node_types, resolve_source=source,
+                                diagnostic=lambda *args, **kwargs: diagnostics.append((args, kwargs)))
+        direct = await ev.pull("w1", "src", "r1", _event())
+        assert [message.position for message in direct] == [2, 3]
         await ev.pull("w2", "asm", "r2", _event())
-        assert calls[0] == ()
+        assert calls[0] == ({"after": 0, "pending_limit": 0, "latest_n": 3,
+                             "truncate_to": 2, "source_node": "src"},)
         assert calls[1] == ({"after": 0, "pending_limit": 2, "latest_n": 1},)
+        assert diagnostics[0][0][:2] == ("flow_source", "truncated")
+        assert diagnostics[0][1]["metadata"]["dropped_messages"] == 1
+
+    @pytest.mark.asyncio
+    async def test_bucket_direct_workflow_caps_messages_and_diagnoses(self):
+        """bucket 直连 WF 也限量读取并最终截断, 不依赖 resolver 执行窗口。"""
+        nodes = [
+            {"id": "src", "type": "source", "title": "s", "config": {}},
+            {"id": "b1", "type": "bucket", "title": "b", "config": {"max_messages": 2}},
+            {"id": "w1", "type": "react_workflow", "title": "w", "config": {}},
+        ]
+        edges = [{"from": "src.out", "to": "b1.in"}, {"from": "b1.out", "to": "w1.input"}]
+        definition, node_types = _def(nodes, edges)
+        calls, diagnostics = [], []
+
+        def source(*args):
+            calls.append(args)
+            return tuple(_msg(index) for index in range(1, 6))
+
+        ev = TransformEvaluator(definition, node_types, resolve_source=source,
+                                diagnostic=lambda *args, **kwargs: diagnostics.append((args, kwargs)))
+        out = await ev.pull("w1", "b1", "r1", _event())
+        assert [message.position for message in out] == [4, 5]
+        assert calls[0][0]["latest_n"] == 3 and calls[0][0]["truncate_to"] == 2
+        truncated = next(item for item in diagnostics if item[0][:1] == ("flow_source",))
+        assert truncated[0][:2] == ("flow_source", "truncated")
 
     @pytest.mark.asyncio
     async def test_bucket_filters_outbound(self):

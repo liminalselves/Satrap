@@ -417,3 +417,48 @@ async def test_background_threshold_scheduled_send_is_recorded(tmp_path, mode):
         assert segments[0]["message_ids"] == ["back-1"]
     finally:
         await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_first_deployment_threshold_covers_only_messages_after_initial_boundary(tmp_path):
+    """单库且不预置位置: 首条建立末尾边界, 第二条提交时 covers_to 固定为 2。"""
+    db = database(tmp_path / "flow.db")
+    store = PlatformMessageStore(db, SCOPE.adapter_id)
+    adapter = FlowAdapter(store)
+    flow = {
+        "version": 3,
+        "nodes": [
+            _node("source", "source", "消息到达"), _node("bucket", "bucket", "桶"),
+            _node("th", "threshold", "阈值", messages=1, chars=0, idle_seconds=0,
+                  max_batch=200, on_new="drop"),
+            _node("agent", "react_workflow", "Agent", model_name="agent", max_steps=4,
+                  plugins="flow_snapshot", timeout_seconds=10),
+            _node("snapshot", "state", "快照"),
+        ],
+        "edges": [_edge("source.out", "bucket.in"), _edge("bucket.out", "th.messages"),
+                  _edge("th.event", "agent.trigger"), _edge("agent.text", "snapshot.write")],
+    }
+
+    def script(messages, tools, count):
+        if count == 1:
+            return response("", [tool_call("snapshot_write", {
+                "state_id": "snapshot", "content": "只覆盖第二条"})])
+        return response("done")
+
+    llm = MockLLM(script)
+    session = AsyncFlowSession("first-deployment", llm, flow=flow, db_path=str(db),
+                               message_store=store, flow_name="first-deployment")
+    try:
+        first = make_event(adapter, SCOPE, "首次部署历史", 1)
+        archive_event(store, SCOPE, first)
+        await session.observe(first)
+        assert llm.calls == []
+        second = make_event(adapter, SCOPE, "边界后的消息", 2)
+        archive_event(store, SCOPE, second)
+        await session.observe(second)
+        await wait_until(lambda: not session._engine.running_workflows())
+        state = session._flow_store.state_by_scope_key(SCOPE.key, "snapshot")
+        assert state["version"] == 1 and state["covers_to"] == 2
+        assert state["content"] == "只覆盖第二条"
+    finally:
+        await session.close_flow_nodes()

@@ -194,7 +194,7 @@ class FlowStore:
         out: dict[str, int] = {}
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            # 首个 seq: 会话刚接管且库里已有消息时, 新位置从最旧未读起 (积压), 不是最新
+            # 首次部署、新 scope 和新增驱动一致: 从当前 MAX(seq) 末尾开始, 触发消息已是历史。
             for wf_id in wf_ids:
                 out[wf_id] = self.ensure_position(connection, self._current_scope_key, tile_id, wf_id)
             # 不再由该磁贴驱动的 WF 清掉它的位置记录 (运行时契约 3.6)
@@ -212,6 +212,35 @@ class FlowStore:
     def _current_scope_key(self) -> str:
         """会话绑定的对话键 (会话在绑档案时写入 store.scope_key)"""
         return self.scope_key
+
+    # ---------- 运行代际 ----------
+
+    def begin_run_token(self, scope_key: str, wf_id: str, run_id: str) -> None:
+        """登记一次 WF 运行的有效代际; 取消或结束都会移除令牌。"""
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO flow_run_tokens VALUES(?, ?, ?, ?, ?)",
+                (scope_key, self.flow_name, run_id, wf_id, time.time()),
+            )
+
+    def finish_run_token(self, scope_key: str, run_id: str) -> None:
+        """作废一次运行代际; 已取消运行的提交线程随后会在事务内看到令牌缺失。"""
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM flow_run_tokens WHERE scope_key=? AND flow_name=? AND run_id=?",
+                (scope_key, self.flow_name, run_id),
+            )
+
+    def run_token_active(self, scope_key: str, run_id: str) -> bool:
+        """发送前检查运行代际; 缺失、已完成或已取消的令牌均不允许开始新发送。"""
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM flow_run_tokens WHERE scope_key=? AND flow_name=? AND run_id=?",
+                (scope_key, self.flow_name, run_id),
+            ).fetchone()
+            return row is not None
 
     # ---------- 状态槽 ----------
 
@@ -295,7 +324,7 @@ class FlowStore:
 
     def commit_states(
         self, scope: MessageScope, tile_id: str, wf_id: str, seq: int,
-        commits: list[StateCommit],
+        commits: list[StateCommit], *, run_token: str = "",
     ) -> None:
         """
         状态槽 CAS 提交与阈值位置推进在同一事务
@@ -310,11 +339,12 @@ class FlowStore:
         返回:
         - 无; 任一槽 base_version 不匹配时整个事务回滚并抛 FlowConflictError
         """
-        self.commit_states_by_scope_key(scope.key, tile_id, wf_id, seq, commits)
+        self.commit_states_by_scope_key(
+            scope.key, tile_id, wf_id, seq, commits, run_token=run_token)
 
     def commit_states_by_scope_key(
         self, scope_key: str, tile_id: str, wf_id: str, seq: int,
-        commits: list[StateCommit],
+        commits: list[StateCommit], *, run_token: str = "",
     ) -> None:
         """
         按已冻结的对话键提交状态槽与位置, 供工具在拿不到 MessageScope 时使用
@@ -329,6 +359,15 @@ class FlowStore:
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                if run_token:
+                    token = connection.execute(
+                        "SELECT 1 FROM flow_run_tokens "
+                        "WHERE scope_key=? AND flow_name=? AND wf_id=? AND run_id=?",
+                        (scope_key, self.flow_name, wf_id, run_token),
+                    ).fetchone()
+                    if token is None:
+                        raise FlowConflictError(
+                            "flow_run_invalidated", f"WF {wf_id} 的运行 {run_token} 已取消或结束")
                 for commit in commits:
                     row = connection.execute(
                         "SELECT version FROM flow_states WHERE scope_key=? AND flow_name=? AND state_id=?",

@@ -820,6 +820,194 @@ class _FlowSchedulerManager(_FakeSessionManager):
             await asyncio.gather(*tasks)
 
 
+class _RealFlowSchedulerManager(_FlowSchedulerManager):
+    """路由管理保持轻量, 会话本身使用未替换 observe 的真实 AsyncFlowSession。"""
+
+    def __init__(self, session_factory: Any) -> None:
+        super().__init__()
+        self.session_factory = session_factory
+
+    async def _acquire_or_create_entry_async(self, call: Any) -> Any:
+        session = self.session_factory(call.session_id)
+        entry = SimpleNamespace(session=session)
+        self.entries[call.session_id] = entry
+        return entry
+
+
+@pytest.mark.asyncio
+async def test_flow_scheduler_real_session_observes_serially(tmp_path: Path):
+    """公开 execute 入口投递到真实会话, 两个唤醒事件按顺序运行真实 WF。"""
+    from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
+    from satrap.edictum.flow.session import AsyncFlowSession
+    from tests.support.flow_runtime import (
+        FlowAdapter, MockLLM, archive_event, database, make_event, response, wait_until,
+    )
+
+    scope = MessageScope("adapter1", "self1", "group", "chat1")
+    store = PlatformMessageStore(database(tmp_path / "flow.db"), scope.adapter_id)
+    adapter = FlowAdapter(store)
+    started, release = asyncio.Event(), asyncio.Event()
+    active, max_active = 0, 0
+
+    async def script(messages: list[Any], tools: Any, count: int):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            if count == 1:
+                started.set()
+                await release.wait()
+            return response(f"回复 {count}")
+        finally:
+            active -= 1
+
+    llm = MockLLM(script)
+    flow = {
+        "version": 3,
+        "nodes": [
+            {"id": "src", "type": "source", "title": "消息", "config": {}},
+            {"id": "bucket", "type": "bucket", "title": "桶", "config": {}},
+            {"id": "wake", "type": "wake", "title": "唤醒",
+             "config": {"use_platform_policy": False, "mention": True, "new_messages": 0, "cooldown": 0}},
+            {"id": "w1", "type": "react_workflow", "title": "WF",
+             "config": {"model_name": "test", "on_busy": "queue", "max_steps": 2}},
+            {"id": "reply", "type": "output", "title": "回复", "config": {"send_mode": "final_text"}},
+        ],
+        "edges": [
+            {"from": "src.out", "to": "bucket.in"}, {"from": "bucket.out", "to": "wake.messages"},
+            {"from": "wake.event", "to": "w1.trigger"}, {"from": "w1.text", "to": "reply.reply"},
+        ],
+    }
+
+    def factory(session_id: str) -> AsyncFlowSession:
+        return AsyncFlowSession(session_id, llm, flow=flow, db_path=str(store.database),
+                                message_store=store, flow_name="scheduler-real")
+
+    manager = _RealFlowSchedulerManager(factory)
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    first = make_event(adapter, scope, "第一", 1, mention=True)
+    second = make_event(adapter, scope, "第二", 2, mention=True)
+    cleaned = []
+    for event in (first, second):
+        event.cleanup_temporary_local_files = lambda event=event: cleaned.append(event)
+    session = None
+    try:
+        archive_event(store, scope, first)
+        await scheduler.execute(first)
+        await asyncio.wait_for(started.wait(), 2)
+        session = next(iter(manager.entries.values())).session
+        archive_event(store, scope, second)
+        await scheduler.execute(second)
+        await manager.drain_observations()
+        assert len(llm.calls) == 1
+        release.set()
+        await wait_until(lambda: len(llm.calls) == 2)
+        await wait_until(lambda: len(adapter.scheduled) == 2)
+        await wait_until(lambda: not session._engine.running_workflows())
+        assert max_active == 1
+        assert [item["text"] for item in adapter.scheduled] == ["回复 1", "回复 2"]
+        assert cleaned == [first, second]
+    finally:
+        release.set()
+        if session is not None:
+            await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_flow_scheduler_real_session_close_drops_queued_observation_with_diagnostic(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """真实 /new 结算占用串行观察时, close/evict 清理未观察事件并写诊断。"""
+    import sqlite3
+    from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
+    from satrap.edictum.flow import session as session_module
+    from satrap.edictum.flow.session import AsyncFlowSession
+    from satrap.edictum.flow.store import FlowStore
+    from tests.support.flow_runtime import (
+        FlowAdapter, MockLLM, archive_event, database, make_event, response,
+    )
+
+    scope = MessageScope("adapter1", "self1", "group", "chat1")
+    db = database(tmp_path / "flow.db")
+    store = PlatformMessageStore(db, scope.adapter_id)
+    adapter = FlowAdapter(store)
+    flow = {
+        "version": 3,
+        "nodes": [
+            {"id": "src", "type": "source", "title": "消息", "config": {}},
+            {"id": "bucket", "type": "bucket", "title": "桶", "config": {}},
+            {"id": "th", "type": "threshold", "title": "阈值",
+             "config": {"messages": 1, "max_batch": 10, "on_new": "drain"}},
+            {"id": "w1", "type": "react_workflow", "title": "WF",
+             "config": {"model_name": "test", "on_busy": "queue", "max_steps": 2,
+                        "plugins": "flow_snapshot"}},
+            {"id": "state", "type": "state", "title": "状态", "config": {}},
+        ],
+        "edges": [
+            {"from": "src.out", "to": "bucket.in"}, {"from": "bucket.out", "to": "th.messages"},
+            {"from": "th.event", "to": "w1.trigger"}, {"from": "w1.text", "to": "state.write"},
+        ],
+    }
+    fs = FlowStore(db, scope.adapter_id, "scheduler-close")
+    with sqlite3.connect(db) as connection:
+        connection.execute("BEGIN")
+        fs.commit_position(connection, scope.key, "th", "w1", 0)
+        connection.execute("COMMIT")
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(messages: list[Any], tools: Any, count: int):
+        started.set()
+        await release.wait()
+        return response("done")
+
+    llm = MockLLM(slow)
+
+    def factory(session_id: str) -> AsyncFlowSession:
+        return AsyncFlowSession(session_id, llm, flow=flow, db_path=str(db), new_from="old",
+                                message_store=store, flow_name="scheduler-close")
+
+    manager = _RealFlowSchedulerManager(factory)
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    diagnostics = []
+    original_record = session_module.record_debug
+
+    def record(category: str, phase: str, **kwargs: Any) -> None:
+        diagnostics.append((category, phase, kwargs))
+        original_record(category, phase, **kwargs)
+
+    monkeypatch.setattr(session_module, "record_debug", record)
+    first = make_event(adapter, scope, "结算", 2)
+    second = make_event(adapter, scope, "未观察", 3)
+    cleaned = []
+    for event in (first, second):
+        event.cleanup_temporary_local_files = lambda event=event: cleaned.append(event)
+    session = None
+    try:
+        old = make_event(adapter, scope, "旧消息", 1)
+        archive_event(store, scope, old)
+        archive_event(store, scope, first)
+        await scheduler.execute(first)
+        session = next(iter(manager.entries.values())).session
+        try:
+            await asyncio.wait_for(started.wait(), 3)
+        except TimeoutError:
+            assert started.is_set(), [issue.to_payload() for issue in session.issues if issue.level == "error"]
+        archive_event(store, scope, second)
+        await scheduler.execute(second)
+        assert list(session._scheduler_observations) == [second]
+        await session.close_flow_nodes()
+        assert not session._scheduler_observations
+        assert set(cleaned) == {first, second}
+        drops = [item for item in diagnostics if item[:2] == ("flow_observation", "queue_drop")]
+        assert drops and drops[-1][2]["metadata"]["dropped_messages"] == 1
+        task = session._spawn_observer_task(
+            session._observe_outbound(scope, None), name="closed-must-not-start")
+        assert task is None and not session._observer_tasks
+    finally:
+        release.set()
+        if session is not None and not session._closed:
+            await session.close_flow_nodes()
+
+
 @pytest.mark.asyncio
 async def test_flow_scheduler_observes_unwoken_scoped_and_switched_mapping(tmp_path: Path):
     """实际调度器在未唤醒时使用真实 UserManager 的群范围和更新后映射。"""

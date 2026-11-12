@@ -1024,6 +1024,12 @@ class PipelineScheduler:
 
     def _enqueue_flow_observation(self, session: Any, event: MessageEvent) -> None:
         """锁内只向目标会话投递; 会话拥有的单个任务按投递顺序观察。"""
+        if getattr(session, "_closed", False):
+            event.cleanup_temporary_local_files()
+            record_debug("flow_observation", "queue_drop", status="dropped", metadata={
+                "session": session.session_id, "reason": "session_closed", "dropped_messages": 1,
+            })
+            return
         queue = getattr(session, "_scheduler_observations", None)
         if queue is None:
             queue = deque()
@@ -1068,6 +1074,10 @@ class PipelineScheduler:
             coro = drain()
             try:
                 task = session._spawn_observer_task(coro, name=f"flow-scheduler-{session.session_id}")
+                if task is None:
+                    while queue:
+                        queue.popleft().cleanup_temporary_local_files()
+                    return
                 session._scheduler_observer_task = task
 
                 def cleanup_unstarted(done: asyncio.Task[Any]) -> None:

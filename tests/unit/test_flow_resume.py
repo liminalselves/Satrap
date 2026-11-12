@@ -94,8 +94,8 @@ class _Msg:
 @pytest.mark.asyncio
 async def test_restart_recovers_positions_states_and_retriggers_batch(tmp_path):
     """真实 observe 完成 _async_init, 重启后的落后批次运行真实 WF 并提交"""
-    db = database(tmp_path / "messages.db")
-    session_db = database(tmp_path / "session.db")
+    db = database(tmp_path / "single.db")
+    session_db = db
     scope = MessageScope("adapter1", "self1", "group", "chat1")
     store = _archive(db, scope, 5)
     adapter = FlowAdapter(store)
@@ -216,8 +216,8 @@ def test_new_settle_clear_state_and_drop_position():
 @pytest.mark.asyncio
 async def test_new_settle_keep_state_and_drain(tmp_path):
     """真实 observe 后台 drain 积压; state keep 保留旧版本, 位置由真实完成路径推进"""
-    db = database(tmp_path / "messages.db")
-    session_db = database(tmp_path / "session.db")
+    db = database(tmp_path / "single.db")
+    session_db = db
     scope = MessageScope("a", "s", "group", "c")
     store = _archive(db, scope, 4)
     adapter = FlowAdapter(store)
@@ -252,8 +252,8 @@ async def test_new_settle_keep_state_and_drain(tmp_path):
 @pytest.mark.asyncio
 async def test_new_drain_failure_falls_back_to_drop(tmp_path):
     """真实 WF 失败位置不推进, drain 随后按 drop 结算到最新"""
-    db = database(tmp_path / "messages.db")
-    session_db = database(tmp_path / "session.db")
+    db = database(tmp_path / "single.db")
+    session_db = db
     scope = MessageScope("a", "s", "group", "c")
     store = _archive(db, scope, 4)
     adapter = FlowAdapter(store)
@@ -282,8 +282,8 @@ async def test_new_drain_failure_falls_back_to_drop(tmp_path):
 @pytest.mark.asyncio
 async def test_new_observe_nonblocking_and_replay_respects_busy(tmp_path):
     """observe 不等待 drain; 结算期间消息暂存, 回放与 drain 不并发"""
-    db = database(tmp_path / "messages.db")
-    session_db = database(tmp_path / "session.db")
+    db = database(tmp_path / "single.db")
+    session_db = db
     scope = MessageScope("a", "s", "group", "c")
     store = _archive(db, scope, 2)
     adapter = FlowAdapter(store)
@@ -391,6 +391,85 @@ async def test_new_drain_deadline_cancels_old_workflow_then_drops(tmp_path, monk
         assert len(llm.calls) == 1
     finally:
         release.set()
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_new_drain_timeout_invalidates_commit_thread_before_drop(tmp_path, monkeypatch):
+    """提交线程已启动但未进入事务时, drain 作废运行后 drop, 线程恢复也不能写状态。"""
+    import threading
+    from satrap.edictum.flow import session as session_module
+
+    monkeypatch.setattr(session_module, "NEW_DRAIN_TIMEOUT_SECONDS", 2.0)
+    db = database(tmp_path / "single.db")
+    scope = MessageScope("a", "s", "group", "c")
+    store = _archive(db, scope, 4)
+    adapter = FlowAdapter(store)
+    fs = FlowStore(db, scope.adapter_id, "f1")
+    with sqlite3.connect(db) as connection:
+        connection.execute("BEGIN")
+        fs.commit_position(connection, scope.key, "t1", "w1", 2)
+        connection.execute("COMMIT")
+    flow = _flow_with_state_and_threshold()
+    flow["nodes"][1]["config"]["on_new"] = "drain"
+    llm = MockLLM(lambda messages, tools, count: (
+        response("", [tool_call("snapshot_write", {
+            "state_id": "s1", "content": "超时运行的状态"})])
+        if count == 1 else response("done")))
+    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(db),
+                               message_store=store, flow_name="f1", new_from="s1")
+    session.error_feedback = False
+    commit_entered, allow_commit, commit_finished = (
+        threading.Event(), threading.Event(), threading.Event())
+    original_commit = FlowStore.commit_states_by_scope_key
+
+    def blocked_commit(self, *args, **kwargs):
+        commit_entered.set()
+        assert allow_commit.wait(5)
+        try:
+            return original_commit(self, *args, **kwargs)
+        finally:
+            commit_finished.set()
+
+    monkeypatch.setattr(FlowStore, "commit_states_by_scope_key", blocked_commit)
+    try:
+        event = make_event(adapter, scope, "new", 5)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        await wait_until(commit_entered.is_set)
+        await wait_until(lambda: session._new_done)
+        assert session._flow_store.positions_for_tile_by_scope_key(scope.key, "t1")["w1"] == 5
+        assert session._flow_store.state_by_scope_key(scope.key, "s1")["version"] == 0
+        allow_commit.set()
+        await wait_until(commit_finished.is_set)
+        await asyncio.sleep(0.05)
+        assert session._flow_store.state_by_scope_key(scope.key, "s1")["version"] == 0
+    finally:
+        allow_commit.set()
+        await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_invalidated_run_does_not_start_scheduled_send(tmp_path):
+    """已作废运行即使恢复到发送边界, 也不能调用适配器开始新的后台发送。"""
+    db = database(tmp_path / "single.db")
+    scope = MessageScope("a", "s", "group", "c")
+    store = _archive(db, scope, 1)
+    adapter = FlowAdapter(store)
+    session = AsyncFlowSession("send-generation", MockLLM(), flow=_flow_definition(),
+                               db_path=str(db), message_store=store, flow_name="f1")
+    try:
+        event = make_event(adapter, scope, "历史", 2)
+        archive_event(store, scope, event)
+        await session.observe(event)
+        run_id = "cancelled-run"
+        await asyncio.to_thread(
+            session._flow_store.begin_run_token, scope.key, "w1", run_id)
+        await asyncio.to_thread(session._flow_store.finish_run_token, scope.key, run_id)
+        receipt = await session._send_scheduled_scope(scope, "不得发送", run_id=run_id)
+        assert receipt.status == "failed" and receipt.reason == "run_invalidated"
+        assert adapter.scheduled == [] and adapter.sent == []
+    finally:
         await session.close_flow_nodes()
 
 

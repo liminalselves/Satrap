@@ -153,6 +153,9 @@ def _time_field(label: str, default: str) -> dict[str, Any]:
             "description": "HH:MM, 跨零点时按次日计算"}
 
 
+DEFAULT_SOURCE_MAX_MESSAGES = 200
+"""source/bucket 直连 WF 或自定义 transform 时的默认消息硬上限。"""
+
 WHEN_PORT = PortSpec(name="when", types=("condition",), multiple=True, side="left", label="启用条件")
 """transform 自动携带的左侧启用条件口, 不接线等于永远启用"""
 
@@ -181,6 +184,12 @@ def builtin_node_types() -> list[FlowNodeType]:
             type="source", version=1, label="群消息", category="数据", role="source",
             description="当前群的消息档案, 包含已确认发出的机器人消息", max_per_flow=1,
             outputs=_ports([("out", "messages", "消息")]),
+            config_schema=_fields({
+                "max_messages": {
+                    "type": "number", "label": "直连消息上限", "default": DEFAULT_SOURCE_MAX_MESSAGES,
+                    "minimum": 1, "maximum": 5000, "integer": True,
+                    "description": "直连 WF 或自定义 transform 时最多读取最新多少条; assemble 使用自己的窗口"},
+            }),
         ),
         FlowNodeType(
             type="bucket", version=2, label="桶", category="数据", role="transform",
@@ -193,6 +202,10 @@ def builtin_node_types() -> list[FlowNodeType]:
             config_schema=_fields({
                 "include_outbound": {"type": "bool", "label": "包含机器人发言", "default": True,
                                      "description": "机器人已确认发出的消息也进入桶"},
+                "max_messages": {
+                    "type": "number", "label": "直连消息上限", "default": DEFAULT_SOURCE_MAX_MESSAGES,
+                    "minimum": 1, "maximum": 5000, "integer": True,
+                    "description": "直连 WF 或自定义 transform 时最多输出最新多少条; assemble 使用自己的窗口"},
             }),
         ),
         FlowNodeType(

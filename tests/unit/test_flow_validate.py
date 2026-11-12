@@ -308,3 +308,44 @@ def test_new_drain_cleared_hint():
     ]
     issues = _validate(raw, catalog=_catalog(rag={"tools": {}}))
     assert any(i.code == "flow_new_drain_cleared" for i in issues)
+
+
+@pytest.mark.parametrize("kind", ["source", "bucket"])
+def test_direct_archive_input_warns_when_max_messages_is_not_explicit(kind):
+    """source/bucket 直连 WF 未显式配置时提示默认硬上限, 显式设置后不重复提示。"""
+    raw = {
+        "version": 3,
+        "nodes": [
+            {"id": "s", "type": kind, "title": "s", "config": {}},
+            {"id": "w", "type": "react_workflow", "title": "w",
+             "config": {"model_name": "test"}},
+        ],
+        "edges": [{"from": "s.out", "to": "w.input"}],
+    }
+    issues = _validate(raw)
+    warning = next(issue for issue in issues if issue.code == "flow_source_default_limit")
+    assert warning.level == "warning" and warning.field == "max_messages"
+    raw["nodes"][0]["config"]["max_messages"] = 50
+    issues = _validate(raw)
+    assert not any(issue.code == "flow_source_default_limit" for issue in issues)
+
+
+def test_custom_transform_archive_input_warns_when_max_messages_is_not_explicit():
+    """source 直连自定义 transform 的输入连接同样给出上限提示。"""
+    from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+    registry = FlowNodeRegistry()
+    registry.register_plugin_nodes("ghost", [FlowNodeType(
+        type="ghost.n", version=1, label="g", description="", role="transform",
+        inputs=(PortSpec(name="m", types=("messages",), required=True),),
+        outputs=(PortSpec(name="o", types=("messages",)),), plugin="ghost",
+    )])
+    raw = {
+        "version": 3,
+        "nodes": [
+            {"id": "s", "type": "source", "title": "s", "config": {}},
+            {"id": "g", "type": "ghost.n", "title": "g", "config": {}},
+        ],
+        "edges": [{"from": "s.out", "to": "g.m"}],
+    }
+    issues = _validate(raw, registry=registry, catalog=_catalog(ghost={}))
+    assert any(issue.code == "flow_source_default_limit" for issue in issues)

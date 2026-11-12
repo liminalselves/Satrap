@@ -96,6 +96,7 @@ def _wake_flow(*, on_busy="queue") -> dict[str, Any]:
 
 
 def _seed_positions(db: Path, flow_name: str, tile: str, wf_ids: Any, seq=0, scope=SCOPE) -> None:
+    # 模拟已有部署的提交位置, 使这些测试可驱动待重试/待处理批次；首次部署不应预置。
     store = FlowStore(db, scope.adapter_id, flow_name)
     connection = sqlite3.connect(db)
     with connection:
@@ -168,15 +169,14 @@ class TestRealWorkflowCommit:
     async def test_real_workflow_max_calls_per_run_blocks_second_model_call(self, tmp_path):
         """真实 _MeteredClient 在第二次模型请求前失败, 状态和位置都不提交"""
         db = database(tmp_path / "messages.db")
-        session_db = database(tmp_path / "session.db")
         store = _archive(db, 2)
         adapter = FlowAdapter(store)
-        _seed_positions(session_db, "budget", "t1", ("w1",))
+        _seed_positions(db, "budget", "t1", ("w1",))
         llm = MockLLM(response("", [tool_call("snapshot_write", {
             "state_id": "state", "content": "不应提交"})]))
         flow = _threshold_flow(snapshot=True)
         flow["nodes"][2]["config"]["max_calls_per_run"] = 1
-        session = AsyncFlowSession("budget", llm, flow=flow, db_path=str(session_db),
+        session = AsyncFlowSession("budget", llm, flow=flow, db_path=str(db),
                                    message_store=store, flow_name="budget")
         session.error_feedback = False
         try:
@@ -207,11 +207,10 @@ class TestRealWorkflowCommit:
         policy = DebugPolicyStore()
         policy.set_default(True, policy.read().revision)
         db = database(tmp_path / "messages.db")
-        session_db = database(tmp_path / "session.db")
         store = _archive(db, 2)
         adapter = FlowAdapter(store)
-        _seed_positions(session_db, "cas", "t1", ("w1",))
-        external = FlowStore(session_db, SCOPE.adapter_id, "cas")
+        _seed_positions(db, "cas", "t1", ("w1",))
+        external = FlowStore(db, SCOPE.adapter_id, "cas")
 
         def script(messages, tools, count):
             if count == 1:
@@ -223,7 +222,7 @@ class TestRealWorkflowCommit:
 
         llm = MockLLM(script)
         session = AsyncFlowSession("cas", llm, flow=_threshold_flow(snapshot=True),
-                                   db_path=str(session_db), message_store=store, flow_name="cas")
+                                   db_path=str(db), message_store=store, flow_name="cas")
         session.error_feedback = False
         writer = None
         try:
@@ -308,13 +307,37 @@ class TestCAS:
 
 class TestThresholdPerWF:
     @pytest.mark.asyncio
+    async def test_first_deployment_starts_at_archived_max_seq(self, tmp_path):
+        """首次部署跳过已有档案, 只在之后累计的消息达到阈值时运行。"""
+        db = database(tmp_path / "messages.db")
+        store = _archive(db, 2)
+        adapter = FlowAdapter(store)
+        llm = MockLLM(response("ok"))
+        session = AsyncFlowSession("fresh", llm, flow=_threshold_flow(), db_path=str(db),
+                                   message_store=store, flow_name="fresh")
+        session.error_feedback = False
+        try:
+            for index in (3, 4, 5):
+                event = make_event(adapter, SCOPE, f"新消息 {index}", index)
+                archive_event(store, SCOPE, event)
+                await session.observe(event)
+                if index == 3:
+                    assert session._flow_store.positions_for_tile_by_scope_key(SCOPE.key, "t1") == {"w1": 3}
+                if index < 5:
+                    assert llm.calls == []
+            await wait_until(lambda: len(llm.calls) == 1)
+            await wait_until(lambda: not session._engine.running_workflows())
+            assert session._flow_store.positions_for_tile_by_scope_key(SCOPE.key, "t1") == {"w1": 5}
+        finally:
+            await session.close_flow_nodes()
+
+    @pytest.mark.asyncio
     async def test_only_failed_wf_retries(self, tmp_path):
         """真实 LLM 失败不推进位置; 下一条消息只重试失败 WF"""
         db = database(tmp_path / "messages.db")
-        session_db = database(tmp_path / "session.db")
         store = _archive(db, 4)
         adapter = FlowAdapter(store)
-        _seed_positions(session_db, "retry", "t1", ("wa", "wb"))
+        _seed_positions(db, "retry", "t1", ("wa", "wb"))
         wa = MockLLM(response("ok"))
 
         def wb_script(messages, tools, count):
@@ -324,7 +347,7 @@ class TestThresholdPerWF:
 
         wb = MockLLM(wb_script)
         session = AsyncFlowSession(
-            "retry", wb, flow=_threshold_flow(("wa", "wb")), db_path=str(session_db),
+            "retry", wb, flow=_threshold_flow(("wa", "wb")), db_path=str(db),
             model_resolver=lambda name: wa if name == "wa" else wb,
             message_store=store, flow_name="retry")
         session.error_feedback = False
@@ -360,12 +383,11 @@ class TestThresholdPerWF:
     async def test_no_rerun_after_success(self, tmp_path):
         """真实运行成功后, 低于阈值的新消息不会重跑已提交批次"""
         db = database(tmp_path / "messages.db")
-        session_db = database(tmp_path / "session.db")
         store = _archive(db, 2)
         adapter = FlowAdapter(store)
-        _seed_positions(session_db, "once", "t1", ("w1",))
+        _seed_positions(db, "once", "t1", ("w1",))
         llm = MockLLM(response("ok"))
-        session = AsyncFlowSession("once", llm, flow=_threshold_flow(), db_path=str(session_db),
+        session = AsyncFlowSession("once", llm, flow=_threshold_flow(), db_path=str(db),
                                    message_store=store, flow_name="once")
         session.error_feedback = False
         try:
@@ -390,10 +412,9 @@ class TestRealBusyAndIdle:
     async def test_threshold_never_force_clears_busy(self, tmp_path, mode, expected):
         """阈值检查期间同 WF 不并发; busy 只由真实结束路径释放"""
         db = database(tmp_path / "messages.db")
-        session_db = database(tmp_path / "session.db")
         store = PlatformMessageStore(db, SCOPE.adapter_id)
         adapter = FlowAdapter(store)
-        _seed_positions(session_db, "busy", "t1", ("w1",))
+        _seed_positions(db, "busy", "t1", ("w1",))
         started, release = asyncio.Event(), asyncio.Event()
         active, max_active = 0, 0
 
@@ -411,7 +432,7 @@ class TestRealBusyAndIdle:
 
         llm = MockLLM(script)
         session = AsyncFlowSession("busy", llm, flow=_threshold_flow(on_busy=mode, messages=1),
-                                   db_path=str(session_db), message_store=store, flow_name="busy")
+                                   db_path=str(db), message_store=store, flow_name="busy")
         session.error_feedback = False
         try:
             for index in (1, 2, 3):
@@ -433,14 +454,13 @@ class TestRealBusyAndIdle:
     async def test_idle_threshold_rechecks_all_workflows_before_updating_tile(self, tmp_path):
         """同一磁贴第二轮 idle 同时触发两个 WF, 不被首个 WF 刷新时间拦截"""
         db = database(tmp_path / "messages.db")
-        session_db = database(tmp_path / "session.db")
         store = PlatformMessageStore(db, SCOPE.adapter_id)
         adapter = FlowAdapter(store)
-        _seed_positions(session_db, "idle", "t1", ("wa", "wb"))
+        _seed_positions(db, "idle", "t1", ("wa", "wb"))
         flow = _threshold_flow(("wa", "wb"), messages=0)
         flow["nodes"][1]["config"]["idle_seconds"] = 1
         llm = MockLLM(response("ok"))
-        session = AsyncFlowSession("idle", llm, flow=flow, db_path=str(session_db),
+        session = AsyncFlowSession("idle", llm, flow=flow, db_path=str(db),
                                    message_store=store, flow_name="idle")
         session.error_feedback = False
         try:
@@ -473,7 +493,7 @@ class TestRealFailureFeedback:
 
         llm = MockLLM(script)
         session = AsyncFlowSession("feedback", llm, flow=_wake_flow(),
-                                   db_path=str(database(tmp_path / "session.db")),
+                                   db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="feedback")
         try:
             for index in range(1, 5):
@@ -492,13 +512,12 @@ class TestRealFailureFeedback:
     async def test_real_background_failure_uses_scheduled_target(self, tmp_path):
         """阈值模型失败经真实后台通道告知并留下发送证据"""
         db = database(tmp_path / "messages.db")
-        session_db = database(tmp_path / "session.db")
         store = PlatformMessageStore(db, SCOPE.adapter_id)
         adapter = FlowAdapter(store)
-        _seed_positions(session_db, "background-error", "t1", ("w1",))
+        _seed_positions(db, "background-error", "t1", ("w1",))
         llm = MockLLM(lambda messages, tools, count: (_ for _ in ()).throw(RuntimeError("offline")))
         session = AsyncFlowSession("background-error", llm,
-                                   flow=_threshold_flow(messages=1), db_path=str(session_db),
+                                   flow=_threshold_flow(messages=1), db_path=str(db),
                                    message_store=store, flow_name="background-error")
         try:
             event = make_event(adapter, SCOPE, "trigger", 1)
@@ -544,13 +563,11 @@ class TestObservationBinding:
         adapter = FlowAdapter(store)
         other = MessageScope(SCOPE.adapter_id, SCOPE.self_id, "group", "other")
         first_llm, second_llm = MockLLM(response("one")), MockLLM(response("two"))
-        _seed_positions(database(tmp_path / "first.db"), "first", "t1", ("w1",), seq=1)
-        _seed_positions(database(tmp_path / "second.db"), "second", "t1", ("w1",), seq=1, scope=other)
         first = AsyncFlowSession("first", first_llm, flow=_threshold_flow(messages=1),
-                                 db_path=str(database(tmp_path / "first.db")),
+                                 db_path=str(database(tmp_path / "messages.db")),
                                  message_store=store, flow_name="first")
         second = AsyncFlowSession("second", second_llm, flow=_threshold_flow(messages=1),
-                                  db_path=str(database(tmp_path / "second.db")),
+                                  db_path=str(database(tmp_path / "messages.db")),
                                   message_store=store, flow_name="second")
         first.error_feedback = second.error_feedback = False
         try:
@@ -578,20 +595,20 @@ class TestObservationBinding:
         assert not adapter._flow_observers
 
     @pytest.mark.asyncio
-    async def test_source_pages_beyond_old_500_limit(self, tmp_path):
-        """source 按 seq 翻页, 1005 条首尾正文都保留"""
+    async def test_source_default_view_is_bounded_to_latest_messages(self, tmp_path):
+        """source 无查询参数也不翻页读全量, 默认只返回最新 200 条。"""
         store = _archive(database(tmp_path / "messages.db"), 1005)
         adapter = FlowAdapter(store)
         session = AsyncFlowSession("paging", MockLLM(), flow=_wake_flow(),
-                                   db_path=str(database(tmp_path / "session.db")),
+                                   db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="paging")
         try:
             event = make_event(adapter, SCOPE, "bind", 2000)
             await session.observe(event)
             messages = session._source_messages()
-            assert len(messages) == 1005
-            assert messages[0].text == "t0" and messages[-1].text == "t1004"
-            assert [message.position for message in messages] == list(range(1, 1006))
+            assert len(messages) == 200
+            assert messages[0].text == "t805" and messages[-1].text == "t1004"
+            assert [message.position for message in messages] == list(range(806, 1006))
         finally:
             await session.close_flow_nodes()
 
@@ -601,7 +618,7 @@ class TestObservationBinding:
         store = _archive(database(tmp_path / "messages.db"), 20)
         adapter = FlowAdapter(store)
         session = AsyncFlowSession("window", MockLLM(), flow=_wake_flow(),
-                                   db_path=str(database(tmp_path / "session.db")),
+                                   db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="window")
         try:
             await session.observe(make_event(adapter, SCOPE, "bind", 2000))
@@ -623,7 +640,7 @@ class TestObservationBinding:
         adapter = FlowAdapter(store)
         llm = MockLLM(response("ok"))
         session = AsyncFlowSession("mentions", llm, flow=_wake_flow(),
-                                   db_path=str(database(tmp_path / "session.db")),
+                                   db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="mentions")
         try:
             plain = make_event(adapter, SCOPE, "@self 只是文本", 1)
@@ -641,7 +658,7 @@ class TestObservationBinding:
         private = MessageScope(SCOPE.adapter_id, SCOPE.self_id, "private", "u1")
         private_llm = MockLLM(response("private"))
         session = AsyncFlowSession("private", private_llm, flow=_wake_flow(),
-                                   db_path=str(database(tmp_path / "private.db")),
+                                   db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="private")
         try:
             event = make_event(adapter, private, "没有 At 的私聊", 3)
@@ -666,7 +683,7 @@ class TestRuntimeIntegration:
         scope = MessageScope(SCOPE.adapter_id, SCOPE.self_id, kind, "target")
         session = AsyncFlowSession(
             f"validation-{kind}", MockLLM(), flow=_threshold_flow(messages=1),
-            db_path=str(database(tmp_path / "session.db")),
+            db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name=f"validation-{kind}")
         try:
             event = make_event(adapter, scope, "绑定并校验", 1)
@@ -695,7 +712,7 @@ class TestRuntimeIntegration:
         adapter = FlowAdapter(store)
         session = AsyncFlowSession(
             "diagnostics", MockLLM(), flow=_wake_flow(),
-            db_path=str(database(tmp_path / "session.db")),
+            db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name="diagnostics")
         writer = None
         try:
@@ -727,6 +744,10 @@ class TestRuntimeIntegration:
             assert metadata["tile"] == "t1" and metadata["gate"] == "wake"
             assert metadata["wf"] == "w1" and metadata["run_id"] == "run-54"
             assert metadata["why"] == "reason-54" and metadata["reason"] == "threshold"
+            policy.set_default(False, policy.read().revision)
+            disabled_status = await session.runtime_status()
+            assert disabled_status["events_source"] == "debug_store"
+            assert disabled_status["events"][0]["metadata"]["event_id"] == "source-54"
         finally:
             if writer is not None:
                 writer.close()
@@ -737,11 +758,15 @@ class TestRuntimeIntegration:
         """诊断关闭或该流程没有持久化事件时, 状态接口如实使用内存摘要"""
         session = AsyncFlowSession(
             "empty-diagnostics", MockLLM(), flow=_wake_flow(),
-            db_path=str(database(tmp_path / "session.db")), flow_name="empty-diagnostics")
-        session._events.append({"kind": "memory-only"})
+            db_path=str(database(tmp_path / "messages.db")), flow_name="empty-diagnostics")
+        session._events.append({"at": 123.0, "kind": "run_end", "status": "ok", "run_id": "r1"})
         try:
             status = await session.runtime_status()
-            assert status["events"] == [{"kind": "memory-only"}]
+            assert status["events"] == [{
+                "event_id": "", "request_id": "", "sequence": -1,
+                "phase": "run_end", "status": "ok", "recorded_at": 123.0,
+                "metadata": {"run_id": "r1"},
+            }]
             assert status["events_source"] == "memory_fallback"
         finally:
             await session.close_flow_nodes()
@@ -756,7 +781,7 @@ class TestRuntimeIntegration:
         catalog = PluginCatalog(tmp_path / "empty-plugins", tmp_path / "empty-user-plugins")
         session = AsyncFlowSession(
             "unchanged", MockLLM(), flow=_wake_flow(), plugin_catalog=catalog,
-            db_path=str(database(tmp_path / "session.db")),
+            db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name="unchanged")
         try:
             first = make_event(adapter, SCOPE, "第一次", 1)
@@ -808,7 +833,7 @@ class TestRuntimeIntegration:
         session = AsyncFlowSession(
             "stamp", MockLLM(), flow=flow,
             plugin_catalog=PluginCatalog(tmp_path / "plugins", tmp_path / "unused"),
-            plugin_config=configs, db_path=str(database(tmp_path / "session.db")),
+            plugin_config=configs, db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name="stamp")
         target = configs.flow_nodes_path("stamp_probe")
         original_read_bytes = Path.read_bytes
@@ -885,7 +910,7 @@ class TestRuntimeIntegration:
         session = AsyncFlowSession(
             "input-timeout", llm, flow=flow,
             plugin_catalog=PluginCatalog(tmp_path / "plugins", tmp_path / "unused"),
-            db_path=str(database(tmp_path / "session.db")),
+            db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name="input-timeout")
         session.error_feedback = False
         try:
