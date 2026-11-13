@@ -14,7 +14,7 @@ from typing import Any, cast
 from satrap.core.call_context import bind_call_origin
 from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
-from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
+from satrap.edictum.plugin.catalog import PluginCatalog, PluginCatalogEntry
 from satrap.core.plugin_authorization import evaluate_plugin_permissions
 from satrap.expend.plugins.group_chat.tools import get_tools as chat_tools
 from support.administration import _setup_adapter, _origin, _async_tools
@@ -510,8 +510,8 @@ async def test_real_agent_self_deletion_approval_uses_current_group_or_private_r
 @pytest.mark.asyncio
 async def test_pending_friend_deletion_rechecks_instance_tool_switch(tmp_path):
     """实例工具关闭后, 已提交的删除申请不能继续执行"""
-    from satrap.edictum.plugin_settings import PluginSettingsService
-    from satrap.edictum.plugin_spec import parse_plugin_specs
+    from satrap.edictum.plugin.settings import PluginSettingsService
+    from satrap.edictum.plugin.spec import parse_plugin_specs
     from satrap.core.config.session_overrides import SessionOverrideStore
 
     backend, adapter, origin, session, provider, configs = await runtime(

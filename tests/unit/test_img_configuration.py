@@ -21,9 +21,9 @@ from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError, ModelConfigManager
 from satrap.core.storage import StorageLayout
 from satrap.core.type import ImgConfig, LLMConfig
-from satrap.edictum.plugin_config import ConfigField
-from satrap.edictum.plugin_resources import PluginResources, build_model_client, named_model_config
-from satrap.edictum.plugin_settings import model_options
+from satrap.edictum.plugin.config import ConfigField
+from satrap.edictum.plugin.resources import PluginResources, build_model_client, named_model_config
+from satrap.edictum.plugin.settings import model_options
 
 
 def payload() -> dict:

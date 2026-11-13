@@ -9,7 +9,7 @@ from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.framework.Base import Session
 from satrap.edictum.registry import EdictumTypeDefinition, EdictumTypeRegistry, create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import cast

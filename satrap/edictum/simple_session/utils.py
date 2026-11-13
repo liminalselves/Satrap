@@ -17,7 +17,7 @@ import inspect
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 import sys
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.core.log import logger
 
 

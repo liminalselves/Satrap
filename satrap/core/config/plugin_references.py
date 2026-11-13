@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from satrap.edictum.plugin_config import parse_config_schema
+from satrap.edictum.plugin.config import parse_config_schema
 from satrap.edictum.plugin import PLUGINS_PRESET_DIR, USER_PLUGINS_DIR, load_plugin_meta
 
 

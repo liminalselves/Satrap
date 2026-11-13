@@ -22,8 +22,8 @@ from satrap.core.utils.application_progress import ApplicationOperations
 from satrap.display import service as chat_module
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.server import ChatHTTPServer
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.catalog import PluginCatalog
 from tests.unit.test_display_service import _FakeAsyncLLM, _make_service, _must_conversation
 from tests.support.platform_application import _platforms, _release
 
@@ -56,10 +56,10 @@ async def main() -> None:
     local = root / kind
     local.mkdir(parents=True, exist_ok=True)
     patches = pytest.MonkeyPatch()
-    patches.setattr("satrap.edictum.plugin_catalog.USER_PLUGINS_DIR", root / "plugins")
+    patches.setattr("satrap.edictum.plugin.catalog.USER_PLUGINS_DIR", root / "plugins")
     patches.setattr("satrap.display.plugins.USER_PLUGINS_DIR", root / "plugins")
     globals_ = PluginConfigManager(root / "globals")
-    for module in ("satrap.edictum.plugin_apply", "satrap.edictum.plugin_settings", "satrap.display.service", "satrap.core.backend.control_server"):
+    for module in ("satrap.edictum.plugin.apply", "satrap.edictum.plugin.settings", "satrap.display.service", "satrap.core.backend.control_server"):
         patches.setattr(module + ".PluginConfigManager", lambda: globals_)
     sessions: list[Any] = []
     held: Any = None

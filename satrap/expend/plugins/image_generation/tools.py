@@ -14,7 +14,7 @@ from satrap.core.plugin_interop.environment import EnvironmentSnapshot
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from satrap.core.utils.TCBuilder.utils import create_tool_defined, tool_error
 from satrap.edictum import SimpleSession, AsyncSimpleSession, PluginHost
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 
 from satrap.expend.plugins.image_generation.artifacts import check_capacity, load_image, save_images
 from satrap.expend.plugins.image_generation.policy import ImagePolicy

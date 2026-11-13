@@ -10,7 +10,7 @@ from satrap.edictum.flow.definition import FlowDefinition, FlowEdge, validate_no
 from satrap.edictum.flow.definition import resolve_node_config as _resolve_node_config
 from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES, FlowNodeRegistry, FlowNodeType
 from satrap.edictum.flow.types import PortType
-from satrap.edictum.plugin_catalog import PluginCatalogEntry
+from satrap.edictum.plugin.catalog import PluginCatalogEntry
 
 from dataclasses import dataclass, field
 from typing import Any, Literal

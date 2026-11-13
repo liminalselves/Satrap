@@ -37,9 +37,9 @@ from satrap.core.platform.event import MessageEvent
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
 from support.group_reply import COMPONENTS, SCOPE as _group_chat_reply_SCOPE, owner, restore_manager, send_mock, setup
 import yaml
-from satrap.edictum.plugin_compatibility import PluginEnvironment
-from satrap.edictum.plugin_config import parse_config_schema
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.config import parse_config_schema
+from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.type import LLMCallResponse

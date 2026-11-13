@@ -17,7 +17,7 @@ from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from satrap.core.plugin_authorization import (BoundPluginTool, PluginEntryBinding, authorize_plugin_entry,
                                               require_plugin_entry_permission, bind_plugin_factory_tools)
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.framework.Base import Session, AsyncSession

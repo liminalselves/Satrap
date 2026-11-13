@@ -14,7 +14,7 @@ from satrap.core.APICall.ReRankCall import AsyncReRank, ReRank
 from satrap.core.APICall.EmbedCall import AsyncEmbedding, Embedding
 from satrap.core.APICall.ASRCall import ASR, AsyncASR, build_asr_from_config
 from satrap.core.APICall.ImageCall import ImageGen, AsyncImageGen, build_imagegen_from_config
-from satrap.edictum.plugin_config import ConfigField
+from satrap.edictum.plugin.config import ConfigField
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 
 from satrap.core.log import logger

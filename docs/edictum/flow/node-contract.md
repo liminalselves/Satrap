@@ -84,7 +84,7 @@ def 节点名(ctx) -> bool:                   # 条件节点: 必须同步, 不�
 
 ### 1.4 config_schema 新增项
 
-现有字段类型和键全部沿用 (`satrap/edictum/plugin_config.py:38`, `:169-223`)。以下三项需要在 `ConfigField`, 解析, 严格校验和 `schema_to_payload` 里新增, 插件自己的配置表单也能用:
+现有字段类型和键全部沿用 (`satrap/edictum/plugin/config.py:38`, `:169-223`)。以下三项需要在 `ConfigField`, 解析, 严格校验和 `schema_to_payload` 里新增, 插件自己的配置表单也能用:
 
 | 新增 | 含义 |
 | --- | --- |
@@ -98,7 +98,7 @@ def 节点名(ctx) -> bool:                   # 条件节点: 必须同步, 不�
 | --- | --- |
 | 节点名 (`name`) | `[a-z][a-z0-9_]{0,31}`, 不能有点号; 同时是 Python 函数名; 同一插件内重复时安装失败 (`flow_contract_name`) |
 | 端口名 | 同上; `when` 保留给宿主 |
-| 完整类型名 | `插件名.节点名`, 按最后一个点拆分 (插件名允许带点, `plugin_config.py:41`) |
+| 完整类型名 | `插件名.节点名`, 按最后一个点拆分 (插件名允许带点, `plugin/config.py:41`) |
 | 不带点的类型名 | 保留给内置节点 (`react_workflow`, `wake`, `and` 等) |
 
 ---
@@ -428,7 +428,7 @@ async def compress(ctx, context):
     if budget <= 0:                      # 保留的快照本身就超长
         ctx.diagnostic("snapshot_over_target")
         return context                   # 不压缩, 原样输出, 让下游的长度检查处理
-    llm = ctx.resources["model_name"]    # 沿用现有 PluginResources 写法 (plugin_resources.py:147,156)
+    llm = ctx.resources["model_name"]    # 沿用现有 PluginResources 写法 (plugin/resources.py:147,156)
     summary = await llm.chat(            # 调用次数由宿主计入 plugin 计数
         f"把下面的群聊压缩到 {budget} 字以内, 保留人物, 时间和约定:\n" + "\n".join(b.text for b in rest)
     )
@@ -610,12 +610,12 @@ flow:
 
 | 问题 | 代码位置 |
 | --- | --- |
-| `save_global` 只写 schema 声明过的键, 不合并旧文件, 插件配置页保存一次就会清掉 `__flow_nodes` | `satrap/edictum/plugin_config.py:484-517` |
+| `save_global` 只写 schema 声明过的键, 不合并旧文件, 插件配置页保存一次就会清掉 `__flow_nodes` | `satrap/edictum/plugin/config.py:484-517` |
 | 现有保留键 `__capability_migration` 能保住, 是靠两处写死 `friend_manager` 的特例 | 同上 `:452`, `:511-514` |
 | `load_global` 遇到未声明的键会打警告, 每次读取都会报 | 同上 `:456-457` |
 | 插件配置页的并发检查用整个文件的 SHA256; 共用文件时, 改节点默认会让正在编辑插件参数的页面保存冲突, 反之亦然 | `satrap/core/config/plugin_service.py:97-98`, `:138` |
 
-单独文件的读写复用 `PluginConfigManager` 的锁和原子写 (`FileLock`, `atomic_write_json`), 并发检查同样用文件 SHA256, 但和插件参数互不影响。不会触发插件重装: 现有插件重装只看 `config` 和 `resources_revision` (`satrap/edictum/plugin_runtime.py:347-352`), 后者只是模型引用的指纹 (`satrap/edictum/plugin_resources.py:191-203`), 都不读这个文件。
+单独文件的读写复用 `PluginConfigManager` 的锁和原子写 (`FileLock`, `atomic_write_json`), 并发检查同样用文件 SHA256, 但和插件参数互不影响。不会触发插件重装: 现有插件重装只看 `config` 和 `resources_revision` (`satrap/edictum/plugin/runtime.py:347-352`), 后者只是模型引用的指纹 (`satrap/edictum/plugin/resources.py:191-203`), 都不读这个文件。
 
 下面的注释只是说明, 实际文件是纯 JSON。
 
@@ -728,7 +728,7 @@ class Detect(FlowNode):                  # 继承 FlowNode 表示类写法
 实例规则:
 
 - 每个流程会话里, 每个节点 id 一个实例
-- 本节点生效配置变化 (包括上层默认变化导致的) 时, 宿主新建实例并 `setup`, 正在运行的那次用旧实例跑完, 然后 `close` 旧实例; 和现有插件"配置变化即重装"一致 (`plugin_runtime.py:347-352`)
+- 本节点生效配置变化 (包括上层默认变化导致的) 时, 宿主新建实例并 `setup`, 正在运行的那次用旧实例跑完, 然后 `close` 旧实例; 和现有插件"配置变化即重装"一致 (`plugin/runtime.py:347-352`)
 - 实例不应该跨运行保存业务状态; 需要跨运行的数据用状态槽或插件自己的存储
 
 ---
@@ -910,4 +910,4 @@ flow_nodes:
 | 参数名和输入端口名对不上 (`ctx` 除外); 可选端口没有默认值 | `flow_contract_signature` |
 | 条件节点是 `async def` | `flow_contract_signature` |
 
-和现有 `tools` 规则的区别: `tools` 的声明只是描述, 以扫描结果为准 (`satrap/edictum/plugin.py:16-18`)。节点的端口和配置决定画布结构, 声明与实现必须严格一致。
+和现有 `tools` 规则的区别: `tools` 的声明只是描述, 以扫描结果为准 (`satrap/edictum/plugin/base.py:16-18`)。节点的端口和配置决定画布结构, 声明与实现必须严格一致。

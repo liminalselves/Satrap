@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from satrap.edictum.flow.types import PORT_TYPE_LABELS, PortType
-from satrap.edictum.plugin_config import ConfigField, schema_to_payload
+from satrap.edictum.plugin.config import ConfigField, schema_to_payload
 
 
 NodeRole = Literal["source", "transform", "workflow", "state", "sink", "trigger", "condition", "logic", "note"]

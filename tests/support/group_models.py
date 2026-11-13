@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 import asyncio
 import copy
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.providers import BindingState, BindingStatus
 from satrap.core.type import LLMCallStreamEvent

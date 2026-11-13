@@ -122,7 +122,7 @@ async def test_real_install_state_roots_commands_plan_and_reinstall(
 ) -> None:
     """真实安装保持状态根, 命令和处理器一致, 卸载后可切换数据目录"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
 
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
     base, llm_type = (AsyncSimpleSession, AsyncLLM) if asynchronous else (SimpleSession, LLM)
@@ -239,7 +239,7 @@ async def test_failed_install_clears_state_and_duplicate_install_preserves_it(
 ) -> None:
     """失败安装释放状态, 重复安装不破坏已加载插件"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
 
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
     base, llm_type = (AsyncSimpleSession, AsyncLLM) if asynchronous else (SimpleSession, LLM)
@@ -494,7 +494,7 @@ class _satrap_coding_plugin_FakeLLM(LLM):
 def _satrap_coding_plugin_session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
     """隔离插件数据目录的会话 + 安装 satrap_coding 插件 (经 config 指定工作区/数据目录)"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "cfg"))
     (tmp_path / "workspace").mkdir()
     s = SimpleSession(
@@ -694,7 +694,7 @@ class _base_take_plugin_FakeLLM(LLM):
 def _base_take_plugin_session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
     """隔离数据目录的会话 + 安装 base_take 插件"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
 
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "cfg"))
     # 隔离: 插件配置目录 + 记忆 db + 沙箱根
@@ -871,7 +871,7 @@ def test_read_document_tool(_base_take_plugin_session: SimpleSession, tmp_path: 
 async def test_approval_mode_requires_native_host_administrator(tmp_path, monkeypatch, asynchronous):
     """原生模式命令区分宿主管理员, 群管理员和模型执行者"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     from satrap.core.call_context import CallOrigin, bind_call_origin, bind_tool_workflow
     from satrap.core.config.administrator_groups import AdministratorService
     from satrap.core.platform import current_adapter_manager, set_current_adapter_manager

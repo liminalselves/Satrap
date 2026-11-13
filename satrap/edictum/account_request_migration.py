@@ -5,10 +5,10 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from satrap.core.plugin_authorization import permission_id_list
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.config import PluginConfigManager
 
 if TYPE_CHECKING:
-    from satrap.edictum.plugin_catalog import PluginCatalog
+    from satrap.edictum.plugin.catalog import PluginCatalog
 
 
 def migrate_account_request_specs(value: list[Any], catalog: PluginCatalog,

@@ -92,10 +92,10 @@ def _plugin(tmp_path: Path, name: str, meta: dict, **sources: str) -> Path:
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_service_install_call_isolation_and_revocation(tmp_path, monkeypatch, asynchronous):
     """模型工具经真实分派复用服务, 保留来源并拒绝停用或失效引用"""
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     from satrap.core.config.document import ConfigRevisionConflict
 
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "plugin-config")
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", tmp_path / "plugin-config")
     base = "AsyncService" if asynchronous else "Service"
     tool_base = "AsyncTool" if asynchronous else "Tool"
     prefix, wait = ("async ", "await ") if asynchronous else ("", "")
@@ -235,7 +235,7 @@ async def test_service_install_call_isolation_and_revocation(tmp_path, monkeypat
 
 def test_interop_static_declarations_and_factory_opt_in():
     """声明拒绝硬矛盾, 宿主注入只匹配显式仅关键字参数"""
-    from satrap.edictum.plugin import _invoke_factory
+    from satrap.edictum.plugin.base import _invoke_factory
 
     for raw in (
         {"exports": {"servcies": ["x"]}},
@@ -429,9 +429,9 @@ async def test_replacement_dependency_protection_and_conflict_rollback(tmp_path,
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_full_configuration_order_counterfactual_and_update_rollback(tmp_path, asynchronous):
     """完整目标独立于配置顺序, 目标删名在实际构造核验失败后恢复整批旧配置"""
-    from satrap.edictum.plugin_runtime import reconcile_plugin_states_async, preview_plugin_reconciliation
-    from satrap.edictum.plugin_catalog import PluginCatalog
-    from satrap.edictum.plugin_spec import parse_plugin_specs
+    from satrap.edictum.plugin.runtime import reconcile_plugin_states_async, preview_plugin_reconciliation
+    from satrap.edictum.plugin.catalog import PluginCatalog
+    from satrap.edictum.plugin.spec import parse_plugin_specs
 
     base, prefix = ("AsyncService", "async ") if asynchronous else ("Service", "")
     source_code = f'''
@@ -541,7 +541,7 @@ async def test_full_configuration_order_counterfactual_and_update_rollback(tmp_p
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_dynamic_skill_refresh_respects_execution_gate_and_uninstall(tmp_path, monkeypatch, asynchronous):
     """动态来源关闸后不再调用工厂, 恢复后重新刷新, 损坏状态与卸载均 fail-closed"""
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "plugin-config")
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", tmp_path / "plugin-config")
     payload = tmp_path / "payload.txt"
     payload.write_text("one", encoding="utf-8")
     provider = _plugin(tmp_path, "dynamic_skills", {}, skills=f'''
@@ -554,7 +554,7 @@ async def test_dynamic_skill_refresh_respects_execution_gate_and_uninstall(tmp_p
                 return [Skill("dynamic_guide", path.read_text(encoding="utf-8"))]
             return plugin_host.skills.provide(source)
     ''')
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     host_config = PluginConfigManager()
     disabled = host_config.save_execution("dynamic_skills", False, 0)
     llm = AsyncLLM(api_key="test", model="test") if asynchronous else LLM(api_key="test", model="test")

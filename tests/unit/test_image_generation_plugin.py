@@ -23,7 +23,7 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.edictum.plugin import load_plugin_meta
-from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
 from satrap.expend.plugins.image_generation.artifacts import load_image
 from satrap.expend.plugins.image_generation.policy import ImagePolicy
 

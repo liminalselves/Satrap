@@ -12,7 +12,7 @@ from satrap.edictum.flow.definition import (
     validate_node_config,
 )
 from satrap.edictum.flow.registry import FlowNodeRegistry, FlowNodeType, PortSpec, RenamedEntry
-from satrap.edictum.plugin_config import ConfigField
+from satrap.edictum.plugin.config import ConfigField
 
 
 def _registry_with_filter() -> FlowNodeRegistry:

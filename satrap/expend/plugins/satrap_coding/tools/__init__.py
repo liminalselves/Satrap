@@ -28,7 +28,7 @@ from satrap.core.approval.policy import (
     RiskLevel,
 )
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 from satrap.core.utils.config_text import comma_names
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.framework.Base import (

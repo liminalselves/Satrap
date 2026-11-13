@@ -90,7 +90,7 @@ class _NodeResources:
             return default
         client = self._clients.get(key)
         if client is None:
-            from satrap.edictum.plugin_resources import named_model_config, build_model_client
+            from satrap.edictum.plugin.resources import named_model_config, build_model_client
             config = named_model_config(self._session._model_reader(), field.type, str(name))
             raw = build_model_client(field.type, config, async_=True)
             node_id = self._node.id

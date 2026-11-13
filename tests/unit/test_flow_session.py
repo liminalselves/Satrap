@@ -825,7 +825,7 @@ class TestRuntimeIntegration:
     @pytest.mark.asyncio
     async def test_unchanged_empty_catalog_does_not_rebuild_or_reresolve(self, tmp_path):
         """无 flow 插件也算稳定配置; 第二次 observe 不重建 registry/resolved/analysis"""
-        from satrap.edictum.plugin_catalog import PluginCatalog
+        from satrap.edictum.plugin.catalog import PluginCatalog
 
         store = PlatformMessageStore(database(tmp_path / "messages.db"), SCOPE.adapter_id)
         adapter = FlowAdapter(store)
@@ -859,8 +859,8 @@ class TestRuntimeIntegration:
         """真实默认文件不变不读内容; 修改与删除仅通过 mtime+size 触发重建"""
         import yaml
         from pathlib import Path
-        from satrap.edictum.plugin_catalog import PluginCatalog
-        from satrap.edictum.plugin_config import PluginConfigManager
+        from satrap.edictum.plugin.catalog import PluginCatalog
+        from satrap.edictum.plugin.config import PluginConfigManager
 
         plugin = tmp_path / "plugins" / "stamp_probe"
         plugin.mkdir(parents=True)
@@ -930,7 +930,7 @@ class TestRuntimeIntegration:
     async def test_real_workflow_input_pull_consumes_total_timeout(self, tmp_path):
         """真实慢 transform 在输入阶段耗尽 WF timeout, 不再给模型循环另起完整超时"""
         import yaml
-        from satrap.edictum.plugin_catalog import PluginCatalog
+        from satrap.edictum.plugin.catalog import PluginCatalog
 
         plugin = tmp_path / "plugins" / "slow_input"
         plugin.mkdir(parents=True)

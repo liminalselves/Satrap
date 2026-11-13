@@ -6,19 +6,19 @@ from pathlib import Path
 import stat
 import zipfile
 import pytest
-from satrap.edictum import plugin_archive
-from satrap.edictum.plugin_archive import PluginArchiveInstaller
-from satrap.edictum.plugin_catalog import PluginCatalog
-import satrap.edictum.plugin as plugin_module
+from satrap.edictum.plugin import archive as plugin_archive
+from satrap.edictum.plugin.archive import PluginArchiveInstaller
+from satrap.edictum.plugin.catalog import PluginCatalog
+import satrap.edictum.plugin.base as plugin_module
 from collections.abc import Iterator
 import sys
 from unittest.mock import Mock
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.edictum.plugin_resources import PluginResources, model_reference_fingerprint
+from satrap.edictum.plugin.resources import PluginResources, model_reference_fingerprint
 from satrap.core.APICall.ReRankCall import parse_rerank_result
-from satrap.edictum.plugin_config import parse_config_schema
+from satrap.edictum.plugin.config import parse_config_schema
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from satrap.edictum.plugin import _invoke_factory
+from satrap.edictum.plugin.base import _invoke_factory
 from satrap.core.type import EmbeddingConfig
 import importlib as _plugin_skill_activation_importlib
 from typing import Any, cast
@@ -29,8 +29,8 @@ from satrap.core.type import SessionConfig, UserCall
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
-from satrap.edictum.plugin_spec import PluginSpec
-from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states, reconcile_plugin_states_async
+from satrap.edictum.plugin.spec import PluginSpec
+from satrap.edictum.plugin.runtime import PluginRuntimeState, reconcile_plugin_states, reconcile_plugin_states_async
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -39,8 +39,8 @@ async def test_command_help_metadata_legacy_fallback_and_reinstallation(tmp_path
     import inspect
     from textwrap import dedent
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
-    from satrap.edictum.plugin_settings import PluginInstallConfig
+    from satrap.edictum.plugin.config import PluginConfigManager
+    from satrap.edictum.plugin.settings import PluginInstallConfig
 
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
     root = tmp_path / "command-help"
@@ -396,7 +396,7 @@ def test_lazy_resources_share_within_plugin_and_close(tmp_path, monkeypatch):
     schema = parse_config_schema({"config_schema": {"embed": {"type": "embed"}}})
     client = Mock()
     build = Mock(return_value=client)
-    monkeypatch.setattr("satrap.edictum.plugin_resources.build_model_client", build)
+    monkeypatch.setattr("satrap.edictum.plugin.resources.build_model_client", build)
     resources = PluginResources(manager, schema, {"embed": "test"}, async_=False)
     build.assert_not_called()
     assert resources["embed"] is resources.get("embed")
@@ -418,7 +418,7 @@ def test_installed_model_snapshot_survives_source_deletion_and_client_close(tmp_
         built.append((kind, config, client))
         return client
 
-    monkeypatch.setattr("satrap.edictum.plugin_resources.build_model_client", build)
+    monkeypatch.setattr("satrap.edictum.plugin.resources.build_model_client", build)
     original = PluginResources(manager, schema, {"embed": configured_name}, async_=False)
     old_client = original["embed"]
     snapshot = original.snapshot_models()

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from satrap.edictum.flow.registry import FlowNodeRegistry, FlowNodeType
-from satrap.edictum.plugin_config import ConfigField
+from satrap.edictum.plugin.config import ConfigField
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, cast

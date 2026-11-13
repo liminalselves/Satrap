@@ -18,7 +18,7 @@ from typing import Any
 import zipfile
 import yaml
 
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.edictum.plugin import load_plugin_meta
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024

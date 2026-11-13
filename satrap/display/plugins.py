@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from satrap.core.storage.persist import atomic_write_json
 from dataclasses import asdict
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 
 import threading
 from pathlib import Path
@@ -30,9 +30,9 @@ import json
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.config.document import ConfigRevisionConflict, config_document_revision
 
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.spec import PluginSpec, parse_plugin_specs
 from satrap.edictum.plugin import (
     PLUGINS_PRESET_DIR,
     USER_PLUGINS_DIR,
@@ -51,7 +51,7 @@ CAPABILITY_LABELS = {
 # 能力类别中文名 (供前端展示)
 
 from satrap.core.config_paths import get_config_path
-from satrap.edictum.plugin_apply import PluginApplySnapshot
+from satrap.edictum.plugin.apply import PluginApplySnapshot
 
 
 def _default_state_path() -> Path:

@@ -81,7 +81,7 @@ from satrap.core.telemetry.health import ServiceRuntime
 from satrap.core.telemetry.contracts import ServiceProbe
 from satrap.core.backend.plugin_application import relay_plugin_application, runtime_result
 from satrap.core.config.versions import ConfigVersionService, ConfigVersionsResult
-from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
+from satrap.edictum.plugin.settings import PluginSettingsService, model_options, validate_model_values
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.config.document import (
@@ -113,9 +113,9 @@ from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin_archive import PluginAlreadyInstalled, PluginArchiveInstaller, MAX_ARCHIVE_BYTES
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.archive import PluginAlreadyInstalled, PluginArchiveInstaller, MAX_ARCHIVE_BYTES
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.core.config.plugin_service import PluginHealth, PluginHealthCoverage, PluginHealthSource, PluginManagementService
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageLayout, StorageMaintenanceService
@@ -3876,7 +3876,7 @@ async def _route_session_plugin_config(ctx: _RouteContext) -> ControlResponse | 
         tool_settings: dict[str, Any] = {}
         spec = None
         if name == "friend_manager":
-            from satrap.edictum.plugin_spec import parse_plugin_specs
+            from satrap.edictum.plugin.spec import parse_plugin_specs
             spec = next((item for item in parse_plugin_specs(plugin_specs, edictum.plugin_catalog) if item.name == name), None)
             if spec is None:
                 spec = parse_plugin_specs([{"name": name, "config_version": entry.config_version}], edictum.plugin_catalog)[0]

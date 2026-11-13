@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 from satrap.expend.plugins.memory.state import get_plugin_state
 from .sync import AddMemoryTool, UpdateMemoryTool, DeleteMemoryTool, ListMemoriesTool, GetMemoryTool
 from .async_ import AsyncAddMemoryTool, AsyncUpdateMemoryTool, AsyncDeleteMemoryTool, AsyncListMemoriesTool, AsyncGetMemoryTool

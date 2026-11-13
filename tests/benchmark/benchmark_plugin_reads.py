@@ -9,7 +9,7 @@ import time
 import json
 
 from satrap.core.backend import control_server
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.edictum.config import EdictumConfigManager
 
 

@@ -41,7 +41,7 @@ async def probe(root: Path, source_root: Path, report_path: Path, source_env: di
     from satrap.core.config.document import find_config_path, load_config_document
     from satrap.core.framework.BackGroundManager import ModelConfigManager
     from satrap.edictum.config import EdictumConfigManager
-    from satrap.edictum.plugin_catalog import PluginCatalog
+    from satrap.edictum.plugin.catalog import PluginCatalog
 
     source = find_config_path(source_root)
     document = load_config_document(source)

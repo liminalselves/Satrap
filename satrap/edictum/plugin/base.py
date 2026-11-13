@@ -169,7 +169,7 @@ class _YamlLoader(Protocol):
 
 _yaml_loader = cast(_YamlLoader, yaml)
 
-PLUGINS_PRESET_DIR = Path(__file__).resolve().parents[1] / "expend" / "plugins"
+PLUGINS_PRESET_DIR = Path(__file__).resolve().parents[2] / "expend" / "plugins"
 """官方预设插件目录 (satrap/expend/plugins), 只读基线"""
 
 USER_PLUGINS_DIR = Path(".satrap") / "plugins"

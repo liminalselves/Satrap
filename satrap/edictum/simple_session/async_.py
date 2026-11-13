@@ -31,7 +31,7 @@ from .utils import (
     HANDLER_TIMEOUT,
     SessionHandler,
 )
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 from .base import _SessionFeatures
 from . import recovery
 from satrap.edictum.settings import normalize_session_settings

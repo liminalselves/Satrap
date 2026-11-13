@@ -5,11 +5,11 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 from satrap.core.config.model_tool_authorization import config_ids
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.edictum.account_request_migration import migrate_account_request_specs
 
 if TYPE_CHECKING:
-    from satrap.edictum.plugin_catalog import PluginCatalog
+    from satrap.edictum.plugin.catalog import PluginCatalog
 
 
 QUERY_MOVES = {

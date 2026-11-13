@@ -17,7 +17,7 @@ from satrap.display import service as service_module, plugins as plugins_module
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.server import ChatHTTPServer
 from satrap.display.service import ChatService
-from satrap.edictum import plugin_config
+from satrap.edictum.plugin import config as plugin_config
 
 
 class ProbeModel(AsyncLLM):

@@ -898,7 +898,7 @@ class PluginInterop:
         - 同一会话内的插件目标节点
         """
         from satrap.core.plugin_interop.contracts import CAPABILITY_KINDS
-        from satrap.edictum.plugin_config import PluginConfigManager
+        from satrap.edictum.plugin.config import PluginConfigManager
 
         result: dict[str, _RelationNode] = {}
         host_config = PluginConfigManager()
@@ -1003,7 +1003,7 @@ class PluginInterop:
         返回:
         - 已激活且所有必需依赖可用时为 True
         """
-        from satrap.edictum.plugin_config import PluginConfigManager
+        from satrap.edictum.plugin.config import PluginConfigManager
 
         if not PluginConfigManager().host_state(name)["execution_enabled"]:
             return False
@@ -1223,7 +1223,7 @@ class PluginInterop:
         plugin = binding.plugin if binding else None
         if plugin is None:
             return "not_installed", ()
-        from satrap.edictum.plugin_config import PluginConfigManager
+        from satrap.edictum.plugin.config import PluginConfigManager
 
         if not PluginConfigManager().host_state(owner)["execution_enabled"]:
             return "execution_disabled", ()

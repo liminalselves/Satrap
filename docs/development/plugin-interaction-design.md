@@ -1005,8 +1005,8 @@ def get_services(
 
 | 批次 | 实际落地结果 | 主要证据 |
 | --- | --- | --- |
-| A1 | 独立 Service / AsyncService; 六类 exports / requires; 五工厂显式仅关键字 plugin_host 注入; 服务权限与原工具/命令分派共用 | plugin_interop/ 六个模块, Edictum 安装器, plugin_permissions.py, test_plugin_interaction_flows.py |
-| A2 | 完整目标关系预检, 依赖/替代合并图, 多替代者和排斥拒绝, 增量依赖保护, 原开关保留, 批次失败/取消回滚 | capabilities.py, plugin_runtime.py, 真实安装/更新/开关与资源回滚场景 |
+| A1 | 独立 Service / AsyncService; 六类 exports / requires; 五工厂显式仅关键字 plugin_host 注入; 服务权限与原工具/命令分派共用 | plugin_interop/ 六个模块, Edictum 安装器, plugin/permissions.py, test_plugin_interaction_flows.py |
+| A2 | 完整目标关系预检, 依赖/替代合并图, 多替代者和排斥拒绝, 增量依赖保护, 原开关保留, 批次失败/取消回滚 | capabilities.py, plugin/runtime.py, 真实安装/更新/开关与资源回滚场景 |
 | B | Chat 与平台统一绑定 EnvironmentSnapshot; 官方基础, 编程, RAG 和群插件完成迁移; 旧 coding_* 路径属性已移除, 自动停用行为改由官方 replaces 声明实现 | display/service.py, SessionManager.py, 官方插件调用入口, 项目/审批/官方替代与恢复场景 |
 | C | 宿主产物接口有界读取图片并冻结来源; group_chat 使用该接口后复用原 AssetStore 登记和发送授权; 群 SDK 仅保留领域登记职责 | artifacts.py, group_chat/tools.py, group_chat/sdk.py, 真实绘图 -> 导入 -> 群回复链路 |
 

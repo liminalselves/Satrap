@@ -30,7 +30,7 @@ from satrap.edictum.registry import (
 )
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin import Plugin
-from satrap.edictum.plugin_compatibility import PluginEnvironment, PluginCompatibilityError
+from satrap.edictum.plugin.compatibility import PluginEnvironment, PluginCompatibilityError
 
 __all__ = [
     "ApprovalMode", "ApprovalRequest", "ApprovalResult", "RiskLevel",

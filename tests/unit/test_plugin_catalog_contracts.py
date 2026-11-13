@@ -9,17 +9,17 @@ import time
 import pytest
 from satrap.core.utils.async_worker import BoundedAsyncWorker, WorkerBusyError
 from satrap.core.utils.snapshot_cache import SnapshotCache
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 from typing import Any, cast
 import yaml
-from satrap.edictum.plugin_runtime import PluginRuntimeState, apply_plugin_capabilities_async
-from satrap.edictum.plugin_runtime import preview_plugin_reconciliation, reconcile_plugin_states_async
-from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
-from satrap.edictum.plugin_compatibility import PluginEnvironment, check_plugin_compatibility
+from satrap.edictum.plugin.runtime import PluginRuntimeState, apply_plugin_capabilities_async
+from satrap.edictum.plugin.runtime import preview_plugin_reconciliation, reconcile_plugin_states_async
+from satrap.edictum.plugin.spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
+from satrap.edictum.plugin.compatibility import PluginEnvironment, check_plugin_compatibility
 from unittest.mock import Mock
 import io
 import logging
-from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
+from satrap.edictum.plugin.config import parse_config_schema, schema_to_payload
 from satrap.core.log import Logger
 from satrap.core.log.stream import standard_log_stream
 
@@ -208,7 +208,7 @@ async def test_slow_source_probe_does_not_block_event_loop():
 
 @pytest.mark.asyncio
 async def test_incompatible_upgrade_is_blocked_before_uninstall():
-    from satrap.edictum.plugin_compatibility import CompatibilityResult
+    from satrap.edictum.plugin.compatibility import CompatibilityResult
 
     old = PluginSpec(name="demo", version="1", path="original")
     handle = object()
@@ -482,7 +482,7 @@ def test_environment_validation(session_type, platform):
 @pytest.mark.parametrize("async_mode", [False, True])
 async def test_incompatible_plugin_never_imported(tmp_path, async_mode):
     from satrap import LLM, AsyncLLM, SimpleSession, AsyncSimpleSession
-    from satrap.edictum.plugin_compatibility import PluginCompatibilityError
+    from satrap.edictum.plugin.compatibility import PluginCompatibilityError
 
     plugin = tmp_path / "platform_plugin"
     plugin.mkdir()
@@ -519,7 +519,7 @@ async def test_incompatible_plugin_never_imported(tmp_path, async_mode):
 
 def test_boolean_alias_keeps_switch_boolean_without_repeated_warning(monkeypatch):
     warning = Mock()
-    monkeypatch.setattr("satrap.edictum.plugin_config.logger.warning", warning)
+    monkeypatch.setattr("satrap.edictum.plugin.config.logger.warning", warning)
     schema = parse_config_schema({"config_schema": {"summary_enabled": {"type": "boolean", "default": True}}})
     field = schema["summary_enabled"]
     assert field.validate(False) is False and field.validate(True) is True

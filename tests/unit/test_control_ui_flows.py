@@ -35,7 +35,7 @@ from satrap.core.type import SessionConfig
 from satrap.core.utils import paths
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 from support.media import png
 from support.administration import _setup_adapter, _async_tools, _origin
 from importlib import import_module

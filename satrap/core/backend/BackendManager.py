@@ -41,7 +41,7 @@ from satrap.core.config.group_action_origin import (
     current_group_request_occupancy, current_model_action_authorization,
 )
 from satrap.core.config.group_events import GroupEventBuffer
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
@@ -56,7 +56,7 @@ from satrap.edictum.registry import (
     create_default_edictum_type_registry,
 )
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
+from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
 from satrap.core.utils.application_progress import progress_phase
 from satrap.core.pipeline.attachments import asr_resolver_from_manager
 from satrap.core.platform.notices import PlatformEventHub, set_current_hub
@@ -87,15 +87,15 @@ from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
 
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.plugin_authorization import permission_id_list, permission_id_list as _lines, evaluate_plugin_permissions, PluginPermissionDenied
-from satrap.edictum.plugin_config import PluginConfigManager, validate_config_values
-from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin.config import PluginConfigManager, validate_config_values
+from satrap.edictum.plugin.spec import parse_plugin_specs
 from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS, GroupConfigConflict
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.config.group_session import session_values, group_binding_chain, resolve_group_session
 from satrap.core.config.group_events import EVENT_KINDS, event_values
 from satrap.core.config.group_policy import policy_values, resolve_group_policy
 from satrap.core.config.wake_overrides import GROUP_KEYS
-from satrap.edictum.plugin_settings import validate_plugin_settings, resolve_runtime_specs
+from satrap.edictum.plugin.settings import validate_plugin_settings, resolve_runtime_specs
 from satrap.core.type import (
     AdministratorRuntimeStatus, DiagnosticStatusBody, GroupAccountsResult, GroupActionPage,
     GroupActionRecord, GroupActionTypesResult, GroupBindingOptionsResult, GroupMembersPage,

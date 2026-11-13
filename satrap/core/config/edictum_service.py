@@ -5,9 +5,9 @@ from collections.abc import Callable
 from typing import Any, cast
 
 
-from satrap.edictum.plugin_settings import validate_plugin_settings
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_config import PluginConfigManager, validate_config_values
+from satrap.edictum.plugin.settings import validate_plugin_settings
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager, validate_config_values
 from satrap.edictum.registry import EdictumTypeRegistry
 from satrap.edictum.config import EdictumConfigManager
 

@@ -9,7 +9,7 @@ import sqlite3
 import base64
 from typing import Any
 
-from satrap.edictum.plugin_settings import model_options
+from satrap.edictum.plugin.settings import model_options
 from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE, SUPPORTED_EXTENSIONS, document_capabilities, extract_document
 from satrap.core.rag import RagService, validate_rag_config
 

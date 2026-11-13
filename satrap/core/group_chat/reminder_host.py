@@ -27,9 +27,9 @@ from satrap.core.platform import PlatformAdapter
 from satrap.core.platform.event import MessageChain
 from satrap.core.platform.scheduled import ScheduledTarget
 from satrap.core.log import logger
-from satrap.edictum.plugin_config import PluginConfigManager, validate_config_values
-from satrap.edictum.plugin_compatibility import PluginEnvironment
-from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin.config import PluginConfigManager, validate_config_values
+from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.spec import parse_plugin_specs
 
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager

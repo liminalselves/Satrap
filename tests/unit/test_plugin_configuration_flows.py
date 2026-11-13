@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 from typing import Any, Iterator
 import json
-from satrap.edictum.plugin_config import ConfigField, PluginConfigManager, parse_config_schema, schema_to_payload
+from satrap.edictum.plugin.config import ConfigField, PluginConfigManager, parse_config_schema, schema_to_payload
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import SimpleSession
 from satrap.core.config.plugin_service import PluginManagementService
 from satrap.display.plugins import ChatPluginRegistry
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.core.config.document import ConfigRevisionConflict
 from copy import deepcopy
 from contextvars import copy_context
@@ -27,7 +27,7 @@ from satrap.core.plugin_authorization import bind_authorization_step, bind_nativ
 from satrap.core.plugin_authorization import evaluate_plugin_permissions
 from satrap.core.utils.TCBuilder.manager import ToolsManager
 from satrap.core.utils.TCBuilder.tool import Tool
-from satrap.edictum.plugin_permissions import PluginPermissions, parse_plugin_permissions, validate_permission_install
+from satrap.edictum.plugin.permissions import PluginPermissions, parse_plugin_permissions, validate_permission_install
 
 class _FakeLLM(LLM):
     """最小同步 fake LLM"""
@@ -417,7 +417,7 @@ async def test_plugin_host_execution_http_cas_and_batched_health(configured_serv
     token = "host-plugin-test-token-longer-than-32-characters"
     auth = ServerAuth.create("127.0.0.1", 0, token=token)
     monkeypatch.setattr(control_server, "_CONTROL_AUTH", auth)
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", service.manager._dir)
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", service.manager._dir)
     monkeypatch.setattr(control_server.PluginCatalog, "snapshot_async", lambda _: asyncio.sleep(0, result=service.catalog))
     monkeypatch.setattr(control_server, "_plugin_runtime_targets", lambda *args: [("Chat", "http://chat/api/chat/plugins/reconcile"), ("Edictum", "http://backend/api/edictum/plugins/reconcile")])
     calls = []

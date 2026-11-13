@@ -8,13 +8,13 @@ import hashlib
 import traceback
 import time
 
-from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.catalog import PluginCatalog, PluginCatalogEntry
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.core.log import logger
 from satrap.core.utils.file_snapshot import file_fingerprint, capture_stable_source
-from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
+from satrap.edictum.plugin.spec import PluginSpec, parse_plugin_specs
 from satrap.core.config.model_snapshot import ModelConfigSnapshot
-from satrap.edictum.plugin_resources import MODEL_TYPES
+from satrap.edictum.plugin.resources import MODEL_TYPES
 
 if TYPE_CHECKING:
     from satrap.edictum.config import EdictumConfigManager

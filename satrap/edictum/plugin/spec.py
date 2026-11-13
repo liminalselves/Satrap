@@ -1,6 +1,6 @@
 """插件运行规格: 统一 Chat 与平台 Edictum 的配置结构和指纹"""
 from __future__ import annotations
-from satrap.edictum.plugin_compatibility import CompatibilityResult
+from satrap.edictum.plugin.compatibility import CompatibilityResult
 from satrap.core.plugin_interop.contracts import InteropSpec, parse_interop
 
 from dataclasses import dataclass, field, replace
@@ -9,9 +9,9 @@ import hashlib
 from typing import Any, Callable, cast
 import json
 
-from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
+from satrap.edictum.plugin.catalog import PluginCatalog, PluginCatalogEntry
 from satrap.edictum.plugin import CAPABILITY_KINDS
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.config import PluginConfigManager
 
 
 PluginConfigResolver = Callable[[PluginCatalogEntry, dict[str, Any]], dict[str, Any]]
@@ -136,7 +136,7 @@ def parse_plugin_specs(
         return []
     if not isinstance(value, list):
         raise ValueError("plugins 必须是数组")
-    from satrap.edictum.plugin_migrations import migrate_group_tool_specs
+    from satrap.edictum.plugin.migrations import migrate_group_tool_specs
     from satrap.edictum.memory_migration import migrate_memory_specs
     value = migrate_memory_specs(migrate_group_tool_specs(value, catalog, migration_manager), catalog)
     from satrap.edictum.approval_migration import migrate_approval_specs

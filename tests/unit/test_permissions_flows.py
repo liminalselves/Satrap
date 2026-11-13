@@ -16,8 +16,8 @@ from satrap.core.approval.state import approval_root, session_approval
 from satrap.core.call_context import bind_tool_workflow
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
 from satrap.edictum.approval_migration import migrate_approval_globals, migrate_approval_overrides, migrate_approval_specs
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap import AsyncLLM, LLM
 
@@ -253,7 +253,7 @@ def test_old_config_switches_globals_and_overrides_migrate_once(tmp_path):
     """旧命令开关, 模型配置和实例覆盖迁移, 新插件显式值优先且不重复补回"""
     from satrap.core.config.session_overrides import SessionOverrideStore
     from satrap.display.plugins import ChatPluginRegistry
-    from satrap.edictum.plugin_spec import parse_plugin_specs
+    from satrap.edictum.plugin.spec import parse_plugin_specs
 
     catalog = PluginCatalog()
     old = [{"name": "satrap_coding", "config": {"approval_model": "old-model", "shell_timeout": 8},
@@ -271,7 +271,7 @@ def test_old_config_switches_globals_and_overrides_migrate_once(tmp_path):
     assert explicit[1]["capabilities"]["commands"]["approve"] is False
     specs = parse_plugin_specs(old, catalog, require_available=True)
     assert {spec.name for spec in specs} == {"permissions", "satrap_coding"}
-    from satrap.edictum.plugin_runtime import reconcile_plugin_states
+    from satrap.edictum.plugin.runtime import reconcile_plugin_states
 
     legacy_root = tmp_path / "legacy-state"
     legacy_root.mkdir()

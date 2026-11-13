@@ -15,9 +15,9 @@ from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 from satrap.core.framework.providers.edictum import EdictumProvider
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
-from satrap.edictum.plugin_compatibility import PluginEnvironment
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
+from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
 import importlib
 from dataclasses import replace
@@ -391,8 +391,8 @@ async def test_corrupt_platform_source_preserves_all_runtime_plugins(tmp_path: P
 async def _setup(tmp_path: Path, monkeypatch: Any, asynchronous: bool = True) -> tuple[Any, Any, Any, list[Any], list[Any], list[Any], list[Any]]:
     """两个实际平台管理器及三个 Simple 会话, 所有存储隔离且模型不联网"""
     globals_ = PluginConfigManager(tmp_path / "globals")
-    monkeypatch.setattr("satrap.edictum.plugin_apply.PluginConfigManager", lambda: globals_)
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: globals_)
+    monkeypatch.setattr("satrap.edictum.plugin.apply.PluginConfigManager", lambda: globals_)
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: globals_)
     types = create_default_edictum_type_registry()
     configs = EdictumConfigManager(types, tmp_path / "agents.json")
     configs.create("assistant", {"edictum_type": "async_simple" if asynchronous else "simple", "model_name": "demo",

@@ -44,7 +44,7 @@ from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.paths import get_db_path
 from satrap.edictum.registry import EDICTUM_PROVIDER
-from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
+from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
 from satrap.core.storage import (
     LOCAL_PLATFORM_ID,
     StorageLayout,
@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 
 _UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 from satrap.core.config.group_session import resolve_group_session
 
 

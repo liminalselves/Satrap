@@ -9,14 +9,19 @@ edictum 是建立在核心框架 `Session` 之上的高可扩展单 workflow Age
 | 模块 | 职责 |
 | --- | --- |
 | `simple_session/` | 内置会话实现: `SimpleSession` (同步) 与 `AsyncSimpleSession` (异步), 处理器注册表, 能力启停, 恢复接入 |
-| `plugin.py` | 插件本体: meta.yaml 加载, 五类能力收集 (`collect_tools` / `collect_skills` / `collect_handlers` / `collect_commands` / `collect_mcp_clients`), `Plugin` 句柄与命名空间启停 |
-| `plugin_catalog.py` | 插件目录: 扫描官方目录 (`satrap/expend/plugins/`) 与用户目录 (`.satrap/plugins/`), 产出稳定的元数据 / 配置结构 / 能力声明条目; 官方插件优先于同名用户插件 |
-| `plugin_spec.py` | 运行规格: 把字符串或对象形式的插件配置解析为统一的 `PluginSpec`, 并计算稳定指纹 |
-| `plugin_compatibility.py` | 兼容性判定: 在导入插件代码前校验 `compatibility` (Satrap 版本范围) 与 `applicability` (会话类型 / 平台适配器) |
-| `plugin_settings.py` | 配置分层: 合并 default / global / named / 会话覆盖四层配置, 逐字段来源追踪与保存校验 |
-| `plugin_runtime.py` | 运行协调器: 比较目标规格与已应用规格, 执行安装 / 启停 / 重装 / 能力差量应用, 失败回滚 |
-| `plugin_resources.py` | 插件模型依赖: 命名模型配置校验, LLM / Embedding / ReRank 客户端懒构造, 每次安装独享生命周期 |
-| `plugin_config.py` | 配置 schema: `ConfigField` 类型定义, 声明解析与值校验 |
+| `plugin/__init__.py` | 插件子系统公共入口: 保持 `satrap.edictum.plugin` 的 `Plugin`, 安装入口和能力收集接口 |
+| `plugin/base.py` | 插件本体: meta.yaml 加载, 六类能力收集, `Plugin` 句柄与命名空间启停 |
+| `plugin/catalog.py` | 插件目录: 扫描官方目录 (`satrap/expend/plugins/`) 与用户目录 (`.satrap/plugins/`), 产出稳定的元数据 / 配置结构 / 能力声明条目; 官方插件优先于同名用户插件 |
+| `plugin/spec.py` | 运行规格: 把字符串或对象形式的插件配置解析为统一的 `PluginSpec`, 并计算稳定指纹 |
+| `plugin/compatibility.py` | 兼容性判定: 在导入插件代码前校验 `compatibility` (Satrap 版本范围) 与 `applicability` (会话类型 / 平台适配器) |
+| `plugin/permissions.py` | 权限声明: 解析管理入口, 命令和子命令的权限规则 |
+| `plugin/config.py` | 配置 schema 与持久化: `ConfigField` 类型定义, 声明解析, 值校验和全局 / 命名配置读写 |
+| `plugin/settings.py` | 配置分层: 合并 default / global / named / 会话覆盖四层配置, 逐字段来源追踪与保存校验 |
+| `plugin/resources.py` | 插件模型依赖: 命名模型配置校验, LLM / Embedding / ReRank 客户端懒构造, 每次安装独享生命周期 |
+| `plugin/apply.py` | 单次应用快照: 固定目录, 全局参数, 模型配置和来源版本 |
+| `plugin/runtime.py` | 运行协调器: 比较目标规格与已应用规格, 执行安装 / 启停 / 重装 / 能力差量应用, 失败回滚 |
+| `plugin/archive.py` | ZIP 插件包预览和原子安装, 校验期间不执行插件代码 |
+| `plugin/migrations.py` | 旧插件配置和工具规格的一次规范化迁移 |
 | `registry.py` | 会话类型注册表: `EdictumTypeRegistry` 用稳定类型名 + 工厂契约描述会话实现 |
 | `config.py` | 命名会话冷配置: `EdictumConfigManager` 持久化 `edictum_session_config.json`, 后端未启动也可增删改查 |
 

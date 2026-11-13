@@ -10,16 +10,16 @@ from typing import Any, Awaitable, Callable, Iterable
 import time
 from uuid import uuid4
 import sys
-from satrap.edictum.plugin_config import (
+from satrap.edictum.plugin.config import (
     PluginConfigManager,
     parse_config_schema,
     schema_to_payload,
 )
-from satrap.edictum.plugin_settings import (
+from satrap.edictum.plugin.settings import (
     EffectivePluginConfig,
     resolve_session_plugin_config,
 )
-from satrap.edictum.plugin_resources import PluginResources, MODEL_TYPES
+from satrap.edictum.plugin.resources import PluginResources, MODEL_TYPES
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager

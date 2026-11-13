@@ -9,17 +9,17 @@ from .recovery import plugin_fingerprint
 from satrap.core.plugin_interop.contracts import parse_interop
 from satrap.core.plugin_interop.capabilities import wrap_plugin_command
 from satrap.core.plugin_interop.service import Service, AsyncService
-from satrap.edictum.plugin_compatibility import check_plugin_compatibility
-from satrap.edictum.plugin_permissions import parse_plugin_permissions, validate_permission_install
+from satrap.edictum.plugin.compatibility import check_plugin_compatibility
+from satrap.edictum.plugin.permissions import parse_plugin_permissions, validate_permission_install
 from satrap.core.plugin_authorization import PluginEntryBinding, bind_plugin_tool, bind_plugin_service
 from typing import Any
-from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
-from satrap.edictum.plugin_settings import (
+from satrap.edictum.plugin.config import parse_config_schema, schema_to_payload
+from satrap.edictum.plugin.settings import (
     EffectivePluginConfig,
     PluginInstallConfig,
     resolve_session_plugin_config,
 )
-from satrap.edictum.plugin_resources import PluginResources, MODEL_TYPES
+from satrap.edictum.plugin.resources import PluginResources, MODEL_TYPES
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum.plugin import (

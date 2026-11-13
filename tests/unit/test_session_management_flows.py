@@ -10,7 +10,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager as _session_manager_config_SessionManager
 from satrap.core.framework.Base import Session as _session_manager_config_Session
 from satrap.core.type import LLMConfig
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 import importlib
 import sqlite3
 from typing import cast
@@ -23,7 +23,7 @@ from satrap.core.framework.SessionManager import SessionManager as _session_prov
 from satrap.core.framework.providers import BindingState, BindingStatus, EdictumProvider, SessionClassProvider
 from satrap.core.framework.providers import SessionProviderDefinition, SessionProviderRegistry
 from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
-from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.framework.Base import AsyncSession as _session_providers_AsyncSession
 from satrap.core.framework.Base import Session as _session_providers_Session
@@ -38,9 +38,9 @@ from satrap.core.config.loader import ConfigLoader
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from satrap.core.config.session_overrides import OverrideConflictError
-from satrap.edictum.plugin_settings import PluginSettingsService
+from satrap.edictum.plugin.settings import PluginSettingsService
 from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain
-from satrap.edictum.plugin_config import ConfigField
+from satrap.edictum.plugin.config import ConfigField
 from satrap.core.storage import StorageMaintenanceService, maintenance as module
 import asyncio
 from satrap.core.framework import AsyncSession as _multisession_AsyncSession, Session as _multisession_Session
@@ -249,7 +249,7 @@ async def test_provider_refreshes_inherited_plugin_values_and_model_references(t
     schema = parse_config_schema(meta)
     global_config = PluginConfigManager(tmp_path / "plugin-config")
     global_config.save_global("rag", schema, {"candidate_k": 21, "top_k": 4})
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: global_config)
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: global_config)
     monkeypatch.setattr("satrap.edictum.simple_session.PluginConfigManager", lambda: global_config)
     registry = create_default_edictum_type_registry()
     manager = EdictumConfigManager(registry, tmp_path / "edictum.json")

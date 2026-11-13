@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from satrap.edictum.flow.registry import FlowNodeType, PortSpec, RenamedEntry
 from satrap.edictum.flow.types import PLUGIN_PORT_TYPES, PORT_TYPE_LABELS, PortType
-from satrap.edictum.plugin_config import ConfigField, parse_config_schema
+from satrap.edictum.plugin.config import ConfigField, parse_config_schema
 
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -375,7 +375,7 @@ def load_flow_node_functions(plugin_dir: Any, module_name: str) -> dict[str, Any
     返回:
     - dict[str, Any]: {节点名: 可调用对象或 FlowNode 子类}; 文件不存在返回 {}
     """
-    from satrap.edictum.plugin import _load_module
+    from satrap.edictum.plugin.base import _load_module
     from satrap.edictum.flow.types import FlowNode
 
     mod = _load_module(plugin_dir / "flow_nodes.py", f"{module_name}.flow_nodes", fresh=True)

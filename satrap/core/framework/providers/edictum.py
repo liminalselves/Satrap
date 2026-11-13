@@ -16,11 +16,11 @@ import json
 import time
 
 from satrap.core.framework.providers.base import SessionProviderDefinition
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
-from satrap.edictum.plugin_settings import resolve_runtime_specs
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
+from satrap.edictum.plugin.settings import resolve_runtime_specs
 from satrap.core.utils.performance import PhaseTimings
-from satrap.edictum.plugin_runtime import (
+from satrap.edictum.plugin.runtime import (
     PluginRuntimeState,
     preview_plugin_reconciliation,
     reconcile_plugin_states_async,
@@ -28,7 +28,7 @@ from satrap.edictum.plugin_runtime import (
 )
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncSession, Session
-from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
+from satrap.edictum.plugin.spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
 from satrap.edictum.registry import (
     EDICTUM_PROVIDER,
     EdictumTypeDefinition,
@@ -261,7 +261,7 @@ class EdictumProvider:
             payload.setdefault("flow_name", name)
             # 插件目录与配置管理器由宿主注入, 会话据此解析插件节点与全局默认
             payload.setdefault("plugin_catalog", self.plugin_catalog)
-            from satrap.edictum.plugin_config import PluginConfigManager
+            from satrap.edictum.plugin.config import PluginConfigManager
             payload.setdefault("plugin_config", PluginConfigManager())
             from satrap.edictum.simple_session.async_plugins import install_workflow_plugin
             payload["plugin_installer"] = install_workflow_plugin

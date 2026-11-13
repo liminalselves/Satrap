@@ -11,8 +11,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from satrap.edictum.plugin_spec import PluginSpec
-from satrap.edictum.plugin_settings import EffectivePluginConfig, PluginInstallConfig
+from satrap.edictum.plugin.spec import PluginSpec
+from satrap.edictum.plugin.settings import EffectivePluginConfig, PluginInstallConfig
 from satrap.edictum.plugin import CAPABILITY_KINDS, Plugin, load_plugin_meta
 from satrap.core.plugin_interop.capabilities import PluginInterop, _RelationNode, _validate_relation_target
 from satrap.core.plugin_interop.contracts import CapabilityKind, InteropSpec, parse_interop
@@ -21,7 +21,7 @@ from satrap.core.utils.application_progress import progress_phase
 
 from satrap.core.log import logger
 from satrap.core.config.model_snapshot import ModelConfigReader
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 
 
 _CAPABILITY_SINGULAR = {

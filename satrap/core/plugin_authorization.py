@@ -20,7 +20,7 @@ import traceback
 from satrap.core.call_context import current_call_origin, current_tool_workflow, is_group_origin, CallOrigin
 from satrap.core.log import logger
 if TYPE_CHECKING:
-    from satrap.edictum.plugin_permissions import PluginPermissions
+    from satrap.edictum.plugin.permissions import PluginPermissions
     from satrap.core.config.administrator_groups import AdministratorService
     from satrap.core.utils.TCBuilder.tool_base import _ToolBase
     from satrap.core.plugin_interop.service import Service, AsyncService
@@ -308,8 +308,8 @@ def _factory_declarations(meta_path: Path) -> tuple[str, PluginPermissions]:
     - 插件名与已严格解析的声明; 文件缺失或声明非法时抛出与直接解析一致的错误
     """
     from satrap.edictum.plugin import load_plugin_meta
-    from satrap.edictum.plugin_config import parse_config_schema
-    from satrap.edictum.plugin_permissions import parse_plugin_permissions
+    from satrap.edictum.plugin.config import parse_config_schema
+    from satrap.edictum.plugin.permissions import parse_plugin_permissions
 
     try:
         stat = meta_path.stat()
@@ -444,7 +444,7 @@ def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None, 
         administrators = getattr(adapter_manager, "administrator_service", None)
         spec = binding.permissions
         if additional_permissions:
-            from satrap.edictum.plugin_permissions import CommandPermissions
+            from satrap.edictum.plugin.permissions import CommandPermissions
             required = tuple(dict.fromkeys((*spec.required(binding.kind, binding.name, subcommand), *additional_permissions)))
             if binding.kind == "tools":
                 spec = replace(spec, tools={**spec.tools, binding.name: required})

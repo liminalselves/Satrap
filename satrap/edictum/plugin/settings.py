@@ -1,6 +1,6 @@
 """插件配置域适配器: 复用通用会话覆盖服务, 合并全局和命名配置"""
 from __future__ import annotations
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 
 from dataclasses import replace
 from copy import deepcopy
@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from satrap.core.config.session_overrides import SessionOverrideService, SessionOverrideStore
-from satrap.edictum.plugin_resources import model_reference_fingerprint, MODEL_TYPES, named_model_config
-from satrap.edictum.plugin_config import ConfigField, PluginConfigManager, schema_to_payload, validate_config_values
+from satrap.edictum.plugin.resources import model_reference_fingerprint, MODEL_TYPES, named_model_config
+from satrap.edictum.plugin.config import ConfigField, PluginConfigManager, schema_to_payload, validate_config_values
 
-from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
-from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
-from satrap.edictum.plugin_apply import PluginApplySnapshot
+from satrap.edictum.plugin.spec import PluginSpec, parse_plugin_specs
+from satrap.edictum.plugin.catalog import PluginCatalog, PluginCatalogEntry
+from satrap.edictum.plugin.apply import PluginApplySnapshot
 from satrap.core.log import logger
 from satrap.core.config.model_snapshot import ModelConfigReader
 

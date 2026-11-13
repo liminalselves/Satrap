@@ -20,7 +20,7 @@ import yaml
 
 from satrap.core.config._yaml import safe_yaml_load
 from satrap.core.config_paths import get_config_dir
-from satrap.edictum.plugin_config import CONFIG_DIR
+from satrap.edictum.plugin.config import CONFIG_DIR
 from satrap.edictum.plugin import PLUGINS_PRESET_DIR, USER_PLUGINS_DIR
 from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 

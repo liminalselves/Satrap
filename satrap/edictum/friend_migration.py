@@ -17,8 +17,8 @@ from satrap.core.storage.file_lock import FileLock, database_session_lock
 
 if TYPE_CHECKING:
     from satrap.core.config.session_overrides import SessionOverrideStore
-    from satrap.edictum.plugin_config import PluginConfigManager
-    from satrap.edictum.plugin_spec import PluginSpec
+    from satrap.edictum.plugin.config import PluginConfigManager
+    from satrap.edictum.plugin.spec import PluginSpec
 
 FRIEND_SWITCHES = {
     "request_handling_enabled": "friend_manager_handle_request",
@@ -37,7 +37,7 @@ def legacy_bool(value: object) -> bool:
     返回:
     - 旧功能开关的实际布尔状态
     """
-    from satrap.edictum.plugin_config import ConfigField
+    from satrap.edictum.plugin.config import ConfigField
     return ConfigField("好友旧写开关", type="bool", default=False).validate(value) is True
 
 

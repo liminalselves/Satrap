@@ -29,9 +29,9 @@ from satrap.core.type import LLMCallStreamEvent
 from satrap.edictum import SimpleSession
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.edictum.memory_migration import migrate_memory_globals, migrate_memory_overrides
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.spec import parse_plugin_specs
 from contextlib import closing
 import threading
 from satrap.core.memory.scoped import MemoryError
@@ -495,7 +495,7 @@ class _FakeLLM(LLM):
 def _memory_plugin_session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
     """隔离数据目录的会话 + 安装 memory 插件"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     from satrap.expend.plugins.memory import state as state_mod
     from satrap.core.memory import store as ms_mod
 
@@ -511,7 +511,7 @@ def _memory_plugin_session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
 def test_memory_mode_config_readonly(tmp_path: Any, monkeypatch: Any):
     """memory_mode=base: 写工具被拒绝; disabled: 注入块为空"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     from satrap.expend.plugins.memory import state as state_mod
     from satrap.core.memory import store as ms_mod
 
@@ -609,7 +609,7 @@ def test_memory_inject_handler(_memory_plugin_session: SimpleSession):
 def test_memory_writes_not_blocked_by_plan_mode(tmp_path: Any, monkeypatch: Any):
     """计划模式限制工作区文件写入和 Shell; 记忆是元信息, 增删改不受拦截"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     from satrap.expend.plugins.memory import state as state_mod
     from satrap.core.memory import store as ms_mod
 

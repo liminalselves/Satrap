@@ -26,13 +26,13 @@
 | --- | --- |
 | 类型注册, 只有 `simple` / `async_simple` | `satrap/edictum/registry.py:169-239` |
 | 按类型名写死的参数规范化和默认插件 | `satrap/edictum/config.py:138-146`, `satrap/core/framework/providers/edictum.py:254-255` |
-| 单 workflow 假设 `session._wf` | 21 个文件, 用 `grep -rln "\._wf\b\|\"_wf\"" --include=*.py satrap` 列出; 主要在 `edictum/simple_session/*`, `edictum/plugin.py:820,842,948`, `core/group_chat/reply.py:217`, `core/group_chat/reminder_service.py:60`, `expend/plugins/group_chat/tools.py:273,346`, `core/plugin_interop/*`, `core/plugin_authorization.py`, `core/approval/coordinator.py`, `core/memory/service.py`, `core/framework/SessionManager.py`, `core/backend/BackendManager.py`, `display/service.py` |
+| 单 workflow 假设 `session._wf` | 21 个文件, 用 `grep -rln "\._wf\b\|\"_wf\"" --include=*.py satrap` 列出; 主要在 `edictum/simple_session/*`, `edictum/plugin/base.py:820,842,948`, `core/group_chat/reply.py:217`, `core/group_chat/reminder_service.py:60`, `expend/plugins/group_chat/tools.py:273,346`, `core/plugin_interop/*`, `core/plugin_authorization.py`, `core/approval/coordinator.py`, `core/memory/service.py`, `core/framework/SessionManager.py`, `core/backend/BackendManager.py`, `display/service.py` |
 | 多 workflow 上下文已支持 | `base.py:113-133` (`workflow_id_assign`), `async_session.py:219-247` (`_track_workflow_context`) |
 | 调度器只在唤醒后调用会话 | `satrap/core/pipeline/scheduler.py:560-610`, 兜底发送 `:832-833`, 出错反馈 `:1148` |
 | 消息档案 | `satrap/core/config/platform_messages.py:124`; 表结构 `satrap/core/config/platform_schema.py:150-164`, 当前 `user_version = 12` |
-| 插件元数据解析 (不认识的键静默忽略) | `satrap/edictum/plugin.py:178-195`, `plugin_catalog.py:207-257` |
-| 配置字段 | `satrap/edictum/plugin_config.py:38` (类型), `:66-85` (`ConfigField`), `:169-223` (解析), `:547-574` (payload), `:577-591` (校验) |
-| 插件全局配置读写 | `plugin_config.py:418-517`, 服务 `satrap/core/config/plugin_service.py:87-144` |
+| 插件元数据解析 (不认识的键静默忽略) | `satrap/edictum/plugin/base.py:178-195`, `plugin/catalog.py:207-257` |
+| 配置字段 | `satrap/edictum/plugin/config.py:38` (类型), `:66-85` (`ConfigField`), `:169-223` (解析), `:547-574` (payload), `:577-591` (校验) |
+| 插件全局配置读写 | `plugin/config.py:418-517`, 服务 `satrap/core/config/plugin_service.py:87-144` |
 | 有界线程池 | `satrap/core/utils/async_worker.py:18`, 实例 `:78-82` |
 | 诊断接口 | `satrap/core/log/debug/hooks.py` (`record_debug`) |
 | 后台发送合约 | `satrap/core/platform/scheduled.py:15-120` |
@@ -46,7 +46,7 @@
 
 ### P0-1 `ConfigField` 新增 `time`, `group`, `visible_when`
 
-- 改 `satrap/edictum/plugin_config.py`:
+- 改 `satrap/edictum/plugin/config.py`:
   - `_FIELD_TYPES` 加 `time`; `validate` / `validate_strict` 接受 `HH:MM` (`00:00`–`24:00`)
   - `ConfigField` 加 `group: str = ""` 和 `visible_when: dict[str, Any | list[Any]] | None`
   - `parse_config_schema` 解析并校验: `visible_when` 引用的字段必须存在 (在整个 schema 解析完后检查)
@@ -69,9 +69,9 @@
 
 ### P0-3 插件 `flow_nodes` 解析与安装校验
 
-- 在 `plugin_catalog.py` 解析 `meta.yaml` 的 `flow_nodes` (列表, 每项 `name`) 和 `flow.workflow`; 结果挂到 `PluginCatalogEntry`, `to_payload` 输出
+- 在 `plugin/catalog.py` 解析 `meta.yaml` 的 `flow_nodes` (列表, 每项 `name`) 和 `flow.workflow`; 结果挂到 `PluginCatalogEntry`, `to_payload` 输出
 - 实现示例文档第 2 节的全部推断规则: 角色, 端口显示名和位置, 自动 `when` 口, `passthrough` 只按必填输入推断, `calls_model` 由模型类字段推断, 卡片字段
-- 加载 `flow_nodes.py` (复用 `plugin.py:225-294` 的 `_load_module`): 同名函数, `@node("x")`, `FlowNode` 子类三种写法
+- 加载 `flow_nodes.py` (复用 `plugin/base.py:225-294` 的 `_load_module`): 同名函数, `@node("x")`, `FlowNode` 子类三种写法
 - 安装校验: 示例文档第 18 节列出的全部 `flow_contract_*` 错误; 不通过时安装失败并回滚 (和 services 的严格规则一致, 不是 tools 的"只警告")
 - `flow_nodes` **不加入** `CAPABILITY_KINDS`
 - 完成标准: 示例文档里每个合法示例都能解析, 每个非法示例报对应错误码; 用 `tests/fixtures` 下的临时插件目录测试

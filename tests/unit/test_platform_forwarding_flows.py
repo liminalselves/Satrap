@@ -30,17 +30,17 @@ from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.type import LLMCallResponse, UserCall
 from satrap.core.framework.SessionManager import SessionManager
-from satrap.edictum.plugin_compatibility import PluginEnvironment
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_settings import PluginSettingsService
+from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.settings import PluginSettingsService
 from support.group_models import Script, Model, AsyncModel
 from satrap.core.framework.Base import Session
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_migrations import migrate_forward_tool_specs
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.migrations import migrate_forward_tool_specs
 from satrap.expend.plugins.message_forward.tools import get_tools
 from satrap.expend.plugins.message_forward.commands import build_commands
 from satrap.core.plugin_authorization import PluginEntryBinding, bind_native_command, bind_authorization_step
-from satrap.edictum.plugin_permissions import validate_permission_install
+from satrap.edictum.plugin.permissions import validate_permission_install
 from support.administration import _setup_adapter, _origin
 from support.providers import RunnableRegistry
 
@@ -484,7 +484,7 @@ async def test_native_command_requires_actual_native_scope_then_cross_forwards(t
 @pytest.mark.parametrize("kind,chat_id", [("group", "456"), ("private", "123")])
 async def test_default_plugin_allows_ordinary_user_model_read_send_and_compose(tmp_path, monkeypatch, asynchronous, kind, chat_id):
     """真实插件安装与模型调用链覆盖默认普通用户, 群聊私聊及同步异步"""
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", tmp_path / "config")
     adapter = setup()
     adapter._loop = asyncio.get_running_loop()
     adapter._bot.get_msg.return_value = message(kind, chat_id, forward=True)

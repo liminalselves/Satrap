@@ -19,7 +19,7 @@ from satrap.core.storage.file_lock import FileLease
 from typing import BinaryIO
 import mimetypes, base64
 
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 
 from dataclasses import asdict, dataclass, field
 from functools import wraps
@@ -43,20 +43,20 @@ from satrap.core.memory.service import MemoryService
 from satrap.core.utils.async_worker import RAG_WORKERS
 from satrap.core.utils.performance import PhaseTimings
 from satrap.core.utils.application_progress import progress_instance, progress_locks, progress_phase, progress_result, progress_source_check
-from satrap.edictum.plugin_settings import (
+from satrap.edictum.plugin.settings import (
     resolve_runtime_specs,
     validate_plugin_settings,
     PluginSettingsService,
     validate_model_values,
     model_options,
 )
-from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states_async
-from satrap.edictum.plugin_apply import PluginApplySnapshot, plugin_source_version
-from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
+from satrap.edictum.plugin.runtime import PluginRuntimeState, reconcile_plugin_states_async
+from satrap.edictum.plugin.apply import PluginApplySnapshot, plugin_source_version
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
 from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.core.APICall.LLMCall.errors import model_error_info
-from satrap.edictum.plugin_spec import plugin_specs_fingerprint
+from satrap.edictum.plugin.spec import plugin_specs_fingerprint
 from satrap.core.utils.paths import get_data_dir, get_project_root
 from satrap.display.recorder import (
     DisplayRecorder,

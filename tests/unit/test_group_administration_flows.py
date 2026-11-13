@@ -17,7 +17,7 @@ from support.administration import _async_tools, _origin, _setup_adapter
 from dataclasses import replace
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.utils.TCBuilder.manager import ToolsManager
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import PluginEnvironment
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.framework.providers import EdictumProvider
@@ -45,7 +45,7 @@ def _clear_manager():
 @pytest.mark.usefixtures('_clear_manager')
 def test_meta_declares_implemented_tools_and_bool_switch():
     """meta.yaml 声明的工具与实现一致, 写开关解析为真实布尔"""
-    from satrap.edictum.plugin_config import parse_config_schema
+    from satrap.edictum.plugin.config import parse_config_schema
     meta_path = Path(__file__).parent.parent.parent / "satrap" / "expend" / "plugins" / "group_admin" / "meta.yaml"
     meta = cast(dict[str, Any], yaml.safe_load(meta_path.read_text(encoding="utf-8")))
     assert set(meta["tools"]) == set(_DEFINITIONS)

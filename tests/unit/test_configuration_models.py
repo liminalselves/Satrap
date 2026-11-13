@@ -9,13 +9,13 @@ from multiprocessing.synchronize import Barrier
 import pytest
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.model_service import ModelConfigService
-from satrap.edictum.plugin_resources import build_model_client
+from satrap.edictum.plugin.resources import build_model_client
 from satrap.core.APICall.EmbedCall import Embedding
 from satrap.core.type import LLMConfig
 from satrap.core.config.model_snapshot import ModelConfigSnapshot, llm_config_fingerprint
 from satrap.core.type import ASRConfig, EmbeddingConfig, ReRankConfig
-from satrap.edictum.plugin_config import parse_config_schema
-from satrap.edictum.plugin_resources import PluginResources, model_reference_fingerprint
+from satrap.edictum.plugin.config import parse_config_schema
+from satrap.edictum.plugin.resources import PluginResources, model_reference_fingerprint
 from typing import Any
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 

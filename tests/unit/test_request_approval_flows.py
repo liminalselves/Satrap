@@ -233,7 +233,7 @@ async def test_real_agent_queries_request_id_and_handles_request_in_private(tmp_
     from satrap.core.type import LLMCallResponse
     from satrap.core.pipeline.scheduler import PipelineScheduler
     from satrap.edictum import SimpleSession, AsyncSimpleSession
-    from satrap.edictum.plugin_compatibility import PluginEnvironment
+    from satrap.edictum.plugin.compatibility import PluginEnvironment
 
     adapter, event, _ = setup(tmp_path, private=True)
     adapter._loop = asyncio.get_running_loop()

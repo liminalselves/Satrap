@@ -25,8 +25,8 @@ APPROVAL_FIELDS = frozenset({"approval_model"})
 
 if TYPE_CHECKING:
     from satrap.core.config.session_overrides import SessionOverrideStore
-    from satrap.edictum.plugin_catalog import PluginCatalog
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.catalog import PluginCatalog
+    from satrap.edictum.plugin.config import PluginConfigManager
 
 
 def migrate_approval_globals(manager: PluginConfigManager) -> None:

@@ -18,8 +18,8 @@ import traceback
 import math
 import time
 
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.spec import parse_plugin_specs
 from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
 from satrap.edictum.settings import normalize_session_settings
 from satrap.core.utils.snapshot_cache import SnapshotCache

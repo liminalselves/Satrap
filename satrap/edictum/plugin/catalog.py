@@ -13,9 +13,9 @@ import yaml
 import json
 import hashlib
 
-from satrap.edictum.plugin_compatibility import PluginEnvironment, check_plugin_compatibility, parse_compatibility
-from satrap.edictum.plugin_permissions import EMPTY_PERMISSIONS, PluginPermissions, parse_plugin_permissions
-from satrap.edictum.plugin_config import ConfigField, parse_config_schema, schema_to_payload
+from satrap.edictum.plugin.compatibility import PluginEnvironment, check_plugin_compatibility, parse_compatibility
+from satrap.edictum.plugin.permissions import EMPTY_PERMISSIONS, PluginPermissions, parse_plugin_permissions
+from satrap.edictum.plugin.config import ConfigField, parse_config_schema, schema_to_payload
 
 if TYPE_CHECKING:
     from satrap.edictum.flow.plugin_nodes import FlowWorkflowDecl

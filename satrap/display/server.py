@@ -57,7 +57,7 @@ from satrap.core.config.rag_service import RagOperationError, rag_admin_request,
 from satrap.core.config.rag_jobs import RagJobError, RagJobManager, rag_jobs_response
 from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS, BoundedAsyncWorker
-from satrap.edictum.plugin_settings import model_options
+from satrap.edictum.plugin.settings import model_options
 from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.utils.application_progress import ApplicationProgressError

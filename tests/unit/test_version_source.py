@@ -9,7 +9,7 @@ from pathlib import Path
 import satrap
 from satrap._version import __version__
 from satrap.core.telemetry import health
-from satrap.edictum.plugin_compatibility import framework_version
+from satrap.edictum.plugin.compatibility import framework_version
 
 ROOT = Path(__file__).resolve().parents[2]
 
