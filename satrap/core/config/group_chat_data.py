@@ -15,7 +15,7 @@ from satrap.core.config.platform_message_data import _archive_store
 from satrap.core.config.conversation_catalog import require_catalog_platform
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.group_chat.summaries import SummaryStore
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.group_chat.stickers import StickerStore
 from satrap.core.storage.layout import StorageLayout
 

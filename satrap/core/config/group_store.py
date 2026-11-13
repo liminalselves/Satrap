@@ -21,7 +21,8 @@ from satrap.core.config.platform_policy import normalize_group_whitelist
 from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.core.config.group_policy import policy_values
 from satrap.core.config.group_session import session_values
-from satrap.core.type import GroupAccountRecord, GroupAccountSummary, GroupConfigRecord
+from satrap.core.type.control import GroupAccountRecord, GroupAccountSummary, GroupConfigRecord
+
 
 
 _IDENTITY = re.compile(r"[1-9][0-9]*\Z")

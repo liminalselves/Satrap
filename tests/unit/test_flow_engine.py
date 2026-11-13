@@ -5,16 +5,10 @@ import time
 import pytest
 
 from satrap.edictum.flow.definition import parse_flow_definition, migrate_flow_definition
-from satrap.edictum.flow.engine import (
-    ConditionEvaluator,
-    FlowEvent,
-    TriggerEngine,
-    gate_and,
-    gate_not,
-    gate_or,
-)
+from satrap.edictum.flow.engine import ConditionEvaluator, TriggerEngine, gate_and, gate_not, gate_or
+from satrap.core.type.flow.events import FlowEvent
 from satrap.edictum.flow.registry import FlowNodeRegistry
-from satrap.edictum.flow.types import StateView
+from satrap.core.type.flow.ports import StateView
 
 
 def _def(nodes, edges):
@@ -62,11 +56,11 @@ class TestConditionEvaluator:
     """条件求值: 插件函数, 超时, 池满, 未知类型"""
 
     def _node(self, node_id="c1", type_name="cond_time"):
-        from satrap.edictum.flow.definition import FlowNodeInstance
+        from satrap.core.type.flow.definition import FlowNodeInstance
         return FlowNodeInstance(id=node_id, type=type_name, version=1, title="c", config={})
 
     def _type(self, plugin=""):
-        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.core.type.flow.registry import FlowNodeType, PortSpec
         return FlowNodeType(
             type="p.cond" if plugin else "cond_time", version=1, label="c",
             description="", role="condition",
@@ -317,7 +311,7 @@ class TestTriggerEngineTargets:
     async def test_graph_candidates_drive_default_budget_strictest_target(self):
         """真实触发图推导候选 WF, 默认目标预算按最严格候选阻断。"""
         from satrap.edictum.flow.budget import FlowCallBudget
-        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.core.type.flow.registry import FlowNodeType, PortSpec
         from satrap.expend.plugins.llm_budget.flow_nodes import within
 
         registry = FlowNodeRegistry()
@@ -434,7 +428,7 @@ class TestTriggerEngineTargets:
     @pytest.mark.asyncio
     async def test_cached_condition_does_not_acquire_again(self):
         """同一事件经 when 与逻辑门复用条件, 第二次不再 acquire"""
-        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.core.type.flow.registry import FlowNodeType, PortSpec
         registry = FlowNodeRegistry()
         registry.register_plugin_nodes("p", [FlowNodeType(
             type="p.ok", version=1, label="ok", description="", role="condition",

@@ -3,7 +3,8 @@ import asyncio
 from asyncio import AbstractEventLoop
 from typing import Any, Dict, Optional
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, tool_error
-from satrap.core.type import safe_getattr, safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 from satrap.core.log import logger
 from .utils import (
     content_to_text,

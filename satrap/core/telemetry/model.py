@@ -17,8 +17,9 @@ from satrap.core.APICall.LLMCall.responses import _extract_token_usage
 from satrap.core.log.debug.capture import current_trace
 from satrap.core.log.managed import report_failure
 from satrap.core.log.debug.model import ModelObservation
-from satrap.core.type import TokenUsage
-from .contracts import ModelCall
+from satrap.core.type.model import TokenUsage
+
+from satrap.core.type.telemetry import ModelCall
 from .capture import current_scope, current_writer
 
 

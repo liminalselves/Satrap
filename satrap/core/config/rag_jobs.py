@@ -798,7 +798,7 @@ class RagJobManager:
         if row["input_name"]:
             self._cleanup_input(row["input_name"])
         from satrap.core.telemetry.capture import bind_scope, record_activity
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         with bind_scope(service=self.owner_service):
             record_activity("rag.completed" if status == "succeeded" else f"rag.{status}",

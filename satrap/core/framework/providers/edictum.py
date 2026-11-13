@@ -15,7 +15,7 @@ from typing import Any, cast, Iterator, TYPE_CHECKING
 import json
 import time
 
-from satrap.core.framework.providers.base import SessionProviderDefinition
+from satrap.core.type.session_provider import SessionProviderDefinition
 from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
 from satrap.edictum.plugin.settings import resolve_runtime_specs
@@ -28,7 +28,8 @@ from satrap.edictum.plugin.runtime import (
 )
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncSession, Session
-from satrap.edictum.plugin.spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
+from satrap.core.type.plugin.spec import PluginSpec
+from satrap.edictum.plugin.spec import parse_plugin_specs, plugin_specs_fingerprint
 from satrap.edictum.registry import (
     EDICTUM_PROVIDER,
     EdictumTypeDefinition,
@@ -36,7 +37,8 @@ from satrap.edictum.registry import (
 )
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.settings import normalize_session_settings
-from satrap.core.type import SessionConfig
+from satrap.core.type.session import SessionConfig
+
 
 from satrap.core.log import logger
 

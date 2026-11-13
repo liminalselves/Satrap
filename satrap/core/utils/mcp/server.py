@@ -18,7 +18,8 @@ from typing import Any, Callable, Literal, cast
 import copy
 
 from satrap.core.utils.TCBuilder import Tool, ToolsManager
-from satrap.core.type import safe_getattr
+from satrap.core.utils.attributes import safe_getattr
+
 from .utils import TYPE_MAP
 
 from satrap.core.log import logger

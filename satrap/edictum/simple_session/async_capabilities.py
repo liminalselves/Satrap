@@ -3,7 +3,8 @@ from typing import Any, Callable
 from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.core.utils.skills import SkillsManager
-from satrap.core.type import safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from satrap.core.log import logger
 from typing import TYPE_CHECKING
 

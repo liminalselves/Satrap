@@ -13,7 +13,8 @@ from typing import Any, Awaitable, Dict, List, Literal, Optional, Protocol, Tupl
 from types import TracebackType
 from mcp import ClientSession
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
-from satrap.core.type import safe_getattr, safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 from satrap.core.log import logger
 from .utils import (
     TYPE_MAP,

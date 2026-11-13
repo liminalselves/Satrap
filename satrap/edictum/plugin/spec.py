@@ -1,7 +1,8 @@
 """插件运行规格: 统一 Chat 与平台 Edictum 的配置结构和指纹"""
 from __future__ import annotations
-from satrap.edictum.plugin.compatibility import CompatibilityResult
-from satrap.core.plugin_interop.contracts import InteropSpec, parse_interop
+from satrap.core.type.plugin.compatibility import CompatibilityResult
+from satrap.core.type.plugin_interop import CAPABILITY_KINDS, InteropSpec
+from satrap.core.plugin_interop.codec import parse_interop
 
 from dataclasses import dataclass, field, replace
 from copy import deepcopy
@@ -9,63 +10,12 @@ import hashlib
 from typing import Any, Callable, cast
 import json
 
-from satrap.edictum.plugin.catalog import PluginCatalog, PluginCatalogEntry
-from satrap.edictum.plugin import CAPABILITY_KINDS
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.core.type.plugin.catalog import PluginCatalogEntry
 from satrap.edictum.plugin.config import PluginConfigManager
 
 
-PluginConfigResolver = Callable[[PluginCatalogEntry, dict[str, Any]], dict[str, Any]]
-"""把插件配置覆盖解析为实际安装配置的回调"""
-
-
-@dataclass(frozen=True)
-class PluginSpec:
-    """插件运行时目标规格"""
-
-    name: str
-    enabled: bool = True
-    config: dict[str, Any] = field(default_factory=dict[str, Any])
-    capabilities: dict[str, dict[str, bool]] = field(default_factory=dict[str, dict[str, bool]])
-    version: str = ""
-    path: str = ""
-    resources_revision: str = ""
-    config_resolved: bool = False
-    availability: CompatibilityResult | None = None
-    config_version: int = 0
-    migration_state: dict[str, Any] = field(default_factory=dict[str, Any])
-    interop: InteropSpec | None = None
-
-    def to_config(self) -> dict[str, Any]:
-        """
-        转换为可持久化的标准配置对象
-
-        返回:
-        - dict[str, Any]: 标准插件配置对象
-        """
-        return {
-            **({"config_version": self.config_version} if self.config_version else {}),
-            **({"migration_state": deepcopy(self.migration_state)} if self.migration_state else {}),
-            "name": self.name,
-            "enabled": self.enabled,
-            "config": dict(self.config),
-            "capabilities": {
-                kind: dict(self.capabilities.get(kind, {}))
-                for kind in CAPABILITY_KINDS
-            },
-        }
-
-    def with_config(self, config: dict[str, Any]) -> PluginSpec:
-        """
-        返回替换安装配置后的新规格
-
-        参数:
-        - config: 已解析的安装配置
-
-        返回:
-        - PluginSpec: 新插件规格
-        """
-        return replace(self, config=dict(config))
-
+from satrap.core.type.plugin.spec import PluginConfigResolver, PluginSpec
 
 def _normalize_capabilities(
     raw: object,

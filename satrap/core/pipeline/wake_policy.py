@@ -6,7 +6,8 @@ import sys
 from satrap.core.config.platform_policy import normalize_wake_words, policy_default_int, policy_default
 from satrap.core.components import Plain, is_self_mention
 from satrap.core.platform.event import MessageEvent
-from satrap.core.type import PlatformMessageType
+from satrap.core.type.platform import PlatformMessageType
+
 
 
 @dataclass(frozen=True)

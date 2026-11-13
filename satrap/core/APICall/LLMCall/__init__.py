@@ -2,14 +2,10 @@
 
 from typing import Any
 
-from satrap.core.type import (
-    LLMConfig,
-    LLMCallResponse,
-    LLMCallStreamEvent,
-    TokenUsage,
-    safe_getattr,
-    safe_getattr_str,
-)
+from satrap.core.type.model_config import LLMConfig
+from satrap.core.type.model import LLMCallResponse, LLMCallStreamEvent, TokenUsage
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 from .responses import (
     parse_chat_response,
     parse_call_response,

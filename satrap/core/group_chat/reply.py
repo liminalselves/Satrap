@@ -11,7 +11,7 @@ import uuid
 from satrap.core.call_context import current_call_origin, current_tool_workflow
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.platform import current_adapter_manager
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.log import logger
 from satrap.core.platform.event import MessageChain
 from satrap.core.framework.Base import AsyncSession

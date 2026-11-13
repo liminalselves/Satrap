@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from satrap.core.utils.file_snapshot import file_fingerprint
-from satrap.core.plugin_interop.contracts import parse_interop
+from satrap.core.plugin_interop.codec import parse_interop
 from dataclasses import dataclass, field, replace
 from copy import deepcopy
 from pathlib import Path
@@ -13,17 +13,20 @@ import yaml
 import json
 import hashlib
 
-from satrap.edictum.plugin.compatibility import PluginEnvironment, check_plugin_compatibility, parse_compatibility
-from satrap.edictum.plugin.permissions import EMPTY_PERMISSIONS, PluginPermissions, parse_plugin_permissions
-from satrap.edictum.plugin.config import ConfigField, parse_config_schema, schema_to_payload
+from satrap.core.type.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import check_plugin_compatibility, parse_compatibility
+from satrap.core.type.plugin.permissions import EMPTY_PERMISSIONS, PluginPermissions
+from satrap.edictum.plugin.permissions import parse_plugin_permissions
+from satrap.core.type.plugin.config import ConfigField, schema_to_payload
+from satrap.edictum.plugin.config import parse_config_schema
 
 if TYPE_CHECKING:
-    from satrap.edictum.flow.plugin_nodes import FlowWorkflowDecl
-    from satrap.edictum.flow.registry import FlowNodeType
+    from satrap.core.type.flow.workflow import FlowWorkflowDecl
+    from satrap.core.type.flow.registry import FlowNodeType
 from satrap.core.utils.snapshot_cache import SnapshotCache
 from satrap.core.utils.async_worker import RAG_WORKERS
+from satrap.core.type.plugin_interop import CAPABILITY_KINDS
 from satrap.edictum.plugin import (
-    CAPABILITY_KINDS,
     PLUGINS_PRESET_DIR,
     USER_PLUGINS_DIR,
     load_plugin_meta,
@@ -33,64 +36,7 @@ from satrap.edictum.plugin import (
 from satrap.core.log import logger
 
 
-def _empty_flow_workflow() -> FlowWorkflowDecl:
-    """延迟构造默认声明, 避免模块级导入 flow 契约造成环"""
-    from satrap.edictum.flow.plugin_nodes import FlowWorkflowDecl
-    return FlowWorkflowDecl()
-
-
-@dataclass(frozen=True)
-class PluginCatalogEntry:
-    """一个可用插件的稳定目录条目"""
-
-    name: str
-    path: Path
-    version: str = ""
-    author: str = ""
-    description: str = ""
-    config_schema: dict[str, ConfigField] = field(default_factory=dict[str, ConfigField])
-    capabilities: dict[str, dict[str, str]] = field(default_factory=dict[str, dict[str, str]])
-    compatibility: dict[str, Any] = field(default_factory=dict[str, Any])
-    applicability: dict[str, Any] = field(default_factory=dict[str, Any])
-    permissions: PluginPermissions = field(default_factory=lambda: EMPTY_PERMISSIONS)
-    config_version: int = 0
-    interop: dict[str, object] = field(default_factory=dict)
-    display_name: str = ""
-    icon: str = ""
-    license: str = ""
-    homepage: str = ""
-    repository: str = ""
-    flow_nodes: tuple[FlowNodeType, ...] = ()
-    """插件提供的流程节点契约, 解析失败即视为元数据损坏"""
-    flow_workflow: FlowWorkflowDecl = field(default_factory=lambda: _empty_flow_workflow())
-    """装到 WF 节点上时的限制与能力声明"""
-
-    def check_environment(self, environment: PluginEnvironment):
-        """根据指定环境计算适用性"""
-        return check_plugin_compatibility({"compatibility": self.compatibility, "applicability": self.applicability}, environment)
-
-    def to_payload(self) -> dict[str, Any]:
-        """转换为前端可使用的插件元数据"""
-        return {
-            **{key: getattr(self, key) for key in ("display_name", "icon", "license", "homepage", "repository") if getattr(self, key)},
-            **self.permissions.to_payload(),
-            "name": self.name,
-            "interop": deepcopy(self.interop),
-            "config_version": self.config_version,
-            "version": self.version,
-            "compatibility": dict(self.compatibility),
-            "applicability": dict(self.applicability),
-            "author": self.author,
-            "description": self.description,
-            "config_schema": schema_to_payload(self.config_schema),
-            "capabilities": {
-                kind: dict(self.capabilities.get(kind, {}))
-                for kind in CAPABILITY_KINDS
-            },
-            "flow_nodes": [node.to_payload() for node in self.flow_nodes],
-            "flow_workflow": self.flow_workflow.to_payload(),
-        }
-
+from satrap.core.type.plugin.catalog import PluginCatalogEntry
 
 @dataclass(frozen=True)
 class _CatalogSnapshot:

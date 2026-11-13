@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import copy
 from typing import Any, Iterable, cast
-from satrap.core.type import RequestContextBlock
+from satrap.core.type.model import RequestContextBlock
+
 
 
 BASE_AGENT_PROMPT = (

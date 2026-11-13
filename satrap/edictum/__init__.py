@@ -8,8 +8,9 @@ Agent 框架, 支持命令/工具/MCP/skill/处理器/插件六类能力的注�
 - checkpoint 与多模态/流式能力完整
 """
 from satrap.core.plugin_interop import ImageArtifact, PluginHost, PluginInteractionError, Service, AsyncService
-from satrap.core.type import RequestContextBlock
-from satrap.core.approval.contracts import ApprovalMode, ApprovalRequest, ApprovalResult
+from satrap.core.type.model import RequestContextBlock
+
+from satrap.core.type.approval import ApprovalMode, ApprovalRequest, ApprovalResult
 from satrap.core.approval.policy import RiskLevel
 from satrap.edictum.simple_session import (
     AsyncSimpleSession,
@@ -30,7 +31,7 @@ from satrap.edictum.registry import (
 )
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin import Plugin
-from satrap.edictum.plugin.compatibility import PluginEnvironment, PluginCompatibilityError
+from satrap.core.type.plugin.compatibility import PluginEnvironment, PluginCompatibilityError
 
 __all__ = [
     "ApprovalMode", "ApprovalRequest", "ApprovalResult", "RiskLevel",

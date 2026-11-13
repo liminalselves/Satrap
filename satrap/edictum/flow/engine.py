@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from satrap.core.log.debug.hooks import record_debug
 from satrap.core.utils.async_worker import WorkerBusyError
-from satrap.edictum.flow.definition import FlowDefinition, FlowEdge, FlowNodeInstance
-from satrap.edictum.flow.registry import FlowNodeType
-from satrap.edictum.flow.types import FLOW_CONDITION_WORKERS, FlowMessage, StateView
+from satrap.core.type.flow.definition import FlowDefinition, FlowEdge, FlowNodeInstance
+from satrap.core.type.flow.registry import FlowNodeType
+from satrap.edictum.flow.graph import edge_key
+from satrap.edictum.flow.resources import FLOW_CONDITION_WORKERS
+from satrap.core.type.flow.ports import FlowMessage, StateView
 
 import asyncio
 import inspect
@@ -22,9 +24,7 @@ from typing import Any, Callable, Literal
 from satrap.core.log import logger
 
 
-ConditionResult = Literal[True, False, "error"]
-"""条件求值三值"""
-
+from satrap.core.type.flow.events import ConditionResult, FlowEvent, EventContext
 
 def _release_completed(future: Any) -> None:
     """接收工作线程归还任务的结果, 防止异常静默丢失"""
@@ -33,44 +33,6 @@ def _release_completed(future: Any) -> None:
     error = future.exception()
     if error is not None:
         logger.warning(f"[流程引擎] 条件实例异步归还失败: {error}")
-
-
-@dataclass(frozen=True)
-class FlowEvent:
-    """一次触发事件"""
-
-    event_id: str
-    kind: Literal["message", "batch", "call"]
-    """message: 唤醒的单条消息; batch: 阈值批次; call: 交接工具或完成事件"""
-    tile: str
-    """发出事件的磁贴/工具节点 id"""
-    why: str
-    message: FlowMessage | None = None
-    """kind=message 时的触发消息"""
-    batch: tuple[FlowMessage, ...] | None = None
-    """kind=batch 时的批次消息"""
-    batch_from: int = 0
-    batch_to: int = 0
-    payload: str = ""
-    """kind=call 时交接工具的参数或上游输出"""
-    source_wf: str = ""
-    """kind=call 时调用方 WF 节点 id"""
-    source_event: Any = None
-    """触发它的平台消息事件; 前台运行的回复轮次与身份来源, 后台触发为 None"""
-    occurred_at: float = field(default_factory=time.monotonic)
-
-
-@dataclass(frozen=True)
-class EventContext:
-    """条件函数拿到的只读上下文"""
-
-    kind: str
-    now: float
-    """UTC 时间戳"""
-    message: FlowMessage | None = None
-    batch: tuple[FlowMessage, ...] | None = None
-    calls_used: int = 0
-    """由宿主填充的调用计数, 条件用 ctx.calls() 读取"""
 
 
 class ConditionEvaluator:
@@ -556,9 +518,9 @@ class TriggerEngine:
         if len(event_edges) > 1:
             window = float(self._config(gate_id).get("window_seconds") or 120)
             arrivals = self._arrivals.setdefault(gate_id, {})
-            arrivals[_edge_key(edge)] = event.occurred_at
-            if not all(arrivals.get(_edge_key(e)) is not None
-                       and event.occurred_at - arrivals[_edge_key(e)] <= window
+            arrivals[edge_key(edge)] = event.occurred_at
+            if not all(arrivals.get(edge_key(e)) is not None
+                       and event.occurred_at - arrivals[edge_key(e)] <= window
                        for e in event_edges):
                 self._diag("flow_trigger", "blocked", bodies={"output": {
                     "gate": gate_id, "reason": "waiting", "window": window,
@@ -576,11 +538,11 @@ class TriggerEngine:
         verdict = gate_and(values)
         if verdict == "error":
             self._diag("flow_trigger", "blocked", bodies={"output": {
-                "gate": gate_id, "reason": "condition_error", "edge": _edge_key(edge)}})
+                "gate": gate_id, "reason": "condition_error", "edge": edge_key(edge)}})
             return
         if verdict is False:
             self._diag("flow_trigger", "blocked", bodies={"output": {
-                "gate": gate_id, "reason": "condition_false", "edge": _edge_key(edge)}})
+                "gate": gate_id, "reason": "condition_false", "edge": edge_key(edge)}})
             return
         await self._emit(gate_id, "out", event, depth + 1, targets)
 
@@ -850,8 +812,3 @@ class TriggerEngine:
         self._tasks.clear()
         self._task_wfs.clear()
         self._arrivals.clear()
-
-
-def _edge_key(e: FlowEdge) -> str:
-    """连线标识"""
-    return f"{e.source}.{e.source_port}->{e.target}.{e.target_port}"

@@ -84,7 +84,7 @@ class EdictumConfigService:
         - dict[str, Any]: 编辑器需要的完整契约
         """
         from satrap.edictum.flow.registry import FlowNodeRegistry
-        from satrap.edictum.flow.types import DATA_PORT_TYPES, PORT_TYPE_LABELS, SIGNAL_PORT_TYPES
+        from satrap.core.type.flow.ports import DATA_PORT_TYPES, PORT_TYPE_LABELS, SIGNAL_PORT_TYPES
 
         registry = FlowNodeRegistry()
         plugin_catalog = {e.name: e for e in self.plugin_catalog.scan()}
@@ -159,8 +159,11 @@ class EdictumConfigService:
             definition, _, errors = migrate_flow_definition(parse_flow_definition(raw_flow), registry)
         except Exception as error:
             return {"ok": False, "issues": [{"code": "flow_parse_error", "level": "error", "category": "结构", "message": str(error)}]}
+        plugin_config = PluginConfigManager()
+        execution_enabled = {name: plugin_config.host_state(name)["execution_enabled"] for name in plugin_catalog}
         issues = [i.to_payload() for i in validate(
             definition, registry, plugin_catalog=plugin_catalog,
+            plugin_execution_enabled=execution_enabled,
             conversation_kinds=[str(k) for k in kinds] if kinds else None,
             scheduled_send_group=group if type(group) is bool else None,
             scheduled_send_private=private if type(private) is bool else None,

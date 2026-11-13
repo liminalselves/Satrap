@@ -7,96 +7,18 @@
 """
 from __future__ import annotations
 
-from satrap.edictum.flow.registry import FlowNodeRegistry, FlowNodeType
-from satrap.edictum.plugin.config import ConfigField
+from typing import Any, Callable, cast
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, cast
+from satrap.core.type.flow.definition import (
+    ConfigSource, FlowBudget, FlowDefaultsEntry, FlowDefinition, FlowDefinitionError,
+    FlowEdge, FlowNodeInstance, ResolvedNodeConfig,
+)
+from satrap.core.type.flow.registry import FlowNodeType
+from satrap.edictum.flow.registry import FlowNodeRegistry
 
 
 FLOW_ARCHIVE_VERSION = 3
 """流程存档格式版本; 与节点契约版本, 插件发行版本是三个不同的东西"""
-
-
-class FlowDefinitionError(ValueError):
-    """流程定义解析或迁移失败"""
-
-    def __init__(self, code: str, message: str, *, node: str = "", field: str = "") -> None:
-        """
-        记录错误码与定位
-
-        参数:
-        - code: flow_* 错误码
-        - message: 可读失败原因
-        - node: 相关节点 id, 默认空
-        - field: 相关字段名, 默认空
-        """
-        super().__init__(message)
-        self.code = code
-        self.node = node
-        self.field = field
-
-
-@dataclass(frozen=True)
-class FlowBudget:
-    """流程级模型调用硬限制"""
-
-    max_calls: int
-    window_minutes: int
-    count: Literal["all", "wf"] = "all"
-    """all: WF 和插件模型调用都计; wf: 只算 WF"""
-
-
-@dataclass(frozen=True)
-class FlowNodeInstance:
-    """存档中的一个节点实例"""
-
-    id: str
-    type: str
-    """完整类型名; 内置不带点, 插件为 插件名.节点名"""
-    version: int
-    """保存时的节点契约版本; 低于当前版本时读取侧迁移"""
-    title: str
-    config: dict[str, Any]
-    """只保存与上层不同的字段"""
-
-
-@dataclass(frozen=True)
-class FlowEdge:
-    """存档中的一条连线"""
-
-    source: str
-    source_port: str
-    target: str
-    target_port: str
-    label: str = ""
-    """用户注释, 可选"""
-
-    @property
-    def key(self) -> str:
-        """边标识, 供问题列表和诊断引用"""
-        return f"{self.source}.{self.source_port}->{self.target}.{self.target_port}"
-
-
-@dataclass(frozen=True)
-class FlowDefaultsEntry:
-    """一类节点的流程默认配置"""
-
-    version: int
-    config: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class FlowDefinition:
-    """解析完成的流程定义"""
-
-    version: int
-    nodes: dict[str, FlowNodeInstance]
-    edges: list[FlowEdge]
-    defaults: dict[str, FlowDefaultsEntry]
-    """流程默认, 键为完整类型名"""
-    layout: dict[str, dict[str, float]]
-    budget: FlowBudget | None
 
 
 def _parse_budget(raw: object) -> FlowBudget | None:
@@ -251,20 +173,6 @@ def parse_flow_definition(raw: object) -> FlowDefinition:
 
 
 # ---------- 配置合并与迁移 ----------
-
-ConfigSource = Literal["type", "plugin", "flow", "node"]
-"""字段生效值来源层"""
-
-
-@dataclass(frozen=True)
-class ResolvedNodeConfig:
-    """一个节点实例的生效配置"""
-
-    values: dict[str, Any]
-    sources: dict[str, ConfigSource]
-    inherited: dict[str, Any]
-    """去掉本节点值之后的值, 即"恢复继承"预览"""
-
 
 def _migrate_config_dict(
     node_type: FlowNodeType,

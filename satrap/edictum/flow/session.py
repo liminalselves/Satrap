@@ -12,18 +12,22 @@ from satrap.core.log.debug.hooks import record_debug
 from satrap.core.platform.event import MessageChain
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.utils.TCBuilder import AsyncToolsManager
-from satrap.edictum.flow.definition import FlowDefinition, FlowNodeInstance, parse_flow_definition
+from satrap.core.type.flow.definition import FlowDefinition, FlowNodeInstance
+from satrap.edictum.flow.definition import parse_flow_definition
 from satrap.edictum.flow.instances import FlowNodeInstancePool, config_fingerprint
+from satrap.edictum.flow.message_projection import flow_message_from_archive, flow_message_from_event
+from satrap.edictum.flow.node_resources import MeteredClient, NodeResources
 from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES, FlowNodeRegistry
 from satrap.edictum.flow.store import FlowConflictError, FlowStore
-from satrap.edictum.flow.validate import analyze, validate
+from satrap.edictum.flow.analysis import analyze
+from satrap.edictum.flow.validate import validate
 from satrap.edictum.flow.budget import FlowCallBudget, BudgetExceeded
+from satrap.edictum.plugin.config import PluginConfigManager
 
 from collections import deque
 from typing import Any
 import asyncio
 import contextvars
-import inspect
 import time
 import uuid
 
@@ -37,72 +41,6 @@ current_flow_event: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
 
 NEW_EVENT_QUEUE_LIMIT = 256
 NEW_DRAIN_TIMEOUT_SECONDS = 120.0
-
-
-class _MeteredClient:
-    """模型客户端计量代理: 每次 call/stream_call 前经回调扣减预算"""
-
-    _METERED_METHODS = ("call", "stream_call", "chat", "generate", "embed",
-                        "rerank", "transcribe", "invoke", "image", "images")
-
-    def __init__(self, inner: Any, on_call: Any) -> None:
-        self._inner = inner
-        self._on_call = on_call
-
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._inner, name)
-        if name not in self._METERED_METHODS or not callable(attr):
-            return attr
-        if inspect.isasyncgenfunction(attr):
-            async def gen(*args: Any, **kwargs: Any) -> Any:
-                self._on_call()
-                async for item in attr(*args, **kwargs):
-                    yield item
-            return gen
-        if inspect.iscoroutinefunction(attr):
-            async def acall(*args: Any, **kwargs: Any) -> Any:
-                self._on_call()
-                return await attr(*args, **kwargs)
-            return acall
-        return attr
-
-    def __repr__(self) -> str:
-        return f"<Metered {self._inner!r}>"
-
-
-class _NodeResources:
-    """插件节点 ctx.resources: 按节点配置字段惰性构造并包装计量"""
-
-    def __init__(self, session: "AsyncFlowSession", node: FlowNodeInstance,
-                 schema: dict[str, Any], resolved: dict[str, Any]) -> None:
-        self._session = session
-        self._node = node
-        self._schema = schema
-        self._config = resolved
-        self._clients: dict[str, Any] = {}
-
-    def get(self, key: str, default: Any = None) -> Any:
-        field = self._schema.get(key)
-        if field is None or field.type not in ("llm", "embed", "rerank", "asr", "img"):
-            return default
-        name = self._config.get(key)
-        if not name:
-            return default
-        client = self._clients.get(key)
-        if client is None:
-            from satrap.edictum.plugin.resources import named_model_config, build_model_client
-            config = named_model_config(self._session._model_reader(), field.type, str(name))
-            raw = build_model_client(field.type, config, async_=True)
-            node_id = self._node.id
-            client = _MeteredClient(raw, lambda: self._session._spend("plugin", node_id))
-            self._clients[key] = client
-        return client
-
-    def __getitem__(self, key: str) -> Any:
-        client = self.get(key)
-        if client is None:
-            raise KeyError(key)
-        return client
 
 
 class AsyncFlowSession(AsyncSession):
@@ -264,12 +202,18 @@ class AsyncFlowSession(AsyncSession):
             plugin_defaults=plugin_defaults, migrate_funcs=migrate_funcs,
         )
         catalog = {entry.name: entry for entry in self._plugin_catalog.scan()} if self._plugin_catalog is not None else None
+        plugin_config = self._plugin_config if self._plugin_config is not None else PluginConfigManager()
+        execution_enabled = {
+            name: plugin_config.host_state(name)["execution_enabled"]
+            for name in catalog or {}
+        }
         scope = self._bound_scope
         adapter = self._bound_adapter
         group_capability = getattr(adapter, "supports_scheduled_group_send", None)
         private_capability = getattr(adapter, "supports_scheduled_private_send", None)
         self._issues = validate(
             definition, self._registry, plugin_catalog=catalog,
+            plugin_execution_enabled=execution_enabled,
             conversation_kinds=[scope.conversation_kind] if scope is not None else None,
             scheduled_send_group=group_capability if type(group_capability) is bool else None,
             scheduled_send_private=private_capability if type(private_capability) is bool else None,
@@ -311,7 +255,7 @@ class AsyncFlowSession(AsyncSession):
             await wf.initialize()
             # 计量包装: 每次模型调用前检查预算 (P2-1)
             node_id = node.id
-            wf.llm = _MeteredClient(wf.llm, lambda nid=node_id: self._spend("wf", nid, per_run=True))
+            wf.llm = MeteredClient(wf.llm, lambda nid=node_id: self._spend("wf", nid, per_run=True))
             self._track_workflow_context(wf_id, wf.ctx)
             self._workflows[node.id] = wf
             self._bind_snapshot_tools(node, wf)
@@ -463,7 +407,7 @@ class AsyncFlowSession(AsyncSession):
         return SimpleNamespace(
             config=resolved, node_id=node.id, session_id=self.session_id,
             diagnostic=lambda *a, **kw: None,
-            resources=_NodeResources(self, node, node_type.config_schema, resolved),
+            resources=NodeResources(self, node, node_type.config_schema, resolved),
             service=lambda *a, **kw: None,
         )
 
@@ -566,7 +510,7 @@ class AsyncFlowSession(AsyncSession):
                 if used >= max_calls:
                     return {"ok": False, "error": f"每次运行最多调用 {max_calls} 次"}
                 self._used[run_id] = used + 1
-                from satrap.edictum.flow.engine import FlowEvent
+                from satrap.core.type.flow.events import FlowEvent
                 source_event = current_flow_event.get()
                 message = None
                 if source_event is not None:
@@ -882,7 +826,7 @@ class AsyncFlowSession(AsyncSession):
                 )
                 if not pending:
                     break
-                from satrap.edictum.flow.engine import FlowEvent
+                from satrap.core.type.flow.events import FlowEvent
                 event = FlowEvent(
                     event_id=uuid.uuid4().hex, kind="batch", tile=node.id,
                     why=f"/new drain: {node.title}",
@@ -1047,7 +991,7 @@ class AsyncFlowSession(AsyncSession):
                 # 自定义唤醒规则不走平台判定: 自定义规则可以扩大唤醒范围 (P1-15)
                 if not self._wake_custom_hit(node, event):
                     continue
-            from satrap.edictum.flow.engine import FlowEvent
+            from satrap.core.type.flow.events import FlowEvent
             msg = self._event_to_flow_message(event)
             await self._engine.fire(
                 node.id,
@@ -1057,29 +1001,8 @@ class AsyncFlowSession(AsyncSession):
             )
 
     def _event_to_flow_message(self, event: Any) -> Any:
-        """把平台消息事件转成 FlowMessage; mentions_bot 用平台解析结果而不是裸扫 @"""
-        from satrap.edictum.flow.types import FlowMessage
-        text = event.get_message_str() or ""
-        mentions = False
-        try:
-            from satrap.core.pipeline.wake_policy import is_self_mention
-            mentions = any(
-                is_self_mention(c, event.call_origin.self_id) for c in event.get_messages()
-            )
-        except Exception:
-            mentions = False
-        if bool(getattr(event, "is_private_chat", lambda: False)()):
-            mentions = True
-        return FlowMessage(
-            message_id=str(event.call_origin.source_message_id or ""),
-            position=0,
-            sender_id=str(event.call_origin.actor_id or ""),
-            nickname=str(getattr(getattr(event, "sender", None), "nickname", "") or ""),
-            text=text,
-            is_bot=False,
-            mentions_bot=mentions,
-            time=event.platform_message.received_at,
-        )
+        """把平台消息事件转成 FlowMessage"""
+        return flow_message_from_event(event)
 
     async def _on_wf_trigger(self, wf_id: str, event: Any) -> None:
         """WF 被触发: 拉取输入并运行, 结果按 send_mode 发送"""
@@ -1348,7 +1271,7 @@ class AsyncFlowSession(AsyncSession):
 
     def _state_view(self, state_id: str) -> Any:
         """state 槽的只读视图"""
-        from satrap.edictum.flow.types import StateView
+        from satrap.core.type.flow.ports import StateView
         row = self._flow_store.state_by_scope_key(self._scope_key, state_id)
         return StateView(content=row["content"], version=row["version"],
                          covers_to=row["covers_to"], committed_at=row["committed_at"])
@@ -1495,7 +1418,7 @@ class AsyncFlowSession(AsyncSession):
                     continue
                 batch_to = pending[-1]["seq"] if pending else committed
                 # busy 只由引擎在运行结束时清除; 位置落后不能作为复位依据
-                from satrap.edictum.flow.engine import FlowEvent
+                from satrap.core.type.flow.events import FlowEvent
                 event = FlowEvent(
                     event_id=uuid.uuid4().hex, kind="batch", tile=node.id,
                     why=f"{node.title}: {hit}",
@@ -1537,24 +1460,8 @@ class AsyncFlowSession(AsyncSession):
         return None
 
     def _to_flow_message(self, item: Any) -> Any:
-        """档案消息转 FlowMessage; @ 只读结构化 mentions, 私聊恒为 True"""
-        from satrap.edictum.flow.types import FlowMessage
-        scope = self._bound_scope
-        mentions = bool(scope and str(scope.self_id) in {
-            str(value) for value in (item.get("mentions") or ())
-        })
-        if scope is not None and scope.conversation_kind == "private":
-            mentions = True
-        return FlowMessage(
-            message_id=str(item.get("message_id") or ""),
-            position=int(item.get("seq") or 0),
-            sender_id=str(item.get("sender_id") or ""),
-            nickname=str(item.get("nickname") or ""),
-            text=str(item.get("text") or ""),
-            is_bot=item.get("direction") == "outbound",
-            mentions_bot=mentions,
-            time=float(item.get("message_time") or 0.0),
-        )
+        """档案消息转 FlowMessage"""
+        return flow_message_from_archive(item, self._bound_scope)
 
     async def _notify_failure(
         self, wf_id: str, reason: str, source_event: Any = None, *, run_id: str = "",

@@ -3,7 +3,7 @@
 from collections.abc import Iterable, Mapping
 from typing import Protocol
 
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMErrorInfo
+from satrap.core.type.model import LLMCallResponse, LLMCallStreamEvent, LLMErrorInfo
 
 
 class ModelProtocolError(ValueError):
@@ -26,6 +26,7 @@ class StreamDecoder(Protocol):
     """一次请求专用的有序增量解码器"""
 
     finish_reason: str | None
+    """当前流的模型结束原因, 尚未收到或上游未提供时为 None"""
 
     def consume(self, chunk: object) -> list[LLMCallStreamEvent]:
         """
@@ -56,6 +57,7 @@ class ModelProtocol(Protocol):
     """仅转换数据, 不管理数据库, 工具执行或网络生命周期"""
 
     api_type: str
+    """实现所对应的请求协议标识, 用于选择匹配的 SDK 端点"""
 
     def build_request(self, parameters: Mapping[str, object], messages: Iterable[dict[str, object]], *,
                       thinking_body: dict[str, object] | None, thinking: str,

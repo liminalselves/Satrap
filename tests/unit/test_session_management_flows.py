@@ -10,7 +10,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager as _session_manager_config_SessionManager
 from satrap.core.framework.Base import Session as _session_manager_config_Session
 from satrap.core.type import LLMConfig
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 import importlib
 import sqlite3
 from typing import cast
@@ -40,7 +40,7 @@ import threading
 from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.edictum.plugin.settings import PluginSettingsService
 from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain
-from satrap.edictum.plugin.config import ConfigField
+from satrap.core.type.plugin.config import ConfigField
 from satrap.core.storage import StorageMaintenanceService, maintenance as module
 import asyncio
 from satrap.core.framework import AsyncSession as _multisession_AsyncSession, Session as _multisession_Session

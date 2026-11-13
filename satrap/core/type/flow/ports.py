@@ -1,18 +1,7 @@
-"""
-流程会话端口类型与宿主对象定义
-
-固定 7 种端口类型, 插件节点可用其中 5 种 (messages/context/text/state/condition);
-同时定义插件节点可见的数据载体 (FlowMessage, ContextBlock, StateView) 与
-节点装饰器 node() 和类写法基类 FlowNode
-"""
+"""流程端口和节点数据契约。"""
 from __future__ import annotations
-
-from satrap.core.utils.async_worker import BoundedAsyncWorker
-
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal
-import datetime
-
+from dataclasses import dataclass
+from typing import Any, Literal
 
 PortType = Literal["messages", "context", "text", "state", "condition", "event", "handoff"]
 """端口类型, 首版固定 7 种, 插件不能新增"""
@@ -62,14 +51,21 @@ class FlowMessage:
     """流程节点间传递的单条档案消息, 不可变"""
 
     message_id: str
+    """平台消息标识, 事件或档案缺少标识时投影为空字符串"""
     position: int
-    """桶内单调序号, 即 platform_messages.seq"""
+    """桶内单调序号, 即 platform_messages.seq; 直接由事件投影时为 0"""
     sender_id: str
+    """消息发送者的平台身份, 来源缺失时投影为空字符串"""
     nickname: str
+    """发送者昵称快照, 来源缺失时为空字符串"""
     text: str
+    """供节点处理的消息文本, 无文本内容时为空字符串"""
     is_bot: bool
+    """是否为机器人出站消息, 档案按 direction 判断, 入站事件投影为 False"""
     mentions_bot: bool
+    """是否结构化提及本机器人, 私聊恒为 True, 不扫描文本中的 @"""
     time: float
+    """消息时间的 Unix 秒数, 档案取 message_time, 事件取宿主接收时间"""
 
     def with_text(self, text: str) -> FlowMessage:
         """
@@ -100,6 +96,7 @@ class ContextBlock:
     kind: str
     """块类型: snapshot / messages / summary / reference"""
     text: str
+    """供下游拼装模型输入的块正文, 可由节点生成或来自档案和状态"""
     source_node: str = ""
     """产出该块的节点 id, 供诊断展示"""
 
@@ -109,11 +106,13 @@ class StateView:
     """状态槽的只读视图, 不可变"""
 
     content: str
+    """成功的写入方 WF 提交的状态内容, 版本 0 的空视图内容为空字符串"""
     version: int
+    """状态槽提交版本, 0 表示从未写入, 每次成功提交递增"""
     covers_to: int
     """本版覆盖到的消息序号, 未由阈值批次写入时保持上一版的值"""
     committed_at: float
-    """提交时间, 版本 0 时为 0"""
+    """状态提交的 Unix 秒数, 版本 0 的空视图为 0"""
 
     @classmethod
     def empty(cls) -> StateView:
@@ -127,22 +126,6 @@ EMPTY_PORT_VALUES["state"] = StateView.empty()
 
 EventContextKind = Literal["message", "batch", "call"]
 """触发事件携带的上下文: 单条消息 (唤醒), 消息批次 (阈值), 调用 (交接/完成)"""
-
-
-def node(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-    """
-    为节点函数指定节点名, 用于函数名不能用作节点名的场合
-
-    参数:
-    - name: meta.yaml flow_nodes 里声明的节点名
-
-    返回:
-    - 装饰器: 给函数打上 __flow_node_name__ 标记
-    """
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        setattr(func, "__flow_node_name__", name)
-        return func
-    return decorator
 
 
 class FlowNode:
@@ -160,7 +143,3 @@ class FlowNode:
     def __call__(self, ctx: Any, *args: Any, **kwargs: Any) -> Any:
         """节点求值入口, 签名与函数写法一致"""
         raise NotImplementedError
-
-
-FLOW_CONDITION_WORKERS = BoundedAsyncWorker("satrap-flow-cond", workers=4, capacity=32)
-"""插件条件函数专用的有界线程池: 条件不做 IO, 超时或池满判为错误"""

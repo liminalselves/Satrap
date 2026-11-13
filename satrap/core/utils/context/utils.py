@@ -19,7 +19,9 @@ from satrap.core.utils.vision import (
     content_text_projection,
     estimate_content_media_tokens,
 )
-from satrap.core.type import JsonRow, RestoreOptions, SnapshotDomain, StateScope, ModelProtocolPayload
+from satrap.core.type.state import JsonRow, RestoreOptions, SnapshotDomain, StateScope
+from satrap.core.type.model import ModelProtocolPayload
+
 from satrap.core.utils.model_history import attach_protocol_payload
 
 from satrap.core.log import logger

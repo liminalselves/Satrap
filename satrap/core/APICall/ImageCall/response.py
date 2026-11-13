@@ -11,7 +11,7 @@ from zipfile import BadZipFile, ZipFile
 from typing import Any
 
 from .media import MAX_IMAGE_BYTES, MAX_IMAGES, MAX_RESPONSE_BYTES, decode_image
-from .types import GeneratedImage, ImageGenError, ImageGenResponse
+from satrap.core.type.image import GeneratedImage, ImageGenError, ImageGenResponse
 
 
 @dataclass

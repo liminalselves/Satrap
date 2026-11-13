@@ -17,9 +17,10 @@ import weakref
 import traceback
 
 from satrap.core.call_context import current_flow_workflow
-from satrap.core.plugin_interop.contracts import (
-    CapabilityKind, HandlerInfo, InteropSpec, ServiceValue, PluginInfo, PluginInteractionError, SkillInfo, copy_data,
+from satrap.core.type.plugin_interop import (
+    CapabilityKind, HandlerInfo, InteropSpec, ServiceValue, PluginInfo, PluginInteractionError, SkillInfo,
 )
+from satrap.core.plugin_interop.codec import copy_data
 from satrap.core.plugin_interop.environment import EnvironmentSnapshot, environment_snapshot
 from satrap.core.plugin_interop.service import AsyncService, Service
 
@@ -897,7 +898,7 @@ class PluginInterop:
         返回:
         - 同一会话内的插件目标节点
         """
-        from satrap.core.plugin_interop.contracts import CAPABILITY_KINDS
+        from satrap.core.type.plugin_interop import CAPABILITY_KINDS
         from satrap.edictum.plugin.config import PluginConfigManager
 
         result: dict[str, _RelationNode] = {}
@@ -1340,7 +1341,8 @@ class PluginInterop:
         self.require_execution(reference._host)
         self.reference(reference._host, reference._plugin, reference._kind, reference._name)
         if reference._kind == "services":
-            from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission, PluginPermissionDenied
+            from satrap.core.type.plugin.authorization import PluginEntryBinding
+            from satrap.core.plugin_authorization import require_plugin_entry_permission, PluginPermissionDenied
             service = (binding.services or {}).get(reference._name)
             authorization: object = getattr(service, "_plugin_entry_binding", None)
             if not isinstance(authorization, PluginEntryBinding):
@@ -1519,7 +1521,7 @@ def bind_tool_plugin(tool: object) -> Iterator[None]:
     返回:
     - 当前工具的插件执行作用域; 非目录插件工具保持原行为
     """
-    from satrap.core.plugin_authorization import PluginEntryBinding
+    from satrap.core.type.plugin.authorization import PluginEntryBinding
 
     binding: object = getattr(tool, "_plugin_entry_binding", None)
     session = binding.session_ref() if isinstance(binding, PluginEntryBinding) and binding.session_ref else None

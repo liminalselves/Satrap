@@ -12,7 +12,8 @@ import weakref
 
 from satrap.core.config.group_action_origin import ModelActionAuthorization
 from satrap.core.call_context import CallOrigin, bind_call_origin
-from satrap.core.plugin_authorization import BoundPluginTool, plugin_tool_live
+from satrap.core.type.plugin.authorization import BoundPluginTool
+from satrap.core.plugin_authorization import plugin_tool_live
 
 _ToolT = TypeVar("_ToolT", bound=BoundPluginTool)
 

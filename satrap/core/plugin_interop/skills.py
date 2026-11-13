@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING
 
 from satrap.core.call_context import current_flow_workflow
 from satrap.core.utils.skills import Skill
-from satrap.core.type import CommandAction, RequestContextBlock
+from satrap.core.type.platform import CommandAction
+from satrap.core.type.model import RequestContextBlock
+
 
 if TYPE_CHECKING:
     from .capabilities import PluginHost

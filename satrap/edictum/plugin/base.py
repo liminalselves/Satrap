@@ -53,16 +53,17 @@ from types import ModuleType
 import yaml
 import sys
 
-from satrap.core.plugin_interop.contracts import CAPABILITY_KINDS, CapabilityKind, InteropSpec
+from satrap.core.type.plugin_interop import CAPABILITY_KINDS, CapabilityKind, InteropSpec
 from satrap.core.plugin_interop.capabilities import PluginHost
 from satrap.core.plugin_interop.service import AsyncService, Service
 from satrap.core.utils.skills import Skill
-from satrap.core.type import (
+from satrap.core.utils.attributes import (
     safe_getattr_callable,
     safe_getattr_str,
     safe_getattr_list,
     safe_getattr_dict,
 )
+
 
 from satrap.core.log import logger
 
@@ -799,7 +800,7 @@ class Plugin:
         if self._session is None:
             return None
         try:
-            from satrap.edictum.flow.session import current_flow_workflow
+            from satrap.core.call_context import current_flow_workflow
             current = current_flow_workflow.get()
             if current is not None:
                 return current

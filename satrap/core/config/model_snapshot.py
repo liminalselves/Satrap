@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
-from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, ReRankConfig
+from satrap.core.type.model_config import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, ReRankConfig
+
 
 
 class ModelConfigReader(Protocol):

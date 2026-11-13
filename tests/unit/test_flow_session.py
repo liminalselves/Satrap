@@ -13,7 +13,8 @@ from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, P
 from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.core.type import LLMCallResponse
 from satrap.edictum.flow.budget import BudgetExceeded, FlowCallBudget
-from satrap.edictum.flow.session import AsyncFlowSession, _MeteredClient, current_flow_run
+from satrap.edictum.flow.node_resources import MeteredClient
+from satrap.edictum.flow.session import AsyncFlowSession, current_flow_run
 from satrap.edictum.flow.store import FlowConflictError, FlowStore, StateCommit
 from tests.support.flow_runtime import (
     FlowAdapter, MockLLM, archive_event, database, make_event, response, tool_call, wait_until,
@@ -152,14 +153,14 @@ class TestBudget:
             current_flow_run.reset(token)
 
     def test_metered_client_counts_calls(self):
-        """_MeteredClient 包装后每次 call 都过计量"""
+        """MeteredClient 包装后每次 call 都过计量"""
         calls = []
         inner = type("L", (), {})()
         async def fake_call(messages, **kw):
             calls.append(1)
             return LLMCallResponse(type="text", content="x")
         inner.call = fake_call
-        metered = _MeteredClient(inner, lambda: calls.append("metered"))
+        metered = MeteredClient(inner, lambda: calls.append("metered"))
         asyncio.run(metered.call([]))
         assert calls == ["metered", 1]
 
@@ -167,7 +168,7 @@ class TestBudget:
 class TestRealWorkflowCommit:
     @pytest.mark.asyncio
     async def test_real_workflow_max_calls_per_run_blocks_second_model_call(self, tmp_path):
-        """真实 _MeteredClient 在第二次模型请求前失败, 状态和位置都不提交"""
+        """真实 MeteredClient 在第二次模型请求前失败, 状态和位置都不提交"""
         db = database(tmp_path / "messages.db")
         store = _archive(db, 2)
         adapter = FlowAdapter(store)
@@ -201,7 +202,7 @@ class TestRealWorkflowCommit:
         monkeypatch.setenv("SATRAP_LOG_ROOT", str(tmp_path / "logs"))
         monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
         from satrap.core.log.debug.capture import debug_request, debug_store, debug_writer
-        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.type.debug import DebugObject
         from satrap.core.log.debug.policy import DebugPolicyStore
 
         policy = DebugPolicyStore()
@@ -626,7 +627,7 @@ class TestObservationBinding:
                                    message_store=store, flow_name="source-limit")
         try:
             await session.observe(make_event(adapter, SCOPE, "绑定", 2))
-            from satrap.edictum.flow.engine import FlowEvent
+            from satrap.core.type.flow.events import FlowEvent
             event = FlowEvent(event_id="source-limit", kind="message", tile="", why="test")
             pulled = await session._pull_inputs("w1", "source-limit", event)
             assert [[message.text for message in value] for value in pulled] == [["t0"]]
@@ -754,7 +755,7 @@ class TestRuntimeIntegration:
         monkeypatch.setenv("SATRAP_LOG_ROOT", str(tmp_path / "logs"))
         monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
         from satrap.core.log.debug.capture import debug_request, debug_writer
-        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.type.debug import DebugObject
         from satrap.core.log.debug.policy import DebugPolicyStore
 
         policy = DebugPolicyStore()
@@ -1031,7 +1032,7 @@ class TestInstanceClose:
     async def test_retired_instance_closed(self):
         """配置指纹变化后旧实例 close"""
         from satrap.edictum.flow.instances import FlowNodeInstancePool
-        from satrap.edictum.flow.types import FlowNode
+        from satrap.core.type.flow.ports import FlowNode
         closed: list[str] = []
 
         class N(FlowNode):
@@ -1047,7 +1048,7 @@ class TestInstanceClose:
     @pytest.mark.asyncio
     async def test_close_all(self):
         from satrap.edictum.flow.instances import FlowNodeInstancePool
-        from satrap.edictum.flow.types import FlowNode
+        from satrap.core.type.flow.ports import FlowNode
         closed: list[str] = []
 
         class N(FlowNode):

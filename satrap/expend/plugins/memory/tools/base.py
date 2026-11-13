@@ -9,7 +9,7 @@ from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.utils.TCBuilder import tool_error
 from satrap.core.memory.service import MemoryService
 from satrap.core.memory.store import MemoryStore
-from satrap.core.plugin_authorization import PluginEntryBinding
+from satrap.core.type.plugin.authorization import PluginEntryBinding
 
 T = TypeVar("T")
 

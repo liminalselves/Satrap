@@ -15,7 +15,8 @@ from satrap.core.friends import FriendError
 from satrap.core.friends.service import FriendService, failure, text_id
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_management_permissions, require_plugin_entry_permission, bind_plugin_factory_tools, permission_id_list
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import authorize_management_permissions, require_plugin_entry_permission, bind_plugin_factory_tools, permission_id_list
 from satrap.edictum.plugin.resources import PluginResources
 from satrap.core.log import logger
 

@@ -16,7 +16,7 @@ from satrap.core.framework.providers.edictum import EdictumProvider
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
 import importlib

@@ -12,7 +12,7 @@ from satrap.core.framework.providers.edictum import EdictumProvider
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.display.service import ChatService
 from satrap.display import service as service_module
-from satrap.edictum.plugin.spec import PluginSpec
+from satrap.core.type.plugin.spec import PluginSpec
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.framework.BackGroundManager import ModelConfigManager

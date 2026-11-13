@@ -28,7 +28,7 @@ from satrap.core.utils.outbound import UnsafeOutboundURLError, OutboundHTTPError
 from satrap.core.call_context import CallOrigin, current_call_origin, require_call_origin
 from satrap.core.conversation import HistoryWindow, current_history_window
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
-from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
+from satrap.core.type.group_chat import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
 from satrap.core.group_chat.summaries import SummaryStore, SummaryLimits
 from satrap.core.platform import PlatformAdapter, current_adapter_manager
 from satrap.core.components import At, Plain, Reply, Image, BaseMessageComponent

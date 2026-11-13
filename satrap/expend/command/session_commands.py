@@ -5,7 +5,8 @@ import secrets
 import string
 from typing import TYPE_CHECKING
 
-from satrap.core.type import CommandAction
+from satrap.core.type.platform import CommandAction
+
 from satrap.core.conversation import current_conversation_route
 if TYPE_CHECKING:
     from satrap.core.framework.Base import Session, AsyncSession

@@ -12,10 +12,12 @@ import json
 
 from satrap.display.plugins import CAPABILITY_LABELS, ChatPluginRegistry
 from satrap.edictum.plugin import CAPABILITY_KINDS
-from satrap.edictum.plugin.config import PluginConfigManager, schema_to_payload, validate_config_values
+from satrap.edictum.plugin.config import PluginConfigManager, validate_config_values
+from satrap.core.type.plugin.config import schema_to_payload
 from satrap.cli.common import chat_client_from_args, offline_requested, parse_kv_pairs
 from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table, render_data
-from satrap.core.type import safe_getattr, safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 
 
 def _registry() -> ChatPluginRegistry:

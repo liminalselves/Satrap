@@ -13,11 +13,13 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
 from satrap.core.config.platform_policy import validate_event_limits
 from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
-from satrap.core.type import Group, PlatformError, PlatformStatus, PlatformMessage, safe_getattr, safe_getattr_str
+from satrap.core.type.platform import Group, PlatformError, PlatformStatus, PlatformMessage
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 
 from satrap.core.log import logger
 
@@ -36,7 +38,7 @@ if TYPE_CHECKING:
     from satrap.core.config.administrator_groups import AdministratorService
     from satrap.core.config.group_actions import GroupActionRecord
     from satrap.core.group_chat.reminder_host import ReminderHost
-    from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
+    from satrap.core.type.group_chat import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
     from satrap.core.platform.scheduled import ScheduledTarget, ScheduledRecorder
     from satrap.core.platform.receipt import SendReceipt
     from satrap.core.file_access.artifacts import FileArtifact
@@ -53,7 +55,7 @@ _confirmed_writes: ContextVar[tuple[object, list[asyncio.Task[bool]]] | None] = 
 
 from satrap.core.config.group_session import decode_group_route
 from satrap.core.platform.message_archive import archive_snapshot
-from satrap.core.group_chat.types import GroupChatError, CAPABILITIES
+from satrap.core.type.group_chat import GroupChatError, CAPABILITIES
 from satrap.core.platform.receipt import SendReceipt
 
 
@@ -386,7 +388,7 @@ class PlatformAdapter(ABC):
         """
         store = self.message_archive
         from satrap.core.telemetry.capture import current_writer, record_message
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         writer = current_writer()
         if store is None and writer is None:
@@ -438,7 +440,7 @@ class PlatformAdapter(ABC):
         """等待已确认的实际消息入档, 再异步通知流程观察者。"""
         store = self.message_archive
         from satrap.core.telemetry.capture import current_writer, record_message
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         writer = current_writer()
         if store is None and writer is None:
@@ -1220,7 +1222,7 @@ class PlatformAdapter(ABC):
             changed = True
         if changed:
             from satrap.core.telemetry.capture import bind_scope, current_writer, record_activity
-            from satrap.core.telemetry.contracts import MetricScope
+            from satrap.core.type.telemetry import MetricScope
 
             with bind_scope(service="backend"):
                 writer = current_writer()

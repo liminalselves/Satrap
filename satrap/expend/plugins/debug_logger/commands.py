@@ -47,7 +47,7 @@ def build_commands(
                 return f"当前对象 Debug: {status['mode']}; 生效: {'开启' if status['enabled'] else '关闭'}; revision={status['revision']}"
             if len(args) == 1 and args[0] in {"on", "off", "reset"}:
                 mode = {"on": "on", "off": "off", "reset": "inherit"}[args[0]]
-                from satrap.core.log.debug.contracts import DebugMode
+                from satrap.core.type.debug import DebugMode
                 from typing import cast
 
                 result = access.set_mode(cast(DebugMode, mode))

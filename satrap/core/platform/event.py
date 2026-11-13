@@ -24,7 +24,9 @@ from satrap.core.platform.receipt import SendReceipt
 from satrap.core.call_context import CallOrigin
 from satrap.core.components import BaseMessageComponent, PlatformComponentType, Plain, At, Reply
 from satrap.core.platform import PlatformAdapter
-from satrap.core.type import PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str, safe_getattr_list
+from satrap.core.type.platform import PlatformMessage, PlatformMessageType
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str, safe_getattr_list
+
 
 from satrap.core.log import logger
 # 模块级导入, 避免每个方法重复 lazy import; 无循环依赖风险 (__init__.py 仅在 TYPE_CHECKING 下引用 event.py)

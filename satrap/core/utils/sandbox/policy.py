@@ -23,10 +23,10 @@ from types import ModuleType
 from typing import IO, NoReturn, Protocol, cast
 from zipfile import ZipFile
 
-try:
-    from .models import Violations, allowed_modules
-except ImportError:
-    from models import Violations, allowed_modules
+if __package__:
+    from satrap.core.type.sandbox import Violations, allowed_modules
+else:
+    from _satrap_sandbox_contract import Violations, allowed_modules
 # 同一策略支持包内导入和 worker 的可信脚本入口, 不要求加载 Satrap 应用
 
 

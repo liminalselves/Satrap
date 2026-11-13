@@ -10,7 +10,7 @@ import textwrap
 
 import pytest
 
-from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+from satrap.core.type.approval import ApprovalRequest, ApprovalResult
 from satrap.core.approval.migration import migrate_approval_admin_config
 from satrap.core.approval.state import approval_root, session_approval
 from satrap.core.call_context import bind_tool_workflow
@@ -76,7 +76,7 @@ async def test_debug_command_group_grant_cannot_change_global_default_or_escape_
 async def test_debug_commands_share_persistent_object_policy_and_reject_model_forwarding(tmp_path, monkeypatch, asynchronous):
     """原生 Debug 命令共享宿主设置, 换上下文不丢覆盖, 模型转发与卸载旧入口均不能修改"""
     from satrap.edictum import simple_session as ss_mod
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     from satrap.core.log.debug.policy import policy_store
 
     monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))

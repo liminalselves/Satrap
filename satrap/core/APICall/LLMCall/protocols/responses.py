@@ -7,11 +7,17 @@ import json
 import re
 from typing import cast
 
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, ModelProtocolPayload, validate_runtime_thinking
+from satrap.core.type.model import (
+    LLMCallResponse,
+    LLMCallStreamEvent,
+    ModelProtocolPayload,
+    validate_runtime_thinking,
+)
+
 from satrap.core.utils import parse_tool_arguments
 from satrap.core.utils.model_history import replay_items
 from ..responses import _extract_token_usage
-from .base import ModelProtocolError, StreamDecoder
+from satrap.core.type.model_protocol import ModelProtocolError, StreamDecoder
 
 from satrap.core.log import logger
 

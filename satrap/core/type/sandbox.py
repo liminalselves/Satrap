@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, NoReturn, TypeAlias, TypedDict
+from typing import Literal, NoReturn, TypedDict
 
 
 Operation = Literal["run", "run_file", "save", "read", "delete", "delete_dir", "list"]
@@ -38,27 +38,43 @@ class SandboxResult(TypedDict, total=False):
     """门面和工具共同使用的 JSON 结果"""
 
     operation: str
+    """已解析请求的操作名称, 解析失败时可能缺失"""
     path: str
+    """请求中的业务路径, 仅在提供路径且请求可解析时返回"""
     stdout: str
+    """worker 捕获的有界标准输出, 失败时也可能为空"""
     stderr: str
+    """worker 捕获的有界标准错误或公开失败说明"""
     returncode: int
+    """兼容执行返回码, 成功为 0, 失败使用负值"""
     content: str
+    """read 操作按请求编码解码并规范换行后的文件文本"""
     files: list[str]
+    """list 操作返回的文件路径, 相对于沙箱根目录并排序"""
     status: str
+    """成功操作的状态标识 success, 失败结果不保证包含此键"""
     error: str
+    """可返回调用方的失败说明, 成功结果通常缺失"""
     error_code: str
+    """稳定的失败类别, 不依赖解析异常文本"""
     action: str
+    """策略拒绝的动作或 API, 无可用信息时为空字符串"""
     module: str
+    """策略拒绝的模块名, 无可用信息时为空字符串"""
     line: int
+    """违规源码行号, 0 表示没有可用位置"""
     worker_pid: int
+    """执行本次操作的隔离 worker 进程 ID"""
     stdout_truncated: bool
+    """标准输出是否因缓冲区上限而被截断"""
     stderr_truncated: bool
+    """标准错误是否因缓冲区上限而被截断"""
     elapsed_seconds: float
+    """父进程测量的请求总耗时, 单位为秒"""
     setup_seconds: float
+    """worker 初始化至执行开始的耗时, 单位为秒, 初始化失败时计至结束"""
     execution_seconds: float
-
-
-JsonValue: TypeAlias = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+    """worker 初始化完成后的执行耗时, 单位为秒, 初始化失败时为 0"""
 
 
 @dataclass(frozen=True)
@@ -66,13 +82,21 @@ class Request:
     """父进程冻结后传入 worker 的单次请求"""
 
     operation: Operation
+    """worker 分派的操作, 必须属于协议支持的操作集合"""
     root: str
+    """本次文件访问的沙箱业务根目录, 由父进程传入并由 worker 固定"""
     modules: tuple[str, ...]
+    """允许模型代码导入的公开模块名单, 不等同于解释器内部依赖"""
     code: str | None = None
+    """run 的内联源码或 save 的文本内容, 其他操作默认 None"""
     path: str | None = None
+    """文件操作的业务路径, 默认 None, 访问前须经过路径策略校验"""
     encoding: str = "utf-8"
+    """read 操作的文本解码格式, 默认 utf-8, 保存源码固定使用 utf-8"""
     version: int = PROTOCOL_VERSION
+    """父子进程协议版本, 默认当前版本, 解析时必须精确匹配"""
     recursive: bool = True
+    """删除目录时是否递归删除内容, 默认 True, False 仅删除空目录"""
 
     @classmethod
     def parse(cls, value: object) -> Request:
@@ -134,6 +158,7 @@ class Violations:
     """仅保存首次违规, 防止捕获异常后误报成功"""
 
     first: PolicyViolation | None = field(default=None, init=False)
+    """本次执行首次策略违规, 初始为 None, 后续违规不得覆盖"""
 
     def reject(self, code: str, message: str, *, action: str = "", module: str = "", line: int = 0) -> NoReturn:
         """

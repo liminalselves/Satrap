@@ -18,7 +18,7 @@ import json
 import math
 import time
 
-from .contracts import JsonValue, MessageCounts, MetricWindow, UsageTotals
+from satrap.core.type.telemetry import JsonValue, MessageCounts, MetricWindow, UsageTotals
 from .store import COUNTERS, HISTOGRAM_KEYS, HISTOGRAM_MS, TelemetryStore, json_text
 
 

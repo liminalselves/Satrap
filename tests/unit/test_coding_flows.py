@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
-from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+from satrap.core.type.approval import ApprovalRequest, ApprovalResult
 
 from pathlib import Path
 from contextlib import closing
@@ -24,6 +24,20 @@ from unittest.mock import AsyncMock, Mock
 from satrap.expend.plugins.satrap_coding.tools import async_interaction, async_write, sync_interaction, sync_write
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 import json
+
+def test_coding_contract_and_validation_preserve_behavior():
+    from satrap.core.approval import ApprovalRequest as PublicApprovalRequest
+    from satrap.core.type.coding import ReplacementPair
+    from satrap.expend.plugins.satrap_coding.tools.validation import prepare_replacements, require_bound_session
+    from typing import get_type_hints
+
+    assert PublicApprovalRequest is ApprovalRequest
+    assert get_type_hints(prepare_replacements)["return"] == list[ReplacementPair] | str
+    assert prepare_replacements("old", [{"old": "old", "new": "new"}]) == [("old", "new", False)]
+    assert "未找到匹配" in prepare_replacements("old", [{"old": "missing"}])
+    with pytest.raises(RuntimeError, match="工具 未绑定会话"):
+        require_bound_session(None, "工具")
+
 
 class TestClassifyCommand:
     def test_empty_and_read(self):

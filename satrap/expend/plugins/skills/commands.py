@@ -6,7 +6,8 @@ import asyncio
 from typing import cast
 
 from satrap.expend.plugins.skills.management import skill_management
-from satrap.core.type import CommandAction
+from satrap.core.type.platform import CommandAction
+
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 
 

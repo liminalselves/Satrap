@@ -14,12 +14,15 @@ from typing import Any, cast
 import yaml
 from satrap.edictum.plugin.runtime import PluginRuntimeState, apply_plugin_capabilities_async
 from satrap.edictum.plugin.runtime import preview_plugin_reconciliation, reconcile_plugin_states_async
-from satrap.edictum.plugin.spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
-from satrap.edictum.plugin.compatibility import PluginEnvironment, check_plugin_compatibility
+from satrap.core.type.plugin.spec import PluginSpec
+from satrap.edictum.plugin.spec import parse_plugin_specs, plugin_specs_fingerprint
+from satrap.core.type.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import check_plugin_compatibility
 from unittest.mock import Mock
 import io
 import logging
-from satrap.edictum.plugin.config import parse_config_schema, schema_to_payload
+from satrap.edictum.plugin.config import parse_config_schema
+from satrap.core.type.plugin.config import schema_to_payload
 from satrap.core.log import Logger
 from satrap.core.log.stream import standard_log_stream
 
@@ -208,7 +211,7 @@ async def test_slow_source_probe_does_not_block_event_loop():
 
 @pytest.mark.asyncio
 async def test_incompatible_upgrade_is_blocked_before_uninstall():
-    from satrap.edictum.plugin.compatibility import CompatibilityResult
+    from satrap.core.type.plugin.compatibility import CompatibilityResult
 
     old = PluginSpec(name="demo", version="1", path="original")
     handle = object()
@@ -482,7 +485,7 @@ def test_environment_validation(session_type, platform):
 @pytest.mark.parametrize("async_mode", [False, True])
 async def test_incompatible_plugin_never_imported(tmp_path, async_mode):
     from satrap import LLM, AsyncLLM, SimpleSession, AsyncSimpleSession
-    from satrap.edictum.plugin.compatibility import PluginCompatibilityError
+    from satrap.core.type.plugin.compatibility import PluginCompatibilityError
 
     plugin = tmp_path / "platform_plugin"
     plugin.mkdir()

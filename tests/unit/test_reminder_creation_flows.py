@@ -14,7 +14,7 @@ from satrap.core.config.platform_messages import MessageScope, PlatformMessageSt
 from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError as _reminder_host_ReminderError
 from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.platform import PlatformConfig
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.receipt import SendReceipt

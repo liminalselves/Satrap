@@ -84,7 +84,7 @@ def 节点名(ctx) -> bool:                   # 条件节点: 必须同步, 不�
 
 ### 1.4 config_schema 新增项
 
-现有字段类型和键全部沿用 (`satrap/edictum/plugin/config.py:38`, `:169-223`)。以下三项需要在 `ConfigField`, 解析, 严格校验和 `schema_to_payload` 里新增, 插件自己的配置表单也能用:
+现有字段类型和键全部沿用 (`satrap/core/type/plugin/config.py` 的 `ConfigField` 与 `schema_to_payload`, `satrap/edictum/plugin/config.py` 的解析)。以下三项需要在字段声明、解析、严格校验和 payload 里支持, 插件自己的配置表单也能用:
 
 | 新增 | 含义 |
 | --- | --- |

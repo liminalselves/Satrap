@@ -13,7 +13,7 @@ import asyncio
 import stat
 import os
 
-from satrap.core.plugin_interop.contracts import ImageArtifact, PluginInteractionError
+from satrap.core.type.plugin_interop import ImageArtifact, PluginInteractionError
 from satrap.core.call_context import current_call_origin, current_flow_workflow, current_tool_workflow
 from satrap.core.file_access.artifacts import FileArtifact, artifact_lease, current_file_receiver, file_receiver_loop, open_artifact
 
@@ -105,7 +105,8 @@ class ArtifactAccess:
         """
         from satrap.core.platform import current_adapter_manager
         from satrap.core.file_access.reads import source_check
-        from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
+        from satrap.core.type.plugin.authorization import PluginEntryBinding
+        from satrap.core.plugin_authorization import require_plugin_entry_permission
         from satrap.core.approval.state import session_approval
 
         runtime = self._host._runtime()

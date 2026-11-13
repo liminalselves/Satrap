@@ -6,7 +6,7 @@
 """
 
 from typing import Optional
-from satrap.core.utils.sandbox.models import SandboxResult
+from satrap.core.type.sandbox import SandboxResult
 from satrap.core.utils.TCBuilder import Tool
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.log import logger

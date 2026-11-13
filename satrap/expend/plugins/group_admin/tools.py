@@ -7,7 +7,7 @@ import traceback
 import weakref
 from typing import Any, TypeVar, cast, overload
 
-from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS
+from satrap.core.type.group_actions import ACTION_FIELDS
 from satrap.core.config.model_tool_authorization import config_ids as _lines, bind_tool_session, model_tool_authorization
 from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_model_action_authorization, bind_group_action_preflight
 from satrap.core.config.group_approval import model_plugin_requires_approval
@@ -15,8 +15,8 @@ from satrap.core.platform.onebot.admin import (OneBotAdmin, AdminActionRejected,
                                              PlatformAdminError, UnsupportedAdminAction)
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.plugin_authorization import (BoundPluginTool, PluginEntryBinding, authorize_plugin_entry,
-                                              require_plugin_entry_permission, bind_plugin_factory_tools)
+from satrap.core.type.plugin.authorization import BoundPluginTool, PluginEntryBinding
+from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 from satrap.edictum.plugin.resources import PluginResources
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase

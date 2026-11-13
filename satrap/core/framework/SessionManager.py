@@ -34,7 +34,7 @@ from satrap.core.framework.providers import (
     SessionProvider,
     SessionProviderRegistry,
 )
-from satrap.core.framework.providers.base import SessionProviderDefinition
+from satrap.core.type.session_provider import SessionProviderDefinition
 from satrap.core.config.model_snapshot import llm_config_fingerprint
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
@@ -52,7 +52,12 @@ from satrap.core.storage import (
     StorageScope,
     default_storage_layout,
 )
-from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
+from satrap.core.type.session import SessionConfig
+from satrap.core.type.model import UserCall
+from satrap.core.type.model_config import LLMConfig
+from satrap.core.type.platform import CommandAction
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_callable
+
 from satrap.core.call_context import bind_call_origin
 from satrap.core.conversation import bind_conversation_route, HistoryWindow
 from satrap.core.group_chat.reply import bind_session_reply, abort_reply_turn
@@ -65,7 +70,7 @@ if TYPE_CHECKING:
 
 _UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.core.config.group_session import resolve_group_session
 
 

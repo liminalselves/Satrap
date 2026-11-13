@@ -3,16 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from satrap.edictum.flow.definition import (
-    FlowDefinitionError,
-    FlowDefaultsEntry,
-    migrate_flow_definition,
-    parse_flow_definition,
-    resolve_node_config,
-    validate_node_config,
-)
-from satrap.edictum.flow.registry import FlowNodeRegistry, FlowNodeType, PortSpec, RenamedEntry
-from satrap.edictum.plugin.config import ConfigField
+from satrap.core.type.flow.definition import FlowDefinitionError, FlowDefaultsEntry
+from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition, resolve_node_config, validate_node_config
+from satrap.edictum.flow.registry import FlowNodeRegistry
+from satrap.core.type.flow.registry import FlowNodeType, PortSpec, RenamedEntry
+from satrap.core.type.plugin.config import ConfigField
 
 
 def _registry_with_filter() -> FlowNodeRegistry:

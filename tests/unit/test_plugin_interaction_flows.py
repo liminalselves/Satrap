@@ -13,7 +13,8 @@ import pytest
 import yaml
 
 from satrap.core.call_context import CallOrigin, bind_call_origin
-from satrap.core.plugin_interop.contracts import PluginInteractionError, parse_interop
+from satrap.core.type.plugin_interop import PluginInteractionError
+from satrap.core.plugin_interop.codec import parse_interop
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap import AsyncLLM, LLM
 
@@ -231,6 +232,47 @@ async def test_service_install_call_isolation_and_revocation(tmp_path, monkeypat
         for plugin in session.list_plugins():
             await _await(session.uninstall_plugin(plugin.name))
         await _await(llm.client.close())
+
+
+def test_interop_codec_preserves_immutable_specs_and_service_data():
+    """迁移后的编解码保持声明冻结、数据隔离和错误身份。"""
+    import copy
+    from dataclasses import FrozenInstanceError
+    from satrap.core.plugin_interop import ImageArtifact, PluginInteractionError as PublicError
+    from satrap.core.plugin_interop.codec import copy_data
+
+    raw = {"name": "owner", "interop": {"exports": {"services": ["lookup"]},
+           "requires": {"provider": {"tools": ["find"]}},
+           "replaces": {"provider": {"tools": {"old": "new"}}},
+           "conflicts": {"other": True}}}
+    spec = parse_interop(raw)
+    payload = spec.to_payload()
+    raw["interop"]["exports"]["services"].append("extra")
+    assert spec.to_payload() == payload
+    assert copy.deepcopy(spec) is spec
+    with pytest.raises(TypeError):
+        spec.exports["services"] = ("changed",)
+    with pytest.raises(TypeError):
+        spec.replaces["provider"]["tools"]["old"] = "changed"
+    with pytest.raises(FrozenInstanceError):
+        spec.requires["provider"].optional = True
+    payload["exports"]["services"].append("modified")
+    assert spec.exports["services"] == ("lookup",)
+
+    value = {"items": [1, {"name": "original"}]}
+    copied = copy_data(value)
+    copied["items"][1]["name"] = "changed"
+    assert value["items"][1]["name"] == "original"
+    cycle = []
+    cycle.append(cycle)
+    for invalid in (cycle, float("nan"), object(), {1: "bad"}):
+        with pytest.raises(TypeError):
+            copy_data(invalid)
+    assert PublicError is PluginInteractionError
+    artifact = ImageArtifact(b"image", lambda: False)
+    with pytest.raises(PublicError) as error:
+        copy_data(artifact)
+    assert error.value.code == "capability_stale"
 
 
 def test_interop_static_declarations_and_factory_opt_in():

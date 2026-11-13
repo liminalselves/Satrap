@@ -7,7 +7,16 @@ import json
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.cli.output import CliError, dispatch_action, ok, print_json, print_table, render_data
-from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, safe_getattr_callable
+from satrap.core.type.model_config import (
+    ASRConfig,
+    EmbeddingConfig,
+    ImgConfig,
+    LLMConfig,
+    MODEL_CONFIG_CLASSES,
+    ReRankConfig,
+)
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from satrap.core.config.reference_checkers import build_reference_checker
 
 

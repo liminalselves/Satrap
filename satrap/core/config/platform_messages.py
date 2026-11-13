@@ -1,9 +1,8 @@
 """平台原始消息档案; 与模型上下文分开保存, 查询和删除"""
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,90 +14,9 @@ import sqlite3
 import time
 import uuid
 
-from satrap.core.conversation import HistoryWindow
-from satrap.core.utils.validation import is_bounded_text
+from satrap.core.type.archive import ArchiveMessage, MessageArchiveError, MessageScope, _identity
+from satrap.core.type.conversation import HistoryWindow
 from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION, ensure_platform_tables
-
-
-class MessageArchiveError(RuntimeError):
-    """携带公共错误码的档案错误, 由请求或消息接收边界记录和捕获"""
-
-    def __init__(self, code: str, message: str) -> None:
-        """
-        初始化档案错误
-
-        参数:
-        - code: 对外稳定的错误码
-        - message: 不包含原始消息正文的错误说明
-        """
-        super().__init__(message)
-        self.code = code
-
-
-def _identity(value: object) -> str:
-    """
-    校验平台身份标识
-
-    参数:
-    - value: 不依赖平台数字格式的字符串标识
-
-    返回:
-    - 原字符串, 非法输入抛出 ValueError
-    """
-    if not is_bounded_text(value):
-        raise ValueError("消息档案身份必须是长度不超过 256 的非空字符串")
-    return value
-
-
-@dataclass(frozen=True)
-class MessageScope:
-    """平台实例, 账号和实际对话组成的档案身份, 不包含 Agent 配置"""
-
-    adapter_id: str
-    self_id: str
-    conversation_kind: str
-    chat_id: str
-
-    def __post_init__(self) -> None:
-        """校验全部身份字段, 不接受空账号或未知对话身份"""
-        for value in (self.adapter_id, self.self_id, self.conversation_kind, self.chat_id):
-            _identity(value)
-
-    @property
-    def key(self) -> str:
-        """
-        编码不受分隔符冲突影响的版本化对话键
-
-        返回:
-        - 包含全部档案身份的 JSON 对话键
-        """
-        return "messages:v1:" + json.dumps(
-            [self.adapter_id, self.self_id, self.conversation_kind, self.chat_id], ensure_ascii=False, separators=(",", ":"),
-        )
-
-
-@dataclass(frozen=True)
-class ArchiveMessage:
-    """已经由适配器归一和核验归属的消息; 不持有原始事件或本地文件内容"""
-
-    message_id: str
-    sender_id: str
-    message_time: float
-    text: str
-    nickname: str = ""
-    card: str = ""
-    direction: str = "inbound"
-    components: Sequence[Mapping[str, object]] = field(default_factory=tuple)
-    reply_to_message_id: str | None = None
-    mentions: Sequence[str] = field(default_factory=tuple)
-    media: Sequence[Mapping[str, object]] = field(default_factory=tuple)
-    source: str = "platform_event"
-    verified: bool = True
-    truncated: bool = False
-    time_source: str = "platform"
-    received_at: float | None = None
-    """宿主首次接收时间, 在进入异步转换或写入等待之前冻结"""
-
 
 
 def archive_time(value: str | None) -> float | None:

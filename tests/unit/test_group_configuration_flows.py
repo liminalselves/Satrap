@@ -28,7 +28,7 @@ from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.providers import EdictumProvider, SessionProviderRegistry
 from satrap.core.type import LLMConfig, SessionConfig, UserCall
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.simple_session import AsyncSimpleSession
 from typing import Mapping

@@ -329,7 +329,7 @@ class ScopedMemories:
             connection.commit()
             if result.get("status") == "pending":
                 from satrap.core.telemetry.capture import record_approval
-                from satrap.core.telemetry.contracts import MetricScope
+                from satrap.core.type.telemetry import MetricScope
 
                 record_approval("memory", result["proposal_id"], "pending", MetricScope(platform_id=self.scope.adapter_id,
                                 self_id=self.scope.self_id, conversation_kind="group", target_id=self.scope.chat_id))
@@ -456,7 +456,7 @@ class ScopedMemories:
                                (state, self.archive._clock(), self.scope.key, proposal_id))
             connection.commit()
             from satrap.core.telemetry.capture import record_approval
-            from satrap.core.telemetry.contracts import MetricScope
+            from satrap.core.type.telemetry import MetricScope
 
             record_approval("memory", proposal_id, state, MetricScope(platform_id=self.scope.adapter_id,
                             self_id=self.scope.self_id, conversation_kind="group", target_id=self.scope.chat_id))

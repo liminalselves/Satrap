@@ -11,11 +11,12 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from satrap.edictum.plugin.spec import PluginSpec
+from satrap.core.type.plugin.spec import PluginSpec
 from satrap.edictum.plugin.settings import EffectivePluginConfig, PluginInstallConfig
 from satrap.edictum.plugin import CAPABILITY_KINDS, Plugin, load_plugin_meta
 from satrap.core.plugin_interop.capabilities import PluginInterop, _RelationNode, _validate_relation_target
-from satrap.core.plugin_interop.contracts import CapabilityKind, InteropSpec, parse_interop
+from satrap.core.type.plugin_interop import CapabilityKind, InteropSpec
+from satrap.core.plugin_interop.codec import parse_interop
 from satrap.core.utils.performance import PhaseTimings
 from satrap.core.utils.application_progress import progress_phase
 

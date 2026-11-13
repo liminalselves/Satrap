@@ -9,8 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from satrap.core.plugin_interop.contracts import PluginInteractionError
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_management_permissions, require_plugin_entry_permission
+from satrap.core.type.plugin_interop import PluginInteractionError
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import authorize_management_permissions, require_plugin_entry_permission
 from satrap.core.approval.coordinator import approve_sync, approve_async
 from satrap.core.approval.policy import RiskLevel
 from satrap.core.approval.state import session_approval

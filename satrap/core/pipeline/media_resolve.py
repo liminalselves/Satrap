@@ -26,7 +26,8 @@ from satrap.core.pipeline.attachments import _admin_action, _download
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.event import MessageEvent
 from satrap.core.utils.media import MAX_MEDIA_BYTES
-from satrap.core.type import safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr_str
+
 
 from satrap.core.log import logger
 

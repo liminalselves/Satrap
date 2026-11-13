@@ -19,7 +19,7 @@ from aiocqhttp.exceptions import ActionFailed
 import asyncio
 from satrap.edictum import AsyncSimpleSession
 from satrap.core.call_context import bind_call_origin
-from satrap.core.group_chat.types import GroupChatLimits
+from satrap.core.type.group_chat import GroupChatLimits
 from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
 from satrap.expend.plugins.group_chat.tools import get_tools
 from support.group_read import _setup
@@ -408,7 +408,7 @@ def test_migration_preserves_global_group_restrictions(tmp_path, monkeypatch):
 async def test_new_queries_support_another_platform_and_private_route_revocation(tmp_path):
     from satrap.core.call_context import CallOrigin
     from satrap.core.group_chat.service import GroupChatService
-    from satrap.core.group_chat.types import GroupRecord, GroupSnapshot, VerifiedGroup
+    from satrap.core.type.group_chat import GroupRecord, GroupSnapshot, VerifiedGroup
     from satrap.core.platform import PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig
     from support.group_read import _FutureAdapter, NOW
 

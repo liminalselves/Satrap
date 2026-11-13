@@ -54,14 +54,17 @@ from satrap.core.server_auth import is_loopback_host
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import ApprovalAdapterState, EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
-from satrap.core.type import GroupActionRecord, PlatformMessage, safe_getattr_callable
+from satrap.core.type.control import GroupActionRecord
+from satrap.core.type.platform import PlatformMessage
+from satrap.core.utils.attributes import safe_getattr_callable
+
 
 from satrap.core.log import logger
 from satrap.core.call_context import CallOrigin, current_call_origin
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.platform.message_archive import archive_snapshot
 from satrap.core.config.group_action_origin import current_group_action_preflight
-from satrap.core.group_chat.types import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupSnapshot, VerifiedGroup
+from satrap.core.type.group_chat import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupSnapshot, VerifiedGroup
 
 from satrap.core.config.group_policy import resolve_group_policy
 from satrap.core.config.wake_overrides import resolve_wake_settings

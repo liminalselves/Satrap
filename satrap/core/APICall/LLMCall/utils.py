@@ -12,7 +12,9 @@ import copy
 
 from types import SimpleNamespace
 
-from satrap.core.type import safe_getattr, validate_runtime_thinking
+from satrap.core.utils.attributes import safe_getattr
+from satrap.core.type.model import validate_runtime_thinking
+
 
 from satrap.core.log import logger
 

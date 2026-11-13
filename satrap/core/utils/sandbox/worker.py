@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -20,11 +21,24 @@ import time
 import traceback
 
 
+# -I/-S 下仅加载可信执行器和固定协议文件, 不导入 Satrap 应用或工作区启动代码
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from models import MAX_MESSAGE_BYTES, MAX_OUTPUT_CHARS, PolicyViolation, Request, SandboxResult, Violations, failure_result
+_CONTRACT_NAME = "_satrap_sandbox_contract"
+_CONTRACT_PATH = Path(__file__).resolve().parents[2] / "type" / "sandbox.py"
+_CONTRACT_SPEC = importlib.util.spec_from_file_location(_CONTRACT_NAME, _CONTRACT_PATH)
+if _CONTRACT_SPEC is None or _CONTRACT_SPEC.loader is None:
+    raise ImportError("无法加载沙箱协议")
+_CONTRACT = importlib.util.module_from_spec(_CONTRACT_SPEC)
+sys.modules[_CONTRACT_NAME] = _CONTRACT
+try:
+    _CONTRACT_SPEC.loader.exec_module(_CONTRACT)
+except Exception:
+    sys.modules.pop(_CONTRACT_NAME, None)
+    raise
+
+from _satrap_sandbox_contract import MAX_MESSAGE_BYTES, MAX_OUTPUT_CHARS, PolicyViolation, Request, SandboxResult, Violations, failure_result
 from guards import install
 from policy import FilePolicy, PythonPolicy
-# -I/-S 下仅加入可信执行器目录, 不导入 Satrap 应用或工作区启动代码
 
 
 class OutputBuffer(io.TextIOBase):

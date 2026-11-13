@@ -11,7 +11,7 @@ from pathlib import Path
 from satrap.core.plugin_interop import PluginHost, PluginInteractionError
 from satrap.core.plugin_interop.environment import environment_snapshot
 from satrap.core.utils.sandbox import CodeSandbox
-from satrap.core.utils.sandbox.models import SandboxResult
+from satrap.core.type.sandbox import SandboxResult
 
 
 class SandboxEnvironmentMixin:

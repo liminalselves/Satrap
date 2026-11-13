@@ -62,7 +62,8 @@ from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.config.loader import ConfigLoader
-from satrap.core.type import validate_runtime_thinking
+from satrap.core.type.model import validate_runtime_thinking
+
 from satrap.display.recorder import list_conversations, query_conversations
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService

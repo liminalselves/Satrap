@@ -6,331 +6,22 @@
 """
 from __future__ import annotations
 
-from satrap.edictum.flow.definition import FlowDefinition, FlowEdge, validate_node_config
+from satrap.core.type.flow.definition import FlowDefinition, FlowEdge
+from satrap.edictum.flow.analysis import analyze
+from satrap.edictum.flow.definition import validate_node_config
 from satrap.edictum.flow.definition import resolve_node_config as _resolve_node_config
-from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES, FlowNodeRegistry, FlowNodeType
-from satrap.edictum.flow.types import PortType
-from satrap.edictum.plugin.catalog import PluginCatalogEntry
+from satrap.edictum.flow.graph import edge_key
+from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES, FlowNodeRegistry
+from satrap.core.type.flow.registry import FlowNodeType
+from satrap.core.type.plugin.catalog import PluginCatalogEntry
 
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 
-IssueLevel = Literal["error", "warning"]
-IssueCategory = Literal["结构", "触发", "逻辑", "端口", "状态槽", "workflow", "配置", "成本", "环境"]
-
-
-@dataclass(frozen=True)
-class Issue:
-    """一条静态检查问题, 与 demo Issue 形状一致"""
-
-    code: str
-    level: IssueLevel
-    category: IssueCategory
-    message: str
-    hint: str = ""
-    node: str = ""
-    edge: str = ""
-    field: str = ""
-
-    def to_payload(self) -> dict[str, Any]:
-        """序列化给前端"""
-        return {
-            "code": self.code,
-            "level": self.level,
-            "category": self.category,
-            "message": self.message,
-            **({"hint": self.hint} if self.hint else {}),
-            **({"node": self.node} if self.node else {}),
-            **({"edge": self.edge} if self.edge else {}),
-            **({"field": self.field} if self.field else {}),
-        }
-
-
-@dataclass(frozen=True)
-class Origin:
-    """一次触发的来源: 触发磁贴, 或上游 WF 的完成事件"""
-
-    kind: Literal["tile", "done"]
-    id: str
-    via: tuple[str, ...]
-
-
-@dataclass
-class WfInfo:
-    """一个 WF 节点的静态分析结果"""
-
-    id: str
-    values: dict[str, Any]
-    pulls: set[str] = field(default_factory=set)
-    """拉取时求值的上游数据节点 (遇到 WF 或状态槽停止)"""
-    origins: list[Origin] = field(default_factory=list)
-    roots: set[str] = field(default_factory=set)
-    """根触发类型: wake / threshold"""
-    background: bool = False
-    handoff_tools: list[dict[str, str]] = field(default_factory=list)
-    writes_state: list[str] = field(default_factory=list)
-    replies_directly: bool = False
-
-
-@dataclass
-class Analysis:
-    """静态分析产物, 供 validate 复用"""
-
-    wfs: dict[str, WfInfo] = field(default_factory=dict)
-    pulled_by: dict[str, set[str]] = field(default_factory=dict)
-    edge_types: dict[str, PortType] = field(default_factory=dict)
-    drives: dict[str, set[str]] = field(default_factory=dict)
-    cond_contexts: dict[str, set[str]] = field(default_factory=dict)
-
+from satrap.core.type.flow.validation import IssueLevel, IssueCategory, Issue, Origin, WfInfo, Analysis
 
 MAX_NODES = 80
-
-_SIGNAL: tuple[PortType, ...] = ("event", "condition", "handoff")
-
-
-def _edge_key(e: FlowEdge) -> str:
-    return f"{e.source}.{e.source_port}->{e.target}.{e.target_port}"
-
-
-def _output_type(
-    node_id: str, port: str,
-    nodes: dict[str, Any], edges: list[FlowEdge],
-    get_type,
-    seen: set[str],
-) -> PortType | None:
-    """
-    推导一个输出端口的实际类型; 逻辑门按输入推导 (有触发输入时输出触发, 否则条件)
-
-    参数:
-    - node_id: 节点 id
-    - port: 输出端口名
-    - nodes: {id: FlowNodeInstance}
-    - edges: 连线列表
-    - get_type: 按类型名查契约
-    - seen: 递归去重集合
-
-    返回:
-    - PortType | None: 推导不出返回 None
-    """
-    node = nodes.get(node_id)
-    node_type = get_type(node.type) if node else None
-    if node_type is None:
-        return None
-    port_def = node_type.output_port(port)
-    if port_def is None:
-        return None
-    if not port_def.derived:
-        return port_def.types[0]
-    if node_id in seen:
-        return "condition"
-    seen.add(node_id)
-    ins = [e for e in edges if e.target == node_id]
-    for e in ins:
-        t = _output_type(e.source, e.source_port, nodes, edges, get_type, seen)
-        if t == "event":
-            return "event"
-    return "condition"
-
-
-def analyze(
-    definition: FlowDefinition,
-    registry: FlowNodeRegistry,
-    resolved_values: dict[str, dict[str, Any]],
-) -> Analysis:
-    """
-    对流程做静态分析: WF 拉取链, 触发来源, 后台判定, 条件上下文
-
-    参数:
-    - definition: 流程定义
-    - registry: 节点类型注册表
-    - resolved_values: {节点 id: 生效配置}
-
-    返回:
-    - Analysis: 供 validate 与各检查器复用
-    """
-    nodes = definition.nodes
-    edges = definition.edges
-    get_type = registry.get
-    edge_types: dict[str, PortType] = {}
-    for e in edges:
-        t = _output_type(e.source, e.source_port, nodes, edges, get_type, set())
-        if t is not None:
-            edge_types[_edge_key(e)] = t
-
-    def in_edges(node_id: str, port: str | None = None) -> list[FlowEdge]:
-        return [e for e in edges if e.target == node_id and (port is None or e.target_port == port)]
-
-    def out_edges(node_id: str, port: str | None = None) -> list[FlowEdge]:
-        return [e for e in edges if e.source == node_id and (port is None or e.source_port == port)]
-
-    def node_role(node_id: str) -> str:
-        node = nodes.get(node_id)
-        t = get_type(node.type) if node else None
-        return t.role if t else ""
-
-    def trace_events(node_id: str, port: str | None, via: tuple[str, ...], seen: set[str]) -> list[Origin]:
-        """从触发输入口向上追溯触发来源"""
-        out: list[Origin] = []
-        for e in in_edges(node_id, port):
-            if edge_types.get(_edge_key(e)) != "event":
-                continue
-            if e.source in seen:
-                continue
-            t = get_type(nodes[e.source].type)
-            if t is None:
-                continue
-            if t.role == "trigger":
-                out.append(Origin(kind="tile", id=e.source, via=via))
-            elif t.role == "workflow" and e.source_port == "done":
-                out.append(Origin(kind="done", id=e.source, via=via))
-            elif t.role == "logic":
-                out.extend(trace_events(e.source, None, via + (e.source,), seen | {e.source}))
-        return out
-
-    wfs: dict[str, WfInfo] = {}
-    pulled_by: dict[str, set[str]] = {}
-    for node in nodes.values():
-        t = get_type(node.type)
-        if t is None or t.role != "workflow":
-            continue
-        pulls: set[str] = set()
-        queue = [e.source for e in in_edges(node.id, "input")]
-        while queue:
-            nid = queue.pop(0)
-            if nid in pulls or node_role(nid) == "workflow":
-                continue
-            pulls.add(nid)
-            if node_role(nid) == "state":
-                continue
-            for e in in_edges(nid):
-                t_edge = edge_types.get(_edge_key(e))
-                if t_edge is None or t_edge not in _SIGNAL:
-                    queue.append(e.source)
-        for nid in pulls:
-            pulled_by.setdefault(nid, set()).add(node.id)
-        wfs[node.id] = WfInfo(
-            id=node.id,
-            values=resolved_values.get(node.id, {}),
-            pulls=pulls,
-            origins=trace_events(node.id, "trigger", (), set()),
-            writes_state=[e.target for e in out_edges(node.id, "text") if node_role(e.target) == "state"],
-            replies_directly=any(node_role(e.target) == "sink" for e in out_edges(node.id, "text")),
-        )
-
-    def tool_name(tile_id: str) -> str:
-        values = resolved_values.get(tile_id, {})
-        return str(values.get("tool_name") or f"handoff_{tile_id}")
-
-    for node in nodes.values():
-        if node.type != "tool":
-            continue
-        for e in in_edges(node.id, "caller"):
-            if e.source in wfs:
-                wfs[e.source].handoff_tools.append({"tool": tool_name(node.id), "tile": node.id})
-
-    def callers_of(tile: str) -> list[str]:
-        return [e.source for e in in_edges(tile, "caller") if e.source in wfs]
-
-    def roots_of(wf: str, seen: set[str]) -> set[str]:
-        result: set[str] = set()
-        if wf in seen:
-            return result
-        seen.add(wf)
-        for o in wfs[wf].origins:
-            if o.kind == "done":
-                result.update(roots_of(o.id, seen))
-                continue
-            t = nodes[o.id].type
-            if t in ("wake", "threshold"):
-                result.add(t)
-            elif t == "tool":
-                for c in callers_of(o.id):
-                    result.update(roots_of(c, seen))
-        return result
-
-    for wf in wfs.values():
-        wf.roots = roots_of(wf.id, set())
-
-    def background_of(wf: str, seen: set[str]) -> bool:
-        if wf in seen:
-            return True
-        seen.add(wf)
-        w = wfs[wf]
-        if not w.origins:
-            return False
-        for o in w.origins:
-            if o.kind == "done":
-                if not background_of(o.id, seen):
-                    return False
-                continue
-            t = nodes[o.id].type
-            if t == "threshold":
-                continue
-            if t == "tool":
-                callers = callers_of(o.id)
-                if callers and all(background_of(c, seen) for c in callers):
-                    continue
-                return False
-            return False
-        return True
-
-    for wf in wfs.values():
-        wf.background = background_of(wf.id, set())
-
-    drives: dict[str, set[str]] = {}
-    for wf in wfs.values():
-        for o in wf.origins:
-            if o.kind == "tile":
-                drives.setdefault(o.id, set()).add(wf.id)
-
-    # 条件求值上下文: 接磁贴 when 用磁贴 emits; 接逻辑门用该门全部触发输入的上下文
-    cond_contexts: dict[str, set[str]] = {}
-
-    def event_ctx(node_id: str, port: str | None, seen: set[str]) -> set[str]:
-        result: set[str] = set()
-        for e in in_edges(node_id, port):
-            if edge_types.get(_edge_key(e)) != "event" or e.source in seen:
-                continue
-            t = get_type(nodes[e.source].type)
-            if t is None:
-                continue
-            if t.role == "trigger" and t.emits:
-                result.add(t.emits)
-            elif t.role == "workflow":
-                result.add("call")
-            elif t.role == "logic":
-                result.update(event_ctx(e.source, None, seen | {e.source}))
-        return result
-
-    def ctx_of_consumer(node_id: str, seen: set[str]) -> set[str]:
-        t = get_type(nodes[node_id].type)
-        if t is None or node_id in seen:
-            return set()
-        seen.add(node_id)
-        if t.role == "trigger" and t.emits:
-            return {t.emits}
-        if t.role == "logic":
-            own = event_ctx(node_id, None, set())
-            if own:
-                return own
-            result: set[str] = set()
-            for e in out_edges(node_id):
-                result.update(ctx_of_consumer(e.target, seen))
-            return result
-        return {"message", "batch", "call"}
-
-    for node in nodes.values():
-        t = get_type(node.type)
-        if t is None or t.role != "condition":
-            continue
-        result: set[str] = set()
-        for e in out_edges(node.id):
-            result.update(ctx_of_consumer(e.target, set()))
-        cond_contexts[node.id] = result
-
-    return Analysis(wfs=wfs, pulled_by=pulled_by, edge_types=edge_types,
-                    drives=drives, cond_contexts=cond_contexts)
 
 
 def _find_cycle(nodes: dict[str, Any], edges: list[FlowEdge], get_type) -> list[str] | None:
@@ -378,6 +69,7 @@ def validate(
     registry: FlowNodeRegistry,
     *,
     plugin_catalog: dict[str, PluginCatalogEntry] | None = None,
+    plugin_execution_enabled: dict[str, bool] | None = None,
     archive_enabled: bool = True,
     resolved_map: dict[str, dict[str, Any]] | None = None,
     conversation_kinds: list[str] | None = None,
@@ -391,7 +83,8 @@ def validate(
     参数:
     - definition: 流程定义 (应先经 migrate_flow_definition 迁移)
     - registry: 节点类型注册表
-    - plugin_catalog: {插件名: PluginCatalogEntry} 用于环境检查 (停用/未装/flow.workflow)
+    - plugin_catalog: {插件名: PluginCatalogEntry} 用于环境检查 (未装/flow.workflow)
+    - plugin_execution_enabled: {插件名: 执行总闸}; None 表示调用方未提供宿主状态
     - archive_enabled: 平台是否开启消息档案
     - resolved_map: 可选的预计算生效配置 {节点 id: {字段: 值}}; 缺省按 defaults 解析
     - conversation_kinds: 绑定的会话类型 ["group","private"], 用于私聊相关检查
@@ -475,17 +168,17 @@ def validate(
         if sp is None or tp is None:
             bad = f"{e.source}.{e.source_port}" if sp is None else f"{e.target}.{e.target_port}"
             add(Issue(code="flow_port_unknown", level="error", category="端口",
-                      edge=_edge_key(e), node=e.target,
+                      edge=edge_key(e), node=e.target,
                       message=f"连线引用了不存在的端口 {bad}", hint="节点类型升级后删除了该端口"))
             continue
-        t_edge = edge_types.get(_edge_key(e))
+        t_edge = edge_types.get(edge_key(e))
         if t_edge is not None and t_edge not in tp.types:
             add(Issue(code="flow_port_type_mismatch", level="error", category="端口",
-                      edge=_edge_key(e), node=e.target,
+                      edge=edge_key(e), node=e.target,
                       message=f"端口类型不匹配: {name(e.source)} 输出{t_edge}, {name(e.target)}.{tp.label} 只接受{'/'.join(tp.types)}",
                       hint="逻辑门没有触发输入时只输出条件; 给它接一个触发磁贴"
                       if sp.derived and t_edge == "condition" and "event" in tp.types else ""))
-        pair = _edge_key(e)
+        pair = edge_key(e)
         if pair in seen_pairs:
             add(Issue(code="flow_duplicate_edge", level="warning", category="端口", edge=pair,
                       message=f"{name(e.source)} 到 {name(e.target)} 重复连线"))
@@ -508,7 +201,7 @@ def validate(
         t = get_type(node.type)
         if t is None or t.role != "logic":
             continue
-        ins = [edge_types.get(_edge_key(e)) for e in in_e(node.id)]
+        ins = [edge_types.get(edge_key(e)) for e in in_e(node.id)]
         events = sum(1 for x in ins if x == "event")
         conds = sum(1 for x in ins if x == "condition")
         if node.type == "or" and events and conds:
@@ -643,7 +336,7 @@ def validate(
             back = next((e for e in out_e(s.id) if e.target == w.source and e.target_port == "input"), None)
             if back and sv.get("writer_reads_previous"):
                 add(Issue(code="flow_state_read_back_redundant", level="warning", category="状态槽",
-                          edge=_edge_key(back), node=s.id,
+                          edge=edge_key(back), node=s.id,
                           message=f"{name(s.id)} 已开启\"写入方读取上一版\", 连回 {name(w.source)} 的读线是重复的",
                           hint="删掉这条线即可"))
         if not out_e(s.id) and not sv.get("writer_reads_previous"):
@@ -696,7 +389,7 @@ def validate(
                 add(Issue(code="flow_plugin_unavailable", level="error", category="workflow", node=w.id, field="plugins",
                           message=f"插件 {p} 未安装"))
                 continue
-            if _plugin_disabled(entry):
+            if _plugin_disabled(entry, plugin_execution_enabled):
                 add(Issue(code="flow_plugin_unavailable", level="error", category="环境", node=w.id, field="plugins",
                           message=f"{name(w.id)} 上的插件 {entry.display_name or p} 已在插件管理中停用"))
             decl = entry.flow_workflow
@@ -806,7 +499,7 @@ def validate(
         if "max_messages" not in source.config:
             warned_source_limits.add(source.id)
             add(Issue(code="flow_source_default_limit", level="warning", category="配置",
-                      node=source.id, edge=_edge_key(edge), field="max_messages",
+                      node=source.id, edge=edge_key(edge), field="max_messages",
                       message=f"{name(source.id)} 直连输入未显式设置 max_messages, "
                               f"运行时使用默认上限 {DEFAULT_SOURCE_MAX_MESSAGES} 条并截断较旧消息"))
     for o in of_type("output"):
@@ -862,7 +555,7 @@ def validate(
         if entry is None:
             add(Issue(code="flow_node_plugin_missing", level="error", category="环境", node=node.id,
                       message=f"提供{name(node.id)}节点的插件 {t.plugin} 未安装"))
-        elif _plugin_disabled(entry):
+        elif _plugin_disabled(entry, plugin_execution_enabled):
             add(Issue(code="flow_node_plugin_disabled", level="error", category="环境", node=node.id,
                       message=f"提供{name(node.id)}节点的插件 {t.plugin} 已停用, 流程不可运行"))
     # /new drain 有意义性检查
@@ -902,11 +595,11 @@ def _plugin_provides_by_name(plugin_name: str, entry: PluginCatalogEntry | None,
     return _plugin_provides(entry, capability)
 
 
-def _plugin_disabled(entry: PluginCatalogEntry) -> bool:
-    """插件目录层面是否已停用 (执行开关关闭)"""
-    permissions = getattr(entry, "permissions", None)
-    flag = getattr(permissions, "execution_enabled", True)
-    return flag is False
+def _plugin_disabled(entry: PluginCatalogEntry, execution_enabled: dict[str, bool] | None) -> bool:
+    """按宿主执行总闸判断是否停用; 权限声明不携带运行开关"""
+    if execution_enabled is None:
+        return False
+    return execution_enabled.get(entry.name, True) is False
 
 
 def _model_ctx_size(model_name: str) -> int | None:

@@ -14,7 +14,8 @@ from typing import Protocol
 import yaml
 import re
 from satrap.core.log import logger
-from satrap.core.type import safe_getattr, safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_callable
+
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, ToolsManager, AsyncToolsManager
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 

@@ -19,6 +19,7 @@ import math
 import time
 
 from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.edictum.plugin.spec import parse_plugin_specs
 from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
 from satrap.edictum.settings import normalize_session_settings
@@ -123,7 +124,12 @@ class EdictumConfigManager:
         definition, _, errors = migrate_flow_definition(parse_flow_definition(raw_flow), registry)
         if errors:
             raise ValueError(f"流程定义迁移失败: {'; '.join(str(e) for e in errors)}")
-        issues = validate(definition, registry, plugin_catalog=plugin_catalog)
+        plugin_config = PluginConfigManager()
+        execution_enabled = {name: plugin_config.host_state(name)["execution_enabled"] for name in plugin_catalog}
+        issues = validate(
+            definition, registry, plugin_catalog=plugin_catalog,
+            plugin_execution_enabled=execution_enabled,
+        )
         if any(i.level == "error" for i in issues):
             raise ValueError(
                 "流程静态检查未通过: " + "; ".join(f"{i.code} @{i.node or '-'}" for i in issues if i.level == "error"))

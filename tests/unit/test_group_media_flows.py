@@ -9,12 +9,12 @@ import asyncio
 import pytest
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.assets import AssetStore, inspect_image, _LEASES
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.platform.onebot.outbound import OutboundTurns
 from support.media import png
 from unittest.mock import AsyncMock, Mock
 from satrap.core.call_context import bind_call_origin
-from satrap.core.group_chat.types import GroupChatLimits
+from satrap.core.type.group_chat import GroupChatLimits
 from satrap.core.components import Image as _group_chat_media_service_Image
 from support.group_reply import setup, owner, SCOPE, send_mock
 from satrap.core.storage import StorageLayout as _group_chat_media_service_StorageLayout

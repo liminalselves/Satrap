@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
-from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+from satrap.core.type.approval import ApprovalRequest, ApprovalResult
 
 import inspect
 from pathlib import Path

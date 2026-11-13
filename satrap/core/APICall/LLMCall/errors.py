@@ -9,7 +9,8 @@ import traceback
 
 from openai import APITimeoutError, APIConnectionError, APIError
 
-from satrap.core.type import LLMErrorInfo
+from satrap.core.type.model import LLMErrorInfo
+
 
 from satrap.core.log import logger
 

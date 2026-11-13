@@ -17,7 +17,7 @@ from satrap.core.config.document import ConfigRevisionConflict, config_document_
 from satrap.core.config_paths import get_config_path
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.storage.persist import atomic_write_text
-from .contracts import DebugMode, DebugObject, ObjectPayload
+from satrap.core.type.debug import DebugMode, DebugObject, ObjectPayload
 
 
 class OverridePayload(TypedDict):

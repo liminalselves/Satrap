@@ -6,7 +6,8 @@ import hashlib
 import json
 from typing import cast
 
-from satrap.core.type import ModelProtocolPayload
+from satrap.core.type.model import ModelProtocolPayload
+
 
 
 def message_fingerprint(message: Mapping[str, object]) -> str:

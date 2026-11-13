@@ -11,7 +11,8 @@ import time
 
 from satrap.core.plugin_interop.environment import EnvironmentSnapshot, environment_snapshot
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
-from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import require_plugin_entry_permission
 from satrap.core.file_access.reads import source_check as _source_check
 from satrap.core.file_access.paths import protection_reason
 from satrap.core.approval.policy import PermissionEngine

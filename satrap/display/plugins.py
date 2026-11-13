@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from satrap.core.storage.persist import atomic_write_json
 from dataclasses import asdict
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 
 import threading
 from pathlib import Path
@@ -32,7 +32,8 @@ from satrap.core.config.document import ConfigRevisionConflict, config_document_
 
 from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.edictum.plugin.config import PluginConfigManager
-from satrap.edictum.plugin.spec import PluginSpec, parse_plugin_specs
+from satrap.core.type.plugin.spec import PluginSpec
+from satrap.edictum.plugin.spec import parse_plugin_specs
 from satrap.edictum.plugin import (
     PLUGINS_PRESET_DIR,
     USER_PLUGINS_DIR,

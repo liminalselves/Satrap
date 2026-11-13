@@ -6,7 +6,8 @@
 """
 
 from typing import List, Any, cast
-from satrap.core.type import safe_getattr
+from satrap.core.utils.attributes import safe_getattr
+
 from satrap.core.log import logger
 
 

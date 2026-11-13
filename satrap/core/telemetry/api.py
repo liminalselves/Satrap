@@ -20,7 +20,7 @@ import time
 
 from satrap.core.utils.async_worker import BoundedAsyncWorker, WorkerBusyError
 from satrap.core.storage.layout import StorageLayout
-from .contracts import JsonValue, Service, SourceState
+from satrap.core.type.telemetry import JsonValue, Service, SourceState
 from .query import ActivityQuery, MetricQuery, local_activity, local_metrics, merge_activity, merge_metrics
 from .store import SettingsConflict, SettingsStore, TelemetryStore, json_text
 

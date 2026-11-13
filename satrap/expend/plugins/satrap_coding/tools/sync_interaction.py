@@ -12,7 +12,7 @@ from satrap.core.approval.policy import PermissionEngine
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.utils.TCBuilder import Tool, ToolsManager
 from satrap.edictum import SimpleSession
-from .contracts import require_bound_session
+from .validation import require_bound_session
 from .constants import _SUBAGENT_PROMPT
 from .subagent import _CodingSubAgent
 from .approval import _parse_integer_argument, _ask_user_sync, _approve_sync

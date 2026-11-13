@@ -17,7 +17,7 @@ import queue
 import json
 
 from satrap.core.config.model_snapshot import ModelConfigReader
-from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+from satrap.core.type.approval import ApprovalRequest, ApprovalResult
 from satrap.core.approval.policy import (
     PermissionDecision,
     PermissionEngine,
@@ -26,7 +26,8 @@ from satrap.core.approval.policy import (
 from satrap.core.APICall.LLMCall import build_llm_from_config
 from satrap.core.approval.state import SessionApproval, session_approval
 from satrap.core.call_context import current_call_origin, current_tool_workflow, current_tool_messages
-from satrap.core.type import safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 from satrap.core.log import logger
@@ -54,7 +55,7 @@ def _evidence(session: SimpleSession | AsyncSimpleSession) -> list[dict[str, obj
     - 保留消息角色和来源的证据副本, 不读取隐藏思考
     """
     result: list[dict[str, object]] = []
-    from satrap.edictum.flow.session import current_flow_workflow
+    from satrap.core.call_context import current_flow_workflow
     main = current_flow_workflow.get() or getattr(session, "_wf", None)
     executing = current_tool_workflow()
     workflows = [(main, "main_history")]

@@ -2,24 +2,28 @@
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 from types import SimpleNamespace
 
 from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition
+from satrap.core.type.flow.workflow import FlowWorkflowDecl
 from satrap.edictum.flow.registry import FlowNodeRegistry
 from satrap.edictum.flow.validate import validate
+from satrap.core.type.plugin.catalog import PluginCatalogEntry
+from satrap.edictum.plugin.config import PluginConfigManager
 
 
 def _catalog(**plugins):
     """造插件目录存根"""
     return {
-        name: SimpleNamespace(
+        name: PluginCatalogEntry(
             name=name,
+            path=Path(name),
             capabilities={"tools": kw.get("tools", {})},
             interop={"requires": kw.get("requires", {})},
             display_name=kw.get("label", name),
-            flow_nodes=(),
-            permissions=SimpleNamespace(execution_enabled=kw.get("enabled", True)),
-            flow_workflow=SimpleNamespace(
+            flow_nodes=tuple(kw.get("flow_nodes", ())),
+            flow_workflow=FlowWorkflowDecl(
                 foreground_only=kw.get("foreground_only", False),
                 provides=tuple(kw.get("provides", ())),
             ),
@@ -28,10 +32,13 @@ def _catalog(**plugins):
     }
 
 
-def _validate(raw, registry=None, catalog=None, kinds=None, archive=True):
+def _validate(raw, registry=None, catalog=None, kinds=None, archive=True, execution_enabled=None):
     reg = registry or FlowNodeRegistry()
     d, _, _ = migrate_flow_definition(parse_flow_definition(raw), reg)
-    return validate(d, reg, plugin_catalog=catalog or {}, conversation_kinds=kinds, archive_enabled=archive)
+    return validate(
+        d, reg, plugin_catalog=catalog or {}, plugin_execution_enabled=execution_enabled,
+        conversation_kinds=kinds, archive_enabled=archive,
+    )
 
 
 AGENT_RP = {
@@ -265,17 +272,18 @@ def test_group_chat_reply_mode_rules():
     assert any(i.code == "flow_reply_mode_private" for i in issues)
 
 
-def test_disabled_plugin_node_and_missing_plugin():
-    """节点插件未安装/停用报环境错误"""
-    from satrap.edictum.flow.registry import FlowNodeType, PortSpec
-    reg = FlowNodeRegistry()
-    reg.register_plugin_nodes("ghost", [FlowNodeType(
+def test_disabled_plugin_node_and_missing_plugin(tmp_path, monkeypatch):
+    """真实目录条目和宿主执行总闸驱动节点停用诊断"""
+    from satrap.core.type.flow.registry import FlowNodeType, PortSpec
+    node_type = FlowNodeType(
         type="ghost.n", version=1, label="g", description="", role="transform",
         inputs=(PortSpec(name="m", types=("messages",), required=True),),
         outputs=(PortSpec(name="o", types=("messages",)),),
         passthrough={"o": "m"},
         plugin="ghost",
-    )])
+    )
+    reg = FlowNodeRegistry()
+    reg.register_plugin_nodes("ghost", [node_type])
     raw = {
         "version": 3,
         "nodes": [
@@ -287,9 +295,26 @@ def test_disabled_plugin_node_and_missing_plugin():
     issues = _validate(raw, registry=reg, catalog={})
     assert any(i.code == "flow_node_plugin_missing" for i in issues)
 
-    catalog = _catalog(ghost={"enabled": False})
-    issues = _validate(raw, registry=reg, catalog=catalog)
+    catalog = _catalog(ghost={"flow_nodes": (node_type,)})
+    config = PluginConfigManager(tmp_path / "plugin-config")
+    config.save_execution("ghost", False, 0)
+    execution_enabled = {"ghost": config.host_state("ghost")["execution_enabled"]}
+    issues = _validate(raw, registry=reg, catalog=catalog, execution_enabled=execution_enabled)
     assert any(i.code == "flow_node_plugin_disabled" for i in issues)
+
+    from satrap.core.config import edictum_service as service_module
+    monkeypatch.setattr(service_module, "PluginConfigManager", lambda: config)
+    service = service_module.EdictumConfigService(None, None)
+    service.plugin_catalog = SimpleNamespace(scan=lambda: list(catalog.values()))
+    result = service.validate_flow({"flow": raw})
+    assert any(i["code"] == "flow_node_plugin_disabled" for i in result["issues"])
+
+    config.save_execution("ghost", True, 1)
+    execution_enabled = {"ghost": config.host_state("ghost")["execution_enabled"]}
+    issues = _validate(raw, registry=reg, catalog=catalog, execution_enabled=execution_enabled)
+    assert not any(i.code == "flow_node_plugin_disabled" for i in issues)
+    result = service.validate_flow({"flow": raw})
+    assert not any(i["code"] == "flow_node_plugin_disabled" for i in result["issues"])
 
 
 def test_archive_required():
@@ -332,7 +357,7 @@ def test_direct_archive_input_warns_when_max_messages_is_not_explicit(kind):
 
 def test_custom_transform_archive_input_warns_when_max_messages_is_not_explicit():
     """source 直连自定义 transform 的输入连接同样给出上限提示。"""
-    from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+    from satrap.core.type.flow.registry import FlowNodeType, PortSpec
     registry = FlowNodeRegistry()
     registry.register_plugin_nodes("ghost", [FlowNodeType(
         type="ghost.n", version=1, label="g", description="", role="transform",

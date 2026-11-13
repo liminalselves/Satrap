@@ -15,9 +15,11 @@ from satrap.core.config.platform_policy import policy_default
 from satrap.core.components import BaseMessageComponent, Forward, Image, Node, PlatformComponentType, Reply, preferred_media_source
 from satrap.core.pipeline.wake_window import PendingImage, PendingMessage, display_label, sender_label
 from satrap.core.platform.identity import BotIdentity
-from satrap.core.type import RequestContextBlock
+from satrap.core.type.model import RequestContextBlock
+
 from satrap.core.platform.event import MessageEvent
-from satrap.core.type import safe_getattr, safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 from satrap.core.log import logger
 
 QUOTE_TEXT_LIMIT = 2000

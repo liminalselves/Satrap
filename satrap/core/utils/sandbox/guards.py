@@ -15,10 +15,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import ModuleType
 
-try:
-    from .models import Violations
-except ImportError:
-    from models import Violations
+if __package__:
+    from satrap.core.type.sandbox import Violations
+else:
+    from _satrap_sandbox_contract import Violations
 
 
 @dataclass

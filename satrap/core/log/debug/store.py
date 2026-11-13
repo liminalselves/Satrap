@@ -18,7 +18,7 @@ import time
 from typing import cast
 
 from .codec import DebugBodyCodec, encoded_json
-from .contracts import DebugData, DebugEvent, DebugObject, EventPage, EventSummary
+from satrap.core.type.debug import DebugData, DebugEvent, DebugObject, EventPage, EventSummary
 from .runtime import runtime_alive
 from .diagnostics import LEVEL_RANK, RANK_LEVEL, event_diagnostic
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 import traceback
-from typing import Any, TypedDict
+from typing import Any
 import math
 import json
 
@@ -22,14 +22,7 @@ from .extraction import ExtractedPage, HtmlNode, html_page
 from .snapshots import SNAPSHOTS
 
 from satrap.core.log import logger
-
-
-class SearchResult(TypedDict):
-    """保留搜索工具原有的成功结果字段"""
-
-    title: str
-    url: str
-    snippet: str
+from satrap.core.type.search import SearchResult
 
 
 def _failure(url: str, error: Exception) -> str:

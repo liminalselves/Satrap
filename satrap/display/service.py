@@ -19,7 +19,7 @@ from satrap.core.storage.file_lock import FileLease
 from typing import BinaryIO
 import mimetypes, base64
 
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 
 from dataclasses import asdict, dataclass, field
 from functools import wraps
@@ -52,8 +52,9 @@ from satrap.edictum.plugin.settings import (
 )
 from satrap.edictum.plugin.runtime import PluginRuntimeState, reconcile_plugin_states_async
 from satrap.edictum.plugin.apply import PluginApplySnapshot, plugin_source_version
-from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
-from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema, validate_config_values
+from satrap.core.type.plugin.config import schema_to_payload
+from satrap.core.type.approval import ApprovalRequest, ApprovalResult
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.core.APICall.LLMCall.errors import model_error_info
 from satrap.edictum.plugin.spec import plugin_specs_fingerprint
@@ -79,7 +80,10 @@ from satrap.core.storage import (
     default_storage_layout,
     delete_session_domain_rows,
 )
-from satrap.core.type import CommandAction, LLMConfig, validate_thinking_levels
+from satrap.core.type.platform import CommandAction
+from satrap.core.type.model_config import LLMConfig
+from satrap.core.type.model import validate_thinking_levels
+
 from satrap.core.rag import RagService
 from satrap.edictum import AsyncSimpleSession
 
@@ -490,7 +494,7 @@ class ChatService:
         返回:
         - 保存后的实际状态; 未启用插件, 参数错误或版本冲突时抛出 ValueError
         """
-        from satrap.core.approval.contracts import APPROVAL_MODES
+        from satrap.core.type.approval import APPROVAL_MODES
         from satrap.core.approval.state import session_approval
         if not isinstance(mode, str) or mode not in APPROVAL_MODES or type(expected_revision) is not int:
             raise ValueError("审批模式或权限版本无效")
@@ -1321,7 +1325,8 @@ class ChatService:
             session_kwargs["db_path"] = self._chat_db_path
 
         session = AsyncSimpleSession(conversation_id, llm, plugin_environment=PluginEnvironment("chat"), **session_kwargs)
-        from satrap.core.log.debug.contracts import DebugObject, bind_debug_object
+        from satrap.core.type.debug import DebugObject
+        from satrap.core.log.debug.context import bind_debug_object
 
         bind_debug_object(session, DebugObject(self._platform_id, "local", "chat", conversation_id))
         session.apply_context_config(cfg)
@@ -1933,7 +1938,8 @@ class ChatService:
             session_kwargs["db_path"] = self._chat_db_path
 
         session = AsyncSimpleSession(conversation_id, llm, plugin_environment=PluginEnvironment("chat"), **session_kwargs)
-        from satrap.core.log.debug.contracts import DebugObject, bind_debug_object
+        from satrap.core.type.debug import DebugObject
+        from satrap.core.log.debug.context import bind_debug_object
 
         bind_debug_object(session, DebugObject(self._platform_id, "local", "chat", conversation_id))
         session.apply_context_config(cfg)
@@ -2024,7 +2030,7 @@ class ChatService:
 
             approval_mode = settings.get("approval_mode")
             if "approval_mode" in settings:
-                from satrap.core.approval.contracts import APPROVAL_MODES
+                from satrap.core.type.approval import APPROVAL_MODES
                 if not isinstance(approval_mode, str) or approval_mode not in APPROVAL_MODES:
                     raise ValueError("审批模式必须是 user, auto 或 full-access")
 
@@ -2207,7 +2213,7 @@ class ChatService:
 
         turn = conv.recorder.start_turn(text, attachments=attachments)
         from satrap.core.telemetry.capture import bind_scope, record_message
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         with bind_scope(service="chat"):
             # 入站与出站使用同一轮次的会话/上下文/模型归属, 只新增新数据, 不回填历史
@@ -2258,9 +2264,9 @@ class ChatService:
         - generation_parameters: 已接受轮次的参数快照, 恢复旧任务时保持 None
         """
         from satrap.core.log.debug.capture import debug_request, record_debug, previous_chat_request
-        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.type.debug import DebugObject
         from satrap.core.telemetry.capture import bind_scope
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         obj = DebugObject(self._platform_id, "local", "chat", conv.conversation_id)
         version = conv.recorder.recovery_origin()
@@ -2590,7 +2596,7 @@ class ChatService:
         - 原有切换结果, 诊断开关不影响业务路径
         """
         from satrap.core.log.debug.capture import debug_request, record_debug
-        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.type.debug import DebugObject
 
         with debug_request(DebugObject(self._platform_id, "local", "chat", conversation_id), "variant-" + uuid.uuid4().hex,
                            context_id=conversation_id, input_data={"turn_index": turn_index, "variant_index": variant_index}) as trace:
@@ -2736,7 +2742,7 @@ class ChatService:
         - 原 Fork 结果, 诊断不复制原链路或对象开关
         """
         from satrap.core.log.debug.capture import debug_request, record_debug
-        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.type.debug import DebugObject
 
         with debug_request(DebugObject(self._platform_id, "local", "chat", conversation_id), "fork-" + uuid.uuid4().hex,
                            context_id=conversation_id, input_data={"action": "fork", "turn_index": turn_index}) as trace:

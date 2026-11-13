@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from satrap.core.type import ModelProtocolPayload
+from satrap.core.type.model import ModelProtocolPayload
+
 from satrap.core.utils.model_history import attach_protocol_payload
 
 from collections.abc import Sequence

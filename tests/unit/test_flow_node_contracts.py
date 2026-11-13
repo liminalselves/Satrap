@@ -5,12 +5,8 @@ from pathlib import Path
 import pytest
 import textwrap
 
-from satrap.edictum.flow.plugin_nodes import (
-    FlowContractError,
-    load_flow_node_functions,
-    parse_flow_nodes,
-    validate_flow_node_pairing,
-)
+from satrap.core.type.flow.definition import FlowContractError
+from satrap.edictum.flow.plugin_nodes import load_flow_node_functions, parse_flow_nodes, validate_flow_node_pairing
 
 
 def _parse(flow_nodes: list[dict], plugin: str = "test"):

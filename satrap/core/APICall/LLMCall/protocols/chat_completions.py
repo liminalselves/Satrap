@@ -5,8 +5,9 @@ from typing import cast
 
 from ..responses import parse_call_response
 from ..stream import _StreamCallAccumulator
-from .base import StreamDecoder
-from satrap.core.type import LLMCallResponse
+from satrap.core.type.model_protocol import StreamDecoder
+from satrap.core.type.model import LLMCallResponse
+
 
 
 class ChatCompletionsProtocol:

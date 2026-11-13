@@ -18,7 +18,9 @@ from satrap.core.utils.context import AsyncContextManager, _messages_domain
 from satrap.core.storage.context_catalog import bind_context
 from satrap.core.utils.paths import get_db_path
 from satrap.core.state import StateStore
-from satrap.core.type import LLMConfig, StateCheckpoint
+from satrap.core.type.model_config import LLMConfig
+from satrap.core.type.state import StateCheckpoint
+
 from satrap.core.log import logger
 
 if TYPE_CHECKING:

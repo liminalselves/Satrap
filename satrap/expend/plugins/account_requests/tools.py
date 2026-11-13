@@ -12,7 +12,8 @@ from satrap.core.config.group_action_origin import bind_model_action_authorizati
 from satrap.core.platform.onebot.admin import OneBotAdmin, AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.plugin_authorization import PluginEntryBinding, bind_plugin_factory_tools, require_plugin_entry_permission, permission_id_list
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import bind_plugin_factory_tools, require_plugin_entry_permission, permission_id_list
 from satrap.edictum.plugin.resources import PluginResources
 from satrap.core.utils.TCBuilder import Tool, AsyncTool, tool_error
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase

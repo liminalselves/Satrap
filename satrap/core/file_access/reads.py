@@ -18,9 +18,10 @@ import time
 
 from satrap.core.plugin_interop.environment import EnvironmentSnapshot
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
-from satrap.core.plugin_interop.contracts import PluginInteractionError
+from satrap.core.type.plugin_interop import PluginInteractionError
 from satrap.core.approval.coordinator import approve_sync, approve_async, _turn_identity
-from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import require_plugin_entry_permission
 from satrap.core.utils.file_snapshot import FileFingerprint, file_fingerprint
 from satrap.core.file_access.paths import protection_reason
 from satrap.core.approval.policy import PermissionEngine, RiskLevel

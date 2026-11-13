@@ -3,7 +3,9 @@
 from typing import Dict, Tuple, Any, Union, List, Callable, cast
 import json
 from satrap.core.utils.context import ContextManager
-from satrap.core.type import LLMCallResponse, safe_getattr
+from satrap.core.type.model import LLMCallResponse
+from satrap.core.utils.attributes import safe_getattr
+
 from satrap.core.log import logger
 from .utils import (
     _SENSITIVE_ARGUMENT_NAMES,

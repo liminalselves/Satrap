@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import cast
 
-from .models import (
+from satrap.core.type.sandbox import (
     OPERATIONS, Operation, Request, SandboxResult, allowed_modules as parse_modules, failure_result,
 )
 from .runner import run, run_async, validate_environment

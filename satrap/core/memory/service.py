@@ -58,7 +58,7 @@ class MemoryService:
             if getattr(environment, "session_type", "") == "platform" and origin is None:
                 raise MemoryError("stale_call", "平台记忆操作需要仍有效的本轮来源")
             workflow = current_tool_workflow()
-            from satrap.edictum.flow.session import current_flow_workflow
+            from satrap.core.call_context import current_flow_workflow
             main = current_flow_workflow.get() or getattr(self.session, "_wf", None)
             if writing and workflow is not None and main is not None and workflow is not main:
                 return {"ok": False, "error": "子工作流不能修改长期记忆", "error_type": "read_only_workflow"}
@@ -120,7 +120,7 @@ class MemoryService:
                 if principal not in {"model", "command"} or (workflow is None and principal != "command"):
                     raise MemoryError("read_only_workflow", "只有当前主工作流可以保存长期记忆")
                 if workflow is not None:
-                    from satrap.edictum.flow.session import current_flow_workflow
+                    from satrap.core.call_context import current_flow_workflow
                     bound = current_flow_workflow.get() or getattr(self.session, "_wf", None)
                     if workflow is not bound:
                         raise MemoryError("read_only_workflow", "只有当前主工作流可以保存长期记忆")

@@ -6,16 +6,17 @@
 """
 from __future__ import annotations
 
-from satrap.edictum.flow.registry import FlowNodeType, PortSpec, RenamedEntry
-from satrap.edictum.flow.types import PLUGIN_PORT_TYPES, PORT_TYPE_LABELS, PortType
-from satrap.edictum.plugin.config import ConfigField, parse_config_schema
-
-from dataclasses import dataclass, field
 from typing import Any, cast
 import inspect
 import re
 
 from satrap.core.log import logger
+from satrap.core.type.flow.definition import FlowContractError
+from satrap.core.type.flow.ports import PLUGIN_PORT_TYPES, PORT_TYPE_LABELS, PortType
+from satrap.core.type.flow.registry import FlowNodeType, PortSpec, RenamedEntry
+from satrap.core.type.flow.workflow import FlowWorkflowDecl
+from satrap.core.type.plugin.config import ConfigField
+from satrap.edictum.plugin.config import parse_config_schema
 
 
 _NODE_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,31}\Z")
@@ -28,41 +29,9 @@ FLOW_WORKFLOW_PROVIDES = ("memory_write", "state_write")
 """flow.workflow.provides 首版允许的取值"""
 
 
-class FlowContractError(ValueError):
-    """flow_nodes 契约校验失败, 带稳定错误码"""
-
-    def __init__(self, code: str, message: str) -> None:
-        """
-        记录错误码与可读原因
-
-        参数:
-        - code: flow_contract_* 错误码
-        - message: 面向插件作者的失败原因
-        """
-        super().__init__(message)
-        self.code = code
-
-
 def _fail(code: str, node: str, message: str) -> FlowContractError:
     """组装带节点定位的契约错误"""
     return FlowContractError(code, f"flow_nodes.{node}: {message}")
-
-
-@dataclass(frozen=True)
-class FlowWorkflowDecl:
-    """插件 flow.workflow 声明: 装到 WF 节点上时的限制与能力"""
-
-    foreground_only: bool = False
-    """只能装在前台 WF; 装在纯后台 WF 上静态检查报错"""
-    provides: tuple[str, ...] = ()
-    """声明的能力, 首版固定 memory_write / state_write"""
-
-    def to_payload(self) -> dict[str, Any]:
-        """序列化给前端"""
-        return {
-            "foreground_only": self.foreground_only,
-            "provides": list(self.provides),
-        }
 
 
 def parse_flow_workflow(meta: dict[str, Any], plugin_name: str) -> FlowWorkflowDecl:
@@ -376,7 +345,7 @@ def load_flow_node_functions(plugin_dir: Any, module_name: str) -> dict[str, Any
     - dict[str, Any]: {节点名: 可调用对象或 FlowNode 子类}; 文件不存在返回 {}
     """
     from satrap.edictum.plugin.base import _load_module
-    from satrap.edictum.flow.types import FlowNode
+    from satrap.core.type.flow.ports import FlowNode
 
     mod = _load_module(plugin_dir / "flow_nodes.py", f"{module_name}.flow_nodes", fresh=True)
     if mod is None:
@@ -415,7 +384,7 @@ def validate_flow_node_pairing(
 
     声明与实现必须严格一致: 声明了没有实现, 或实现了没有声明, 均拒绝安装
     """
-    from satrap.edictum.flow.types import FlowNode
+    from satrap.core.type.flow.ports import FlowNode
 
     declared_names = {t.type.rsplit(".", 1)[-1] for t in declared}
     missing = declared_names - set(implemented)

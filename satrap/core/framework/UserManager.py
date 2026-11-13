@@ -18,12 +18,14 @@ import time
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.conversation import ConversationRoute
 from satrap.core.utils.paths import get_db_path
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, StorageScope
-from satrap.core.type import SessionConfig, UserCall, UserInfo
+from satrap.core.type.session import SessionConfig, UserInfo
+from satrap.core.type.model import UserCall
+
 
 from satrap.core.log import logger
 

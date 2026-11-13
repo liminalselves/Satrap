@@ -12,7 +12,8 @@ from satrap.core.utils.context import (
     ContextManager,
     PreparedModelContext,
 )
-from satrap.core.type import ModelContextRequestStats, TokenUsage
+from satrap.core.type.model import ModelContextRequestStats, TokenUsage
+
 
 
 

@@ -22,13 +22,13 @@ from satrap.core.plugin_authorization import permission_id_list
 from satrap.core.group_chat.reminder_validation import validate_reminder_text, validate_reminder_mentions
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError
 from satrap.core.group_chat.reminder_scheduler import ReminderDelivery
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.platform import PlatformAdapter
 from satrap.core.platform.event import MessageChain
 from satrap.core.platform.scheduled import ScheduledTarget
 from satrap.core.log import logger
 from satrap.edictum.plugin.config import PluginConfigManager, validate_config_values
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.edictum.plugin.spec import parse_plugin_specs
 
 if TYPE_CHECKING:

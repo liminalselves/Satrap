@@ -6,14 +6,16 @@ import traceback
 import weakref
 from pathlib import Path
 from .recovery import plugin_fingerprint
-from satrap.core.plugin_interop.contracts import parse_interop
+from satrap.core.plugin_interop.codec import parse_interop
 from satrap.core.plugin_interop.capabilities import wrap_plugin_command
 from satrap.core.plugin_interop.service import Service, AsyncService
 from satrap.edictum.plugin.compatibility import check_plugin_compatibility
 from satrap.edictum.plugin.permissions import parse_plugin_permissions, validate_permission_install
-from satrap.core.plugin_authorization import PluginEntryBinding, bind_plugin_tool, bind_plugin_service
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import bind_plugin_tool, bind_plugin_service
 from typing import Any
-from satrap.edictum.plugin.config import parse_config_schema, schema_to_payload
+from satrap.edictum.plugin.config import parse_config_schema
+from satrap.core.type.plugin.config import schema_to_payload
 from satrap.edictum.plugin.settings import (
     EffectivePluginConfig,
     PluginInstallConfig,
@@ -34,7 +36,8 @@ from satrap.edictum.plugin import (
     load_plugin_meta,
     parse_capability_descriptions,
 )
-from satrap.core.type import safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from satrap.core.log import logger
 from .utils import (
     _assert_sync_callbacks,

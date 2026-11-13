@@ -11,7 +11,8 @@ from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
 from satrap.cli.client import DEFAULT_CHAT_PORT, DEFAULT_CONTROL_PORT, DaemonClient, DaemonInfo
 from satrap.cli.output import CliError, print_json, warn
-from satrap.core.type import safe_getattr, safe_getattr_bool
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_bool
+
 
 __all__ = [
     "load_cli_config",

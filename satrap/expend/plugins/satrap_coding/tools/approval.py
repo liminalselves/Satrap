@@ -8,7 +8,8 @@ import inspect
 from typing import Awaitable, Callable, cast
 
 from satrap.core.approval.coordinator import approve_sync as _approve_sync, approve_async as _approve_async, _turn_identity
-from satrap.core.type import safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 from satrap.core.log import logger

@@ -13,7 +13,7 @@ import difflib
 import hashlib
 import os
 
-from .contracts import prepare_replacements
+from .validation import prepare_replacements
 
 from satrap.core.log import logger
 

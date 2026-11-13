@@ -16,7 +16,8 @@ import uuid
 from satrap.edictum.plugin.resources import build_model_client, named_model_config
 from satrap.core.storage.file_lock import FileLease, FileLock, session_storage_lock
 from satrap.core.utils.text_utils import TextSplitter
-from satrap.core.type import EmbeddingConfig
+from satrap.core.type.model_config import EmbeddingConfig
+
 from satrap.core.database import DataBase
 from satrap.core.storage import StorageLayout
 

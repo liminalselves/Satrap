@@ -25,12 +25,31 @@ def store_for(tmp_path):
     return LoggingPolicyStore(tmp_path / "logging.json", tmp_path / "logs")
 
 
+def test_debug_context_uses_bound_object_and_trusted_origin():
+    """上下文解析优先可信来源，绑定与缺失身份的语义不变。"""
+    from types import SimpleNamespace
+    from satrap.core.call_context import CallOrigin, bind_call_origin
+    from satrap.core.log.debug.context import bind_debug_object, current_debug_object
+    from satrap.core.type.debug import DebugObject
+
+    session = SimpleNamespace()
+    with pytest.raises(ValueError):
+        current_debug_object(session)
+    bound = DebugObject("local", "bot", "chat", "chat-id")
+    bind_debug_object(session, bound)
+    assert current_debug_object(session) is bound
+    origin = CallOrigin("qq", "bot1", "GroupMessage", "group1", "member1", "msg1", "req1", conversation_kind="group")
+    with bind_call_origin(origin):
+        assert current_debug_object(session) == DebugObject("qq", "bot1", "group", "group1")
+    assert current_debug_object(session) is bound
+
+
 def test_advanced_debug_object_policy_survives_context_replacement_and_reload(tmp_path):
     """对象开关独立持久化, 新上下文与跨进程读取保留覆盖并核验修订和身份隔离"""
     from dataclasses import replace
     from satrap.core.call_context import CallOrigin
     from satrap.core.config.document import ConfigRevisionConflict
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     from satrap.core.log.debug.policy import DebugPolicy, DebugPolicyStore
 
     origin = CallOrigin("qq", "bot1", "GroupMessage", "group1", "member1", "msg1", "req1", conversation_kind="group")
@@ -75,7 +94,7 @@ def test_advanced_debug_object_policy_survives_context_replacement_and_reload(tm
 def test_recent_flow_triggers_reads_persisted_summaries_only(tmp_path):
     """跨存储实例读取并隔离流程和作用域, 限制条数及同刻排序。"""
     from dataclasses import replace
-    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.type.debug import DebugEvent, DebugObject
     from satrap.core.log.debug.store import DebugStore
 
     path = tmp_path / "debug" / "backend.sqlite"
@@ -105,7 +124,7 @@ def test_recent_flow_triggers_reads_persisted_summaries_only(tmp_path):
 def test_advanced_debug_chain_store_preserves_shared_bodies_and_event_ownership(tmp_path):
     """诊断链路分页不解码正文, 多请求共享及清理保留活跃引用, 损坏内容明确拒绝"""
     from dataclasses import replace
-    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.type.debug import DebugEvent, DebugObject
     from satrap.core.log.debug.store import DebugStore
 
     store = DebugStore(tmp_path / "debug" / "backend.sqlite", "backend")
@@ -167,7 +186,7 @@ def test_advanced_debug_existing_store_maintenance_restarts_without_new_capture(
     from dataclasses import replace
     from unittest.mock import Mock
     from satrap.core.log.debug import capture
-    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.type.debug import DebugEvent, DebugObject
     from satrap.core.log.debug.store import DebugStore
     store = DebugStore(tmp_path / "backend.sqlite", "backend")
     monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
@@ -194,7 +213,7 @@ def test_advanced_debug_capture_freezes_policy_redacts_and_keeps_tools_across_ne
     """高级采集冻结设置, 脱敏正文, 保留工具和新上下文, 关闭后下一请求不再写入"""
     from dataclasses import replace
     from satrap.core.log.debug import capture
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     from satrap.core.log.debug.policy import policy_store
     from satrap.core.log.debug.store import DebugStore
 
@@ -250,7 +269,7 @@ async def test_advanced_debug_observes_sdk_streams_without_changing_results(tmp_
     from openai.types.chat import ChatCompletion, ChatCompletionChunk
     from satrap.core.log.debug import capture
     from satrap.core.log.debug.model import complete_sync, complete_async
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     from satrap.core.log.debug.policy import DebugPolicy
     from satrap.core.log.debug.store import DebugStore
     from dataclasses import replace
@@ -315,7 +334,7 @@ def test_advanced_debug_cold_catalog_and_stable_tied_pagination(tmp_path):
     from satrap.core.framework.UserManager import UserInfoStore
     from satrap.core.conversation import ConversationRoute
     from satrap.core.log.debug.store import DebugStore
-    from satrap.core.log.debug.contracts import DebugObject, DebugEvent
+    from satrap.core.type.debug import DebugObject, DebugEvent
     from dataclasses import replace
     layout = StorageLayout(tmp_path / "data")
     layout.ensure_platform("qq", platform_type="onebot")
@@ -364,7 +383,7 @@ def test_advanced_debug_cold_catalog_and_stable_tied_pagination(tmp_path):
 def test_advanced_debug_model_input_view_shows_only_new_actions_and_preserves_full_snapshots(tmp_path):
     """同轮模型输入按变化浏览, 首次隐藏旧历史, 压缩与并行父步骤不混用, 原始导出可独立还原"""
     from dataclasses import replace
-    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.type.debug import DebugEvent, DebugObject
     from satrap.core.log.debug.store import DebugStore
 
     store = DebugStore(tmp_path / "debug.sqlite", "backend")
@@ -413,7 +432,7 @@ async def test_advanced_debug_http_auth_settings_export_and_source_isolation(tmp
     from satrap.core.utils.minihttp import MiniHTTPServer
     from satrap.core.log.debug.capture import debug_store
     from satrap.core.log.debug.policy import DebugPolicy
-    from satrap.core.log.debug.contracts import DebugObject, DebugEvent
+    from satrap.core.type.debug import DebugObject, DebugEvent
     from dataclasses import replace
     monkeypatch.setenv("SATRAP_LOG_ROOT", str(tmp_path / "logs"))
     monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
@@ -487,7 +506,7 @@ async def test_advanced_debug_tool_outcomes_keep_warning_and_hard_error_after_re
     - asynchronous: 是否使用异步工具管理器
     """
     from satrap.core.log.debug import capture
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     from satrap.core.log.debug.policy import DebugPolicy
     from satrap.core.log.debug.store import DebugStore
     from satrap.core.utils.TCBuilder import Tool, AsyncTool, ToolsManager, AsyncToolsManager
@@ -605,7 +624,7 @@ def test_advanced_debug_v1_migration_keeps_legacy_unknown_without_reading_bodies
     """
     import sqlite3
     from satrap.core.log.debug.store import DebugStore
-    from satrap.core.log.debug.contracts import DebugEvent, DebugObject
+    from satrap.core.type.debug import DebugEvent, DebugObject
     from satrap.core.log.debug.codec import DebugBodyCodec
     obj = DebugObject("qq", "bot", "group", "room")
     path = tmp_path / "v1.sqlite"
@@ -648,12 +667,12 @@ async def test_advanced_debug_real_session_model_tool_approval_and_runtime_inter
     from satrap.core.approval.coordinator import approve_async
     from satrap.core.approval.policy import RiskLevel
     from satrap.core.approval.state import session_approval
-    from satrap.core.approval.contracts import ApprovalResult
+    from satrap.core.type.approval import ApprovalResult
     from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
     from satrap.core.log.debug import capture
     from satrap.core.log.debug.policy import DebugPolicy
     from satrap.core.log.debug.store import DebugStore
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     from dataclasses import replace
     monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
     capture.policy_store().save(DebugPolicy(default_enabled=True), DebugPolicy().revision)
@@ -722,7 +741,7 @@ def test_advanced_debug_concurrent_objects_and_capacity_pause_keep_business_runn
     from satrap.core.log.debug import capture
     from satrap.core.log.debug.policy import DebugPolicy
     from satrap.core.log.debug.store import DebugStore
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
     capture.policy_store().save(DebugPolicy(default_enabled=True), DebugPolicy().revision)
     store = DebugStore(tmp_path / "backend.sqlite", "backend")
@@ -775,7 +794,7 @@ def test_advanced_debug_deferred_group_and_friend_decisions_link_to_original_obj
     from satrap.core.log.debug import capture
     from satrap.core.log.debug.policy import DebugPolicy
     from satrap.core.log.debug.store import DebugStore
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     from satrap.core.config.group_actions import GroupActionStore
     from satrap.core.friends.store import FriendStore
     monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
@@ -821,7 +840,7 @@ def test_advanced_debug_end_frame_cannot_overtake_queued_events(tmp_path, monkey
     from satrap.core.log.debug import capture
     from satrap.core.log.debug.policy import DebugPolicy
     from satrap.core.log.debug.store import DebugStore
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     monkeypatch.setenv("SATRAP_CONFIG_ROOT", str(tmp_path / "config"))
     store = DebugStore(tmp_path / "backend.sqlite", "backend")
     entered, release = threading.Event(), threading.Event()

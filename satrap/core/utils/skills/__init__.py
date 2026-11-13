@@ -11,7 +11,8 @@ import yaml
 import os
 import re
 from satrap.core.log import logger
-from satrap.core.type import safe_getattr, safe_getattr_callable, safe_getattr_dict
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_callable, safe_getattr_dict
+
 from satrap.core.framework.Base import (
     ModelWorkflowFramework,
     AsyncModelWorkflowFramework,

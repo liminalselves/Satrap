@@ -22,15 +22,9 @@ from satrap.core.utils.vision import (
 )
 from satrap.core.utils.paths import get_db_path
 from satrap.core.state import StateStore
-from satrap.core.type import (
-    ContextUsageSnapshot,
-    JsonRow,
-    RestoreOptions,
-    SnapshotDomain,
-    StateCheckpoint,
-    StateScope,
-    TokenUsage,
-)
+from satrap.core.type.model import ContextUsageSnapshot, TokenUsage
+from satrap.core.type.state import JsonRow, RestoreOptions, SnapshotDomain, StateCheckpoint, StateScope
+
 from satrap.core.log import logger
 from .utils import (
     TokenEstimateMethod,

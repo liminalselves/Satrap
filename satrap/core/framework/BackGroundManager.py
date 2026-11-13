@@ -15,7 +15,8 @@ from typing import Any, Callable, Dict, Literal, TypeVar, cast
 import json
 import os
 
-from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, ReRankConfig
+from satrap.core.type.model_config import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, ReRankConfig
+
 
 from satrap.core.log import logger
 

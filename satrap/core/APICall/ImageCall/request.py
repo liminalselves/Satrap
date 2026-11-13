@@ -9,7 +9,7 @@ import secrets
 from typing import Any, Mapping, Sequence
 
 from .media import MAX_IMAGES, b64, data_url, decode_image, mask_png, precise_image
-from .types import ImageGenParams, ImageInput, NovelAIParams
+from satrap.core.type.image import ImageGenParams, ImageInput, NovelAIParams
 
 
 NAI_DEFAULT_POSITIVE_PROMPT = "very aesthetic, masterpiece, no text"

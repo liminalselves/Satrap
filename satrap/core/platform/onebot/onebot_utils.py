@@ -29,7 +29,8 @@ from satrap.core.components import (
     Video,
     preferred_media_source,
 )
-from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
+from satrap.core.type.platform import Group, MessageMember, PlatformMessage, PlatformMessageType
+
 from satrap.core.log import logger
 
 

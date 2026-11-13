@@ -18,9 +18,8 @@ from __future__ import annotations
 
 from satrap.core.storage.persist import atomic_write_json
 
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, TypedDict, cast
+from typing import Any, Callable, cast
 import hashlib
 import threading
 import time
@@ -39,23 +38,13 @@ CONFIG_DIR = get_config_path("plugins", legacy_name="plugin_config")
 _FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "time", "llm", "embed", "rerank", "asr", "img", "knowledge_base", "knowledge_bases")
 """支持的配置字段类型"""
 
-_TIME_RE = re.compile(r"^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$")
-"""time 字段的 HH:MM 取值格式, 允许 24:00 表示当天结束"""
-
 _PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 """插件配置文件使用的稳定名称格式"""
 
 from satrap.core.storage.file_lock import FileLock
 
 
-class PluginHostState(TypedDict):
-    """宿主管理状态, 与插件作者的参数结构分开保存"""
-
-    execution_enabled: bool
-    revision: int
-    updated_at: float | None
-    execution_updated_at: float | None
-
+from satrap.core.type.plugin.config import PluginHostState, ConfigField, schema_to_payload
 
 _HOST_CACHE_LOCK = threading.RLock()
 _HOST_CACHE: dict[Path, tuple[tuple[int, int, int] | None, dict[str, PluginHostState], bool]] = {}
@@ -65,121 +54,6 @@ _HOST_CACHE: dict[Path, tuple[tuple[int, int, int] | None, dict[str, PluginHostS
 def _disabled_host_state() -> PluginHostState:
     """返回损坏条目或整体损坏时使用的 fail-closed 状态"""
     return PluginHostState(execution_enabled=False, revision=0, updated_at=None, execution_updated_at=None)
-
-
-@dataclass
-class ConfigField:
-    """单个配置项声明 (来自 meta.yaml config_schema)"""
-
-    name: str
-    type: str = "string"
-    default: Any = None
-    description: str = ""
-    options: list[str] = field(default_factory=lambda: list[str]())
-    """select 类型的可选值"""
-    required: bool = False
-    nullable: bool = False
-    session_overridable: bool = True
-    minimum: float | None = None
-    maximum: float | None = None
-    integer: bool = False
-    scope: str = ""
-    label: str = ""
-    option_labels: dict[str, str] = field(default_factory=dict[str, str])
-    strict: bool = False
-    group: str = ""
-    """属性面板分组名, 空串表示不分组"""
-    visible_when: dict[str, Any | list[Any]] | None = None
-    """显示条件 {字段: 值 或 [值, ...]}: 全部满足才显示, 只影响前端展示, 后端照常校验"""
-
-    def validate_strict(self, value: Any) -> Any:
-        """管理接口严格校验显式值, 不以默认值吞掉非法输入"""
-        if value is None:
-            if self.nullable:
-                return None
-            raise ValueError(f"{self.name} 不允许 null")
-        if self.type == "bool":
-            if not isinstance(value, bool):
-                raise ValueError(f"{self.name} 必须是布尔值")
-        elif self.type == "number":
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-                raise ValueError(f"{self.name} 必须是有限数字")
-            if self.integer and int(value) != value:
-                raise ValueError(f"{self.name} 必须是整数")
-            if self.minimum is not None and value < self.minimum:
-                raise ValueError(f"{self.name} 不能小于 {self.minimum}")
-            if self.maximum is not None and value > self.maximum:
-                raise ValueError(f"{self.name} 不能大于 {self.maximum}")
-            if self.integer:
-                value = int(value)
-        elif self.type == "knowledge_bases":
-            if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in cast(list[object], value)):
-                raise ValueError(f"{self.name} 必须是知识库 ID 数组")
-            value = list(dict.fromkeys(cast(list[str], value)))
-        else:
-            if not isinstance(value, str):
-                raise ValueError(f"{self.name} 必须是字符串")
-            if self.type == "select" and self.options and value not in self.options:
-                raise ValueError(f"{self.name} 不在可选值中")
-            if self.type == "time" and _TIME_RE.fullmatch(value) is None:
-                raise ValueError(f"{self.name} 必须是 HH:MM 格式 (00:00-24:00)")
-        return value
-
-    def validate(self, value: Any) -> Any:
-        """
-        校验并归一化一个值, 非法时回退默认值并警告
-
-        参数:
-        - value: 输入值
-
-        返回:
-        - Any: 校验并归一化一个值, 非法时回退默认值并警告
-        """
-        if self.strict:
-            return self.validate_strict(value)
-        if value is None:
-            if self.nullable:
-                return None
-            return self.default
-        if self.type in {"llm", "embed", "rerank", "asr", "img", "knowledge_base", "knowledge_bases"}:
-            return self.validate_strict(value)
-        try:
-            if self.type == "bool":
-                # 显式映射, 避免 bool("false") == True 的 fail-open
-                if isinstance(value, bool):
-                    return value
-                if isinstance(value, (int, float)) and value in (0, 1):
-                    return bool(value)
-                if isinstance(value, str):
-                    mapped = {"true": True, "1": True, "yes": True, "on": True,
-                              "false": False, "0": False, "no": False, "off": False}.get(value.strip().lower())
-                    if mapped is not None:
-                        return mapped
-                logger.warning(f"[插件配置] {self.name} 布尔值 {value!r} 无法识别, 回退默认 {self.default!r}")
-                return self.default
-            if self.type == "number":
-                if isinstance(value, bool):
-                    return self.default
-                if isinstance(value, (int, float)):
-                    return value
-                return float(str(value))
-            if self.type == "select":
-                text = str(value)
-                if self.options and text not in self.options:
-                    logger.warning(f"[插件配置] {self.name} 值 {text} 不在可选 {self.options}, 回退默认")
-                    return self.default
-                return text
-            if self.type == "time":
-                text = str(value).strip()
-                if _TIME_RE.fullmatch(text) is None:
-                    logger.warning(f"[插件配置] {self.name} 值 {value!r} 不是 HH:MM, 回退默认 {self.default!r}")
-                    return self.default
-                return text
-            # string / path / textarea 统一按字符串
-            return str(value)
-        except (TypeError, ValueError):
-            logger.warning(f"[插件配置] {self.name} 值 {value!r} 非法, 回退默认 {self.default!r}")
-            return self.default
 
 
 def parse_config_schema(meta: dict[str, Any]) -> dict[str, ConfigField]:
@@ -739,38 +613,6 @@ class PluginConfigManager:
                     continue
                 resolved[key] = fld.validate(value)
         return resolved
-
-
-def schema_to_payload(schema: dict[str, ConfigField]) -> dict[str, dict[str, Any]]:
-    """
-    把 schema 转为可序列化 payload (供前端渲染表单)
-
-    参数:
-    - schema: 数据结构定义
-
-    返回:
-    - dict[str, dict[str, Any]]: 把 schema 转为可序列化 payload (供前端渲染表单)
-    """
-    return {
-        key: {
-            "type": fld.type,
-            "default": fld.default,
-            "description": fld.description,
-            "options": fld.options,
-            "required": fld.required,
-            "nullable": fld.nullable,
-            "session_overridable": fld.session_overridable,
-            "minimum": fld.minimum,
-            "maximum": fld.maximum,
-            "integer": fld.integer,
-            "scope": fld.scope,
-            **({"label": fld.label} if fld.label else {}),
-            **({"option_labels": fld.option_labels} if fld.option_labels else {}),
-            **({"group": fld.group} if fld.group else {}),
-            **({"visible_when": dict(fld.visible_when)} if fld.visible_when else {}),
-        }
-        for key, fld in schema.items()
-    }
 
 
 def validate_config_values(

@@ -8,7 +8,8 @@ import json
 
 from satrap.core.pipeline.wake_window import PendingMessage
 from satrap.core.platform.event import MessageEvent
-from satrap.core.type import WakeSubmitResult
+from satrap.core.type.control import WakeSubmitResult
+
 from satrap.core.log import logger
 
 

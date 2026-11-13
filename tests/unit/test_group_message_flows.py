@@ -15,7 +15,7 @@ from satrap.core.call_context import CallOrigin, bind_call_origin
 from satrap.core.config.agent_routing import AgentRouteStore
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.service import GroupChatService
-from satrap.core.group_chat.types import GroupChatLimits
+from satrap.core.type.group_chat import GroupChatLimits
 from satrap.core.conversation import HistoryWindow, bind_conversation_route
 from satrap.core.group_chat.service import HISTORY_OPERATIONS
 from satrap.core.platform import PlatformAdapter, PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig
@@ -26,7 +26,7 @@ from satrap.core.platform.event import PlatformMetadata
 from types import SimpleNamespace
 from unittest.mock import Mock
 import threading
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from support.group_read import NOW, _FutureAdapter, _setup
 from typing import cast
 from satrap.core.group_chat.reply import current_reply_turn
@@ -37,13 +37,21 @@ from satrap.core.platform.event import MessageEvent
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
 from support.group_reply import COMPONENTS, SCOPE as _group_chat_reply_SCOPE, owner, restore_manager, send_mock, setup
 import yaml
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.edictum.plugin.config import parse_config_schema
 from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.type import LLMCallResponse
 from support.group_models import AsyncModel, Invoker, Model, PLUGIN, Script, session
+
+def test_group_chat_contracts_reference_canonical_archive_types():
+    from satrap.core.type.archive import ArchiveMessage as CanonicalMessage, MessageScope as CanonicalScope
+    from satrap.core.type.group_chat import ArchiveMessage as GroupMessage, MessageScope as GroupScope
+
+    assert GroupMessage is CanonicalMessage is ArchiveMessage
+    assert GroupScope is CanonicalScope is MessageScope
+
 
 _group_chat_service_SCOPE = MessageScope("ob", "10000", "group", "456")
 

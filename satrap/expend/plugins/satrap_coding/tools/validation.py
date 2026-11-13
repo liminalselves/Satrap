@@ -9,11 +9,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypeVar, cast
 
+from satrap.core.type.coding import ReplacementPair
+
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 SessionT = TypeVar("SessionT", "SimpleSession", "AsyncSimpleSession")
-ReplacementPair = tuple[str, str, bool]
 
 
 def require_bound_session(session: SessionT | None, tool_name: str) -> SessionT:

@@ -12,7 +12,8 @@ import asyncio
 
 from satrap.core.components import BaseMessageComponent, File, Forward, Node, Nodes, PlatformComponentType, Plain
 from satrap.core.log import logger
-from satrap.core.type import safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr_str
+
 
 T = TypeVar("T")
 

@@ -28,7 +28,8 @@ from satrap.expend.tools import (
     FetchPageTool,
     SearchTool,
 )
-from satrap.core.type import safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 from .async_ import (
     AsyncReadDocumentTool,

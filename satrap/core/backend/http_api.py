@@ -27,7 +27,7 @@ from satrap.core.config.session_routes import read_session_routes
 from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
 from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
 from satrap.core.framework.SessionClassManager import SessionClassConfigUnavailable
 from satrap.core.config.edictum_service import EdictumConfigService
@@ -56,7 +56,7 @@ RouteResponse = tuple[int, Mapping[str, Any]]
 # 管理 API 响应: (状态码, JSON 体)
 
 from satrap.core.group_chat.reminders import ReminderError
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 
 
 def _parse_json_object(body: bytes) -> dict[str, Any]:

@@ -3,7 +3,8 @@
 from openai import OpenAI, AsyncOpenAI, APIError
 from typing import List, Dict, Any, Optional, Union, Literal, cast, overload
 from satrap.core.utils import normalize_openai_base_url
-from satrap.core.type import safe_getattr
+from satrap.core.utils.attributes import safe_getattr
+
 from satrap.core.log import logger
 from .utils import (
     _response_field,

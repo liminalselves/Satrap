@@ -37,7 +37,8 @@ from satrap.core.framework.Base import (
 )
 from satrap.core.utils.paths import get_project_root
 from .async_interaction import AsyncAskUserTool, AsyncShellTool, AsyncSubAgentTool
-from satrap.core.type import safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from .sync_interaction import AskUserTool, ShellTool, SubAgentTool
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 from .async_write import AsyncWriteFileTool, AsyncEditFileTool, AsyncSearchReplaceTool

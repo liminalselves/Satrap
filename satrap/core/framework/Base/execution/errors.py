@@ -4,7 +4,8 @@
 普通与可恢复执行使用相同的失败契约, 任务状态由执行记录层另行保存
 """
 
-from satrap.core.type import LLMErrorInfo
+from satrap.core.type.model import LLMErrorInfo
+
 
 
 class AgentExecutionError(RuntimeError):

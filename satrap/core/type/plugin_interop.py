@@ -9,8 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal, TypeAlias, cast
-import math
+from typing import Literal, TypeAlias
 
 
 CapabilityKind = Literal["tools", "services", "handlers", "mcp", "skills", "commands"]
@@ -49,7 +48,9 @@ class ImageArtifact:
     """本次宿主执行产生的只读图片字节引用"""
 
     _payload: bytes = field(repr=False)
+    """执行时冻结的图片字节, 不在对象展示中暴露"""
     _valid: Callable[[], bool] = field(repr=False, compare=False)
+    """检查来源执行范围是否仍有效的回调, 失效后拒绝读取图片"""
 
     def read(self) -> bytes:
         """
@@ -71,7 +72,9 @@ class Dependency:
     """一个提供者的必需或可选依赖"""
 
     optional: bool = False
+    """是否允许提供者缺失, 默认 False 表示依赖是必需的"""
     capabilities: CapabilityNames = field(default_factory=dict)
+    """按类别列出的提供者能力名称, 空映射表示只依赖插件本身"""
 
     def __post_init__(self) -> None:
         """冻结调用者传入的类别映射, 不共享可变容器"""
@@ -83,9 +86,13 @@ class InteropSpec:
     """一次解析的交互声明, 缺省不导出或依赖任何能力"""
 
     exports: CapabilityNames = field(default_factory=dict)
+    """按类别列出向其他插件公开的能力, 空映射表示不导出"""
     requires: Mapping[str, Dependency] = field(default_factory=dict)
+    """提供者插件名到依赖声明的映射, 空映射表示没有依赖"""
     replaces: Mapping[str, Mapping[CapabilityKind, Mapping[str, str]]] = field(default_factory=dict)
+    """按被替代插件和能力类别将目标能力名映射到本插件实现名, 空映射表示没有替代"""
     conflicts: Mapping[str, CapabilityNames | None] = field(default_factory=dict)
+    """冲突插件及其能力范围, None 表示与整个插件冲突, 空映射表示没有冲突"""
 
     def __post_init__(self) -> None:
         """冻结所有嵌套声明, 使应用快照可安全复用该对象"""
@@ -143,9 +150,13 @@ class PluginInfo:
     """消费者可查询的插件公开资料"""
 
     name: str
+    """宿主登记的插件名称, 供消费者识别提供者"""
     version: str
+    """提供者公开的插件版本, 源元数据未声明时可为空串"""
     description: str
+    """提供者公开的用途说明, 源元数据未声明时可为空串"""
     enabled: bool = True
+    """插件当前是否启用, 默认 True"""
 
 
 @dataclass(frozen=True)
@@ -153,9 +164,13 @@ class HandlerInfo:
     """处理器公开资料, 不包含回调或可变实例"""
 
     name: str
+    """宿主登记的处理器名称, 供消费者查询能力"""
     priority: int
+    """处理器注册时的执行优先级, 用于处理顺序"""
     stages: tuple[str, ...]
+    """处理器已提供回调的执行阶段, 空元组表示没有阶段回调"""
     description: str = ""
+    """供消费者展示的处理器用途, 默认空串"""
 
 
 @dataclass(frozen=True)
@@ -163,124 +178,8 @@ class SkillInfo:
     """技能公开资料, 不包含会话或技能管理器"""
 
     name: str
+    """宿主登记的技能名称, 供消费者查询"""
     description: str
+    """技能的公开用途说明, 来源于技能定义"""
     content: str
-
-
-def _object(value: object, path: str) -> Mapping[str, object]:
-    """
-    严格读取配置对象
-
-    参数:
-    - value: 待校验值
-    - path: 错误定位字段
-
-    返回:
-    - 字符串键对象; 格式不符时抛出 ValueError
-    """
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) or not key.strip() or key != key.strip() for key in value):
-        raise ValueError(f"{path} 必须是非空字符串键对象")
-    return cast(Mapping[str, object], value)
-
-
-def _capabilities(value: object, path: str) -> CapabilityNames:
-    """
-    读取六类能力的显式名称列表
-
-    参数:
-    - value: 原始类别映射
-    - path: 错误定位字段
-
-    返回:
-    - 不可变类别映射; 未知类别, 空名称或重复名称时抛出 ValueError
-    """
-    result: dict[CapabilityKind, tuple[str, ...]] = {}
-    for kind, names in _object(value, path).items():
-        if kind not in CAPABILITY_KINDS:
-            raise ValueError(f"{path} 包含未知能力类别: {kind}")
-        if not isinstance(names, list) or any(not isinstance(name, str) or not name.strip() or name != name.strip() or name in {"*", "all"} for name in names):
-            raise ValueError(f"{path}.{kind} 必须是显式能力名称列表")
-        entries = cast(list[str], names)
-        if len(set(entries)) != len(entries):
-            raise ValueError(f"{path}.{kind} 包含重复能力名称")
-        result[cast(CapabilityKind, kind)] = tuple(entries)
-    return MappingProxyType(result)
-
-
-def parse_interop(meta: Mapping[str, object]) -> InteropSpec:
-    """
-    严格解析交互声明并拒绝自引用与直接矛盾
-
-    参数:
-    - meta: 插件元数据, 不含 interop 时使用空声明
-
-    返回:
-    - 不可变交互声明; 配置错误抛出 ValueError 供安装边界处理
-    """
-    raw = _object(meta.get("interop", {}), "interop")
-    if set(raw) - {"exports", "requires", "replaces", "conflicts"}:
-        raise ValueError("interop 包含未知分组")
-    owner = meta.get("name")
-    exports = _capabilities(raw.get("exports", {}), "interop.exports")
-    requires: dict[str, Dependency] = {}
-    for plugin, entry in _object(raw.get("requires", {}), "interop.requires").items():
-        config = {} if entry is True else dict(_object(entry, f"interop.requires.{plugin}"))
-        optional = config.pop("optional", False)
-        if type(optional) is not bool:
-            raise ValueError(f"interop.requires.{plugin}.optional 必须是布尔值")
-        requires[plugin] = Dependency(optional, _capabilities(config, f"interop.requires.{plugin}"))
-    conflicts: dict[str, CapabilityNames | None] = {}
-    for plugin, entry in _object(raw.get("conflicts", {}), "interop.conflicts").items():
-        conflicts[plugin] = None if entry is True else _capabilities(entry, f"interop.conflicts.{plugin}")
-    replaces: dict[str, Mapping[CapabilityKind, Mapping[str, str]]] = {}
-    for plugin, entry in _object(raw.get("replaces", {}), "interop.replaces").items():
-        mappings: dict[CapabilityKind, Mapping[str, str]] = {}
-        for kind, pairs in _object(entry, f"interop.replaces.{plugin}").items():
-            if kind not in CAPABILITY_KINDS:
-                raise ValueError(f"interop.replaces.{plugin} 包含未知能力类别: {kind}")
-            values = _object(pairs, f"interop.replaces.{plugin}.{kind}")
-            if any(not isinstance(name, str) or not name.strip() or name != name.strip() or name in {"*", "all"} for name in values.values()) or any(name in {"*", "all"} for name in values):
-                raise ValueError(f"interop.replaces.{plugin}.{kind} 包含无效名称")
-            mappings[cast(CapabilityKind, kind)] = MappingProxyType(cast(dict[str, str], dict(values)))
-        replaces[plugin] = MappingProxyType(mappings)
-    if owner in set(requires) | set(conflicts) | set(replaces):
-        raise ValueError("插件交互关系不能指向自身")
-    for plugin, dependency in requires.items():
-        if dependency.optional or plugin not in conflicts:
-            continue
-        conflict = conflicts[plugin]
-        if conflict is None or any(set(names).intersection(conflict.get(kind, ())) for kind, names in dependency.capabilities.items()):
-            raise ValueError(f"requires 与 conflicts 自相矛盾: {plugin}")
-    return InteropSpec(exports, MappingProxyType(requires), MappingProxyType(replaces), MappingProxyType(conflicts))
-
-
-def copy_data(value: object, *, _active: set[int] | None = None) -> ServiceValue:
-    """
-    复制普通业务数据并拒绝循环引用与运行时对象
-
-    参数:
-    - value: 服务输入或输出数据
-    - _active: 当前递归容器标识, 仅供内部循环检查
-
-    返回:
-    - 不与原容器共享状态的 JSON 兼容数据; 非法数据抛出 TypeError
-    """
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, ImageArtifact):
-        value.read()
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return value
-    active = _active if _active is not None else set()
-    if id(value) in active:
-        raise TypeError("服务数据不能包含循环引用")
-    active.add(id(value))
-    try:
-        if isinstance(value, list):
-            return [copy_data(item, _active=active) for item in value]
-        if isinstance(value, dict) and all(isinstance(key, str) for key in value):
-            return {key: copy_data(item, _active=active) for key, item in cast(dict[str, object], value).items()}
-        raise TypeError("服务只接受普通 JSON 数据或宿主支持的产物引用")
-    finally:
-        active.remove(id(value))
+    """技能定义中的指令正文, 不包含会话或管理器对象"""

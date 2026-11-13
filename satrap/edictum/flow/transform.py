@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
 from satrap.core.log.debug.hooks import record_debug
-from satrap.edictum.flow.definition import FlowDefinition, FlowNodeInstance
-from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES, FlowNodeType
-from satrap.edictum.flow.types import ContextBlock, FlowMessage, StateView
+from satrap.core.type.flow.definition import FlowDefinition, FlowNodeInstance
+from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES
+from satrap.core.type.flow.registry import FlowNodeType
+from satrap.core.type.flow.ports import ContextBlock, FlowMessage, StateView
 
 import asyncio
 import inspect

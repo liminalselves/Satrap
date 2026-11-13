@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 from typing import Any, Iterator
 import json
-from satrap.edictum.plugin.config import ConfigField, PluginConfigManager, parse_config_schema, schema_to_payload
+from satrap.core.type.plugin.config import ConfigField, schema_to_payload
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import SimpleSession
@@ -27,7 +28,8 @@ from satrap.core.plugin_authorization import bind_authorization_step, bind_nativ
 from satrap.core.plugin_authorization import evaluate_plugin_permissions
 from satrap.core.utils.TCBuilder.manager import ToolsManager
 from satrap.core.utils.TCBuilder.tool import Tool
-from satrap.edictum.plugin.permissions import PluginPermissions, parse_plugin_permissions, validate_permission_install
+from satrap.core.type.plugin.permissions import PluginPermissions
+from satrap.edictum.plugin.permissions import parse_plugin_permissions, validate_permission_install
 
 class _FakeLLM(LLM):
     """最小同步 fake LLM"""

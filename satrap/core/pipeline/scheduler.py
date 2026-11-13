@@ -59,7 +59,9 @@ from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeSt
 from satrap.core.pipeline.request_diagnostics import RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.platform import PlatformAdapter
 from satrap.core.group_chat.reply import bind_reply_turn
-from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
+from satrap.core.type.model import UserCall
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 
 from satrap.core.APICall.LLMCall.errors import model_error_info
 from satrap.core.log import logger
@@ -470,7 +472,7 @@ class PipelineScheduler:
         参数:
         - event: 当前实际平台消息
         """
-        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.type.debug import DebugObject
         from satrap.core.log.debug.capture import debug_request
 
         try:

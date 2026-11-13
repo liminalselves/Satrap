@@ -29,7 +29,7 @@ from satrap.core.type import SessionConfig, UserCall
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
-from satrap.edictum.plugin.spec import PluginSpec
+from satrap.core.type.plugin.spec import PluginSpec
 from satrap.edictum.plugin.runtime import PluginRuntimeState, reconcile_plugin_states, reconcile_plugin_states_async
 
 

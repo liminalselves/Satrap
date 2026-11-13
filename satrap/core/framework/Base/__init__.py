@@ -31,14 +31,15 @@ from satrap.core.utils.context import (
 )
 from satrap.core.utils.paths import get_db_path
 from satrap.core.state import StateStore
-from satrap.core.type import (
+from satrap.core.type.model import (
     LLMCallResponse,
-    LLMConfig,
     ModelContextRequestStats,
     ModelContextTurnStats,
-    StateCheckpoint,
     TokenUsage,
 )
+from satrap.core.type.model_config import LLMConfig
+from satrap.core.type.state import StateCheckpoint
+
 from satrap.core.log import logger
 from .utils import _WorkflowT, _build_context_request_stats
 

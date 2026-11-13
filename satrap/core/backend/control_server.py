@@ -52,7 +52,7 @@ from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.framework.SessionManager import SessionConfigStore
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, platform_catalog, filter_records, record_facets, conversation_aggregates
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict, MessagePageTooLarge
@@ -62,7 +62,7 @@ from satrap.core.memory.management import memory_management
 from satrap.core.memory.scoped import MemoryError
 from satrap.core.group_chat.stickers import StickerStore
 from satrap.core.group_chat.assets import MAX_IMAGE_BYTES
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.group_chat.reminder_management import reminder_management
 from satrap.core.group_chat.reminders import ReminderError
 from satrap.core.config.platform_messages import MessageArchiveError
@@ -78,7 +78,7 @@ from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
 from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError, progress_phase
 from satrap.core.telemetry.health import ServiceRuntime
-from satrap.core.telemetry.contracts import ServiceProbe
+from satrap.core.type.telemetry import ServiceProbe
 from satrap.core.backend.plugin_application import relay_plugin_application, runtime_result
 from satrap.core.config.versions import ConfigVersionService, ConfigVersionsResult
 from satrap.edictum.plugin.settings import PluginSettingsService, model_options, validate_model_values
@@ -1208,7 +1208,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
             record = await asyncio.to_thread(store.read_account, self_id)
             if record is None:
                 return 404, {"error": "账号群配置不存在", "reason": "account_not_found"}
-            from satrap.core.platform.onebot.group_action_types import action_metadata
+            from satrap.core.platform.onebot.group_actions import action_metadata
 
             counts = await asyncio.to_thread(store.approval_inheritance_counts, self_id)
             return 200, {**record, "current": current == self_id, "offline_snapshot": True,
@@ -1231,7 +1231,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 store.patch_account, expected_self_id, expected_revision=revision,
                 mode=mode, approval_defaults=cast(dict[str, object], defaults),
             )
-            from satrap.core.platform.onebot.group_action_types import action_metadata
+            from satrap.core.platform.onebot.group_actions import action_metadata
 
             counts = await asyncio.to_thread(store.approval_inheritance_counts, expected_self_id)
             return 200, {**saved, "current": True, "offline_snapshot": True,
@@ -1722,7 +1722,7 @@ async def _route_telemetry(ctx: _RouteContext) -> ControlResponse | None:
     if not ctx.path.startswith("/api/stats/") and ctx.path not in {"/config/telemetry", "/api/activity", "/api/activity/local"}:
         return None
     from satrap.core.telemetry.api import QUERY_WORKERS, telemetry_response
-    from satrap.core.telemetry.contracts import JsonValue, Service
+    from satrap.core.type.telemetry import JsonValue, Service
     from collections.abc import Callable
 
     try:

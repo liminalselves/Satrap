@@ -14,7 +14,8 @@ from typing import Any, cast
 from satrap.core.call_context import bind_call_origin
 from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
-from satrap.edictum.plugin.catalog import PluginCatalog, PluginCatalogEntry
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.core.type.plugin.catalog import PluginCatalogEntry
 from satrap.core.plugin_authorization import evaluate_plugin_permissions
 from satrap.expend.plugins.group_chat.tools import get_tools as chat_tools
 from support.administration import _setup_adapter, _origin, _async_tools

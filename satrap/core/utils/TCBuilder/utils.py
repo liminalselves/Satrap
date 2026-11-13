@@ -132,7 +132,7 @@ def _tool_execution_error(
     logger.error(
         f"[执行{mode}] 工具 {tool_name} 执行出错: {type(error).__name__}: {error}, 参数: {args_summary}"
     )
-    from satrap.core.plugin_interop.contracts import PluginInteractionError
+    from satrap.core.type.plugin_interop import PluginInteractionError
 
     if isinstance(error, PluginInteractionError):
         result = tool_error(tool_name, "插件能力调用失败", error.code)

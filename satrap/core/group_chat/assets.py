@@ -24,7 +24,7 @@ from PIL import Image as PillowImage
 
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.group_chat.summaries import _digest
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.platform.event import MessageChain
 
 

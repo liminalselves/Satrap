@@ -11,7 +11,7 @@ import hashlib
 import json
 from typing import Literal, Mapping, TypeAlias, TypedDict, cast
 
-from satrap.core.call_context import CallOrigin, current_call_origin, is_group_origin, is_private_origin
+from satrap.core.type.conversation import CallOrigin
 
 
 DebugMode = Literal["inherit", "on", "off"]
@@ -21,39 +21,60 @@ DebugData: TypeAlias = None | str | int | float | bool | list["DebugData"] | dic
 class ObjectPayload(TypedDict):
     """可持久保存的完整对象身份"""
     platform_id: str
+    """可信入站提供的平台适配器身份, 与账号及目标共同区分对象"""
     self_id: str
+    """可信入站的机器人账号身份, 避免同平台不同账号共用设置"""
     conversation_kind: str
+    """会话类型, 支持 group, private 或 chat, 区分不同类型的目标"""
     target_id: str
+    """会话目标身份, 对群聊为群 ID, 对私聊为对话目标 ID"""
 
 
 class EventSummary(TypedDict):
     """事件分页的固定摘要协议, 不包含正文摘要或内容"""
     event_id: str
+    """采集时生成的事件身份, 用于关联当前事件可展开的正文"""
     request_id: str
+    """所属宿主请求身份, 事件分页限定在该请求内"""
     sequence: int
+    """请求内从 0 开始递增的采集序号, 分页游标按此顺序排他续读"""
     category: str
+    """事件所属阶段类别, 如 request, model 或 tool"""
     phase: str
+    """该类别中的执行阶段, 如 start, update 或 end"""
     span_id: str
+    """当前执行步骤身份, 空字符串表示未关联步骤"""
     parent_span_id: str
+    """父执行步骤身份, 空字符串表示没有关联的父步骤"""
     recorded_at: float
+    """事件采集时的 Unix 时间戳, 单位为秒"""
     status: str
+    """该阶段的执行状态, 空字符串表示采集时未提供状态"""
     metadata: dict[str, DebugData]
+    """脱敏且有界的控制资料, 查询时还合并诊断分类, 不包含正文槽位内容"""
     body_slots: list[str]
+    """此事件实际保存的正文槽位名称, 空列表表示没有可展开槽位"""
 
 
 class EventPage(TypedDict):
     """按序号分页的事件摘要"""
     events: list[EventSummary]
+    """当前请求中大于给定序号的事件摘要, 按序号升序排列, 无结果时为空列表"""
     has_more: bool
+    """本页之后是否还有符合条件的事件, 由多取一条记录判断"""
 
 
 @dataclass(frozen=True)
 class DebugObject:
     """独立于 /new 和发话者的诊断设置对象"""
     platform_id: str
+    """可信入站的平台适配器身份, 不随上下文切换而改变"""
     self_id: str
+    """平台上的机器人账号身份, 用于隔离不同账号的对象设置"""
     conversation_kind: str
+    """对话类型, 只能为 group, private 或 chat"""
     target_id: str
+    """对话目标身份, 从可信入站的聊天 ID 获取而非发话者身份"""
 
     def __post_init__(self) -> None:
         """拒绝缺失, 过长或可能发生跨对象混用的身份"""
@@ -111,6 +132,8 @@ class DebugObject:
         返回:
         - 群或私聊对象, 身份不足时抛出 ValueError
         """
+        from satrap.core.call_context import is_group_origin, is_private_origin
+
         if is_group_origin(origin):
             kind = "group"
         elif is_private_origin(origin):
@@ -120,53 +143,40 @@ class DebugObject:
         return cls(origin.adapter_id, origin.self_id, kind, origin.chat_id)
 
 
-def current_debug_object(session: object | None = None) -> DebugObject:
-    """
-    解析当前对象, 平台优先使用本轮真实来源
-
-    参数:
-    - session: 可选的宿主会话, Chat 由宿主显式绑定对象
-
-    返回:
-    - 不从 Session 名称推测的稳定对象
-    """
-    origin = current_call_origin()
-    if origin is not None:
-        return DebugObject.from_origin(origin)
-    bound = getattr(session, "_debug_object", None)
-    if isinstance(bound, DebugObject):
-        return bound
-    raise ValueError("当前会话尚未绑定可识别的 Debug 对象")
-
-
-def bind_debug_object(session: object, obj: DebugObject) -> None:
-    """
-    在宿主创建会话时固定显式对象归属
-
-    参数:
-    - session: 实际宿主会话
-    - obj: 由宿主解析的完整对象
-    """
-    setattr(session, "_debug_object", obj)
-
-
 @dataclass(frozen=True)
 class DebugEvent:
     """采集边界冻结的单条诊断事实, 动态正文不混入控制字段"""
     request_id: str
+    """宿主真实请求身份, 用于聚合该请求的诊断事件"""
     object: DebugObject
+    """受理时冻结的诊断对象身份, 决定设置归属和数据隔离"""
     context_id: str
+    """实际路由绑定的上下文身份, 未绑定时可为空, 仅用于索引"""
     title: str
+    """上下文展示名称, 未提供时可为空"""
     event_id: str
+    """采集时生成的唯一事件身份, 用于关联正文槽位"""
     sequence: int
+    """请求内从 0 开始递增的采集序号, 写入失败可能留下缺口"""
     category: str
+    """事件所属阶段类别, 如 request, model 或 tool"""
     phase: str
+    """类别内的执行阶段, 如 start, update 或 end"""
     span_id: str
+    """当前执行步骤身份, 空字符串表示未关联步骤"""
     parent_span_id: str
+    """父执行步骤身份, 空字符串表示没有关联的父步骤"""
     recorded_at: float
+    """事件采集时的 Unix 时间戳, 单位为秒"""
     status: str
+    """当前阶段的执行状态, 空字符串表示未提供状态"""
     metadata: dict[str, DebugData]
+    """采集时冻结和脱敏的有界控制资料, 与正文分开保存"""
     bodies: dict[str, DebugData]
+    """按槽位名保存的已冻结和脱敏正文, 可因预算省略或截断"""
     settings_revision: str
+    """请求受理时冻结的诊断设置版本, 用于追溯采集依据"""
     parent_request_id: str = ""
+    """重试或分支来源的请求身份, 默认空字符串表示未关联来源"""
     incomplete: bool = False
+    """采集或写入是否已知不完整, 默认 False, 后续事件仍可能报告缺失"""

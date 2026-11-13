@@ -5,10 +5,10 @@ import time
 import pytest
 
 from satrap.edictum.flow.definition import parse_flow_definition, migrate_flow_definition
-from satrap.edictum.flow.engine import FlowEvent
+from satrap.core.type.flow.events import FlowEvent
 from satrap.edictum.flow.registry import FlowNodeRegistry
 from satrap.edictum.flow.transform import TransformEvaluator
-from satrap.edictum.flow.types import FlowMessage, StateView
+from satrap.core.type.flow.ports import FlowMessage, StateView
 
 
 def _def(nodes, edges):
@@ -148,7 +148,7 @@ class TestSharing:
         ]
         edges = [{"from": "p1.out", "to": "w1.input"}, {"from": "p1.out", "to": "w2.input"}]
         registry = FlowNodeRegistry()
-        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.core.type.flow.registry import FlowNodeType, PortSpec
         registry.register_plugin_nodes("plug", [FlowNodeType(
             type="plug.fn", version=1, label="fn", description="", role="transform",
             inputs=(PortSpec(name="in", types=("messages",), required=False),),
@@ -178,7 +178,7 @@ class TestSharing:
         ]
         edges = [{"from": "p1.out", "to": "w1.input"}, {"from": "p1.out", "to": "w2.input"}]
         registry = FlowNodeRegistry()
-        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.core.type.flow.registry import FlowNodeType, PortSpec
         registry.register_plugin_nodes("plug", [FlowNodeType(
             type="plug.fn", version=1, label="fn", description="", role="transform",
             outputs=(PortSpec(name="out", types=("text",)),), plugin="plug",
@@ -220,7 +220,7 @@ class TestTimeout:
         ]
         edges = [{"from": "p1.out", "to": "w1.input"}, {"from": "p1.out", "to": "w2.input"}]
         registry = FlowNodeRegistry()
-        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.core.type.flow.registry import FlowNodeType, PortSpec
         registry.register_plugin_nodes("plug", [FlowNodeType(
             type="plug.fn", version=1, label="fn", description="", role="transform",
             outputs=(PortSpec(name="out", types=("text",)),), plugin="plug",
@@ -247,7 +247,7 @@ class TestTimeout:
 class TestLifecycle:
     @staticmethod
     def _async_node():
-        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.core.type.flow.registry import FlowNodeType, PortSpec
         nodes = [
             {"id": "p1", "type": "plug.fn", "title": "p", "config": {}},
             {"id": "w1", "type": "react_workflow", "title": "w1", "config": {}},
@@ -296,7 +296,7 @@ class TestLifecycle:
     @pytest.mark.asyncio
     async def test_argument_failure_releases_acquired_instance(self):
         """acquire 后上游参数拉取异常也归还实例引用"""
-        from satrap.edictum.flow.registry import FlowNodeType, PortSpec
+        from satrap.core.type.flow.registry import FlowNodeType, PortSpec
         nodes = [
             {"id": "up", "type": "plug.up", "title": "up", "config": {}},
             {"id": "p1", "type": "plug.fn", "title": "p", "config": {}},

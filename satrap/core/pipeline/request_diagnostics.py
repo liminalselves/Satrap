@@ -13,7 +13,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 import threading
 
-from satrap.core.type import RequestDiagnosticDetail, RequestDiagnosticsStats
+from satrap.core.type.control import RequestDiagnosticDetail, RequestDiagnosticsStats
+
 
 REQUEST_CAPACITY = 256
 """每适配器保留的最近请求数"""

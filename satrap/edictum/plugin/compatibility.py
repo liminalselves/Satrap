@@ -8,43 +8,7 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 
-@dataclass(frozen=True)
-class PluginEnvironment:
-    """由宿主提供的插件运行环境"""
-
-    session_type: str = "embedded"
-    platform_type: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.session_type not in {"chat", "platform", "embedded"}:
-            raise ValueError("未知的插件会话类型")
-        if self.session_type == "platform" and not self.platform_type:
-            raise ValueError("平台会话必须指定适配器类型")
-        if self.session_type != "platform" and self.platform_type is not None:
-            raise ValueError("仅平台会话可以指定适配器类型")
-
-
-@dataclass(frozen=True)
-class CompatibilityResult:
-    """可供安装接口和界面共同使用的判定结果"""
-
-    allowed: bool
-    reason_code: str = ""
-    message: str = ""
-    warnings: tuple[str, ...] = ()
-
-    def require(self) -> None:
-        if not self.allowed:
-            raise PluginCompatibilityError(self)
-
-
-class PluginCompatibilityError(ValueError):
-    """包含机器可读原因的兼容性错误"""
-
-    def __init__(self, result: CompatibilityResult):
-        self.result = result
-        super().__init__(result.message)
-
+from satrap.core.type.plugin.compatibility import PluginEnvironment, CompatibilityResult, PluginCompatibilityError
 
 def framework_version() -> str:
     """返回当前源码的版本; 不读安装元数据, 可编辑安装升级后元数据可能滞后"""

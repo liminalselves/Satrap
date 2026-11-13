@@ -31,7 +31,7 @@ from satrap.edictum import AsyncSimpleSession
 from satrap.core.framework.Base import Session
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.providers import EdictumProvider
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
 from satrap.core.type import SessionConfig

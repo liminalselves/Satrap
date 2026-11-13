@@ -30,7 +30,7 @@ from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.type import LLMCallResponse, UserCall
 from satrap.core.framework.SessionManager import SessionManager
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.edictum.plugin.settings import PluginSettingsService
 from support.group_models import Script, Model, AsyncModel

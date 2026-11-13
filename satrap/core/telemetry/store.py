@@ -17,7 +17,7 @@ import time
 
 from satrap.core.config_paths import get_config_path
 from satrap.core.log.managed import LogFileLock, atomic_json
-from .contracts import ActivityEvent, JsonValue, MessageMetric, MetricScope, ModelCall, Service, TelemetrySettings
+from satrap.core.type.telemetry import ActivityEvent, JsonValue, MessageMetric, MetricScope, ModelCall, Service, TelemetrySettings
 
 
 COUNTERS = ("inbound", "outbound", "commands", "calls", "succeeded", "failed", "cancelled", "usage_reported_calls",

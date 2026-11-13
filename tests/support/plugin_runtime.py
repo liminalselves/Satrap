@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, cast
 import asyncio
 from satrap.core.platform import current_adapter_manager
-from satrap.edictum.plugin.compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from support.group_read import _setup
 
 async def runtime(tmp_path: Path, asynchronous: bool, plugin_name: str, plugin_config: dict[str, Any] | None = None):

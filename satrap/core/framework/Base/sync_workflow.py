@@ -6,13 +6,15 @@
 """
 
 from __future__ import annotations
-from satrap.core.type import RequestContextBlock
+from satrap.core.type.model import RequestContextBlock
+
 import copy
 from typing import Optional, Callable, Any, Literal
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.utils.TCBuilder import ToolsManager
 from satrap.core.utils.paths import get_db_path
-from satrap.core.type import LLMCallResponse, ModelContextTurnStats
+from satrap.core.type.model import LLMCallResponse, ModelContextTurnStats
+
 from satrap.core.log import logger
 
 
