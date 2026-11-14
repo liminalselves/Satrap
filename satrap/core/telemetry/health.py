@@ -14,7 +14,7 @@ from uuid import uuid4
 import os
 import re
 
-from .contracts import Service, ServiceHealth
+from satrap.core.type.telemetry import Service, ServiceHealth
 
 
 @lru_cache(maxsize=1)
@@ -79,7 +79,9 @@ class ServiceRuntime:
         返回:
         - 带稳定启动身份和单调运行时长的公开资料
         """
-        return {"service": self.service, "running": running, "healthy": healthy,
-                "runtime_id": self.runtime_id, "pid": self._pid, "started_at": self.started_at,
-                "uptime_seconds": max(0.0, time.monotonic() - self._started_monotonic), "generated_at": time.time(),
-                "python": self._python, "platform": self._platform, "version": self._build[0], "revision": self._build[1]}
+        return {
+            "service": self.service, "running": running, "healthy": healthy,
+            "runtime_id": self.runtime_id, "pid": self._pid, "started_at": self.started_at,
+            "uptime_seconds": max(0.0, time.monotonic() - self._started_monotonic), "generated_at": time.time(),
+            "python": self._python, "platform": self._platform, "version": self._build[0], "revision": self._build[1]
+        }
