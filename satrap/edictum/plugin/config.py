@@ -41,6 +41,12 @@ _FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "time"
 _PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 """插件配置文件使用的稳定名称格式"""
 
+
+def is_valid_plugin_name(name: str) -> bool:
+    """判断名称是否符合目录、配置和宿主状态共用的稳定插件名规则"""
+    return _PLUGIN_NAME_RE.fullmatch(name) is not None
+
+
 from satrap.core.storage.file_lock import FileLock
 
 
@@ -178,7 +184,7 @@ class PluginConfigManager:
         返回:
         - Path: 严格位于全局配置目录内的 JSON 路径
         """
-        if _PLUGIN_NAME_RE.fullmatch(name) is None:
+        if not is_valid_plugin_name(name):
             raise ValueError(f"非法插件名称: {name}")
         root = self._dir.resolve()
         path = (root / f"{name}.json").resolve()
@@ -457,7 +463,7 @@ class PluginConfigManager:
         返回:
         - Path: 严格位于全局配置目录内的 <插件名>.flow_nodes.json
         """
-        if _PLUGIN_NAME_RE.fullmatch(name) is None:
+        if not is_valid_plugin_name(name):
             raise ValueError(f"非法插件名称: {name}")
         root = self._dir.resolve()
         path = (root / f"{name}.flow_nodes.json").resolve()

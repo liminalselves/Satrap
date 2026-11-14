@@ -86,6 +86,35 @@ def test_presentation_fields_are_relaxed_but_identity_and_schema_stay_strict(tmp
         assert catalog.scan_errors
 
 
+@pytest.mark.parametrize('name', ['中文插件', 'bad name', 'bad/name', '-bad', 'a' * 65])
+def test_invalid_plugin_names_are_quarantined(tmp_path, name):
+    """非法稳定名称只淘汰对应目录, 不影响同目录的合法插件"""
+    preset = tmp_path / 'preset'
+    invalid = preset / 'invalid-directory'
+    invalid.mkdir(parents=True)
+    (invalid / 'meta.yaml').write_text(yaml.safe_dump({
+        'name': name, 'version': '1',
+    }, allow_unicode=True), encoding='utf-8')
+    write_meta(preset, 'valid_probe')
+    catalog = PluginCatalog(preset, tmp_path / 'user')
+    assert [entry.name for entry in catalog.scan()] == ['valid_probe']
+    assert catalog.get(name) is None
+    assert catalog.get('valid_probe') is not None
+    assert len(catalog.scan_errors) == 1
+    assert catalog.scan_errors[0]['name'] == 'invalid-directory'
+    assert '非法插件名称' in catalog.scan_errors[0]['error']
+    assert catalog.snapshot().scan_errors == catalog.scan_errors
+
+
+@pytest.mark.parametrize('name', ['a', 'A_0.-z', 'a' * 64])
+def test_valid_plugin_name_boundaries_remain_available(tmp_path, name):
+    """稳定名称规则的一字符和六十四字符边界仍可扫描"""
+    write_meta(tmp_path, name)
+    catalog = PluginCatalog(tmp_path, tmp_path / 'missing')
+    assert catalog.get(name) is not None
+    assert catalog.scan_errors == []
+
+
 def test_broken_metadata_recovers_and_preserves_errors(tmp_path):
     path = write_meta(tmp_path, 'probe')
     catalog = PluginCatalog(tmp_path, tmp_path / 'missing')

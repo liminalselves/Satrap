@@ -19,6 +19,7 @@ import zipfile
 import yaml
 
 from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import is_valid_plugin_name
 from satrap.edictum.plugin import load_plugin_meta
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
@@ -211,12 +212,12 @@ class PluginArchiveInstaller:
                     raw_name = load_plugin_meta(plugin_dir).get("name")
                     if not isinstance(raw_name, str) or raw_name != raw_name.strip():
                         raise ValueError("插件 name 必须是无首尾空格的字符串")
+                    if not is_valid_plugin_name(raw_name):
+                        raise ValueError("插件名称须为 1 到 64 位英文字母、数字、下划线、点或连字符")
                     entry = self.catalog._load_entry(plugin_dir)
                     json.dumps(entry.to_payload(), allow_nan=False)
                 except (yaml.YAMLError, RecursionError, TypeError) as error:
                     raise ValueError("插件元数据格式无效") from error
-                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", entry.name):
-                    raise ValueError("插件名称须为 1 到 64 位英文字母、数字、下划线、点或连字符")
                 _safe_parts(entry.name)
                 if entry.flow_nodes:
                     # flow_nodes 契约校验: 声明/实现必须一一对应, 签名与端口一致;

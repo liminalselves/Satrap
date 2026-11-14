@@ -18,7 +18,7 @@ from satrap.edictum.plugin.compatibility import check_plugin_compatibility, pars
 from satrap.core.type.plugin.permissions import EMPTY_PERMISSIONS, PluginPermissions
 from satrap.edictum.plugin.permissions import parse_plugin_permissions
 from satrap.core.type.plugin.config import ConfigField, schema_to_payload
-from satrap.edictum.plugin.config import parse_config_schema
+from satrap.edictum.plugin.config import is_valid_plugin_name, parse_config_schema
 
 if TYPE_CHECKING:
     from satrap.core.type.flow.workflow import FlowWorkflowDecl
@@ -181,6 +181,8 @@ class PluginCatalog:
         name = str(meta.get("name") or "").strip()
         if not name:
             raise ValueError(f"插件目录缺少合法 name: {plugin_dir}")
+        if not is_valid_plugin_name(name):
+            raise ValueError(f"非法插件名称: {name}")
         compatibility, applicability = parse_compatibility(meta)
         descriptions = parse_capability_descriptions(meta)
         interop = parse_interop(meta)

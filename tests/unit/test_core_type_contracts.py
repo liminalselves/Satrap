@@ -43,6 +43,9 @@ def test_current_contract_pickle_and_runtime_annotations() -> None:
     for value in values:
         assert type(pickle.loads(pickle.dumps(value))) is type(value)
     assert typing.get_type_hints(contracts.FlowDefinition)["nodes"] == dict[str, contracts.FlowNodeInstance]
+    llm_hints = typing.get_type_hints(contracts.LLMConfig)
+    assert llm_hints["thinking_fields"] == typing.Optional[typing.List[str]]
+    assert llm_hints["thinking_levels"] == typing.Optional[typing.List[str]]
     from satrap.core.APICall.LLMCall import AsyncLLM, LLM
     from satrap.core.framework.Base import AsyncSession, Session
 

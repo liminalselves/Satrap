@@ -11,6 +11,7 @@ from satrap.edictum.flow.registry import FlowNodeRegistry
 from satrap.edictum.flow.validate import validate
 from satrap.core.type.plugin.catalog import PluginCatalogEntry
 from satrap.edictum.plugin.config import PluginConfigManager
+from tests.support.flow_runtime import workflow_flow
 
 
 def _catalog(**plugins):
@@ -374,3 +375,67 @@ def test_custom_transform_archive_input_warns_when_max_messages_is_not_explicit(
     }
     issues = _validate(raw, registry=registry, catalog=_catalog(ghost={}))
     assert any(issue.code == "flow_source_default_limit" for issue in issues)
+
+
+def test_invalid_catalog_name_does_not_block_unrelated_flow_validation(tmp_path, monkeypatch):
+    """非法目录名称被隔离; 未引用时可校验, 显式引用时得到领域 issue"""
+    import yaml
+    from satrap.core.config import edictum_service as service_module
+    from satrap.edictum.plugin.catalog import PluginCatalog
+
+    plugin = tmp_path / "plugins" / "invalid-directory"
+    plugin.mkdir(parents=True)
+    (plugin / "meta.yaml").write_text(yaml.safe_dump({
+        "name": "中文插件", "version": "1",
+        "flow_nodes": [{"name": "probe", "out": "text", "passthrough": {"out": None}}],
+    }, allow_unicode=True), encoding="utf-8")
+    catalog = PluginCatalog(tmp_path / "plugins", tmp_path / "unused")
+    assert catalog.scan() == [] and catalog.scan_errors
+    config = PluginConfigManager(tmp_path / "plugin-config")
+    monkeypatch.setattr(service_module, "PluginConfigManager", lambda: config)
+    service = service_module.EdictumConfigService(None, None)
+    service.plugin_catalog = catalog
+
+    result = service.validate_flow({"flow": workflow_flow()})
+    assert result["ok"] is True
+    referenced = service.validate_flow({"flow": workflow_flow(plugins="中文插件")})
+    assert referenced["ok"] is False
+    assert any(issue["code"] == "flow_plugin_unavailable" and issue["level"] == "error"
+               for issue in referenced["issues"])
+
+
+def test_disabled_workflow_plugin_reports_unavailable_and_recovers(tmp_path, monkeypatch):
+    """WF 引用插件的真实执行总闸驱动 disabled 分支, 恢复后 issue 消失"""
+    import yaml
+    from satrap.core.config import edictum_service as service_module
+    from satrap.edictum.plugin.catalog import PluginCatalog
+
+    plugin = tmp_path / "plugins" / "probe"
+    plugin.mkdir(parents=True)
+    (plugin / "meta.yaml").write_text(yaml.safe_dump({
+        "name": "probe", "version": "1", "flow": {"workflow": {}},
+    }), encoding="utf-8")
+    catalog = PluginCatalog(tmp_path / "plugins", tmp_path / "unused")
+    entries = {entry.name: entry for entry in catalog.scan()}
+    flow = workflow_flow(plugins="probe")
+    config = PluginConfigManager(tmp_path / "plugin-config")
+    config.save_execution("probe", False, 0)
+
+    execution_enabled = {"probe": config.host_state("probe")["execution_enabled"]}
+    issues = _validate(flow, catalog=entries, execution_enabled=execution_enabled)
+    assert any(issue.code == "flow_plugin_unavailable" and issue.level == "error"
+               and issue.node == "w1" and issue.field == "plugins" for issue in issues)
+
+    monkeypatch.setattr(service_module, "PluginConfigManager", lambda: config)
+    service = service_module.EdictumConfigService(None, None)
+    service.plugin_catalog = catalog
+    result = service.validate_flow({"flow": flow})
+    assert result["ok"] is False
+    assert any(issue["code"] == "flow_plugin_unavailable" for issue in result["issues"])
+
+    config.save_execution("probe", True, 1)
+    execution_enabled = {"probe": config.host_state("probe")["execution_enabled"]}
+    issues = _validate(flow, catalog=entries, execution_enabled=execution_enabled)
+    assert not any(issue.code == "flow_plugin_unavailable" for issue in issues)
+    result = service.validate_flow({"flow": flow})
+    assert result["ok"] is True

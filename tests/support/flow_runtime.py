@@ -93,6 +93,21 @@ def response(text: str = "done", tool_calls: list[dict[str, Any]] | None = None)
         type="tools_call" if tool_calls else "text", content=text, tool_calls=tool_calls)
 
 
+def workflow_flow(*, plugins: str = "") -> dict[str, Any]:
+    """构造经真实解析、校验和初始化入口使用的最小唤醒流程"""
+    return {"version": 3, "nodes": [
+        {"id": "src", "type": "source", "title": "s", "config": {}},
+        {"id": "wake", "type": "wake", "title": "wake", "config": {
+            "use_platform_policy": False, "mention": True, "new_messages": 0, "cooldown": 1}},
+        {"id": "w1", "type": "react_workflow", "title": "w1", "config": {
+            "model_name": "test", "prompt": "test", "plugins": plugins,
+            "max_steps": 2, "timeout_seconds": 10}},
+    ], "edges": [
+        {"from": "src.out", "to": "wake.messages"},
+        {"from": "wake.event", "to": "w1.trigger"},
+    ]}
+
+
 def tool_call(name: str, arguments: dict[str, Any], call_id: str = "") -> dict[str, Any]:
     """构造一个模型工具调用"""
     return {"id": call_id or f"call-{name}", "name": name, "arguments": arguments}

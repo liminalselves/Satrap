@@ -117,7 +117,7 @@ async def probe(root: Path, source_root: Path, report_path: Path, source_env: di
             parses[key] = parses.get(key, 0) + 1
         return original_load(path)
 
-    def normalize(manager, entry, catalog=None):
+    def normalize(manager, entry, catalog=None, *, check_execution=True):
         """
         记录实际命名配置归一化
 
@@ -125,13 +125,14 @@ async def probe(root: Path, source_root: Path, report_path: Path, source_env: di
         - manager: 原配置管理器
         - entry: 原命名条目
         - catalog: 原固定目录
+        - check_execution: 是否检查当前宿主执行总闸
 
         返回:
         - 原归一化结果
         """
         with lock:
             normalized.append(1)
-        return original_normalize(manager, entry, catalog)
+        return original_normalize(manager, entry, catalog, check_execution=check_execution)
 
     def read(*args, **kwargs):
         """

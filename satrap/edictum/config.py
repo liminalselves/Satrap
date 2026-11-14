@@ -97,13 +97,20 @@ class EdictumConfigManager:
             raise ValueError("Edictum 配置名称不能包含路径分隔符")
         return name
 
-    def _normalize_flow_params(self, params: dict[str, Any], catalog: PluginCatalog | None) -> dict[str, Any]:
+    def _normalize_flow_params(
+        self,
+        params: dict[str, Any],
+        catalog: PluginCatalog | None,
+        *,
+        check_execution: bool = True,
+    ) -> dict[str, Any]:
         """
         校验流程会话的 params.flow: 解析定义并做静态检查, 有错误即拒绝
 
         参数:
         - params: 原始 params
         - catalog: 插件目录, 用于检查节点插件是否存在/停用
+        - check_execution: 是否把当前宿主执行总闸纳入检查; 读取持久化配置时关闭
 
         返回:
         - dict[str, Any]: 校验通过的 params
@@ -124,8 +131,10 @@ class EdictumConfigManager:
         definition, _, errors = migrate_flow_definition(parse_flow_definition(raw_flow), registry)
         if errors:
             raise ValueError(f"流程定义迁移失败: {'; '.join(str(e) for e in errors)}")
-        plugin_config = PluginConfigManager()
-        execution_enabled = {name: plugin_config.host_state(name)["execution_enabled"] for name in plugin_catalog}
+        execution_enabled: dict[str, bool] | None = None
+        if check_execution:
+            plugin_config = PluginConfigManager()
+            execution_enabled = {name: plugin_config.host_state(name)["execution_enabled"] for name in plugin_catalog}
         issues = validate(
             definition, registry, plugin_catalog=plugin_catalog,
             plugin_execution_enabled=execution_enabled,
@@ -155,13 +164,20 @@ class EdictumConfigManager:
             )
         ]
 
-    def _normalize_entry(self, entry: object, catalog: PluginCatalog | None = None) -> dict[str, Any]:
+    def _normalize_entry(
+        self,
+        entry: object,
+        catalog: PluginCatalog | None = None,
+        *,
+        check_execution: bool = True,
+    ) -> dict[str, Any]:
         """
         校验并规范化单个配置条目
 
         参数:
         - entry: 原始配置对象
         - catalog: 本轮读取固定的插件目录, 默认读取最新目录
+        - check_execution: 是否拒绝引用当前已停用插件的 flow; 持久化读取时关闭
 
         返回:
         - dict[str, Any]: 规范化配置条目
@@ -179,7 +195,7 @@ class EdictumConfigManager:
         elif type_name == "flow":
             # 流程会话不做 simple 的参数归一化, 也不注入默认插件;
             # 保存时的合法性由 _normalize_entry 之后的流程静态检查保证
-            params = self._normalize_flow_params(params, catalog)
+            params = self._normalize_flow_params(params, catalog, check_execution=check_execution)
         model_name = str(raw.get("model_name", "")).strip()
         updated = raw.get("_updated_at")
         if updated is not None and (not isinstance(updated, (int, float)) or isinstance(updated, bool) or not math.isfinite(updated) or updated < 0):
@@ -247,7 +263,7 @@ class EdictumConfigManager:
                     loaded: dict[str, dict[str, Any]] = {}
                     for raw_name, raw_entry in cast(dict[str, object], payload).items():
                         name = self._normalize_name(raw_name)
-                        loaded[name] = self._normalize_entry(raw_entry, catalog)
+                        loaded[name] = self._normalize_entry(raw_entry, catalog, check_execution=False)
                     return loaded
 
                 if cached:

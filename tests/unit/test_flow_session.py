@@ -17,7 +17,7 @@ from satrap.edictum.flow.node_resources import MeteredClient
 from satrap.edictum.flow.session import AsyncFlowSession, current_flow_run
 from satrap.edictum.flow.store import FlowConflictError, FlowStore, StateCommit
 from tests.support.flow_runtime import (
-    FlowAdapter, MockLLM, archive_event, database, make_event, response, tool_call, wait_until,
+    FlowAdapter, MockLLM, archive_event, database, make_event, response, tool_call, wait_until, workflow_flow,
 )
 
 
@@ -822,6 +822,75 @@ class TestRuntimeIntegration:
             assert status["events_source"] == "memory_fallback"
         finally:
             await session.close_flow_nodes()
+
+    @pytest.mark.asyncio
+    async def test_invalid_catalog_name_does_not_block_async_init(self, tmp_path):
+        """未引用的非法目录在 catalog 隔离后不再阻断真实会话初始化"""
+        import yaml
+        from satrap.edictum.plugin.catalog import PluginCatalog
+        from satrap.edictum.plugin.config import PluginConfigManager
+
+        plugin = tmp_path / "plugins" / "invalid-directory"
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(yaml.safe_dump({
+            "name": "中文插件", "version": "1",
+            "flow_nodes": [{"name": "probe", "out": "text", "passthrough": {"out": None}}],
+        }, allow_unicode=True), encoding="utf-8")
+        db = database(tmp_path / "messages.db")
+        session = AsyncFlowSession(
+            "invalid-catalog", MockLLM(), flow=workflow_flow(),
+            plugin_catalog=PluginCatalog(tmp_path / "plugins", tmp_path / "unused"),
+            plugin_config=PluginConfigManager(tmp_path / "plugin-config"),
+            db_path=str(db), message_store=PlatformMessageStore(db, SCOPE.adapter_id))
+        try:
+            await session._async_init()
+            assert session._definition is not None
+        finally:
+            await session.close_flow_nodes()
+
+    @pytest.mark.asyncio
+    async def test_disabled_workflow_plugin_blocks_async_init_until_reenabled(self, tmp_path):
+        """真实初始化保留 WF 总闸 fail-fast, 恢复启用后装配并调用安装器"""
+        import yaml
+        from satrap.edictum.plugin.catalog import PluginCatalog
+        from satrap.edictum.plugin.config import PluginConfigManager
+
+        plugin = tmp_path / "plugins" / "probe"
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(yaml.safe_dump({
+            "name": "probe", "version": "1", "flow": {"workflow": {}},
+        }), encoding="utf-8")
+        catalog = PluginCatalog(tmp_path / "plugins", tmp_path / "unused")
+        configs = PluginConfigManager(tmp_path / "plugin-config")
+        configs.save_execution("probe", False, 0)
+        db = database(tmp_path / "messages.db")
+        store = PlatformMessageStore(db, SCOPE.adapter_id)
+        installer = AsyncMock()
+        disabled = AsyncFlowSession(
+            "disabled-workflow-plugin", MockLLM(), flow=workflow_flow(plugins="probe"),
+            plugin_catalog=catalog, plugin_config=configs, plugin_installer=installer,
+            db_path=str(db), message_store=store)
+        try:
+            with pytest.raises(ValueError, match="流程定义存在错误"):
+                await disabled._async_init()
+            assert disabled._definition is None and disabled._workflows == {}
+            assert any(issue.code == "flow_plugin_unavailable" and issue.node == "w1"
+                       for issue in disabled._issues)
+            installer.assert_not_awaited()
+        finally:
+            await disabled.close_flow_nodes()
+
+        configs.save_execution("probe", True, 1)
+        enabled = AsyncFlowSession(
+            "enabled-workflow-plugin", MockLLM(), flow=workflow_flow(plugins="probe"),
+            plugin_catalog=catalog, plugin_config=configs, plugin_installer=installer,
+            db_path=str(db), message_store=store)
+        try:
+            await enabled._async_init()
+            assert enabled._definition is not None
+            assert installer.await_count == 1
+        finally:
+            await enabled.close_flow_nodes()
 
     @pytest.mark.asyncio
     async def test_unchanged_empty_catalog_does_not_rebuild_or_reresolve(self, tmp_path):

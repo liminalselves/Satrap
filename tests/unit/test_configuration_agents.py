@@ -21,6 +21,7 @@ from satrap.core.type import SessionConfig, UserCall
 from typing import Protocol
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager, SessionClassConfigUnavailable
 from satrap.core.config.session_class_service import SessionClassConfigService
+from tests.support.flow_runtime import workflow_flow
 
 class _FutureEdictumSession(Session):
     """验证自定义类型无需修改注册表设计的测试会话"""
@@ -87,6 +88,76 @@ def test_edictum_cold_config_crud_is_named_and_has_no_placeholders(tmp_path: Pat
     assert service.delete("platform-assistant") is True
     assert service.list_configs() == {}
 
+def _flow_config(plugins: str = "") -> dict[str, Any]:
+    """构造命名 flow 冷配置正文"""
+    return {"edictum_type": "flow", "params": {"flow": workflow_flow(plugins=plugins)}, "plugins": []}
+
+
+def test_invalid_catalog_name_does_not_block_flow_config_save(tmp_path, monkeypatch):
+    """未引用的非法目录不阻断保存, 显式引用按缺失插件拒绝"""
+    import yaml
+    from satrap.edictum.plugin.config import PluginConfigManager
+
+    plugin = tmp_path / "plugins" / "invalid-directory"
+    plugin.mkdir(parents=True)
+    (plugin / "meta.yaml").write_text(yaml.safe_dump({
+        "name": "中文插件", "version": "1",
+    }, allow_unicode=True), encoding="utf-8")
+    catalog = PluginCatalog(tmp_path / "plugins", tmp_path / "unused")
+    config = PluginConfigManager(tmp_path / "plugin-config")
+    monkeypatch.setattr("satrap.edictum.config.PluginConfigManager", lambda: config)
+    manager = EdictumConfigManager(
+        create_default_edictum_type_registry(), tmp_path / "edictum.json", plugin_catalog=catalog)
+
+    assert manager.create("unrelated", _flow_config())["edictum_type"] == "flow"
+    with pytest.raises(ValueError, match="flow_plugin_unavailable"):
+        manager.create("invalid-reference", _flow_config("中文插件"))
+    assert manager.get_config("invalid-reference") is None
+
+
+def test_disabled_workflow_plugin_keeps_saved_config_readable_but_writes_strict(tmp_path, monkeypatch):
+    """停用只放松持久化读取; 新建和受影响配置更新仍拒绝, 无关事务可继续"""
+    import yaml
+    from satrap.edictum.plugin.config import PluginConfigManager
+
+    plugin = tmp_path / "plugins" / "probe"
+    plugin.mkdir(parents=True)
+    (plugin / "meta.yaml").write_text(yaml.safe_dump({
+        "name": "probe", "version": "1", "flow": {"workflow": {}},
+    }), encoding="utf-8")
+    catalog = PluginCatalog(tmp_path / "plugins", tmp_path / "unused")
+    config = PluginConfigManager(tmp_path / "plugin-config")
+    monkeypatch.setattr("satrap.edictum.config.PluginConfigManager", lambda: config)
+    registry = create_default_edictum_type_registry()
+    storage = tmp_path / "edictum.json"
+    manager = EdictumConfigManager(registry, storage, plugin_catalog=catalog)
+    manager.create("saved", _flow_config("probe"))
+    manager.create("editable", _flow_config())
+    original = storage.read_bytes()
+
+    config.save_execution("probe", False, 0)
+    with pytest.raises(ValueError, match="flow_plugin_unavailable"):
+        manager.create("blocked", _flow_config("probe"))
+    with pytest.raises(ValueError, match="flow_plugin_unavailable"):
+        manager.update("editable", {"params": {"flow": workflow_flow(plugins="probe")}})
+    assert storage.read_bytes() == original
+
+    manager.reload()
+    assert manager.get_config("saved")["params"]["flow"] == workflow_flow(plugins="probe")
+    EdictumConfigManager.invalidate_read_snapshots()
+    reloaded = EdictumConfigManager(registry, storage, plugin_catalog=catalog)
+    assert reloaded.get_config("saved") is not None
+    assert storage.read_bytes() == original
+
+    with pytest.raises(ValueError, match="flow_plugin_unavailable"):
+        manager.update("saved", {"description": "仍应严格校验"})
+    assert storage.read_bytes() == original
+    assert manager.create("unrelated", _flow_config())["edictum_type"] == "flow"
+
+    config.save_execution("probe", True, 1)
+    assert manager.update("saved", {"description": "恢复后可保存"})[1]["description"] == "恢复后可保存"
+
+
 def test_edictum_cold_config_rejects_unknown_type_and_fields(tmp_path: Path) -> None:
     """Edictum 冷配置应拒绝未知类型和意义不明的请求字段"""
     registry = EdictumTypeRegistry()
@@ -108,9 +179,9 @@ def test_normalization_is_read_only_and_copies_are_independent(tmp_path, monkeyp
     normalize = EdictumConfigManager._normalize_entry
     calls = []
 
-    def counted(self, entry, catalog=None):
+    def counted(self, entry, catalog=None, *, check_execution=True):
         calls.append(1)
-        return normalize(self, entry, catalog)
+        return normalize(self, entry, catalog, check_execution=check_execution)
 
     monkeypatch.setattr(EdictumConfigManager, '_normalize_entry', counted)
     first = EdictumConfigManager(registry, path)
