@@ -1586,6 +1586,10 @@ class AsyncFlowSession(AsyncSession):
             "events": [],
             "events_source": "debug_store",
             "node_status": self._instances.status(),
+            # 只有流程定义配置了 budget 才返回用量; 未配置时为 None, 前端不显示
+            "budget": self._budget.usage()
+            if self._budget is not None and self._definition is not None and self._definition.budget is not None
+            else None,
         }
 
         def read_events() -> list[Any]:

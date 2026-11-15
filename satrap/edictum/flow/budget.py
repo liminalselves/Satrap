@@ -126,6 +126,24 @@ class FlowCallBudget:
                 and (scope == "flow" or c.node_id == target)
             )
 
+    def usage(self) -> dict[str, Any]:
+        """
+        运行状态展示用的硬预算用量, 口径与 check_and_spend 的拦截判断一致
+
+        返回:
+        - dict: used 为窗口内按 count 口径计入的调用数; max_calls 为 0 表示不限
+        """
+        now = time.time()
+        with self._lock:
+            self._prune(now)
+            used = sum(1 for c in self._calls if self.count == "all" or c.source == "wf")
+        return {
+            "used": used,
+            "max_calls": self.max_calls,
+            "window_minutes": self.window_seconds // 60,
+            "count": self.count,
+        }
+
     def end_run(self, run_id: str) -> None:
         """WF 运行结束, 本次用量结算 (调用计数保留在窗口内)"""
         with self._lock:

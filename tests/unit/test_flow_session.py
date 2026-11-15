@@ -824,6 +824,32 @@ class TestRuntimeIntegration:
             await session.close_flow_nodes()
 
     @pytest.mark.asyncio
+    async def test_runtime_status_reports_budget_usage_only_when_configured(self, tmp_path):
+        """配置了 budget 时状态接口返回真实已用调用数; 未配置时 budget 为 None"""
+        db = database(tmp_path / "budget.db")
+        store = PlatformMessageStore(db, SCOPE.adapter_id)
+        adapter = FlowAdapter(store)
+        flow = _wake_flow()
+        flow["budget"] = {"max_calls": 5, "window_minutes": 30, "count": "wf"}
+        llm = MockLLM()
+        session = AsyncFlowSession("budget", llm, flow=flow, db_path=str(db),
+                                   message_store=store, flow_name="budget")
+        plain = AsyncFlowSession("plain", MockLLM(), flow=_wake_flow(), db_path=str(db),
+                                 message_store=store, flow_name="plain")
+        try:
+            event = make_event(adapter, SCOPE, "@bot 你好", 1, mention=True)
+            archive_event(store, SCOPE, event)
+            await session.observe(event)
+            await wait_until(lambda: len(llm.calls) >= 1 and not session._engine.running_workflows())
+            status = await session.runtime_status()
+            assert status["budget"] == {"used": 1, "max_calls": 5, "window_minutes": 30, "count": "wf"}
+            await plain.observe(make_event(adapter, SCOPE, "x", 2))
+            assert (await plain.runtime_status())["budget"] is None
+        finally:
+            await session.close_flow_nodes()
+            await plain.close_flow_nodes()
+
+    @pytest.mark.asyncio
     async def test_invalid_catalog_name_does_not_block_async_init(self, tmp_path):
         """未引用的非法目录在 catalog 隔离后不再阻断真实会话初始化"""
         import yaml

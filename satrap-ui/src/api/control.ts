@@ -11,6 +11,10 @@ import type {
   EdictumSessionConfig,
   EdictumAvailablePlugin,
   EdictumTypeDefinition,
+  FlowDefinitionJSON,
+  FlowRuntimeStatus,
+  FlowValidateResult,
+  PluginFlowNodeDefaults,
   ModelConfig,
   ModelType,
   PlatformConfig,
@@ -180,6 +184,23 @@ export interface EdictumConfigPayload {
 export interface EdictumConfigResult extends ControlResult {
   name?: string;
   config?: EdictumSessionConfig;
+  /** 保存后的配置修订, 下次更新作为 expected_revision */
+  revision?: string;
+}
+
+/** 命名配置或插件节点默认已被别处修改; revision 为后端当前修订, 用于"覆盖"重试 */
+export class RevisionConflictError extends Error {
+  constructor(message: string, public revision: string | null) {
+    super(message);
+    this.name = 'RevisionConflictError';
+  }
+}
+
+function revisionConflict(error: unknown): RevisionConflictError | null {
+  if (!axios.isAxiosError(error) || error.response?.status !== 409) return null;
+  const body = error.response.data as { error?: unknown; revision?: unknown } | undefined;
+  const message = typeof body?.error === 'string' && body.error ? body.error : '配置已被其他操作修改';
+  return new RevisionConflictError(message, typeof body?.revision === 'string' ? body.revision : null);
 }
 
 export function parseModelConfigs(data: unknown): Record<string, ModelConfig> {
@@ -613,12 +634,57 @@ export const controlApi = {
   updateEdictumSession: async (
     name: string,
     config: Partial<EdictumConfigPayload>,
+    expectedRevision?: string,
   ): Promise<EdictumConfigResult> => {
-    const response = await controlClient.patch<EdictumConfigResult>(
-      `/config/edictum/sessions/${encodeURIComponent(name)}`,
-      config,
-    );
+    try {
+      const response = await controlClient.patch<EdictumConfigResult>(
+        `/config/edictum/sessions/${encodeURIComponent(name)}`,
+        expectedRevision === undefined ? config : { ...config, expected_revision: expectedRevision },
+      );
+      return response.data;
+    } catch (error) {
+      throw revisionConflict(error) ?? error;
+    }
+  },
+
+  validateFlow: async (data: {
+    flow: FlowDefinitionJSON;
+    conversation_kinds?: Array<'group' | 'private'>;
+    platform_id?: string;
+  }, signal?: AbortSignal): Promise<FlowValidateResult> => {
+    const response = await controlClient.post<FlowValidateResult>('/config/edictum/flow/validate', data, { signal });
     return response.data;
+  },
+
+  getFlowRuntime: async (platformId: string, sessionId: string, signal?: AbortSignal): Promise<FlowRuntimeStatus> => {
+    const response = await controlClient.get<FlowRuntimeStatus>('/config/edictum/flow/runtime', {
+      params: { platform_id: platformId, session_id: sessionId },
+      signal,
+    });
+    return response.data;
+  },
+
+  getPluginFlowNodeDefaults: async (plugin: string, signal?: AbortSignal): Promise<PluginFlowNodeDefaults> => {
+    const response = await controlClient.get<PluginFlowNodeDefaults>(
+      `/config/plugins/${encodeURIComponent(plugin)}/flow-nodes`, { signal });
+    return response.data;
+  },
+
+  // 整张表替换: config 必须包含该插件全部要保存的节点; 冲突抛 RevisionConflictError
+  savePluginFlowNodeDefaults: async (
+    plugin: string,
+    config: Record<string, { version?: number; config: Record<string, unknown> }>,
+    expectedRevision: string,
+  ): Promise<PluginFlowNodeDefaults> => {
+    try {
+      const response = await controlClient.put<PluginFlowNodeDefaults>(
+        `/config/plugins/${encodeURIComponent(plugin)}/flow-nodes`,
+        { config, expected_revision: expectedRevision },
+      );
+      return response.data;
+    } catch (error) {
+      throw revisionConflict(error) ?? error;
+    }
   },
 
   setEdictumSessionEnabled: async (

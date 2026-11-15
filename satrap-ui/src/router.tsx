@@ -8,6 +8,7 @@ const Rag = lazy(() => import('@/pages/Rag').then((module) => ({ default: module
 const Plugins = lazy(() => import('@/pages/Plugins').then((module) => ({ default: module.Plugins })));
 const PluginDetail = lazy(() => import('@/pages/Plugins').then((module) => ({ default: module.PluginDetail })));
 const Sessions = lazy(() => import('@/pages/Sessions').then((module) => ({ default: module.Sessions })));
+const FlowEditor = lazy(() => import('@/pages/FlowEditor').then((module) => ({ default: module.FlowEditor })));
 const Platforms = lazy(() => import('@/pages/Platforms').then((module) => ({ default: module.Platforms })));
 const Approvals = lazy(() => import('@/pages/Platforms/Approvals').then((module) => ({ default: module.Approvals })));
 const Friends = lazy(() => import('@/pages/Friends').then((module) => ({ default: module.Friends })));
@@ -75,6 +76,7 @@ export const router = createBrowserRouter([
       { path: 'plugins', element: lazyRoute(<Plugins />) },
       { path: 'plugins/:name', element: lazyRoute(<PluginDetail />) },
       { path: 'agents', element: lazyRoute(<Sessions />) },
+      { path: 'agents/:name/flow', element: lazyRoute(<FlowEditor />) },
       { path: 'conversations', element: lazyRoute(<Conversations />) },
       { path: 'conversations/instances', element: lazyRoute(<Sessions view="instances" />) },
       { path: 'conversations/versions', element: lazyRoute(<Checkpoints />) },

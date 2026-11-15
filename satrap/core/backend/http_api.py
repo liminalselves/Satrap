@@ -30,7 +30,7 @@ from satrap.core.framework.session_discovery import SessionClassDiscoveryService
 from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
 from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
 from satrap.core.framework.SessionClassManager import SessionClassConfigUnavailable
-from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.config.edictum_service import EdictumConfigService, config_revision, split_expected_revision
 from satrap.core.config.model_service import ModelConfigService
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
@@ -1403,7 +1403,7 @@ class BackendHTTPServer(MiniHTTPServer):
                     models=backend.model_config_manager,
                 )
                 created = service.create(_parse_json_object(body))
-                return 200, {"ok": True, "config": created}
+                return 200, {"ok": True, "config": created, "revision": config_revision(created)}
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: POST /api/config/edictum/sessions
@@ -1475,11 +1475,21 @@ class BackendHTTPServer(MiniHTTPServer):
                     config_entry = service.get(name)
                     if config_entry is None:
                         return 404, {"error": "not found"}
-                    return 200, config_entry
+                    return 200, {**config_entry, "revision": config_revision(config_entry)}
                 if method in {"PATCH", "PUT"} and not action:
-                    payload = _parse_json_object(body)
+                    # 局部导入: config.document 顶层依赖后端包, 模块级导入会形成循环
+                    from satrap.core.config.document import ConfigRevisionConflict
+
+                    payload, expected_revision = split_expected_revision(_parse_json_object(body))
                     previous = service.get(name)
-                    final_name, updated = service.update(name, payload)
+                    try:
+                        final_name, updated = service.update(name, payload, expected_revision=expected_revision)
+                    except ConfigRevisionConflict as e:
+                        current = service.get(name)
+                        return 409, {
+                            "error": str(e), "code": "config_revision_conflict",
+                            "revision": config_revision(current) if current is not None else None,
+                        }
                     migrated_refs: list[dict[str, str]] = []
                     if final_name != name:
                         try:
@@ -1495,11 +1505,12 @@ class BackendHTTPServer(MiniHTTPServer):
                         "ok": True,
                         "name": final_name,
                         "config": updated,
+                        "revision": config_revision(updated),
                         "migrated_refs": migrated_refs,
                     }
                 if method == "POST" and action:
                     updated = service.set_enabled(name, action == "enable")
-                    return 200, {"ok": True, "config": updated}
+                    return 200, {"ok": True, "config": updated, "revision": config_revision(updated)}
                 if method == "DELETE" and not action:
                     references = backend.list_edictum_config_references(name)
                     if references:

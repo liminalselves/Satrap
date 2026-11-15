@@ -53,7 +53,7 @@ from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
-from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.config.edictum_service import EdictumConfigService, config_revision, split_expected_revision
 from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, platform_catalog, filter_records, record_facets, conversation_aggregates
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict, MessagePageTooLarge
 from satrap.core.config.platform_message_data import platform_archive_catalog, platform_archive_operation
@@ -1735,13 +1735,16 @@ async def _route_telemetry(ctx: _RouteContext) -> ControlResponse | None:
                                     fetch=cast(Callable[[Service, str], dict[str, JsonValue]], _read_telemetry_source))
 
 
-async def _action_backend_request(path: str, payload: object = None) -> tuple[int, dict[str, object]]:
+async def _action_backend_request(
+    path: str, payload: object = None, *, pass_through_not_found: bool = False,
+) -> tuple[int, dict[str, object]]:
     """
     异步访问固定 Backend, 长审批等待不占用统计或 SQLite 工作线程
 
     参数:
     - path: 宿主生成的审批接口路径
     - payload: 可选的已校验决策批次, 缺少时为 GET
+    - pass_through_not_found: 为真时 404 按业务结果原样返回 (如会话未激活); 默认视为后端版本不支持该接口
 
     返回:
     - 有界 JSON 响应, 发送后连接不确定时不重试或改走其它执行路径
@@ -1768,7 +1771,7 @@ async def _action_backend_request(path: str, payload: object = None) -> tuple[in
             async with session.request('POST' if payload is not None else 'GET', url, json=payload, headers=headers) as response:
                 if response.status in {401, 403}:
                     raise SourceUnavailable('auth_required', 'service_auth_required')
-                if response.status == 404:
+                if response.status == 404 and not pass_through_not_found:
                     raise SourceUnavailable('error', 'unsupported_version')
                 data = bytearray()
                 async for chunk in response.content.iter_chunked(65536):
@@ -3781,7 +3784,8 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "GET" and ctx.path == "/config/edictum/types":
         try:
-            return 200, {"types": await RAG_WORKERS.run(lambda: create_default_edictum_type_registry().list_types())}
+            # 走共享服务: flow 类型需要附带节点/端口契约, 编辑器据此渲染节点面板
+            return 200, {"types": await RAG_WORKERS.run(lambda: _edictum_config_service().list_types())}
         except WorkerBusyError as e:
             logger.warning(f"[Edictum 类型] 工作队列已满: {e}")
             return 503, {"error": str(e)}
@@ -3811,7 +3815,9 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
         # 运行状态只存在于后端进程内的活会话, 控制服务代理到后端
         query = urllib.parse.urlsplit(ctx.raw_path).query
         try:
-            status, result = await _action_backend_request(f"/api/config/edictum/flow/runtime?{query}")
+            # 404 是业务结果 (平台未运行/会话未激活), 原样透传, 前端据此显示"会话未运行"
+            status, result = await _action_backend_request(
+                f"/api/config/edictum/flow/runtime?{query}", pass_through_not_found=True)
             return status, result
         except Exception as error:
             return 503, {"error": f"后端不可用: {error}"}
@@ -4103,7 +4109,7 @@ async def _route_edictum_mutations(ctx: _RouteContext) -> ControlResponse | None
             created = _edictum_config_service().create(
                 await _read_json_body(ctx.reader, ctx.raw_request)
             )
-            return 200, {"ok": True, "config": created}
+            return 200, {"ok": True, "config": created, "revision": config_revision(created)}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
@@ -4123,11 +4129,19 @@ async def _route_edictum_mutations(ctx: _RouteContext) -> ControlResponse | None
                 config_entry = service.get(name)
                 if config_entry is None:
                     return 404, {"error": "not found"}
-                return 200, config_entry
+                return 200, {**config_entry, "revision": config_revision(config_entry)}
             if ctx.method == "PATCH" and not action:
-                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                payload, expected_revision = split_expected_revision(
+                    await _read_json_body(ctx.reader, ctx.raw_request))
                 previous = service.get(name)
-                final_name, updated = service.update(name, payload)
+                try:
+                    final_name, updated = service.update(name, payload, expected_revision=expected_revision)
+                except ConfigRevisionConflict as e:
+                    current = service.get(name)
+                    return 409, {
+                        "error": str(e), "code": "config_revision_conflict",
+                        "revision": config_revision(current) if current is not None else None,
+                    }
                 migrated_refs: list[dict[str, str]] = []
                 if final_name != name:
                     try:
@@ -4143,11 +4157,12 @@ async def _route_edictum_mutations(ctx: _RouteContext) -> ControlResponse | None
                     "ok": True,
                     "name": final_name,
                     "config": updated,
+                    "revision": config_revision(updated),
                     "migrated_refs": migrated_refs,
                 }
             if ctx.method == "POST" and action:
                 updated = service.set_enabled(name, action == "enable")
-                return 200, {"ok": True, "config": updated}
+                return 200, {"ok": True, "config": updated, "revision": config_revision(updated)}
             if ctx.method == "DELETE" and not action:
                 references = _edictum_config_references(name)
                 if references:

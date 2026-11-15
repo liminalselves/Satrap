@@ -88,6 +88,23 @@ def test_edictum_cold_config_crud_is_named_and_has_no_placeholders(tmp_path: Pat
     assert service.delete("platform-assistant") is True
     assert service.list_configs() == {}
 
+def test_flow_type_metadata_lists_llm_models_with_context_window(tmp_path: Path) -> None:
+    """flow 类型元数据的模型选项来自真实 LLM 配置, ctx 取 context_window"""
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.type.model_config import LLMConfig
+
+    registry = create_default_edictum_type_registry()
+    models = ModelConfigManager(storage_path=tmp_path / "models.json")
+    models.set_llm_config(LLMConfig(model="m", base_url="https://example.invalid/v1", api_key="k",
+                                    context_window=32000), name="long")
+    service = EdictumConfigService(EdictumConfigManager(registry, tmp_path / "e.json"), registry, models=models)
+
+    flow_type = next(item for item in service.list_types() if item["name"] == "flow")
+    by_name = {item["name"]: item for item in flow_type["flow"]["models"]}
+    assert by_name["long"] == {"name": "long", "ctx": 32000, "tools": True}
+    assert "api_key" not in json.dumps(flow_type["flow"]["models"])
+
+
 def _flow_config(plugins: str = "") -> dict[str, Any]:
     """构造命名 flow 冷配置正文"""
     return {"edictum_type": "flow", "params": {"flow": workflow_flow(plugins=plugins)}, "plugins": []}

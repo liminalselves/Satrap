@@ -131,7 +131,7 @@ def validate(
     if len(sources) != 1:
         add(Issue(code="flow_source_count", level="error", category="结构",
                   node=sources[1].id if len(sources) > 1 else "",
-                  message=f"需要恰好一个群消息入口, 当前 {len(sources)} 个"))
+                  message=f"需要恰好一个对话消息入口, 当前 {len(sources)} 个"))
     if not wfs:
         add(Issue(code="flow_no_workflow", level="error", category="结构",
                   message="流程里没有 WF, 不会调用任何模型"))
@@ -255,7 +255,7 @@ def validate(
             if not v.get("use_platform_policy") and not int(v.get("cooldown") or 0):
                 add(Issue(code="flow_wake_cooldown_zero", level="warning", category="触发",
                           node=node.id, field="cooldown",
-                          message=f"{name(node.id)} 冷却为 0, 群里可能被连续回复"))
+                          message=f"{name(node.id)} 冷却为 0, 可能被连续回复"))
             if not v.get("use_platform_policy") and int(v.get("new_messages") or 0) == 1:
                 add(Issue(code="flow_wake_every_message", level="warning", category="成本",
                           node=node.id, field="new_messages",
@@ -267,7 +267,7 @@ def validate(
             if 0 < int(v.get("messages") or 0) <= 2:
                 add(Issue(code="flow_threshold_low", level="warning", category="成本",
                           node=node.id, field="messages",
-                          message=f"{name(node.id)} 每 {v.get('messages')} 条消息就触发一次, 活跃群里每小时可能调用上百次"))
+                          message=f"{name(node.id)} 每 {v.get('messages')} 条消息就触发一次, 活跃对话里每小时可能调用上百次"))
             if len(driven) > 1:
                 add(Issue(code="flow_threshold_shared", level="warning", category="触发", node=node.id,
                           message=f"{name(node.id)} 驱动 {len(driven)} 个 WF, 各自推进自己的位置",
@@ -296,11 +296,11 @@ def validate(
                       hint="在左侧连接一个触发磁贴, 或上游 WF 的\"完成\""))
         elif not w.roots:
             add(Issue(code="flow_wf_never_triggered", level="error", category="触发", node=w.id,
-                      message=f"{name(w.id)} 的触发链上没有群唤醒或阈值磁贴, 永远不会运行"))
+                      message=f"{name(w.id)} 的触发链上没有唤醒或阈值磁贴, 永远不会运行"))
         direct = {nodes[o.id].type for o in w.origins if o.kind == "tile" and o.id in nodes}
         if "wake" in direct and "threshold" in direct:
             add(Issue(code="flow_mixed_roots", level="warning", category="触发", node=w.id,
-                      message=f"{name(w.id)} 同时被群唤醒和阈值磁贴直接驱动, 前台和后台运行共用模型, 提示词和插件"))
+                      message=f"{name(w.id)} 同时被唤醒和阈值磁贴直接驱动, 前台和后台运行共用模型, 提示词和插件"))
         if w.background and w.replies_directly:
             add(Issue(code="flow_background_reply", level="error", category="触发", node=w.id,
                       message=f"{name(w.id)} 只在后台运行, 不能直接连到平台回复",
@@ -312,14 +312,14 @@ def validate(
     for w in wfs.values():
         if w.replies_directly and not w.background and "threshold" in w.roots:
             add(Issue(code="flow_proactive_reply", level="warning", category="成本", node=w.id,
-                      message=f"{name(w.id)} 能被阈值链路 (经交接或完成) 触发并直接发言, 这类发言不经过群唤醒的冷却",
+                      message=f"{name(w.id)} 能被阈值链路 (经交接或完成) 触发并直接发言, 这类发言不经过唤醒磁贴的冷却",
                       hint="在该路径上加条件或调用预算, 或让模型自己判断是否开口"))
     replying_wake = [w for w in wfs.values()
                      if "wake" in w.roots and w.replies_directly
                      and any(o.kind == "tile" and nodes[o.id].type == "wake" for o in w.origins)]
     if len(replying_wake) > 1:
         add(Issue(code="flow_wake_multiple", level="warning", category="成本", node=replying_wake[1].id,
-                  message=f"{', '.join(name(w.id) for w in replying_wake)} 都由群唤醒驱动并能回复, 同一条消息可能各回一次",
+                  message=f"{', '.join(name(w.id) for w in replying_wake)} 都由唤醒磁贴驱动并能回复, 同一条消息可能各回一次",
                   hint="用条件或逻辑门区分它们各自处理哪些消息"))
 
     # ---------- 状态槽 ----------
@@ -506,7 +506,7 @@ def validate(
         v = cfg(o.id)
         send_mode = str(v.get("send_mode") or "flow_reply")
         if send_mode == "group_chat_reply":
-            # 只能被群唤醒链路驱动的前台 WF; 后台或私聊时报错
+            # 只能被唤醒链路驱动的前台 WF; 后台或私聊时报错
             feeding = {w for e in in_e(o.id, "reply") for w in [e.source] if w in wfs}
             if "private" in kinds:
                 add(Issue(code="flow_reply_mode_private", level="error", category="配置", node=o.id, field="send_mode",

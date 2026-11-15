@@ -76,8 +76,8 @@ def builtin_node_types() -> list[FlowNodeType]:
     return [
         # ---------- 数据 ----------
         FlowNodeType(
-            type="source", version=1, label="群消息", category="数据", role="source",
-            description="当前群的消息档案, 包含已确认发出的机器人消息", max_per_flow=1,
+            type="source", version=1, label="对话消息", category="数据", role="source",
+            description="当前对话 (群聊或私聊) 的消息档案, 包含已确认发出的机器人消息", max_per_flow=1,
             outputs=_ports([("out", "messages", "消息")]),
             config_schema=_fields({
                 "max_messages": {
@@ -202,17 +202,18 @@ def builtin_node_types() -> list[FlowNodeType]:
         ),
         # ---------- 触发磁贴 ----------
         FlowNodeType(
-            type="wake", version=1, label="群唤醒", category="触发", role="trigger", emits="message",
-            description="每条消息到达时按 @, 唤醒词, 新消息数和冷却判断; 一个磁贴可以驱动多个 WF",
+            type="wake", version=1, label="唤醒", category="触发", role="trigger", emits="message",
+            description="每条消息到达时判断是否唤醒; 沿用平台策略时群聊按 @, 唤醒词和频率, 私聊每条都唤醒; 一个磁贴可以驱动多个 WF",
             inputs=(
                 PortSpec(name="messages", types=("messages",), required=True, label="消息"),
                 PortSpec(name="when", types=("condition",), multiple=True, side="left", label="条件"),
             ),
             outputs=_ports([("event", "event", "触发")]),
             config_schema=_fields({
-                "use_platform_policy": {"type": "bool", "label": "沿用群唤醒策略", "default": True,
-                                        "description": "使用平台管理里该群的 @, 唤醒词, 频率和冷却"},
+                "use_platform_policy": {"type": "bool", "label": "沿用平台唤醒策略", "default": True,
+                                        "description": "群聊使用平台管理里该群的 @, 唤醒词, 频率和冷却; 私聊每条消息都唤醒"},
                 "mention": {"type": "bool", "label": "被 @ 时唤醒", "default": True,
+                            "description": "私聊消息视为已 @",
                             "visible_when": {"use_platform_policy": False}},
                 "wake_words": {"type": "textarea", "label": "唤醒词", "default": "",
                                "description": "每行一个", "visible_when": {"use_platform_policy": False}},
@@ -273,7 +274,8 @@ def builtin_node_types() -> list[FlowNodeType]:
             config_schema=_fields({
                 "kind": {"type": "select", "label": "判断", "default": "mention",
                          "options": ["mention", "keyword", "sender"],
-                         "option_labels": {"mention": "被 @", "keyword": "包含关键词", "sender": "发言人在名单中"}},
+                         "option_labels": {"mention": "被 @", "keyword": "包含关键词", "sender": "发言人在名单中"},
+                         "description": "私聊消息视为已 @"},
                 "keywords": {"type": "textarea", "label": "关键词", "default": "",
                              "description": "每行一个, 命中任一即为真", "visible_when": {"kind": "keyword"}},
                 "senders": {"type": "textarea", "label": "成员名单", "default": "",

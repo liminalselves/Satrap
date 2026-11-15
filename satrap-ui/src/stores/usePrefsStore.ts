@@ -10,10 +10,13 @@ interface PrefsState {
   glass: boolean | null;
   /** 动态背景色; null 表示按设备自动决定 */
   ambient: boolean | null;
+  /** 流程编辑器视口, 按命名配置名区分; 不写进流程存档 */
+  flowViewports: Record<string, { x: number; y: number; zoom: number }>;
   setMotion: (motion: MotionPreference) => void;
   toggleSidebar: () => void;
   setGlass: (value: boolean | null) => void;
   setAmbient: (value: boolean | null) => void;
+  setFlowViewport: (name: string, viewport: { x: number; y: number; zoom: number }) => void;
 }
 
 /** 触屏、窄屏或核心/内存较少的设备视为低性能, 默认关闭亚克力与动态背景 */
@@ -33,10 +36,12 @@ export const usePrefsStore = create<PrefsState>()(persist((set) => ({
   sidebarCollapsed: false,
   glass: null,
   ambient: null,
+  flowViewports: {},
   setMotion: (motion) => set({ motion }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   setGlass: (glass) => set({ glass }),
   setAmbient: (ambient) => set({ ambient }),
+  setFlowViewport: (name, viewport) => set((state) => ({ flowViewports: { ...state.flowViewports, [name]: viewport } })),
 }), { name: 'satrap.ui.prefs' }));
 
 /** 实际生效的视觉效果: 用户未设置时取设备默认值 */

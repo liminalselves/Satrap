@@ -4,6 +4,7 @@ import { AlertCircle, Link2Off, Lock, RotateCcw } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { Input, Textarea } from '@/components/kit';
 import { Select as KitSelect } from '@/components/kit/Select';
+import { effectiveValues, fieldVisible, groupFields, validTime } from './configFieldLayout';
 
 export interface ConfigOption { value: string; label: string; scope?: string }
 export type ModelOptions = Record<string, ConfigOption[]>;
@@ -20,6 +21,12 @@ interface Props {
   sessionMode?: boolean;
   namedMode?: boolean;
   disabled?: boolean;
+  /** schema 为空时的提示文案 */
+  emptyText?: string;
+  /** 固定单列布局, 用于窄面板 */
+  singleColumn?: boolean;
+  /** 按字段覆盖来源文案; 提供时总是显示, 优先于 sessionMode/namedMode 的固定文案 */
+  sourceText?: Record<string, string>;
   onChange: (key: string, value: unknown) => void;
   onReset?: (key: string) => void;
 }
@@ -33,14 +40,18 @@ function inheritedLabel(source?: string) {
   return '继承默认值';
 }
 
-export function PluginConfigFields({ schema, values, inherited = {}, sources = {}, modelOptions = {}, knowledgeBases = [], modelState = 'ready', knowledgeState = 'ready', sessionMode = false, namedMode = false, disabled = false, onChange, onReset }: Props) {
+export function PluginConfigFields({ schema, values, inherited = {}, sources = {}, modelOptions = {}, knowledgeBases = [], modelState = 'ready', knowledgeState = 'ready', sessionMode = false, namedMode = false, disabled = false, emptyText = '此插件没有可配置的参数', singleColumn = false, sourceText, onChange, onReset }: Props) {
   const prefix = useId();
-  const fields = Object.entries(schema);
-  if (!fields.length) {
-    return <p className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-[13px] text-fg-3">此插件没有可配置的参数</p>;
+  const allFields = Object.entries(schema);
+  if (!allFields.length) {
+    return <p className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-[13px] text-fg-3">{emptyText}</p>;
   }
-  return (
-    <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
+  // visible_when 只决定显示; 隐藏字段的显式值不清除, 后端仍会校验
+  const effective = effectiveValues(schema, values, inherited);
+  const sections = groupFields(allFields.filter(([, field]) => fieldVisible(field, effective)));
+  const grouped = sections.some((section) => section.group);
+  const renderGrid = (fields: Array<[string, EdictumPluginConfigField]>) => (
+    <div className={cn('grid gap-x-5 gap-y-4', !singleColumn && 'sm:grid-cols-2')}>
       {fields.map(([key, field]) => {
         const fieldId = `${prefix}-${key}`;
         const fieldLabel = field.label || key;
@@ -76,7 +87,9 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
               {field.description && <p className="mt-0.5 text-[11.5px] leading-4 text-fg-3">{field.description}</p>}
             </div>
             <div className="flex flex-none flex-col items-end gap-1">
-              {(sessionMode || namedMode) && (
+              {sourceText?.[key] ? (
+                <span className={cn('whitespace-nowrap text-[11px]', overridden ? 'font-medium text-teal' : 'text-fg-4')}>{sourceText[key]}</span>
+              ) : (sessionMode || namedMode) && (
                 <span className={cn('whitespace-nowrap text-[11px]', overridden ? 'font-medium text-teal' : 'text-fg-4')}>
                   {overridden ? (namedMode ? '命名配置' : '会话自定义') : inheritedLabel(sources[key])}
                 </span>
@@ -107,7 +120,7 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
 
         if (field.type === 'bool') {
           return (
-            <div key={key} className="rounded-xl border border-line bg-glass px-3.5 py-3">
+            <div key={key} data-field={key} className="rounded-xl border border-line bg-glass px-3.5 py-3">
               <div className="flex items-center justify-between gap-4">
                 {labelRow}
                 <input
@@ -126,7 +139,7 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
         }
 
         return (
-          <div key={key} className={cn('space-y-1.5', wide && 'sm:col-span-2')}>
+          <div key={key} data-field={key} className={cn('space-y-1.5', wide && !singleColumn && 'sm:col-span-2')}>
             {labelRow}
             {nullableRow}
             {field.type === 'knowledge_bases' ? (
@@ -178,6 +191,25 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
                 value={String(value ?? '')}
                 onChange={(event) => onChange(key, event.target.value)}
               />
+            ) : field.type === 'time' ? (
+              <>
+                <Input
+                  id={fieldId}
+                  aria-label={fieldLabel}
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="HH:MM"
+                  maxLength={5}
+                  className="num"
+                  aria-invalid={value !== '' && value !== null && !validTime(value)}
+                  disabled={locked || nullSelected}
+                  value={String(value ?? '')}
+                  onChange={(event) => onChange(key, event.target.value)}
+                />
+                {value !== '' && value !== null && value !== undefined && !validTime(value) && (
+                  <p role="alert" className="flex items-center gap-1 text-[11.5px] text-red"><AlertCircle className="h-3 w-3" />时间格式应为 HH:MM, 范围 00:00–24:00</p>
+                )}
+              </>
             ) : (
               <Input
                 id={fieldId}
@@ -201,6 +233,19 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
           </div>
         );
       })}
+    </div>
+  );
+  if (!grouped) return renderGrid(sections[0]?.fields ?? []);
+  return (
+    <div className="space-y-5">
+      {sections.map((section) => (
+        <section key={section.group || '_'} aria-label={section.group || '基本'} className="space-y-3">
+          {section.group && (
+            <h4 className="text-[11.5px] font-semibold uppercase tracking-wide text-fg-3">{section.group}</h4>
+          )}
+          {renderGrid(section.fields)}
+        </section>
+      ))}
     </div>
   );
 }

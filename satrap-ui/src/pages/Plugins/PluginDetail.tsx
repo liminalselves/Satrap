@@ -14,6 +14,7 @@ import { PluginInteractions } from '@/components/common/PluginCapabilities';
 import type { PluginRuntimeResult } from '@/api/types';
 import { useDirtyGuard, confirmDiscard } from '@/hooks/useDirtyGuard';
 import { GlobalPluginSettings, PluginRuntimeStatus } from './GlobalPluginSettings';
+import { FlowNodeDefaults } from './FlowNodeDefaults';
 import { PluginUsages } from './PluginUsages';
 import { SkillLibrary } from './SkillLibrary';
 import { StickerLibrary } from './StickerLibrary';
@@ -237,14 +238,15 @@ export function PluginDetail() {
   const plugin = plugins.find((item) => item.name === name);
   const [tab, setTab] = useState<Tab>('overview');
   const [dirty, setDirty] = useState(false);
+  const [flowDirty, setFlowDirty] = useState(false);
   const [execution, setExecution] = useState<{ enabled: boolean; revision: number } | null>(null);
   const [executionBusy, setExecutionBusy] = useState(false);
   const [executionError, setExecutionError] = useState('');
   const [executionRuntime, setExecutionRuntime] = useState<PluginRuntimeResult[]>([]);
-  useDirtyGuard(dirty);
+  useDirtyGuard(dirty || flowDirty);
 
   const tabParam = params.get('tab');
-  useEffect(() => { setDirty(false); }, [name]);
+  useEffect(() => { setDirty(false); setFlowDirty(false); }, [name]);
   // URL 中的 tab 变化时同步标签; 目录轮询刷新不会重置当前标签
   useEffect(() => {
     setTab(normalizeTab(tabParam, plugin?.name));
@@ -260,8 +262,9 @@ export function PluginDetail() {
 
   const changeTab = (next: Tab) => {
     if (next === tab) return;
-    if (dirty && !confirmDiscard()) return;
+    if ((dirty || flowDirty) && !confirmDiscard()) return;
     setDirty(false);
+    setFlowDirty(false);
     setTab(next);
   };
 
@@ -411,7 +414,12 @@ export function PluginDetail() {
 
       <div key={tab} className="animate-rise">
         {tab === 'overview' && <Overview plugin={plugin} onOpenTab={changeTab} />}
-        {tab === 'config' && <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} />}
+        {tab === 'config' && (
+          <div className="space-y-4">
+            <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} />
+            {(plugin.flow_nodes?.length ?? 0) > 0 && <FlowNodeDefaults key={`${plugin.name}-flow`} name={plugin.name} nodes={plugin.flow_nodes ?? []} onDirty={setFlowDirty} />}
+          </div>
+        )}
         {tab === 'usages' && <PluginUsages key={plugin.name} plugin={plugin} onDirty={setDirty} onSaved={refresh} />}
         {tab === 'skills' && plugin.name === 'skills' && <SkillLibrary onDirty={setDirty} />}
         {tab === 'stickers' && plugin.name === 'group_chat' && <StickerLibrary onDirty={setDirty} />}

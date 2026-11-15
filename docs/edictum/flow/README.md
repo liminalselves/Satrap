@@ -8,6 +8,7 @@ issue #4 "Edictum 范式增加与自定义编辑"。新增 `flow` 会话类型: 
 | --- | --- | --- |
 | [runtime-contract.md](runtime-contract.md) | 执行语义: 条件三值, 共享求值, 阈值位置, 预算, 状态槽 CAS, 失败处理, 重启 | 实现宿主, 写插件节点 |
 | [node-contract.md](node-contract.md) | 插件节点契约: `meta.yaml` + `flow_nodes.py` 写法, 存档格式, 迁移, 安装时拒绝的写法 | 写插件节点, 实现契约解析 |
+| [frontend-plan.md](frontend-plan.md) | 前端实现计划: 后端前置小改, 流程编辑器, 插件节点默认, 运行状态面板, 测试 | 前端实现 agent 从这里开始 |
 
 前端历史原型在 `satrap-ui-preview/src/flow/` (被 `.gitignore` 忽略, 不入库): `registry.ts` 内置节点和端口, `validate.ts` 静态检查规则, `Simulator.tsx` 运行语义参考, `model.ts` 存档格式和模板。原型仅作历史参考, 现行后端行为以运行时契约、插件节点契约和实际实现为准。
 

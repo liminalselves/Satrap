@@ -503,6 +503,14 @@ async def test_control_server_manages_edictum_config_while_backend_is_stopped(
     fetched = await _request("/config/edictum/sessions/platform-assistant")
 
     assert b'"async_simple"' in types
+    type_items = json.loads(types.split(b"\r\n\r\n", 1)[1])["types"]
+    flow_type = next(item for item in type_items if item["name"] == "flow")
+    # 控制服务的类型表要带流程编辑器契约, 前端只走控制服务
+    assert {"node_types", "port_types", "defaults", "models"} <= set(flow_type["flow"])
+    builtin = {node["type"] for node in flow_type["flow"]["node_types"]}
+    assert {"source", "react_workflow", "output", "threshold", "note"} <= builtin
+    assert flow_type["flow"]["port_types"]["event"] == {"label": "触发", "signal": True}
+    assert all("flow" not in item for item in type_items if item["name"] != "flow")
     assert b'"ok": true' in created
     assert b'"ok": true' in instance
     assert b'"name": "platform-assistant"' in renamed
@@ -531,6 +539,68 @@ async def test_control_server_manages_edictum_config_while_backend_is_stopped(
     )
     assert b'"ok": true' in deleted
     assert json.loads(edictum_path.read_text(encoding="utf-8")) == {}
+
+
+def _response_json(response: bytes) -> tuple[int, Any]:
+    """拆出控制服务原始 HTTP 响应的状态码和 JSON 正文"""
+    status = int(response.split(b"\r\n", 1)[0].split()[1])
+    return status, json.loads(response.split(b"\r\n\r\n", 1)[1])
+
+
+@pytest.mark.asyncio
+async def test_control_edictum_update_honors_expected_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """命名配置的读取和写入都返回修订值; 带过期修订的 PATCH 返回 409, 不带时行为不变"""
+    monkeypatch.setattr(control_server, "_check_backend_health", lambda: {"running": False})
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({
+            "data_root": str(tmp_path / "data"),
+            "edictum_config_path": str(tmp_path / "edictum.json"),
+            "platforms": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
+
+    status, created = _response_json(await _request(
+        "/config/edictum/sessions", "POST",
+        b'{"name":"rp","edictum_type":"async_simple","model_name":"default","plugins":[]}',
+    ))
+    assert status == 200 and isinstance(created["revision"], str) and created["revision"]
+    status, fetched = _response_json(await _request("/config/edictum/sessions/rp"))
+    assert status == 200 and fetched["revision"] == created["revision"]
+    status, listed = _response_json(await _request("/config/edictum/sessions"))
+    assert status == 200 and listed["rp"]["revision"] == created["revision"]
+
+    status, updated = _response_json(await _request(
+        "/config/edictum/sessions/rp", "PATCH",
+        json.dumps({"description": "v2", "expected_revision": created["revision"]}).encode(),
+    ))
+    assert status == 200 and updated["config"]["description"] == "v2"
+    assert updated["revision"] != created["revision"]
+
+    status, conflict = _response_json(await _request(
+        "/config/edictum/sessions/rp", "PATCH",
+        json.dumps({"description": "stale", "expected_revision": created["revision"]}).encode(),
+    ))
+    assert status == 409 and conflict["code"] == "config_revision_conflict"
+    assert conflict["revision"] == updated["revision"]
+    status, after = _response_json(await _request("/config/edictum/sessions/rp"))
+    assert after["description"] == "v2"
+
+    status, unguarded = _response_json(await _request(
+        "/config/edictum/sessions/rp", "PATCH", b'{"description":"v3"}',
+    ))
+    assert status == 200 and unguarded["config"]["description"] == "v3"
+
+    status, invalid = _response_json(await _request(
+        "/config/edictum/sessions/rp", "PATCH", b'{"description":"x","expected_revision":7}',
+    ))
+    assert status == 400 and "expected_revision" in invalid["error"]
+
 
 @pytest.mark.asyncio
 async def test_control_server_lists_edictum_plugins():
@@ -1169,3 +1239,32 @@ async def test_control_img_models_crud_snapshot_and_test_contract(tmp_path: Path
     rejected = await _request("/config/models/img/paint/test", "POST", b'{"prompt":"cat"}', authenticated=False)
     assert b"401" in rejected and len(calls) == 1
     assert b"200" in await _request("/config/models/img/paint", "DELETE")
+
+
+@pytest.mark.asyncio
+async def test_control_flow_runtime_preserves_backend_not_found(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """流程运行状态经控制服务代理时, 后端的"会话未激活" 404 原样透传, 不变成 503"""
+    from urllib.request import Request
+    from satrap.core.server_auth import ServerAuth
+
+    backend = BackendManager(BackendConfig(data_root=str(tmp_path / "data")))
+    handler = BackendHTTPServer(backend)
+    handler.auth = ServerAuth.create("127.0.0.1", 0, token="backend-flow-runtime-token-at-least-32-chars")
+    listener = await asyncio.start_server(handler._handle_connection, "127.0.0.1", 0)
+    port = listener.sockets[0].getsockname()[1]
+    monkeypatch.setattr(control_server, "_configured_backend_address", lambda: ("127.0.0.1", port))
+    monkeypatch.setattr(
+        control_server, "_authenticated_request",
+        lambda url, method="GET": Request(url, headers={"Authorization": "Bearer " + handler.auth.token}, method=method),
+    )
+    try:
+        response = await _request("/config/edictum/flow/runtime?platform_id=missing&session_id=s1")
+        status, payload = _response_json(response)
+        assert status == 404, payload
+        assert "平台实例未运行" in payload["error"]
+    finally:
+        listener.close()
+        await listener.wait_closed()

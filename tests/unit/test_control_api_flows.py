@@ -217,6 +217,32 @@ async def test_edictum_enable_disable_and_detail(tmp_path: Path, monkeypatch: py
     assert status == 400
 
 @pytest.mark.asyncio
+async def test_backend_edictum_update_honors_expected_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """后端直连接口与控制服务同口径: 返回修订值, 过期修订返回 409"""
+    registry = create_default_edictum_type_registry()
+    mgr = EdictumConfigManager(registry, storage_path=tmp_path / "ed.json")
+    _patch_manager(monkeypatch, "edictum_type_registry", registry)
+    _patch_manager(monkeypatch, "edictum_config_manager", mgr)
+    server = _http_api_dispatch_make_server(tmp_path)
+
+    status, created = await _http_api_dispatch_route(
+        server, "POST", "/api/config/edictum/sessions",
+        b'{"name":"rp","edictum_type":"async_simple","model_name":"default","plugins":[]}')
+    assert status == 200
+    status, fetched = await _http_api_dispatch_route(server, "GET", "/api/config/edictum/sessions/rp")
+    assert fetched["revision"] == created["revision"]
+    status, updated = await _http_api_dispatch_route(
+        server, "PATCH", "/api/config/edictum/sessions/rp",
+        json.dumps({"description": "v2", "expected_revision": created["revision"]}).encode())
+    assert status == 200 and updated["revision"] != created["revision"]
+    status, conflict = await _http_api_dispatch_route(
+        server, "PUT", "/api/config/edictum/sessions/rp",
+        json.dumps({"description": "stale", "expected_revision": created["revision"]}).encode())
+    assert status == 409 and conflict["code"] == "config_revision_conflict"
+    assert conflict["revision"] == updated["revision"]
+
+
+@pytest.mark.asyncio
 async def test_models_collection_and_prefix_quirk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """GET /api/config/models 列表; startswith 前缀怪癖 (/api/config/modelsx 也命中)"""
     mgr = ModelConfigManager(storage_path=tmp_path / "models.json")

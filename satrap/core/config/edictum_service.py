@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 
+from satrap.core.log import logger
 from satrap.edictum.plugin.settings import validate_plugin_settings
 from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.edictum.plugin.config import PluginConfigManager, validate_config_values
@@ -24,6 +25,42 @@ _ALLOWED_FIELDS = {
 """Edictum 冷配置允许写入的字段"""
 
 from satrap.core.config.reference_guard import guard_agent_reference
+
+
+def config_revision(config: dict[str, Any]) -> str:
+    """
+    计算命名配置的修订值, 与 EdictumConfigManager.update 的 expected_revision 校验口径一致
+
+    参数:
+    - config: get_config 返回的公开配置 (不含 _updated_at)
+
+    返回:
+    - str: 与字段顺序无关的 sha256 摘要
+    """
+    from satrap.core.config.document import config_document_revision
+
+    return config_document_revision(config)
+
+
+def split_expected_revision(payload: object) -> tuple[object, str | None]:
+    """
+    从更新请求体中取出 expected_revision, 其余字段原样交给配置校验
+
+    参数:
+    - payload: 原始请求体
+
+    返回:
+    - tuple[object, str | None]: 去掉修订字段后的请求体与期望修订; 未提供时为 None
+    """
+    if not isinstance(payload, dict) or "expected_revision" not in payload:
+        return payload, None
+    body = dict(cast(dict[str, Any], payload))
+    expected = body.pop("expected_revision")
+    if expected is None:
+        return body, None
+    if not isinstance(expected, str) or not expected.strip():
+        raise ValueError("expected_revision 必须是非空字符串")
+    return body, expected
 
 
 class EdictumConfigService:
@@ -106,14 +143,16 @@ class EdictumConfigService:
         models = []
         if self.models is not None:
             try:
-                for name, cfg in self.models.list_models().items():
+                configs = self.models.list_llm_configs(mask_api_key=True)
+                for name, cfg in sorted(configs.items()):
                     models.append({
                         "name": name,
-                        "ctx": getattr(cfg, "context_window", 0) or 0,
-                        "tools": getattr(cfg, "supports_tools", True),
+                        "ctx": int(cfg.get("context_window") or 0),
+                        "tools": True,   # LLM 配置没有工具能力开关, 工具调用一律视为可用
                     })
-            except Exception:
-                models = []   # 模型管理器接口差异时不阻断类型表
+            except Exception as error:
+                logger.warning(f"[Edictum 类型] 读取模型列表失败, 流程编辑器模型选项为空: {error}")
+                models = []
         return {
             "node_types": node_types,
             "port_types": port_types,
@@ -187,7 +226,10 @@ class EdictumConfigService:
         返回:
         - 命名配置及实际保存时间, 旧记录的时间为空
         """
-        return {name: {**config, "updated_at": self.manager.config_updated_at(name)} for name, config in self.manager.list_configs().items()}
+        return {
+            name: {**config, "updated_at": self.manager.config_updated_at(name), "revision": config_revision(config)}
+            for name, config in self.manager.list_configs().items()
+        }
 
     def list_plugins(self) -> list[dict[str, Any]]:
         """

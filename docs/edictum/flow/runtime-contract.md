@@ -410,7 +410,8 @@ WF 内部的模型调用和工具调用沿用现有的 `execution_run` 等类别
 - 入站消息仍由平台先入档再交给调度器; 已确认的出站回显和主动发送快照先 `await` 真实档案提交 (SQLite 经 `asyncio.to_thread`), 提交成功且为新记录后才异步通知 flow 观察者。通知队列满不会丢非 flow 档案, 发送返回时无需 drain 即可按消息 id 读取、去重和恢复
 - flow 消息在稳定路由锁内只复核映射并投递到会话自有的串行观察任务, 锁内不执行初始化、阈值检查或 WF; 映射代际复核与消息顺序保持有效
 - source/bucket 直连 WF 或自定义 transform 时按节点 `max_messages` 只读取最新 `上限+1` 条, 最终只保留最新上限条并写 `flow_source.truncated` 诊断; 默认上限 200 条, 配置上限 5000 条, 窗口查询相应允许 `latest_n=5001`。读取异常写 `flow_source.read_failed` 诊断, 不得只返回空输入而不留诊断; 静态检查对未显式设置上限的直连连接给 warning。source→bucket→assemble (或 source 直连 assemble) 使用 assemble 自己的窗口: 最新 `max_pending` 条未覆盖消息与 `latest_n`, 在同一事务内按 seq 去重; 所有路径都不翻页读取整个保留期
-- 运行状态异步读取 SQLite; 诊断开关只控制新采集, 关闭后仍可展示库里已有的 `debug_store` 事件。诊断库无该流程事件或读取失败时回落进程内摘要并标 `events_source=memory_fallback`; 两种来源统一为 `event_id/request_id/sequence/phase/status/recorded_at/metadata` 字段结构
+- 运行状态异步读取 SQLite; 诊断开关只控制新采集, 关闭后仍可展示库里已有的 `debug_store` 事件。诊断库无该流程事件或读取失败时回落进程内摘要并标 `events_source=memory_fallback`; 两种来源统一为 `event_id/request_id/sequence/phase/status/recorded_at/metadata` 字段结构。流程定义配置了 `budget` 时附带 `budget: {used, max_calls, window_minutes, count}`, `used` 与硬限制的拦截口径一致 (只在内存, 重启清零); 未配置时为 `null`。经控制服务代理时, 后端的 404 (平台实例未运行、会话未激活) 原样透传, 只有后端不可达才返回 503
+- 命名配置的读取、列表、创建和更新响应带 `revision` (公开配置正文的 sha256)。更新请求可带 `expected_revision`, 不匹配时返回 `409 {code: "config_revision_conflict", revision: 当前值}` 且不写入; 不带时行为不变
 - 同一适配器可承载多个流程会话; 出站观察按冻结 `MessageScope.key` 精确分发, 不修改其他会话的绑定。出站通知各自独立执行, 与入站串行观察之间不保证顺序, 阈值由 `last_batch_to` 去重; 会话关闭时注销观察者
 - 会话 evict/reload/close 后拒绝创建新观察任务。旧会话尚未处理的入站事件会清理临时文件并写 `flow_observation.queue_drop` 诊断, 不转交新会话; 阈值能按档案位置补回, 只存在于平台事件中的唤醒判定不跨会话实例保留
 - 新会话实例装配时尚无运行中的 WF, 启动会清理本 scope、本流程的 `flow_run_tokens` 崩溃残留; 同 scope 的其他流程令牌不受影响
