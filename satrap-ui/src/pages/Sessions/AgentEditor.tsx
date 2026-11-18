@@ -73,7 +73,8 @@ export interface AgentEditorProps {
   saving: boolean;
   statusContent?: ReactNode;
   onClose: () => void;
-  onSave: (input: AgentSaveInput) => void;
+  /** after 为 'flow' 时保存成功后进入该配置的流程编辑器 */
+  onSave: (input: AgentSaveInput, after?: 'flow') => void;
   onManagePlugins: (name: string) => void;
 }
 
@@ -197,7 +198,7 @@ export function AgentEditor({
     }
   };
 
-  // 新建流程时先进入编辑器, 第一次保存流程时才创建命名配置
+  // 新建流程时先进入编辑器, 第一次保存流程时才创建命名配置; 编辑时有未保存修改先保存再进入
   const openFlowEditor = () => {
     if (mode === 'create') {
       if (!draft.name.trim()) { setError('请填写配置名称'); return; }
@@ -205,10 +206,11 @@ export function AgentEditor({
       navigate(`/agents/${encodeURIComponent(draft.name.trim())}/flow?${query}`);
       return;
     }
+    if (dirty) { submit('flow'); return; }
     if (initial) navigate(`/agents/${encodeURIComponent(initial.name)}/flow`);
   };
 
-  const submit = () => {
+  const submit = (after?: 'flow') => {
     if (flow && mode === 'create') { openFlowEditor(); return; }
     if (!draft.name.trim()) { setError('请填写配置名称'); return; }
     if (isEdictum && !draft.edictum_type.trim()) { setError('请选择 Edictum 类型'); return; }
@@ -255,7 +257,7 @@ export function AgentEditor({
       edictum_type: isEdictum ? draft.edictum_type : undefined,
       params,
       plugins,
-    });
+    }, after);
   };
 
   return (
@@ -430,14 +432,11 @@ export function AgentEditor({
 
         {flow && (
           <Section icon={<Workflow className="h-3.5 w-3.5" />} title="流程" description="节点、连线、WF 插件和预算在流程编辑器里配置">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-glass px-3.5 py-3">
-              <p className="text-[12.5px] text-fg-3">
-                {mode === 'create' ? '填好名称后进入编辑器, 选择模板或空白画布; 第一次保存流程时创建配置' : dirty ? '请先保存或放弃抽屉里的修改, 再打开流程编辑器' : '流程会话不支持顶层插件, 插件装在各个 WF 节点上'}
-              </p>
-              <Button size="sm" variant="tinted" tint="purple" icon={<Workflow className="h-3.5 w-3.5" />} disabled={saving || (mode === 'edit' && dirty)} onClick={openFlowEditor}>
-                打开流程编辑器
-              </Button>
-            </div>
+            <p className="rounded-xl border border-line bg-glass px-3.5 py-3 text-[12.5px] text-fg-3">
+              {mode === 'create'
+                ? '填好名称后点下方"下一步: 编辑流程", 选择模板或空白画布; 第一次保存流程时创建配置'
+                : '流程会话不支持顶层插件, 插件装在各个 WF 节点上; 点下方"编辑流程"打开编辑器, 抽屉里未保存的修改会先保存'}
+            </p>
           </Section>
         )}
 
@@ -528,9 +527,20 @@ export function AgentEditor({
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
-            <Button variant="tinted" tint="teal" icon={<Save className="h-4 w-4" />} loading={saving} onClick={submit}>
-              {flow && mode === 'create' ? '下一步: 编辑流程' : mode === 'create' ? '创建' : '保存'}
-            </Button>
+            {flow ? (
+              <>
+                {mode === 'edit' && (
+                  <Button variant="ghost" icon={<Save className="h-4 w-4" />} disabled={saving || !dirty} onClick={() => submit()}>保存</Button>
+                )}
+                <Button variant="tinted" tint="purple" icon={<Workflow className="h-4 w-4" />} loading={saving} onClick={openFlowEditor}>
+                  {mode === 'create' ? '下一步: 编辑流程' : dirty ? '保存并编辑流程' : '编辑流程'}
+                </Button>
+              </>
+            ) : (
+              <Button variant="tinted" tint="teal" icon={<Save className="h-4 w-4" />} loading={saving} onClick={() => submit()}>
+                {mode === 'create' ? '创建' : '保存'}
+              </Button>
+            )}
           </div>
         </div>
       </div>

@@ -111,6 +111,8 @@ async function flow_edit_roundtrip(runtime) {
   await wake.getByText('沿用群策略').waitFor();
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await page.getByText('流程已保存').waitFor();
+  await page.waitForURL(`${origin}/agents?edictum=rp`);
+  assert.equal(await page.getByRole('dialog', { name: '管理插件' }).count(), 0, '流程配置返回时不弹出顶层插件管理');
   const patch = requests.find((item) => item.method === 'PATCH');
   assert.equal(patch.body.expected_revision, 'rev-1');
   assert.deepEqual(patch.body.plugins, []);
@@ -124,7 +126,7 @@ async function flow_edit_roundtrip(runtime) {
   await page.waitForURL(`${origin}/agents/rp/flow`);
   await page.locator('[data-flow-node="agent"]').waitFor();
   assert.deepEqual(errors, []);
-  console.log('PASS: 已有流程按存档还原, 原样保存后存档一致并带修订号, 命令面板可直达');
+  console.log('PASS: 已有流程按存档还原, 原样保存后存档一致并带修订号并返回 Agent 配置, 命令面板可直达');
 }
 
 async function flow_agent_editor_entry(runtime) {
@@ -134,7 +136,7 @@ async function flow_agent_editor_entry(runtime) {
   await page.getByRole('button', { name: 'Edictum 流程', exact: true }).click();
   await page.locator('button').filter({ hasText: /^flow/ }).first().click();
   const drawer = page.getByRole('dialog');
-  await drawer.getByText('打开流程编辑器').waitFor();
+  assert.equal(await drawer.getByRole('button', { name: '打开流程编辑器' }).count(), 0, '新建时只有底部一个流程入口');
   assert.equal(await drawer.getByLabel('其他会话参数 (JSON 对象)').count(), 0, 'flow 不显示 JSON 参数');
   assert.equal(await drawer.getByRole('button', { name: '管理插件' }).count(), 0, 'flow 不显示顶层插件');
   await drawer.getByPlaceholder('如: platform-assistant').fill('group-rp');
@@ -148,7 +150,7 @@ async function flow_agent_editor_entry(runtime) {
   await page.locator('[data-flow-node="rp"]').waitFor();
   await page.getByRole('button', { name: '创建', exact: true }).click();
   await page.getByText('流程已创建').waitFor();
-  await page.waitForURL(`${origin}/agents/group-rp/flow`);
+  await page.waitForURL(`${origin}/agents?edictum=group-rp`);
   const created = requests.find((item) => item.method === 'POST' && item.path === '/config/edictum/sessions');
   assert.equal(created.body.edictum_type, 'flow');
   assert.equal(created.body.description, '群聊 RP');
@@ -157,7 +159,41 @@ async function flow_agent_editor_entry(runtime) {
   assert.ok(created.body.params.flow.nodes.some((node) => node.id === 'agent' && node.config.plugins === 'flow_snapshot'));
   assert.ok(state.sessions['group-rp']);
   assert.deepEqual(errors, []);
-  console.log('PASS: 抽屉新建 flow 隐藏参数与插件, 选择模板后首次保存才创建配置');
+  console.log('PASS: 抽屉新建 flow 隐藏参数与插件, 选择模板后首次保存才创建配置并返回 Agent 配置');
+}
+
+async function flow_drawer_edit_entry(runtime) {
+  /** 编辑已有 flow: 抽屉底部"编辑流程"直达; 有未保存修改时先保存再进入, 不用二次点击; Ctrl+S 保存后留在编辑器 */
+  const { page, origin, requests, errors, state } = await open(runtime, { sessions: { rp: flowConfig(FLOWS.agent_rp) } });
+  await page.goto(`${origin}/agents`);
+  await page.getByRole('button', { name: 'Edictum 流程', exact: true }).click();
+  await page.getByRole('button', { name: '打开 rp 配置' }).click();
+  const drawer = page.getByRole('dialog');
+  await drawer.getByRole('button', { name: '编辑流程', exact: true }).click();
+  await page.waitForURL(`${origin}/agents/rp/flow`);
+  await page.locator('[data-flow-node="agent"]').waitFor();
+  assert.equal(requests.filter((item) => item.method === 'PATCH').length, 0, '没有修改时直接进入, 不保存');
+
+  // Ctrl+S: 保存后留在编辑器
+  await page.locator('[data-flow-node="agent"]').click();
+  await page.getByLabel('节点名称').fill('Agent 快捷键');
+  await page.keyboard.press('Control+s');
+  await page.getByText('流程已保存').waitFor();
+  assert.equal(new URL(page.url()).pathname, '/agents/rp/flow', 'Ctrl+S 后留在编辑器');
+  assert.equal(state.sessions.rp.params.flow.nodes.find((node) => node.id === 'agent').title, 'Agent 快捷键');
+
+  // 抽屉改了描述: 主按钮变为"保存并编辑流程", 一次点击先保存再进入
+  await page.goto(`${origin}/agents`);
+  await page.getByRole('button', { name: 'Edictum 流程', exact: true }).click();
+  await page.getByRole('button', { name: '打开 rp 配置' }).click();
+  await drawer.getByPlaceholder(/QQ 群客服助手/).fill('群聊 RP 改');
+  await drawer.getByRole('button', { name: '保存并编辑流程' }).click();
+  await page.waitForURL(`${origin}/agents/rp/flow`);
+  await page.locator('[data-flow-node="agent"]').waitFor();
+  assert.equal(state.sessions.rp.description, '群聊 RP 改');
+  assert.equal(state.sessions.rp.params.flow.nodes.find((node) => node.id === 'agent').title, 'Agent 快捷键', '抽屉保存保留流程');
+  assert.deepEqual(errors, []);
+  console.log('PASS: 抽屉一个入口直达流程编辑器, 未保存修改先保存再进入; Ctrl+S 保存留在编辑器');
 }
 
 async function flow_validate_issues(runtime) {
@@ -386,6 +422,7 @@ async function flow_runtime_status(runtime) {
 export const scenarios = [
   ['flow-edit-roundtrip', flow_edit_roundtrip],
   ['flow-agent-editor-entry', flow_agent_editor_entry],
+  ['flow-drawer-edit-entry', flow_drawer_edit_entry],
   ['flow-validate-issues', flow_validate_issues],
   ['flow-validate-unavailable', flow_validate_unavailable],
   ['flow-connect-reject', flow_connect_reject],

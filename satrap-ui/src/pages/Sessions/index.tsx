@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity, ArrowUpRight, Bot, Code2, Cpu, FolderPlus, LayoutGrid, List, Plus, Puzzle, RefreshCw,
   Search, Settings, ShieldCheck, Trash2, X,
@@ -83,6 +83,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
 function AgentsPage() {
   useConfigWatch(['sessions', 'edictum', 'llm']);
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const linkedName = searchParams.get('edictum');
   const openedLink = useRef<string | null>(null);
 
@@ -209,6 +210,8 @@ function AgentsPage() {
     if (!linkedName || booting || openedLink.current === linkedName) return;
     if (!edictumConfigs[linkedName]) return;
     openedLink.current = linkedName;
+    // 流程配置没有顶层插件, 链接只定位到 Edictum 页签
+    if (edictumConfigs[linkedName].edictum_type === 'flow') return;
     setPluginTarget(linkedName);
   }, [linkedName, booting, edictumConfigs]);
 
@@ -353,7 +356,7 @@ function AgentsPage() {
     }
   }, [fetchSessionClasses]);
 
-  const handleSaveAgent = useCallback(async (input: AgentSaveInput) => {
+  const handleSaveAgent = useCallback(async (input: AgentSaveInput, after?: 'flow') => {
     if (!editor) return;
     setSaving(true);
     try {
@@ -362,10 +365,11 @@ function AgentsPage() {
         ? await commitEdictum(input, editingName)
         : await commitSessionClass(input, editingName);
       if (ok) setEditor(null);
+      if (ok && after === 'flow') navigate(`/agents/${encodeURIComponent(input.name)}/flow`);
     } finally {
       setSaving(false);
     }
-  }, [commitEdictum, commitSessionClass, editor]);
+  }, [commitEdictum, commitSessionClass, editor, navigate]);
 
   const askDelete = useCallback(async (agent: AgentEntry) => {
     const message = agent.provider === 'edictum'
@@ -842,7 +846,7 @@ function AgentsPage() {
         saving={saving}
         statusContent={editor && application.view?.kind === 'full' && application.view.application.label === fullApplyLabel ? progressCard : undefined}
         onClose={() => { if (!saving) setEditor(null); }}
-        onSave={(input) => void handleSaveAgent(input)}
+        onSave={(input, after) => void handleSaveAgent(input, after)}
         onManagePlugins={(name) => setPluginTarget(name)}
       />
 

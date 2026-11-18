@@ -388,7 +388,12 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
     setConfirmPrompt((current) => { current?.resolve(value); return null; });
   }, []);
 
-  const save = useCallback(async (overwriteRevision?: string) => {
+  /**
+   * 检查并保存; 成功后返回 Agent 配置页
+   *
+   * stay 为真时留在编辑器 (Ctrl+S); 运行时应用失败或未确认时也留下, 便于查看进度和重新查询
+   */
+  const save = useCallback(async (overwriteRevision?: string, stay = false) => {
     if (saving) return;
     setSaving(true);
     setSaveErrors([]);
@@ -427,15 +432,20 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
       setBaseline(JSON.stringify(flow));
       dirtyRef.current = false;
       toast.success(creating ? '流程已创建' : '流程已保存', checked && checked.issues.length ? `另有 ${checked.issues.length} 条提示` : undefined);
-      if (creating) navigate(`/agents/${encodeURIComponent(name)}/flow`, { replace: true });
+      let applied = true;
       if (isRunning) {
         try {
-          const applied = await application.apply(createEdictumApplication('full', { config_name: name }), 'full');
-          if (!applied.ok) toast.warning('流程已保存, 但后端热加载失败');
+          const outcome = await application.apply(createEdictumApplication('full', { config_name: name }), 'full');
+          if (!outcome.ok) { applied = false; toast.warning('流程已保存, 但后端热加载失败'); }
         } catch (error) {
+          applied = false;
           if (!(error instanceof ApplicationUnconfirmedError && error.code === 'query_stopped')) toast.warning('流程已保存, 运行时应用未确认', errorText(error));
         }
       }
+      // 应用期间的重渲染会按 creating 重新算脏状态, 导航前再清一次, 不触发离开确认
+      dirtyRef.current = false;
+      if (!stay && applied) navigate(`/agents?edictum=${encodeURIComponent(name)}`);
+      else if (creating) navigate(`/agents/${encodeURIComponent(name)}/flow`, { replace: true });
     } catch (error) {
       if (error instanceof RevisionConflictError) setConflict(error);
       else toast.error('保存失败', errorText(error));
@@ -443,6 +453,19 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
       setSaving(false);
     }
   }, [acceptEdictumConfig, application, askConfirm, creating, isRunning, loaded.config, meta.models, name, navigate, revision, saving, search, types, validateNow]);
+
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => {
+    // Ctrl+S 保存并留在编辑器; 输入框里也生效
+    const handler = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's' || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      void saveRef.current(undefined, true);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   const resolveConflict = useCallback(async (mode: 'reload' | 'overwrite') => {
     const current = conflict;
@@ -497,7 +520,7 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
               onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFile(file); }}
             />
             <Button size="sm" icon={<FileJson className="h-4 w-4" />} onClick={() => { setJsonDraft(null); setShowJson(true); }}>查看配置</Button>
-            <Button size="sm" variant="primary" icon={<Save className="h-4 w-4" />} loading={saving} onClick={() => void save()}>{creating ? '创建' : '保存'}</Button>
+            <Button size="sm" variant="primary" icon={<Save className="h-4 w-4" />} loading={saving} onClick={() => void save()} title="保存后返回 Agent 配置; Ctrl+S 保存并留在编辑器">{creating ? '创建' : '保存'}</Button>
           </div>
         </header>
 
