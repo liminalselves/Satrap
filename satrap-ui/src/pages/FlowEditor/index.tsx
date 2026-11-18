@@ -6,7 +6,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import './flow.css';
-import { ArrowLeft, FileJson, LayoutTemplate, Redo2, Save, Settings2, Undo2, Workflow } from 'lucide-react';
+import { ArrowLeft, FileJson, FileUp, LayoutTemplate, Redo2, Save, Settings2, Undo2, Workflow } from 'lucide-react';
 import { createEdictumApplication, type ConfigReloadResult } from '@/api/backend';
 import { controlApi, RevisionConflictError } from '@/api/control';
 import { edictumApi } from '@/api/edictum';
@@ -15,7 +15,7 @@ import type {
   EdictumAvailablePlugin, EdictumSessionConfig, FlowBudget, FlowDefinitionJSON, FlowIssue, FlowPortType, FlowTypeMetadata, PlatformConfig,
 } from '@/api/types';
 import { RuntimeApplicationProgress } from '@/components/common/RuntimeApplicationProgress';
-import { Badge, Button, EmptyState, Modal, Select, Skeleton, toast } from '@/components/kit';
+import { Badge, Button, EmptyState, Modal, Select, Skeleton, Textarea, toast } from '@/components/kit';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { useRuntimeApplication } from '@/hooks/useRuntimeApplication';
 import { useTheme } from '@/hooks/useTheme';
@@ -25,6 +25,7 @@ import { usePrefsStore } from '@/stores/usePrefsStore';
 import { cn } from '@/utils/cn';
 import { errorText } from '@/utils/errorText';
 import { analyzeFlow } from './analysis';
+import { IMPORT_MAX_BYTES, parseFlowImport, unknownNodeTypes, type FlowImport } from './flowImport';
 import { FlowNodeView } from './FlowNodeView';
 import { FlowSettings } from './FlowSettings';
 import {
@@ -141,6 +142,10 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
   const [editLabel, setEditLabel] = useState(0);
   const [connecting, setConnecting] = useState<FlowPortType | null>(null);
   const [showJson, setShowJson] = useState(false);
+  // 配置弹窗里正在编辑的 JSON; null 表示只读查看
+  const [jsonDraft, setJsonDraft] = useState<string | null>(null);
+  const [fileOver, setFileOver] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showTemplates, setShowTemplates] = useState(creating && initial.nodes.length === 0);
   const [kinds, setKinds] = useState<Kinds>(() => boundKinds(name, platforms));
@@ -255,13 +260,53 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
     setSelectedEdge(null);
   }, [counts, nodes, record, screenToFlowPosition, setNodes, types]);
 
+  /** 用导入的 JSON 替换画布; 结构错误时不动画布, 语义问题交给检查面板 */
+  const importFlow = useCallback((text: string, from: string): boolean => {
+    let parsed: FlowImport;
+    let next: FlowDraft;
+    try {
+      parsed = parseFlowImport(text);
+      next = toReactFlow(parsed.definition, types);
+    } catch (error) {
+      toast.error(`无法导入${from}`, errorText(error));
+      return false;
+    }
+    record();
+    restore(next);
+    setSelected(null);
+    setSelectedEdge(null);
+    setSaveErrors([]);
+    setShowJson(false);
+    setShowTemplates(false);
+    const unknown = unknownNodeTypes(parsed.definition, types);
+    if (unknown.length) toast.warning('已导入, 部分节点类型不可用', `未安装或未知: ${unknown.join(', ')}`);
+    else toast.success('已导入流程', `${parsed.origin} · ${next.nodes.length} 个节点, 可撤销; 保存后生效`);
+    window.setTimeout(() => { void fitView({ duration: 400, padding: 0.12 }); }, 30);
+    return true;
+  }, [fitView, record, restore, types]);
+
+  const importFile = useCallback(async (file: File) => {
+    if (!/\.json$/i.test(file.name) && file.type !== 'application/json') {
+      toast.error('无法导入文件', `${file.name} 不是 .json 文件`);
+      return;
+    }
+    if (file.size > IMPORT_MAX_BYTES) {
+      toast.error('无法导入文件', `${file.name} 超过 ${IMPORT_MAX_BYTES / 1024 / 1024} MB`);
+      return;
+    }
+    importFlow(await file.text(), ` ${file.name}`);
+  }, [importFlow]);
+
   const onDrop = useCallback((event: DragEvent) => {
     event.preventDefault();
+    setFileOver(false);
+    const file = event.dataTransfer.files[0];
+    if (file) { void importFile(file); return; }
     const type = event.dataTransfer.getData(DRAG_MIME);
     if (!type) return;
     const point = screenToFlowPosition({ x: event.clientX, y: event.clientY });
     addNode(type, { x: point.x - 110, y: point.y - 40 });
-  }, [addNode, screenToFlowPosition]);
+  }, [addNode, importFile, screenToFlowPosition]);
 
   const patchNode = useCallback((id: string, patch: Partial<NodeData>) => {
     record(`patch:${id}:${Object.keys(patch).join(',')}`);
@@ -446,7 +491,12 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
             <Button size="sm" variant="ghost" icon={<Redo2 className="h-4 w-4" />} onClick={redo} disabled={!history.current.canRedo} aria-label="重做">重做</Button>
             <Button size="sm" variant="ghost" icon={<LayoutTemplate className="h-4 w-4" />} onClick={() => setShowTemplates(true)}>模板</Button>
             <Button size="sm" variant="ghost" icon={<Settings2 className="h-4 w-4" />} onClick={() => setShowSettings(true)}>流程设置</Button>
-            <Button size="sm" icon={<FileJson className="h-4 w-4" />} onClick={() => setShowJson(true)}>查看配置</Button>
+            <Button size="sm" variant="ghost" icon={<FileUp className="h-4 w-4" />} onClick={() => fileInput.current?.click()}>导入</Button>
+            <input
+              ref={fileInput} type="file" accept=".json,application/json" className="hidden" aria-label="选择流程 JSON 文件"
+              onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFile(file); }}
+            />
+            <Button size="sm" icon={<FileJson className="h-4 w-4" />} onClick={() => { setJsonDraft(null); setShowJson(true); }}>查看配置</Button>
             <Button size="sm" variant="primary" icon={<Save className="h-4 w-4" />} loading={saving} onClick={() => void save()}>{creating ? '创建' : '保存'}</Button>
           </div>
         </header>
@@ -467,7 +517,14 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
           <aside className="surface scroll w-[188px] flex-none !p-3"><Palette meta={meta} counts={counts} onAdd={(type) => addNode(type)} /></aside>
           <main
             className="surface relative min-w-0 flex-1 overflow-hidden !p-0" aria-label="流程画布"
-            onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }} onDrop={onDrop}
+            onDragOver={(event) => {
+              event.preventDefault();
+              const files = event.dataTransfer.types.includes('Files');
+              event.dataTransfer.dropEffect = files ? 'copy' : 'move';
+              if (files !== fileOver) setFileOver(files);
+            }}
+            onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFileOver(false); }}
+            onDrop={onDrop}
           >
             <ReactFlow<FlowNode, FlowEdge>
               nodes={nodes} edges={shownEdges} nodeTypes={nodeTypes}
@@ -493,9 +550,14 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
                 nodeColor={(node) => { const def = types.get((node.data as NodeData).type); return def ? `rgb(var(--rgb-${nodeTint(def)}))` : 'rgb(var(--rgb-red))'; }}
                 maskColor={theme === 'dark' ? 'rgba(10,10,14,0.6)' : 'rgba(240,242,247,0.6)'} />
             </ReactFlow>
-            {nodes.length === 0 && (
+            {nodes.length === 0 && !fileOver && (
               <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                <p className="text-[13px] text-fg-3">从左侧拖入节点, 或点击"模板"选择一个起点</p>
+                <p className="text-[13px] text-fg-3">从左侧拖入节点, 点击"模板"选择一个起点, 或拖入流程 JSON 文件</p>
+              </div>
+            )}
+            {fileOver && (
+              <div className="pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-xl border-2 border-dashed border-accent bg-[rgb(var(--rgb-accent)/0.08)]">
+                <p className="rounded-full border border-line bg-[var(--glass-bg-strong)] px-4 py-1.5 text-[13px] font-medium text-fg shadow-[var(--shadow-1)]">松开以导入流程 JSON, 将替换当前画布 (可撤销)</p>
               </div>
             )}
             {connecting && (
@@ -522,8 +584,23 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
         </div>
       </div>
 
-      <Modal open={showJson} onClose={() => setShowJson(false)} title="配置 JSON" description="命名配置 params.flow 的内容; 节点只保存显式设置的字段" icon={<FileJson className="h-4 w-4" />} size="lg">
-        <pre className="scroll max-h-[60vh] rounded-lg border border-line bg-[rgb(0_0_0/0.25)] p-3 font-mono text-[11px] leading-5 text-fg-2">{JSON.stringify(definition, null, 2)}</pre>
+      <Modal
+        open={showJson} onClose={() => setShowJson(false)} title="配置 JSON" icon={<FileJson className="h-4 w-4" />} size="lg"
+        description={jsonDraft === null ? '命名配置 params.flow 的内容; 节点只保存显式设置的字段'
+          : '粘贴 params.flow, 完整命名配置, 或含一个流程的配置文件; 应用后替换画布, 可撤销'}
+        footer={jsonDraft === null
+          ? <Button size="sm" icon={<FileUp className="h-4 w-4" />} onClick={() => setJsonDraft(JSON.stringify(definition, null, 2))}>编辑并替换</Button>
+          : <>
+            <Button size="sm" variant="ghost" onClick={() => setJsonDraft(null)}>取消</Button>
+            <Button size="sm" variant="primary" disabled={!jsonDraft.trim()} onClick={() => { if (importFlow(jsonDraft, ' JSON')) setJsonDraft(null); }}>替换画布</Button>
+          </>}
+      >
+        {jsonDraft === null
+          ? <pre className="scroll max-h-[60vh] rounded-lg border border-line bg-[rgb(0_0_0/0.25)] p-3 font-mono text-[11px] leading-5 text-fg-2">{JSON.stringify(definition, null, 2)}</pre>
+          : <Textarea
+            data-autofocus aria-label="流程 JSON" spellCheck={false} value={jsonDraft} onChange={(event) => setJsonDraft(event.target.value)}
+            rows={1} className="!h-[56vh] !resize-none font-mono !text-[11px] !leading-5"
+          />}
       </Modal>
 
       <Modal open={showTemplates} onClose={() => setShowTemplates(false)} title="选择模板" description={nodes.length ? '应用模板会替换当前画布, 可撤销' : '从模板或空白画布开始'} icon={<LayoutTemplate className="h-4 w-4" />}>

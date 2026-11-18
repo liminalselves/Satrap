@@ -241,6 +241,62 @@ async function flow_connect_reject(runtime) {
   console.log('PASS: 类型不符的连线被拒绝, 单输入端口替换旧连线, 撤销可恢复');
 }
 
+async function flow_import_json(runtime) {
+  /** 导入 JSON: 拖入命名配置文件替换画布并可撤销, 文件选择导入 params.flow, 粘贴错误内容不动画布, 导入后保存写入导入的流程 */
+  const { page, origin, requests, errors } = await open(runtime, { sessions: { rp: flowConfig({ version: 3, nodes: [] }) } });
+  await page.goto(`${origin}/agents/rp/flow`);
+  await page.getByRole('heading', { name: '流程编辑' }).waitFor();
+  const nodes = () => page.locator('.react-flow__node').count();
+  assert.equal(await nodes(), 0);
+
+  // 拖入完整配置文件 (配置名 -> 命名配置): 取出唯一的流程
+  const file = JSON.stringify({ chat: { edictum_type: 'simple', params: {} }, rp: flowConfig(FLOWS.agent_rp) });
+  const transfer = await page.evaluateHandle((text) => {
+    const data = new DataTransfer();
+    data.items.add(new File([text], 'edictum_session_config.json', { type: 'application/json' }));
+    return data;
+  }, file);
+  const canvas = page.getByRole('main', { name: '流程画布' });
+  await canvas.dispatchEvent('dragover', { dataTransfer: transfer });
+  await page.getByText('松开以导入流程 JSON').waitFor();
+  await shot(page, 'flow-import-drop');
+  await canvas.dispatchEvent('drop', { dataTransfer: transfer });
+  await page.getByText('已导入流程').waitFor();
+  await page.locator('[data-flow-node="agent"]').waitFor();
+  assert.equal(await nodes(), FLOWS.agent_rp.nodes.length);
+  assert.equal(await page.getByText('松开以导入流程 JSON').count(), 0);
+  await page.getByRole('button', { name: '撤销' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.react-flow__node').length === 0);
+
+  // 文件选择: 直接是 params.flow
+  await page.getByLabel('选择流程 JSON 文件').setInputFiles({ name: 'flow.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(FLOWS.agent_rp)) });
+  await page.locator('[data-flow-node="agent"]').waitFor();
+
+  // 粘贴: 结构错误时提示原因, 画布不变
+  await page.getByRole('button', { name: '查看配置' }).click();
+  const dialog = page.getByRole('dialog', { name: '配置 JSON' });
+  await dialog.getByRole('button', { name: '编辑并替换' }).click();
+  const editor = dialog.getByLabel('流程 JSON');
+  await editor.fill(JSON.stringify({ nodes: [{ id: 'a', type: 'note' }], edges: [{ from: 'a.out', to: 'b.in' }] }));
+  await dialog.getByRole('button', { name: '替换画布' }).click();
+  await page.getByText('不存在的节点 b').waitFor();
+  await shot(page, 'flow-import-edit');
+  assert.equal(await nodes(), FLOWS.agent_rp.nodes.length, '错误内容不替换画布');
+  // 粘贴合法内容: 改一个标题后替换, 保存写入导入后的流程
+  const edited = { ...FLOWS.agent_rp, nodes: FLOWS.agent_rp.nodes.map((node) => node.id === 'agent' ? { ...node, title: '导入的 Agent' } : node) };
+  await editor.fill(JSON.stringify(edited));
+  await dialog.getByRole('button', { name: '替换画布' }).click();
+  await dialog.waitFor({ state: 'detached' });
+  await page.locator('[data-flow-node="agent"]').getByText('导入的 Agent').waitFor();
+  await shot(page, 'flow-import-json');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await page.getByText('流程已保存').waitFor();
+  const patch = requests.find((item) => item.method === 'PATCH');
+  assert.deepEqual(patch.body.params.flow, edited);
+  assert.deepEqual(errors, []);
+  console.log('PASS: 拖入配置文件与文件选择可导入并撤销, 错误 JSON 不动画布, 粘贴替换后保存写入导入的流程');
+}
+
 async function flow_save_conflict(runtime) {
   /** 409 冲突: 弹窗提示, 覆盖时用最新修订重新提交 */
   const { page, origin, requests, errors, state } = await open(runtime, { sessions: { rp: flowConfig(FLOWS.agent_rp) } });
@@ -333,6 +389,7 @@ export const scenarios = [
   ['flow-validate-issues', flow_validate_issues],
   ['flow-validate-unavailable', flow_validate_unavailable],
   ['flow-connect-reject', flow_connect_reject],
+  ['flow-import-json', flow_import_json],
   ['flow-save-conflict', flow_save_conflict],
   ['flow-plugin-defaults', flow_plugin_defaults],
   ['flow-runtime-status', flow_runtime_status],
