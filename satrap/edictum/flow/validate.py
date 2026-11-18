@@ -398,10 +398,10 @@ def validate(
                           message=f"{entry.display_name or p} 只能装在前台 WF 上, {name(w.id)} 只会在后台运行"))
             requires = entry.interop.get("requires") if isinstance(entry.interop, dict) else None
             if isinstance(requires, dict):
-                for req, decl in requires.items():
+                for req, req_decl in requires.items():
                     # optional: true 的依赖不强制同装 (只生图不发送时不需要 group_chat);
                     # dict 声明必须显式 optional:false 才按必须算
-                    needed = decl is True or (isinstance(decl, dict) and decl.get("optional") is False)
+                    needed = req_decl is True or (isinstance(req_decl, dict) and req_decl.get("optional") is False)
                     if needed and req not in plugins:
                         add(Issue(code="flow_plugin_dependency", level="error", category="workflow", node=w.id, field="plugins",
                                   message=f"{entry.display_name or p} 依赖 {req}, 需要装在同一个 WF 上"))

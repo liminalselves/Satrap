@@ -263,6 +263,45 @@ def test_workflow_plugin_rules():
     assert "flow_snapshot_plugin_missing" in codes
 
 
+def test_plugin_with_requires_keeps_workflow_declaration():
+    """声明了依赖的插件: 依赖检查不覆盖插件自己的 flow.workflow 声明, 后续记忆写入规则照常判断"""
+    catalog = _catalog(
+        image_generation={"requires": {"group_chat": {"optional": True}}, "provides": []},
+        recorder={"requires": {"group_chat": {"optional": False}}, "provides": ["memory_write"]},
+    )
+
+    def background_flow(plugins: str) -> dict:
+        return {
+            "version": 3,
+            "nodes": [
+                {"id": "s", "type": "source", "title": "s", "config": {}},
+                {"id": "t", "type": "threshold", "title": "t", "config": {"messages": 5}},
+                {"id": "a", "type": "react_workflow", "title": "a",
+                 "config": {"model_name": "m", "prompt": "p", "plugins": plugins}},
+            ],
+            "edges": [{"from": "s.out", "to": "t.messages"}, {"from": "t.event", "to": "a.trigger"}],
+        }
+
+    codes = {i.code for i in _validate(background_flow("image_generation"), catalog=catalog)}
+    assert "flow_plugin_dependency" not in codes   # optional 依赖不强制同装
+    assert "flow_memory_write_background" not in codes
+    codes = {i.code for i in _validate(background_flow("recorder"), catalog=catalog)}
+    assert "flow_plugin_dependency" in codes
+    assert "flow_memory_write_background" in codes  # 依赖声明之后仍按插件自己的 provides 判断
+
+
+def test_real_image_generation_plugin_validates():
+    """真实插件目录: image_generation 装在 WF 上时检查正常返回"""
+    from satrap.edictum.plugin.catalog import PluginCatalog
+    catalog = {entry.name: entry for entry in PluginCatalog().scan()}
+    assert "image_generation" in catalog
+    raw = dict(AGENT_RP)
+    raw["nodes"] = [{**n, "config": {**n["config"], "plugins": "image_generation"}} if n["id"] == "rp" else n
+                    for n in AGENT_RP["nodes"]]
+    issues = _validate(raw, catalog=catalog)
+    assert not any(i.code == "flow_plugin_dependency" and i.node == "rp" for i in issues)
+
+
 def test_group_chat_reply_mode_rules():
     """私聊报错; 后台 WF 连 reply 也报"""
     private = dict(AGENT_RP)
