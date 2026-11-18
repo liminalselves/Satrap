@@ -139,8 +139,14 @@ async def test_agent_rp_17_messages_real_observe_snapshot_and_reply_turn(tmp_pat
 
         snapshot, pending, latest = _user_input(_first_calls(rp)[-1]).split("\n\n")
         assert snapshot == "快照 v1: 周六 8:40 798 集合"
-        assert pending.splitlines() == SCRIPT[12:17]
-        assert latest.splitlines() == SCRIPT[9:17]
+        # 与非流程会话同格式: 触发消息 (第 17 条 @) 只带来源标记, 其余消息包成先前窗口消息;
+        # 夹具档案不带昵称, 只显示 ID
+        labeled = [f"[用户 u{index % 3}, 消息 m{index}] {text}" if index == 17
+                   else f"[先前窗口消息: [用户 u{index % 3}, 消息 m{index}] {text}]"
+                   for index, text in enumerate(SCRIPT, 1)]
+        assert pending.splitlines() == labeled[12:17]
+        # 最新 8 条按消息 ID 去掉已在未覆盖段里的 5 条
+        assert latest.splitlines() == labeled[9:12]
         source_view = session._source_messages()
         assert [(message.position, message.text) for message in source_view] == list(enumerate(SCRIPT, 1))
         assert len(adapter.sent) == 4

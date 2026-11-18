@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 import asyncio
@@ -49,6 +51,22 @@ EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
 _confirmed_writes: ContextVar[tuple[object, list[asyncio.Task[bool]]] | None] = ContextVar(
     "platform_confirmed_writes", default=None
 )
+# 错误反馈不是对话内容: 置位期间确认发送不写消息档案, 避免下一轮被当成机器人发言喂回模型
+_archive_suppressed: ContextVar[bool] = ContextVar("platform_archive_suppressed", default=False)
+
+
+@contextmanager
+def error_feedback_send() -> Iterator[None]:
+    """
+    标记块内的发送为错误反馈, 平台确认后不写入消息档案
+
+    不经过 send_message(purpose=...) 的发送路径 (如后台定时通道) 用它显式标记
+    """
+    token = _archive_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _archive_suppressed.reset(token)
 # 统一事件回调签名:
 # - 输入: PlatformEvent
 # - 输出: 可等待对象或 None (均可)
@@ -140,6 +158,8 @@ class PlatformAdapter(ABC):
                                              __method: Any = method, **kwargs: Any) -> Any:
                 writes: list[asyncio.Task[bool]] = []
                 token = _confirmed_writes.set((self, writes))
+                suppress = (_archive_suppressed.set(True)
+                            if kwargs.get("purpose") == "error_feedback" else None)
                 try:
                     return await __method(self, *args, **kwargs)
                 finally:
@@ -147,6 +167,8 @@ class PlatformAdapter(ABC):
                         if writes:
                             await asyncio.shield(asyncio.gather(*writes))
                     finally:
+                        if suppress is not None:
+                            _archive_suppressed.reset(suppress)
                         _confirmed_writes.reset(token)
 
             setattr(cls, name, await_confirmed_writes)
@@ -431,18 +453,20 @@ class PlatformAdapter(ABC):
         if context is None or context[0] is not self:
             logger.error(f"[消息档案] 出站采集缺少发送边界, 平台={self.config.id}")
             return False
+        # create_task 复制当前上下文, 错误反馈标记随任务带入
         task = asyncio.create_task(self._record_confirmed_message(scope, snapshot, label=label))
         context[1].append(task)
         return True
 
     async def _record_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage,
                                         *, label: str = "") -> bool:
-        """等待已确认的实际消息入档, 再异步通知流程观察者。"""
+        """等待已确认的实际消息入档, 再异步通知流程观察者; 错误反馈只计数不入档。"""
         store = self.message_archive
         from satrap.core.telemetry.capture import current_writer, record_message
         from satrap.core.type.telemetry import MetricScope
 
         writer = current_writer()
+        suppressed = _archive_suppressed.get()
         if store is None and writer is None:
             return False
         try:
@@ -453,7 +477,7 @@ class PlatformAdapter(ABC):
             if writer is not None:
                 record_message(MetricScope(platform_id=scope.adapter_id, self_id=scope.self_id, conversation_kind=scope.conversation_kind,
                                             target_id=scope.chat_id), snapshot.message_id, received_at=snapshot.received_at, outbound=True)
-            if store is None:
+            if store is None or suppressed:
                 return False
             recorded = await asyncio.to_thread(store.record, scope, snapshot, label=label)
             observers = tuple(getattr(self, "_flow_observers", ()))

@@ -381,9 +381,15 @@ class TriggerEngine:
         """AND 门时间窗: {gate_id: {edge_key: 到达时刻}}"""
         self._event_refs: dict[str, int] = {}
         """事件在 WF 在飞/队列中的引用数; 归零后清理条件与 transform 缓存"""
+        self._event_waiters: dict[str, list[asyncio.Future[None]]] = {}
+        """等待事件全部下游完成的 Future; merge 时随事件关系转移"""
+        self._event_aliases: dict[str, str] = {}
+        """merge 被替换事件到最新事件的映射, 防止旧事件提前完成等待"""
         self._tasks: set[asyncio.Task[Any]] = set()
         self._task_wfs: dict[asyncio.Task[Any], str] = {}
         """进行中的 WF 触发任务; create_task 引用由引擎持有, 关闭时可取消"""
+        self._task_events: dict[asyncio.Task[Any], str] = {}
+        """WF 任务尚未经 finish 释放的事件 ID; 取消回调据此收殓未启动任务"""
         self._diag = record_debug
 
     def on_trigger(self, handler: Callable[[str, FlowEvent], Any]) -> None:
@@ -391,6 +397,50 @@ class TriggerEngine:
         self._handlers = [handler]
 
     # ---------- 对外入口 ----------
+
+    def _canonical_event_id(self, event_id: str) -> str:
+        """沿 merge 关系找到仍在执行链上的最新事件"""
+        seen: set[str] = set()
+        while event_id in self._event_aliases and event_id not in seen:
+            seen.add(event_id)
+            event_id = self._event_aliases[event_id]
+        return event_id
+
+    @staticmethod
+    def _finish_waiters(waiters: list[asyncio.Future[None]]) -> None:
+        """唤醒已经完成的事件等待者, 忽略等待方取消"""
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+
+    def _settle_event_waiters(self, event_id: str) -> None:
+        """引用归零后完成等待; merge 旧事件则把等待转交给最新事件"""
+        canonical = self._canonical_event_id(event_id)
+        waiters = self._event_waiters.pop(event_id, [])
+        if canonical != event_id:
+            if self._event_refs.get(canonical, 0) > 0:
+                self._event_waiters.setdefault(canonical, []).extend(waiters)
+            else:
+                self._finish_waiters(waiters)
+            return
+        self._finish_waiters(waiters)
+        # 最新事件已经完成, 之后从旧 ID 进入的等待也应立即返回。
+        for old_id, new_id in list(self._event_aliases.items()):
+            if self._canonical_event_id(new_id) == event_id:
+                self._event_aliases.pop(old_id, None)
+
+    async def wait_for_events(self, event_ids: tuple[str, ...] | list[str]) -> None:
+        """等待每个事件及其 merge 后继的全部 WF 下游完成; 未接收的事件立即返回"""
+        waiters: list[asyncio.Future[None]] = []
+        for original_id in dict.fromkeys(event_ids):
+            event_id = self._canonical_event_id(original_id)
+            if self._event_refs.get(event_id, 0) <= 0:
+                continue
+            waiter = asyncio.get_running_loop().create_future()
+            self._event_waiters.setdefault(event_id, []).append(waiter)
+            waiters.append(waiter)
+        if waiters:
+            await asyncio.gather(*waiters)
 
     async def _cleanup_event(self, event_id: str) -> None:
         """仅在事件没有 WF 引用时清理事件级共享缓存"""
@@ -404,18 +454,21 @@ class TriggerEngine:
                 await result
 
     async def _release_event(self, event_id: str) -> None:
-        """运行结束释放一个 WF 引用, 最后一个引用负责清理"""
-        remaining = self._event_refs.get(event_id, 0) - 1
+        """运行结束释放一个 WF 引用, 最后一个引用负责清理; 已释放事件不重复计数"""
+        if event_id not in self._event_refs:
+            return
+        remaining = self._event_refs[event_id] - 1
         if remaining > 0:
             self._event_refs[event_id] = remaining
             return
         self._event_refs.pop(event_id, None)
         await self._cleanup_event(event_id)
+        self._settle_event_waiters(event_id)
 
     async def fire(
         self, tile_id: str, event: FlowEvent,
         targets: frozenset[str] | set[str] | None = None,
-    ) -> None:
+    ) -> str:
         """
         让一个磁贴/工具节点发出事件, 经 when 条件和逻辑门传播
 
@@ -424,19 +477,27 @@ class TriggerEngine:
         - event: 触发事件
         - targets: 允许接收本事件的 WF 节点 id 集; None 不限制.
           阈值磁贴按每个 WF 的已提交位置分别发批次时, 用 targets 只触发满足的那个
+
+        返回:
+        - str: fired 表示已传播, when_false/when_error 表示条件拦截, ignored 表示节点无效
         """
         node = self.definition.nodes.get(tile_id)
         node_type = self.node_types.get(tile_id)
         if node is None or node_type is None or node_type.role != "trigger":
-            return
+            return "ignored"
         verdict = await self._when_ok(tile_id, event, targets)
         if verdict is not True:
             reason = "when_error" if verdict == "error" else "when_false"
             self._diag("flow_trigger", "blocked", bodies={"output": {"tile": tile_id, "reason": reason}})
             await self._cleanup_event(event.event_id)
-            return
+            if self._event_refs.get(event.event_id, 0) <= 0:
+                self._settle_event_waiters(event.event_id)
+            return reason
         await self._emit(tile_id, "event", event, depth=0, targets=targets)
         await self._cleanup_event(event.event_id)
+        if self._event_refs.get(event.event_id, 0) <= 0:
+            self._settle_event_waiters(event.event_id)
+        return "fired"
 
     async def complete(self, wf_id: str, event: FlowEvent, output: str) -> None:
         """
@@ -692,6 +753,7 @@ class TriggerEngine:
                     task = asyncio.create_task(result)
                     self._tasks.add(task)
                     self._task_wfs[task] = wf_id
+                    self._task_events[task] = event.event_id
                     task.add_done_callback(
                         lambda done, wid=wf_id: self._handler_done(done, wid))
             return
@@ -713,12 +775,14 @@ class TriggerEngine:
                 batch_from=min(previous.batch_from or 0, event.batch_from or 0) if event.batch or previous.batch else 0,
                 batch_to=max(previous.batch_to or 0, event.batch_to or 0) if event.batch or previous.batch else 0,
                 payload=event.payload or previous.payload,
+                payload_message_ids=event.payload_message_ids or previous.payload_message_ids,
                 source_wf=event.source_wf or previous.source_wf,
                 source_event=event.source_event or previous.source_event,
             )
             if event.kind == "batch":
                 state.last_batch_to = max(state.last_batch_to, event.batch_to)
             if previous is not None:
+                self._event_aliases[previous.event_id] = event.event_id
                 await self._release_event(previous.event_id)
             return
         if event.kind == "batch":
@@ -726,15 +790,35 @@ class TriggerEngine:
         self._event_refs[event.event_id] = self._event_refs.get(event.event_id, 0) + 1
         state.queued.append(event)
 
+    def _release_task_done(self, task: asyncio.Task[Any]) -> None:
+        """接收取消收殓任务的异常, 避免事件清理失败静默丢失"""
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.warning(f"[流程引擎] 取消后的事件引用释放失败: {error}")
+
+    def _release_unfinished_event(self, event_id: str | None) -> None:
+        """取消或异常发生在 session finally 之前时, 由引擎释放尚未 finish 的引用"""
+        if event_id is None:
+            return
+        task = asyncio.create_task(self._release_event(event_id))
+        self._tasks.add(task)
+        task.add_done_callback(self._release_task_done)
+
     def _handler_done(self, task: asyncio.Task[Any], wf_id: str) -> None:
         """接收 handler 异常并兜底复位; 正常结束由 session._run_workflow 的 finish 负责"""
         self._tasks.discard(task)
         self._task_wfs.pop(task, None)
+        event_id = self._task_events.pop(task, None)
         if task.cancelled():
+            self._release_unfinished_event(event_id)
             return
         error = task.exception()
         if error is None:
             return
+        self._release_unfinished_event(event_id)
         logger.error(f"[流程引擎] WF {wf_id} 运行任务未处理异常: {error}")
         state = self._wf.get(wf_id)
         if state is not None:
@@ -770,6 +854,9 @@ class TriggerEngine:
         state = self._wf.get(wf_id)
         if state is None:
             return None
+        task = asyncio.current_task()
+        if task is not None:
+            self._task_events.pop(task, None)
         await self._release_event(event.event_id)
         if state.merged is not None:
             next_event, state.merged = state.merged, None
@@ -811,4 +898,10 @@ class TriggerEngine:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         self._task_wfs.clear()
+        self._task_events.clear()
         self._arrivals.clear()
+        for waiters in self._event_waiters.values():
+            self._finish_waiters(waiters)
+        self._event_waiters.clear()
+        self._event_aliases.clear()
+        self._event_refs.clear()

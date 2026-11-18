@@ -15,7 +15,10 @@ from satrap.core.utils.TCBuilder import AsyncToolsManager
 from satrap.core.type.flow.definition import FlowDefinition, FlowNodeInstance
 from satrap.edictum.flow.definition import parse_flow_definition
 from satrap.edictum.flow.instances import FlowNodeInstancePool, config_fingerprint
-from satrap.edictum.flow.message_projection import flow_message_from_archive, flow_message_from_event
+from satrap.edictum.flow.message_projection import (
+    flow_message_from_archive, flow_message_from_event, render_flow_messages, trigger_message_id,
+)
+from satrap.core.type.flow.ports import FlowMessage
 from satrap.edictum.flow.node_resources import MeteredClient, NodeResources
 from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES, FlowNodeRegistry
 from satrap.edictum.flow.store import FlowConflictError, FlowStore
@@ -41,6 +44,10 @@ current_flow_event: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
 
 NEW_EVENT_QUEUE_LIMIT = 256
 NEW_DRAIN_TIMEOUT_SECONDS = 120.0
+
+_MANUAL_EVENT_IDS_EXTRA = "flow_manual_event_ids"
+_MANUAL_ERRORS_EXTRA = "flow_manual_errors"
+_MANUAL_BATCH_EXTRA = "flow_manual_wake_batch"
 
 
 class AsyncFlowSession(AsyncSession):
@@ -964,41 +971,112 @@ class AsyncFlowSession(AsyncSession):
                 self._flow_store.scope_key = scope.key
                 self._flow_store.adapter_id = scope.adapter_id
 
+    @staticmethod
+    def _is_manual_wake(event: Any) -> bool:
+        """识别 scheduler 已受理并标记的控制面板唤醒, 不信任消息正文中的身份"""
+        origin = getattr(event, "call_origin", None)
+        return bool(
+            getattr(event, "is_wake", False)
+            and getattr(origin, "actor_kind", "") == "management"
+            and getattr(origin, "request_id", "")
+            and event.get_extra("require_send_tracking", False)
+        )
+
+    @staticmethod
+    def _record_manual_error(event: Any, reason: str) -> None:
+        """记录本次手动观察的分支失败, 多分支原因在请求结算时合并"""
+        errors = list(event.get_extra(_MANUAL_ERRORS_EXTRA, ()) or ())
+        if reason not in errors:
+            errors.append(reason)
+        event.set_extra(_MANUAL_ERRORS_EXTRA, errors)
+
+    async def _manual_wake_payload(self, event: Any) -> tuple[str, tuple[str, ...]]:
+        """构造手动 prompt 或实际认领窗口; message_id 回源形态不重复附加原消息"""
+        batch = tuple(event.get_extra(_MANUAL_BATCH_EXTRA, ()) or ())
+        if not batch:
+            if event.call_origin.source_message_id:
+                return "", ()
+            return event.get_message_str() or "", ()
+        messages: list[FlowMessage] = []
+        for item in batch:
+            row = None
+            if self._message_store is not None and self._bound_scope is not None and item.message_id:
+                try:
+                    row = await asyncio.to_thread(
+                        self._message_store.get, self._bound_scope, item.message_id)
+                except Exception as error:
+                    logger.warning(f"[流程会话] 手动窗口档案回读失败 message_id={item.message_id}: {error}")
+            if row is not None:
+                messages.append(flow_message_from_archive(row, self._bound_scope))
+            else:
+                messages.append(FlowMessage(
+                    message_id=item.message_id, position=0, sender_id=item.actor_id,
+                    nickname=item.nickname, text=item.text, is_bot=False,
+                    mentions_bot=False, time=item.received_at,
+                ))
+        payload = render_flow_messages(messages, private=self._is_private_scope(), current_id=None)
+        return payload, tuple(item.message_id for item in batch if item.message_id)
+
+    async def wait_for_manual_observation(self, event: Any) -> str | None:
+        """等待一次手动观察产生的全部 FlowEvent 下游完成, 返回分支失败原因"""
+        event_ids = tuple(event.get_extra(_MANUAL_EVENT_IDS_EXTRA, ()) or ())
+        if self._engine is not None and event_ids:
+            await self._engine.wait_for_events(event_ids)
+        errors = tuple(event.get_extra(_MANUAL_ERRORS_EXTRA, ()) or ())
+        return ";".join(errors) or None
+
     async def _handle_observed(self, event: Any, *, check_thresholds: bool = True) -> None:
         """分发一条已观察的消息; 首次恢复已检查最新阈值时不重复检查"""
+        if event.get_extra("manual_wake_cancelled", False):
+            return
         await self._ensure_engine()
         # 每条消息都过阈值磁贴 (按 seq); 唤醒磁贴只在唤醒判定通过时发事件
         if check_thresholds:
             await self._check_thresholds()
+        manual = self._is_manual_wake(event)
+        if manual:
+            event.set_extra(_MANUAL_EVENT_IDS_EXTRA, [])
+            event.set_extra(_MANUAL_ERRORS_EXTRA, [])
         is_private = bool(getattr(event, "is_private_chat", lambda: False)())
         try:
             from satrap.core.pipeline.wake_policy import evaluate_wake
             decision = evaluate_wake(event)
         except Exception:
             decision = None
-        if is_private:
+        if manual or is_private:
             decision_triggered = True
         else:
             decision_triggered = decision is not None and decision.triggered
+        payload, payload_message_ids = await self._manual_wake_payload(event) if manual else ("", ())
         for node in self._definition.nodes.values():
             if node.type != "wake":
                 continue
             cfg = self._config(node.id)
-            if cfg.get("use_platform_policy", True):
-                if not decision_triggered:
-                    continue
-            else:
-                # 自定义唤醒规则不走平台判定: 自定义规则可以扩大唤醒范围 (P1-15)
-                if not self._wake_custom_hit(node, event):
-                    continue
+            if not manual:
+                if cfg.get("use_platform_policy", True):
+                    if not decision_triggered:
+                        continue
+                else:
+                    # 自定义唤醒规则不走平台判定: 自定义规则可以扩大唤醒范围 (P1-15)
+                    if not self._wake_custom_hit(node, event):
+                        continue
             from satrap.core.type.flow.events import FlowEvent
-            msg = self._event_to_flow_message(event)
-            await self._engine.fire(
-                node.id,
-                FlowEvent(event_id=uuid.uuid4().hex, kind="message", tile=node.id,
-                          why=f"唤醒: {getattr(decision, 'reason', 'custom')}", message=msg,
-                          source_event=event),
+            msg = None if payload_message_ids else self._event_to_flow_message(event)
+            flow_event = FlowEvent(
+                event_id=uuid.uuid4().hex, kind="message", tile=node.id,
+                why="控制面板手动唤醒" if manual else f"唤醒: {getattr(decision, 'reason', 'custom')}",
+                message=msg, payload=payload, payload_message_ids=payload_message_ids,
+                source_event=event,
             )
+            if manual:
+                event.get_extra(_MANUAL_EVENT_IDS_EXTRA).append(flow_event.event_id)
+            fire_result = await self._engine.fire(node.id, flow_event)
+            if manual and fire_result in {"when_false", "when_error"}:
+                self._record_manual_error(event, f"flow_{fire_result}")
+
+    def _is_private_scope(self) -> bool:
+        """当前绑定的对话是否私聊; 尚未绑定时按群聊"""
+        return self._bound_scope is not None and self._bound_scope.conversation_kind == "private"
 
     def _event_to_flow_message(self, event: Any) -> Any:
         """把平台消息事件转成 FlowMessage"""
@@ -1074,6 +1152,9 @@ class AsyncFlowSession(AsyncSession):
             self._failure_notified.pop(wf_id, None)
         except Exception as error:
             self._discard_pending(wf_id)
+            source_event = getattr(event, "source_event", None)
+            if source_event is not None and self._is_manual_wake(source_event):
+                self._record_manual_error(source_event, "flow_workflow_failed")
             self._events.append({"at": time.time(), "kind": "run_end", "wf": wf_id,
                                  "run_id": run_id, "status": "failed", "error": str(error)[:200]})
             record_debug("flow_run", "end", metadata={"wf": wf_id, "run_id": run_id, "status": "failed"})
@@ -1117,12 +1198,22 @@ class AsyncFlowSession(AsyncSession):
                 await self._on_wf_trigger(wf_id, next_event)
 
     async def _wf_run(self, wf: Any, wf_id: str, pulled: list[Any], event: Any) -> str:
-        """运行一次 full_agent; 包装便于前后台路径共用"""
+        """
+        运行一次 full_agent; 包装便于前后台路径共用
+
+        每次运行按生效配置重置系统提示词; keep_history 关闭时先清空上一轮的对话
+        """
+        config = self._config(wf_id)
+        prompt = str(config.get("prompt") or "")
+        history = [m for m in wf.ctx.get_context() if m.get("role") != "system"] if config.get("keep_history", False) else []
+        # 整体替换而不是逐项编辑: 编辑接口每次都会写一份保护检查点
+        await wf.ctx.replace_messages(([{"role": "system", "content": prompt}] if prompt.strip() else []) + history)
         user_input = await self._compose_input(wf_id, pulled, event)
         return await wf.full_agent(
             user_input=user_input,
             callback=False,
-            max_iterations=int(self._config(wf_id).get("max_steps") or 8),
+            max_iterations=int(config.get("max_steps") or 8),
+            thinking=str(config.get("thinking") or "default"),
         )
 
     def _snapshot_base_versions(self, wf_id: str) -> dict[str, int]:
@@ -1174,6 +1265,7 @@ class AsyncFlowSession(AsyncSession):
                 build_ctx=lambda node, resolved: self._node_ctx(
                     node, self._node_types.get(node.id), resolved),
                 diagnostic=self._record_flow_diagnostic,
+                is_private=self._is_private_scope,
             )
         inputs: list[Any] = []
         for e in self._definition.edges:
@@ -1217,14 +1309,20 @@ class AsyncFlowSession(AsyncSession):
     async def _compose_input(self, wf_id: str, pulled: list[Any], event: Any) -> str:
         """把拉取结果和触发负载拼成 WF 的 user_input; writer_reads_previous 自动带上上一版"""
         parts: list[str] = []
+        private = self._is_private_scope()
+        current_id = trigger_message_id(event)
         if event.kind == "batch" and event.batch:
             parts.append(f"本批消息 #{event.batch_from + 1}–#{event.batch_to}:\n"
-                         + "\n".join(m.text for m in event.batch))
+                         + render_flow_messages(event.batch, private=private, current_id=current_id))
         if event.payload:
             parts.append(event.payload)
         for value in pulled:
             if isinstance(value, tuple):
-                parts.extend(getattr(item, "text", str(item)) for item in value)
+                # 直连的消息合成一段逐行带发送者; 拼装块已在 transform 渲染
+                messages = [item for item in value if isinstance(item, FlowMessage)]
+                if messages:
+                    parts.append(render_flow_messages(messages, private=private, current_id=current_id))
+                parts.extend(getattr(item, "text", str(item)) for item in value if not isinstance(item, FlowMessage))
             elif isinstance(value, str) and value:
                 parts.append(value)
         # 写入方读取上一版: 该 WF 写的每个开了开关的状态槽自动带上一版内容
@@ -1286,7 +1384,12 @@ class AsyncFlowSession(AsyncSession):
                 continue
             send_mode = str(self._config(e.target).get("send_mode") or "flow_reply")
             if send_mode == "final_text" and output:
-                await self._send_scheduled_scope(self._bound_scope, output, run_id=run_id)
+                source_event = getattr(event, "source_event", None)
+                if source_event is not None and self._is_manual_wake(source_event):
+                    # 手动请求要求可追踪的业务发送证据; 普通流程仍走后台 scheduled 通道。
+                    await source_event.send(MessageChain.from_text(output))
+                else:
+                    await self._send_scheduled_scope(self._bound_scope, output, run_id=run_id)
             # flow_reply: 模型已通过工具发过了, 不做兜底
             # group_chat_reply: 由 group_chat 插件自己发, 不干预
 
@@ -1489,7 +1592,9 @@ class AsyncFlowSession(AsyncSession):
             if source_event is not None:
                 await source_event.send(MessageChain.from_text(text), purpose="error_feedback")
             else:
-                await self._send_scheduled_scope(self._bound_scope, text, run_id=run_id)
+                from satrap.core.platform import error_feedback_send
+                with error_feedback_send():
+                    await self._send_scheduled_scope(self._bound_scope, text, run_id=run_id)
         except Exception as error:
             logger.warning(f"[流程会话] 失败告知发送失败: {error}")
 

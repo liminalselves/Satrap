@@ -184,7 +184,8 @@ class TestRealWorkflowCommit:
             event = make_event(adapter, SCOPE, "第三條", 3)
             archive_event(store, SCOPE, event)
             await session.observe(event)
-            await asyncio.sleep(0.2)
+            # 等运行结束而不是固定休眠: 整套串行跑时 0.2 秒内 WF 可能还没发出第一次请求
+            await wait_until(lambda: llm.calls and not session._engine.running_workflows())
             assert len(llm.calls) == 1, (
                 session._events, session._issues, session._drives,
                 session._flow_store.positions_for_tile_by_scope_key(SCOPE.key, "t1"))
@@ -1075,7 +1076,80 @@ class TestRuntimeIntegration:
             await session.close_flow_nodes()
 
 
+class TestWorkflowNodeConfig:
+    @pytest.mark.parametrize("keep_history", [False, True])
+    @pytest.mark.asyncio
+    async def test_prompt_thinking_and_history_reach_real_model_calls(self, tmp_path, keep_history):
+        """WF 节点的系统提示词, 思考强度和保留历史在真实运行里生效; 输入逐行带发送者"""
+        db = database(tmp_path / "messages.db")
+        store = PlatformMessageStore(db, "a")
+        adapter = FlowAdapter(store)
+        flow = workflow_flow()
+        flow["nodes"].append({"id": "bucket", "type": "bucket", "title": "b", "config": {"max_messages": 5}})
+        flow["edges"].append({"from": "src.out", "to": "bucket.in"})
+        flow["edges"].append({"from": "bucket.out", "to": "w1.input"})
+        flow["nodes"][1]["config"]["cooldown"] = 0
+        flow["nodes"][2]["config"].update(prompt="你是小萨", thinking="low", keep_history=keep_history)
+        llm = MockLLM(response("好"))
+        session = AsyncFlowSession("cfg", llm, flow=flow, db_path=str(db), message_store=store, flow_name="cfg")
+        session.error_feedback = False
+        try:
+            for index in (1, 2):
+                event = make_event(adapter, SCOPE, f"第{index}条", index, mention=True)
+                archive_event(store, SCOPE, event)
+                await session.observe(event)
+                await wait_until(lambda: len(llm.calls) == index and not session._engine.running_workflows())
+            assert not [issue for issue in session._issues if issue.level == "error"], session._issues
+            first, second = (call["messages"] for call in llm.calls)
+            assert first[0] == {"role": "system", "content": "你是小萨"}
+            assert all(call["kwargs"].get("thinking") == "low" for call in llm.calls)
+            assert [m["role"] for m in second].count("system") == 1
+            # 关闭保留历史时第二次只有系统提示词和本次输入
+            assert len(second) == (len(first) + 2 if keep_history else 2)
+            # 触发消息只带来源标记, 之前的消息包成先前窗口消息, 与非流程会话一致
+            assert second[-1]["content"].splitlines() == [
+                "[先前窗口消息: [用户 u1, 消息 m1] 第1条]", "[用户 u2, 消息 m2] 第2条"]
+        finally:
+            await session.close_flow_nodes()
+
+    @pytest.mark.asyncio
+    async def test_private_input_has_no_user_label_but_marks_bot_lines(self, tmp_path):
+        """私聊与非流程会话一致不加用户标记; 档案里的机器人发言仍标出"""
+        db = database(tmp_path / "messages.db")
+        store = PlatformMessageStore(db, "a")
+        adapter = FlowAdapter(store)
+        private = MessageScope("a", "s", "private", "u1")
+        store.record(private, ArchiveMessage(message_id="b0", sender_id="s", message_time=time.time(),
+                                             text="之前的回复", direction="outbound"))
+        flow = workflow_flow()
+        flow["nodes"].append({"id": "bucket", "type": "bucket", "title": "b", "config": {"max_messages": 5}})
+        flow["edges"].append({"from": "src.out", "to": "bucket.in"})
+        flow["edges"].append({"from": "bucket.out", "to": "w1.input"})
+        llm = MockLLM(response("好"))
+        session = AsyncFlowSession("pv", llm, flow=flow, db_path=str(db), message_store=store, flow_name="pv")
+        session.error_feedback = False
+        try:
+            event = make_event(adapter, private, "你在吗", 1)
+            archive_event(store, private, event)
+            await session.observe(event)
+            await wait_until(lambda: len(llm.calls) == 1 and not session._engine.running_workflows())
+            assert llm.calls[0]["messages"][-1]["content"].splitlines() == [
+                "[先前窗口消息: [机器人自己, 消息 b0] 之前的回复]", "你在吗"]
+        finally:
+            await session.close_flow_nodes()
+
+
 class TestPrivateReply:
+    def test_flow_reply_schema_uses_json_schema_types(self):
+        """flow_reply 参数类型必须是 JSON Schema 类型名, 严格校验的服务商 (DeepSeek Responses) 会拒绝 "bool" """
+        from satrap.edictum.flow.reply_tool import AsyncFlowReplyTool
+
+        async def send(text: str, quote: bool) -> bool:
+            return True
+
+        properties = AsyncFlowReplyTool(send).get_tool_defined()["function"]["parameters"]["properties"]
+        assert {name: spec["type"] for name, spec in properties.items()} == {"text": "string", "quote_trigger": "boolean"}
+
     @pytest.mark.asyncio
     async def test_private_flow_reply_uses_private_target(self):
         """私聊 scope 的后台发送走 private_session_id, 不报错"""

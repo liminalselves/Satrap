@@ -13,6 +13,7 @@ from satrap.core.type.flow.definition import FlowDefinition, FlowNodeInstance
 from satrap.edictum.flow.registry import DEFAULT_SOURCE_MAX_MESSAGES
 from satrap.core.type.flow.registry import FlowNodeType
 from satrap.core.type.flow.ports import ContextBlock, FlowMessage, StateView
+from satrap.edictum.flow.message_projection import render_flow_messages, trigger_message_id
 
 import asyncio
 import inspect
@@ -59,6 +60,7 @@ class TransformEvaluator:
         build_ctx: Callable[[FlowNodeInstance, dict[str, Any]], Any] | None = None,
         diagnostic: Callable[..., Any] = record_debug,
         timeout: float = 60.0,
+        is_private: Callable[[], bool] | None = None,
     ) -> None:
         """
         初始化求值调度器
@@ -73,6 +75,7 @@ class TransformEvaluator:
         - resolve_config: 节点生效配置回调 {node_id: 合并后配置}; 缺省用实例 config
         - build_ctx: 插件节点 ctx 构造回调 (node, 生效配置) -> ctx; 缺省用最小 ctx
         - timeout: 节点求值默认超时
+        - is_private: 当前对话是否私聊的回调; 会话绑定对话后才可知, 缺省按群聊
         """
         self.definition = definition
         self.node_types = node_types
@@ -84,6 +87,7 @@ class TransformEvaluator:
         self._build_ctx = build_ctx
         self._diag = diagnostic
         self.timeout = timeout
+        self._is_private = is_private or (lambda: False)
         self._cells: dict[tuple[str, str], _EvalCell] = {}
         """(event_id, 节点 id) -> 共享求值"""
         self._in_edges: dict[str, list[Any]] = {}
@@ -169,6 +173,10 @@ class TransformEvaluator:
             value = self._resolve_source(source_query) if accepts_query else self._resolve_source()
             messages = await value if inspect.isawaitable(value) else value
             result = tuple(messages or ())
+            payload_message_ids = set(getattr(event, "payload_message_ids", ())) if getattr(event, "payload", "") else set()
+            if payload_message_ids:
+                # 手动合成窗口已随 payload 进入 WF, source/bucket/assemble 不再重复提供同批档案。
+                result = tuple(message for message in result if message.message_id not in payload_message_ids)
             return self._truncate_direct_messages(node, result, source_query) if bounded else result
         if node.type == "bucket" and source_query is not None:
             # 不同 assemble 的覆盖位置/窗口可能不同, 有界桶查询不能复用另一个请求的 cell。
@@ -335,16 +343,18 @@ class TransformEvaluator:
             pending = list(reversed(selected))
             if pending:
                 blocks.append(ContextBlock(kind="messages",
-                                           text="\n".join(m.text for m in pending), source_node=node.id))
+                                           text=render_flow_messages(pending, private=self._is_private(), current_id=trigger_message_id(event)), source_node=node.id))
+        else:
+            pending = []
         latest_n = int(config.get("latest_n") or 0)
         if latest_n > 0 and messages:
             dedupe = bool(config.get("dedupe", True))
-            covered = {m.text for b in blocks for m in [b]}
+            covered = {m.message_id for m in pending}
             extra = [m for m in messages[-latest_n:]
-                     if not dedupe or m.text not in covered]
+                     if not dedupe or m.message_id not in covered]
             if extra:
                 blocks.append(ContextBlock(kind="messages",
-                                           text="\n".join(m.text for m in extra), source_node=node.id))
+                                           text=render_flow_messages(extra, private=self._is_private(), current_id=trigger_message_id(event)), source_node=node.id))
         return tuple(blocks)
 
     async def _pull_input(

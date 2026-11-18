@@ -41,7 +41,7 @@ class AsyncFlowReplyTool(AsyncTool):
     description = "把文本发送到当前对话; 不调用即不回复 (沉默)"
     params_dict = {
         "text": ("string", "要发送的文本"),
-        "quote_trigger": ("bool", "是否引用触发消息, 默认 false; 后台发送时忽略"),
+        "quote_trigger": ("boolean", "是否引用触发消息, 默认 false; 后台发送时忽略"),
     }
 
     def __init__(self, send: Callable[[str, bool], Awaitable[bool]], quote: bool = False) -> None:

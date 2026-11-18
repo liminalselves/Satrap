@@ -9,6 +9,7 @@ PipelineScheduler / RateLimiter 单元测试
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 import pytest
 from types import SimpleNamespace
@@ -834,6 +835,94 @@ class _RealFlowSchedulerManager(_FlowSchedulerManager):
         return entry
 
 
+def _manual_flow(*, use_platform_policy: bool = False, on_busy: str = "queue") -> dict[str, Any]:
+    """真实手动唤醒测试图: source 输入、wake 触发和 final_text 业务回复"""
+    return {
+        "version": 3,
+        "nodes": [
+            {"id": "src", "type": "source", "title": "消息", "config": {}},
+            {"id": "wake", "type": "wake", "title": "唤醒", "config": {
+                "use_platform_policy": use_platform_policy, "mention": True,
+                "new_messages": 99, "cooldown": 3600,
+            }},
+            {"id": "w1", "type": "react_workflow", "title": "WF", "config": {
+                "model_name": "test", "on_busy": on_busy, "max_steps": 2, "timeout_seconds": 10,
+            }},
+            {"id": "reply", "type": "output", "title": "回复", "config": {"send_mode": "final_text"}},
+        ],
+        "edges": [
+            {"from": "src.out", "to": "wake.messages"},
+            {"from": "src.out", "to": "w1.input"},
+            {"from": "wake.event", "to": "w1.trigger"},
+            {"from": "w1.text", "to": "reply.reply"},
+        ],
+    }
+
+
+def _manual_event(
+    adapter: Any, scope: Any, text: str, index: int, request_id: str,
+    *, snapshot: tuple[Any, ...] = (), source_message: bool = True,
+) -> tuple[MessageEvent, Any]:
+    """构造 BackendManager.wake_platform 同形的 management 事件和票据"""
+    from satrap.core.pipeline.manual_wake import ManualWakeTicket
+    from tests.support.flow_runtime import make_event
+
+    event = make_event(adapter, scope, text, index)
+    if not source_message:
+        event.platform_message.message_id = ""
+    event._call_origin = replace(
+        event.call_origin, actor_id="panel-operator", actor_kind="management",
+        source_message_id=event.platform_message.message_id, request_id=request_id,
+        route_user_id=event.get_sender_id(),
+    )
+    return event, ManualWakeTicket(request_id, snapshot)
+
+
+def _accept_manual(
+    scheduler: PipelineScheduler, store: Any, event: MessageEvent, ticket: Any,
+) -> None:
+    """复用生产登记入口建立进程内票据和持久化 accepted 占位"""
+    scheduler.manual_wakes.register(event, "fingerprint", ticket)
+    store.accept_request(event.call_origin.adapter_id, ticket.request_id, "fingerprint", "group:chat1", "panel-operator")
+
+
+def _model_input(call: dict[str, Any]) -> str:
+    """取 MockLLM 收到的最后一条用户输入"""
+    return next(item["content"] for item in reversed(call["messages"]) if item["role"] == "user")
+
+
+async def _drain_manual_settlements(scheduler: PipelineScheduler, manager: Any) -> None:
+    """等待串行观察与已派生的手动结算任务全部结束"""
+    await manager.drain_observations()
+    pending = [task for task in scheduler._flow_manual_tasks if not task.done()]
+    if pending:
+        await asyncio.gather(*pending)
+
+
+def _manual_real_runtime(
+    tmp_path: Path, llm: Any, flow: dict[str, Any], **session_kwargs: Any,
+) -> tuple[Any, ...]:
+    """建立真实 scheduler/flow/session 工厂, 仅替换模型与最底层适配器发送"""
+    from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
+    from satrap.core.pipeline.manual_wake_store import ManualWakeStore
+    from satrap.edictum.flow.session import AsyncFlowSession
+    from tests.support.flow_runtime import FlowAdapter, database
+
+    scope = MessageScope("adapter1", "self1", "group", "chat1")
+    store = PlatformMessageStore(database(tmp_path / "flow.db"), scope.adapter_id)
+    adapter = FlowAdapter(store)
+
+    def factory(session_id: str) -> AsyncFlowSession:
+        return AsyncFlowSession(session_id, llm, flow=flow, db_path=str(store.database),
+                                message_store=store, flow_name="manual-real", **session_kwargs)
+
+    manager = _RealFlowSchedulerManager(factory)
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    requests = ManualWakeStore(tmp_path / "wake.json")
+    scheduler.manual_wake_store = requests
+    return scope, store, adapter, scheduler, manager, requests
+
+
 @pytest.mark.asyncio
 async def test_flow_scheduler_real_session_observes_serially(tmp_path: Path):
     """公开 execute 入口投递到真实会话, 两个唤醒事件按顺序运行真实 WF。"""
@@ -911,6 +1000,398 @@ async def test_flow_scheduler_real_session_observes_serially(tmp_path: Path):
         release.set()
         if session is not None:
             await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_platform_policy", [True, False])
+@pytest.mark.parametrize("form", ["prompt", "message_id", "snapshot"])
+async def test_flow_manual_wake_real_scheduler_inputs_and_reply(
+    tmp_path: Path, form: str, use_platform_policy: bool,
+):
+    """三种控制面板输入均绕过两种唤醒策略, 由真实 WF 输入并发送可追踪回复"""
+    from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
+    from satrap.core.pipeline.manual_wake_store import ManualWakeStore
+    from satrap.edictum.flow.session import AsyncFlowSession
+    from tests.support.flow_runtime import FlowAdapter, MockLLM, archive_event, database, make_event, response
+
+    scope = MessageScope("adapter1", "self1", "group", "chat1")
+    store = PlatformMessageStore(database(tmp_path / "flow.db"), scope.adapter_id)
+    adapter = FlowAdapter(store)
+    llm = MockLLM(response("手动回复"))
+    flow = _manual_flow(use_platform_policy=use_platform_policy)
+
+    def factory(session_id: str) -> AsyncFlowSession:
+        return AsyncFlowSession(session_id, llm, flow=flow, db_path=str(store.database),
+                                message_store=store, flow_name="manual-real")
+
+    manager = _RealFlowSchedulerManager(factory)
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    requests = ManualWakeStore(tmp_path / "wake.json")
+    scheduler.manual_wake_store = requests
+    session = None
+    try:
+        if form == "snapshot":
+            original = make_event(adapter, scope, "档案正文", 1)
+            archive_event(store, scope, original)
+            original.message_str = "陈旧快照"
+            original.platform_message.message_str = "陈旧快照"
+            original.platform_message.message = [Plain("陈旧快照")]
+            scheduler.wake_window.observe(original)
+            event, ticket = _manual_event(
+                adapter, scope, "", 2, f"manual-{form}-{use_platform_policy}",
+                source_message=False,
+            )
+            ticket.snapshot = scheduler.wake_window.peek(event)
+        elif form == "message_id":
+            event, ticket = _manual_event(
+                adapter, scope, "回源消息", 1, f"manual-{form}-{use_platform_policy}")
+            archive_event(store, scope, event)
+        else:
+            event, ticket = _manual_event(
+                adapter, scope, "面板原始 prompt", 1, f"manual-{form}-{use_platform_policy}",
+                source_message=False,
+            )
+        _accept_manual(scheduler, requests, event, ticket)
+        await scheduler.execute(event)
+        assert event.is_wake and event.get_extra("require_send_tracking") is True
+        await _drain_manual_settlements(scheduler, manager)
+
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "sent"
+        assert len(llm.calls) == 1
+        model_input = _model_input(llm.calls[0])
+        if form == "prompt":
+            assert model_input == "面板原始 prompt"
+            assert "[用户" not in model_input and "[先前窗口消息" not in model_input
+            assert store.flow_window_by_scope_key(scope.key, latest_n=10) == []
+        elif form == "message_id":
+            assert model_input == "[用户 u1, 消息 m1] 回源消息"
+            assert model_input.count("回源消息") == 1
+        else:
+            assert model_input == "[用户 u1, 消息 m1] 档案正文"
+            assert "陈旧快照" not in model_input and model_input.count("档案正文") == 1
+        assert [item["text"] for item in adapter.sent] == ["手动回复"]
+        assert adapter.scheduled == []
+        session = next(iter(manager.entries.values())).session
+    finally:
+        if session is not None:
+            await session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_flow_manual_request_waits_for_real_workflow_completion(tmp_path: Path):
+    """WF 阻塞期间请求保持 executing, 真实回复完成后才进入 sent"""
+    from tests.support.flow_runtime import MockLLM, response, wait_until
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def script(messages: list[Any], tools: Any, count: int):
+        started.set()
+        await release.wait()
+        return response("延迟回复")
+
+    scope, store, adapter, scheduler, manager, requests = _manual_real_runtime(
+        tmp_path, MockLLM(script), _manual_flow())
+    event, ticket = _manual_event(adapter, scope, "等待执行", 1, "manual-delayed", source_message=False)
+    _accept_manual(scheduler, requests, event, ticket)
+    try:
+        await scheduler.execute(event)
+        await asyncio.wait_for(started.wait(), 2)
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "executing"
+        assert ticket.status == "pending" and adapter.sent == []
+        release.set()
+        await _drain_manual_settlements(scheduler, manager)
+        await wait_until(lambda: len(adapter.sent) == 1)
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "sent"
+        assert adapter.sent[0]["text"] == "延迟回复"
+    finally:
+        release.set()
+        for entry in manager.entries.values():
+            await entry.session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workflow_fails", [False, True])
+async def test_flow_manual_request_silence_and_failure_have_terminal_state(
+    tmp_path: Path, workflow_fails: bool,
+):
+    """沉默与 WF 异常都在真实运行结束后 failed, 不再提前报 no_response"""
+    from tests.support.flow_runtime import MockLLM, response
+
+    async def script(messages: list[Any], tools: Any, count: int):
+        if workflow_fails:
+            raise RuntimeError("模型失败")
+        return response("")
+
+    llm = MockLLM(script)
+    scope, store, adapter, scheduler, manager, requests = _manual_real_runtime(
+        tmp_path, llm, _manual_flow())
+    event, ticket = _manual_event(adapter, scope, "无回复", 1, f"manual-silent-{workflow_fails}", source_message=False)
+    _accept_manual(scheduler, requests, event, ticket)
+    try:
+        await scheduler.execute(event)
+        await _drain_manual_settlements(scheduler, manager)
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "failed"
+        assert record["detail"] == ("flow_workflow_failed" if workflow_fails else "no_confirmed_send")
+        assert len(llm.calls) == 1
+        assert not any(item["purpose"] == "business" for item in adapter.sent)
+    finally:
+        for entry in manager.entries.values():
+            await entry.session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_flow_manual_request_wake_when_false_is_failed(tmp_path: Path):
+    """management 绕过唤醒策略但不绕过 wake.when, 条件拦截原因可读"""
+    from tests.support.flow_runtime import MockLLM, response
+
+    flow = _manual_flow()
+    flow["nodes"].append({"id": "never", "type": "cond_message", "title": "仅提及", "config": {"kind": "mention"}})
+    flow["edges"].append({"from": "never.out", "to": "wake.when"})
+    scope, store, adapter, scheduler, manager, requests = _manual_real_runtime(
+        tmp_path, MockLLM(response("不应执行")), flow)
+    event, ticket = _manual_event(adapter, scope, "普通 prompt", 1, "manual-when-false", source_message=False)
+    _accept_manual(scheduler, requests, event, ticket)
+    try:
+        await scheduler.execute(event)
+        await _drain_manual_settlements(scheduler, manager)
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "failed"
+        assert record["detail"] == "flow_when_false"
+        assert adapter.sent == []
+        session = manager.entries[event.session_id].session
+        assert not any(item["kind"] == "run_start" for item in session._events)
+    finally:
+        for entry in manager.entries.values():
+            await entry.session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_enqueue", [False, True])
+async def test_flow_manual_cancelled_ticket_never_triggers(
+    tmp_path: Path, after_enqueue: bool,
+):
+    """execute 入口与已入队未 observe 的取消均不调用模型并写取消终态"""
+    from tests.support.flow_runtime import MockLLM, response
+
+    llm = MockLLM(response("不应执行"))
+    scope, store, adapter, scheduler, manager, requests = _manual_real_runtime(
+        tmp_path, llm, _manual_flow())
+    event, ticket = _manual_event(adapter, scope, "取消请求", 1, f"manual-cancel-{after_enqueue}", source_message=False)
+    _accept_manual(scheduler, requests, event, ticket)
+    try:
+        if not after_enqueue:
+            scheduler.manual_wakes.clear_adapter(scope.adapter_id)
+        await scheduler.execute(event)
+        if after_enqueue:
+            scheduler.manual_wakes.clear_adapter(scope.adapter_id)
+        await manager.drain_observations()
+        assert llm.calls == [] and adapter.sent == []
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "failed"
+        assert "cancelled" in record["detail"]
+    finally:
+        for entry in manager.entries.values():
+            await entry.session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_flow_manual_request_waits_for_all_workflows(tmp_path: Path):
+    """同一 wake 驱动两个 WF 时, 首个完成不能提前结算手动请求"""
+    from tests.support.flow_runtime import MockLLM, response, wait_until
+
+    release = asyncio.Event()
+
+    async def script(messages: list[Any], tools: Any, count: int):
+        await release.wait()
+        return response(f"分支回复 {count}")
+
+    llm = MockLLM(script)
+    flow = _manual_flow()
+    flow["nodes"].insert(3, {"id": "w2", "type": "react_workflow", "title": "WF2", "config": {
+        "model_name": "test", "on_busy": "queue", "max_steps": 2, "timeout_seconds": 10,
+    }})
+    flow["edges"].extend([
+        {"from": "src.out", "to": "w2.input"},
+        {"from": "wake.event", "to": "w2.trigger"},
+        {"from": "w2.text", "to": "reply.reply"},
+    ])
+    scope, store, adapter, scheduler, manager, requests = _manual_real_runtime(tmp_path, llm, flow)
+    event, ticket = _manual_event(adapter, scope, "两个分支", 1, "manual-multi", source_message=False)
+    _accept_manual(scheduler, requests, event, ticket)
+    try:
+        await scheduler.execute(event)
+        await wait_until(lambda: len(llm.calls) == 2)
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "executing"
+        release.set()
+        await _drain_manual_settlements(scheduler, manager)
+        assert len(adapter.sent) == 2
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "sent"
+    finally:
+        release.set()
+        for entry in manager.entries.values():
+            await entry.session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("on_busy", ["queue", "merge", "drop"])
+async def test_flow_manual_request_respects_busy_strategy_and_completion(
+    tmp_path: Path, on_busy: str,
+):
+    """手动事件在真实 WF 忙碌时按 queue/merge/drop 结算, 不绕过 busy 策略"""
+    from tests.support.flow_runtime import MockLLM, archive_event, make_event, response, wait_until
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def script(messages: list[Any], tools: Any, count: int):
+        if count == 1:
+            started.set()
+            await release.wait()
+        return response(f"回复 {count}")
+
+    llm = MockLLM(script)
+    scope, store, adapter, scheduler, manager, requests = _manual_real_runtime(
+        tmp_path, llm, _manual_flow(on_busy=on_busy))
+    try:
+        normal = make_event(adapter, scope, "普通唤醒", 1, mention=True)
+        archive_event(store, scope, normal)
+        await scheduler.execute(normal)
+        await asyncio.wait_for(started.wait(), 2)
+        event, ticket = _manual_event(
+            adapter, scope, "手动忙碌策略", 2, f"manual-busy-{on_busy}", source_message=False)
+        _accept_manual(scheduler, requests, event, ticket)
+        await scheduler.execute(event)
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "executing"
+        if on_busy == "drop":
+            await _drain_manual_settlements(scheduler, manager)
+            record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+            assert record is not None and record["status"] == "failed"
+            assert record["detail"] == "no_confirmed_send"
+            assert len(llm.calls) == 1 and adapter.sent == []
+        release.set()
+        await _drain_manual_settlements(scheduler, manager)
+        session = manager.entries[event.session_id].session
+        await wait_until(lambda: not session._engine.running_workflows())
+        if on_busy != "drop":
+            assert len(llm.calls) == 2
+            assert _model_input(llm.calls[1]).split("\n\n")[0] == "手动忙碌策略"
+            assert [item["text"] for item in adapter.sent] == ["回复 2"]
+            record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+            assert record is not None and record["status"] == "sent"
+    finally:
+        release.set()
+        for entry in manager.entries.values():
+            await entry.session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_flow_manual_settlement_does_not_block_next_observation(tmp_path: Path):
+    """手动唤醒的 WF 阻塞期间, 同会话的下一条消息仍被观察并触发自己的 WF。"""
+    from tests.support.flow_runtime import MockLLM, archive_event, make_event, response, wait_until
+
+    release_manual = asyncio.Event()
+
+    async def script(messages: list[Any], tools: Any, count: int):
+        if count == 1:
+            await release_manual.wait()
+            return response("手动回复")
+        return response("普通回复")
+
+    # 阈值磁贴驱动第二个 WF: on_busy=queue 的单 WF 按设计串行,
+    # 用第二个 WF 证明观察没有被手动结算等待挡住, 而不是被 WF 级排队挡住。
+    flow = _manual_flow()
+    flow["nodes"].insert(2, {"id": "th", "type": "threshold", "title": "阈值", "config": {
+        "messages": 1, "chars": 0, "idle_seconds": 0, "max_batch": 10,
+    }})
+    flow["nodes"].insert(4, {"id": "w2", "type": "react_workflow", "title": "WF2", "config": {
+        "model_name": "test", "on_busy": "queue", "max_steps": 2, "timeout_seconds": 10,
+        "plugins": "flow_snapshot",
+    }})
+    flow["nodes"].append({"id": "sink", "type": "state", "title": "状态", "config": {}})
+    flow["edges"].extend([
+        {"from": "src.out", "to": "th.messages"},
+        {"from": "th.event", "to": "w2.trigger"},
+        {"from": "w2.text", "to": "sink.write"},
+    ])
+    llm = MockLLM(script)
+    scope, store, adapter, scheduler, manager, requests = _manual_real_runtime(tmp_path, llm, flow)
+    event, ticket = _manual_event(adapter, scope, "手动阻塞", 1, "manual-unblocked", source_message=False)
+    _accept_manual(scheduler, requests, event, ticket)
+    cleaned: list[MessageEvent] = []
+    event.cleanup_temporary_local_files = lambda: cleaned.append(event)
+    session = None
+    try:
+        await scheduler.execute(event)
+        await wait_until(lambda: len(llm.calls) == 1)
+        # 手动 WF 已阻塞但结算任务不占用观察队列: 下一条消息应立即被观察,
+        # 阈值 (1 条新消息) 命中后第二个 WF 立即被触发, 第二个模型调用不需要先释放手动 WF。
+        normal = make_event(adapter, scope, "普通提及", 2)
+        archive_event(store, scope, normal)
+        await scheduler.execute(normal)
+        await wait_until(lambda: len(llm.calls) == 2, timeout=5)
+        # 结算尚未发生: 请求仍在执行, 临时文件也未被 drain 提前清理
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "executing"
+        assert cleaned == []
+        release_manual.set()
+        await _drain_manual_settlements(scheduler, manager)
+        # 结算恰好一次: 终态 sent 且临时文件清理由结算任务执行
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        assert record is not None and record["status"] == "sent"
+        assert [item["text"] for item in adapter.sent] == ["手动回复"]
+        assert cleaned == [event]
+        assert not scheduler._flow_manual_tasks
+        session = next(iter(manager.entries.values())).session
+    finally:
+        release_manual.set()
+        for entry in manager.entries.values():
+            await entry.session.close_flow_nodes()
+
+
+@pytest.mark.asyncio
+async def test_flow_manual_settlement_close_while_waiting_reaches_terminal(tmp_path: Path):
+    """会话关闭时仍在等待的手动结算必须终结: 引擎解除等待后按证据归并, 不悬挂 pending。"""
+    from tests.support.flow_runtime import MockLLM, response, wait_until
+
+    release_manual = asyncio.Event()
+
+    async def script(messages: list[Any], tools: Any, count: int):
+        await release_manual.wait()
+        return response("不会送达")
+
+    llm = MockLLM(script)
+    scope, store, adapter, scheduler, manager, requests = _manual_real_runtime(tmp_path, llm, _manual_flow())
+    event, ticket = _manual_event(adapter, scope, "关闭等待", 1, "manual-close-wait", source_message=False)
+    _accept_manual(scheduler, requests, event, ticket)
+    cleaned: list[MessageEvent] = []
+    event.cleanup_temporary_local_files = lambda: cleaned.append(event)
+    session = None
+    try:
+        await scheduler.execute(event)
+        await wait_until(lambda: len(llm.calls) == 1)
+        session = next(iter(manager.entries.values())).session
+        # 结算任务已在等待 WF; 关闭会话取消 WF, 引擎释放等待者, 结算按已记录证据归并终态
+        await session.close_flow_nodes()
+        await wait_until(
+            lambda: (record := requests.lookup_request(ticket.request_id, scope.adapter_id)) is not None
+            and record["status"] in {"sent", "partial", "failed", "unknown"})
+        record = requests.lookup_request(ticket.request_id, scope.adapter_id)
+        # 结算任务不属于会话观察任务, 不会被 close 取消; WF 取消后按发送证据归并而非 cancelled
+        assert record is not None and record["status"] == "failed"
+        assert record["detail"] == "no_confirmed_send"
+        assert cleaned == [event]
+        assert not scheduler._flow_manual_tasks
+    finally:
+        release_manual.set()
+        for entry in manager.entries.values():
+            if not entry.session._closed:
+                await entry.session.close_flow_nodes()
 
 
 @pytest.mark.asyncio

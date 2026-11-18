@@ -513,3 +513,56 @@ class TestTriggerEngineTargets:
         # 模拟运行结束: 手动 finish 应取出 e2
         next_event = await engine.finish("w1", FlowEvent(event_id="e1", kind="message", tile="t1", why="1"))
         assert next_event is not None and next_event.event_id == "e2"
+
+    @pytest.mark.asyncio
+    async def test_merge_transfers_event_completion_waiter(self):
+        """被 merge 替换的旧事件等到最新合并事件完成, 不提前结束"""
+        nodes = [
+            {"id": "t1", "type": "wake", "title": "t", "config": {}},
+            {"id": "w1", "type": "react_workflow", "title": "w", "config": {"on_busy": "merge"}},
+        ]
+        definition, node_types = _def(nodes, [{"from": "t1.event", "to": "w1.trigger"}])
+        engine = TriggerEngine(definition, node_types)
+        gate = asyncio.Event()
+
+        async def handler(w, event):
+            await gate.wait()
+
+        engine.on_trigger(handler)
+        events = [FlowEvent(event_id=f"e{index}", kind="message", tile="t1", why="test") for index in range(1, 4)]
+        for event in events:
+            await engine.fire("t1", event)
+        await asyncio.sleep(0)
+        waiter = asyncio.create_task(engine.wait_for_events(("e2",)))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        gate.set()
+        next_event = await engine.finish("w1", events[0])
+        assert next_event is not None and next_event.event_id == "e3"
+        assert not waiter.done()
+        await engine.finish("w1", events[2])
+        await asyncio.wait_for(waiter, 1)
+        assert engine._event_aliases == {}
+        await engine.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_handler_start_releases_event_waiter(self):
+        """WF 协程尚未启动就取消时, 引擎仍释放事件并结束等待"""
+        nodes = [
+            {"id": "t1", "type": "wake", "title": "t", "config": {}},
+            {"id": "w1", "type": "react_workflow", "title": "w", "config": {}},
+        ]
+        definition, node_types = _def(nodes, [{"from": "t1.event", "to": "w1.trigger"}])
+        engine = TriggerEngine(definition, node_types)
+
+        async def handler(w, event):
+            raise AssertionError("取消前不应进入 handler")
+
+        engine.on_trigger(handler)
+        event = FlowEvent(event_id="e1", kind="message", tile="t1", why="test")
+        await engine.fire("t1", event)
+        waiter = asyncio.create_task(engine.wait_for_events(("e1",)))
+        await engine.cancel_workflow("w1")
+        await asyncio.wait_for(waiter, 1)
+        assert engine._event_refs == {}
+        await engine.shutdown()

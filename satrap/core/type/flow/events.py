@@ -30,7 +30,9 @@ class FlowEvent:
     batch_to: int = 0
     """阈值批次末尾消息序号, 默认 0, 成功后用于推进提交位置"""
     payload: str = ""
-    """kind=call 时交接工具的参数或上游输出"""
+    """kind=call 时为交接参数或上游输出; 手动 message 时为本次附加 prompt 或合成窗口"""
+    payload_message_ids: tuple[str, ...] = ()
+    """payload 已包含的窗口消息 ID, source/assemble 拉取档案时据此避免重复输入"""
     source_wf: str = ""
     """kind=call 时调用方 WF 节点 id"""
     source_event: Any = None

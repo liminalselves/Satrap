@@ -891,6 +891,25 @@ async def test_structured_reply_uses_actual_onebot_split_queue_and_archives_conf
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio
+async def test_error_feedback_send_is_not_archived_as_conversation(tmp_path):
+    """错误反馈确认发出但不进消息档案, 否则下一轮会作为机器人发言喂回模型"""
+    from satrap.core.platform import error_feedback_send
+    from satrap.core.platform.event import MessageChain
+    adapter, event, service = setup(tmp_path)
+    adapter.send_message = OneBotAdapter.send_message.__get__(adapter)
+    adapter._bot.send_group_msg.side_effect = [{"message_id": 910}, {"message_id": 911}, {"message_id": 912}]
+    await event.send(MessageChain.from_text("运行失败"), purpose="error_feedback")
+    await event.send(MessageChain.from_text("正常回复"))
+    with error_feedback_send():
+        await adapter.send_message(event.session_id, MessageChain.from_text("后台失败告知"))
+    await adapter.drain_message_archive()
+    assert adapter._bot.send_group_msg.await_count == 3
+    assert adapter.message_archive.get(_group_chat_reply_SCOPE, "910") is None
+    assert adapter.message_archive.get(_group_chat_reply_SCOPE, "911") is not None
+    assert adapter.message_archive.get(_group_chat_reply_SCOPE, "912") is None
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
 async def test_ended_scope_copies_cannot_prepare_or_submit(tmp_path):
     adapter, event, service = setup(tmp_path)
     ready = asyncio.Event()

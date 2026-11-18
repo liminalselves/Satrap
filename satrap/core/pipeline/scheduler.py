@@ -139,6 +139,8 @@ class PipelineScheduler:
         self.manual_wake_store: ManualWakeStore | None = None
         self.request_diagnostics = RequestDiagnosticLog()
         self.asr_resolver: AsrResolver | None = None
+        self._flow_manual_tasks: set[asyncio.Task[Any]] = set()
+        """已观察手动唤醒的独立结算任务; 串行观察不等待后台 WF, 引用由调度器持有防回收"""
 
     async def clear_manual_wakes(self, adapter_id: str) -> None:
         """
@@ -502,6 +504,7 @@ class PipelineScheduler:
         """
         manual_detail: str | None = None
         flow_owns_cleanup = False
+        flow_owns_manual = False
         try:
             manual_ticket = self.manual_wakes.tickets.get(event)
             if manual_ticket is not None and manual_ticket.cancelled:
@@ -582,8 +585,23 @@ class PipelineScheduler:
                     if (manual_ticket is not None and manual_ticket.cancelled) or (deadline_ticket is not None and deadline_ticket.cancelled):
                         return
                     if flow_session is not None:
-                        self._enqueue_flow_observation(flow_session, event)
+                        if manual_ticket is not None:
+                            event.is_wake = True
+                            event.set_extra("require_send_tracking", True)
+                            if manual_ticket.snapshot:
+                                batch = self._claim_wake_batch(
+                                    event, manual_ticket.snapshot, False, False, deadline=False)
+                                if not batch:
+                                    manual_detail = "window_unavailable"
+                                    return
+                                event.set_extra("flow_manual_wake_batch", batch)
+                                self.wake_timers.cancel_route(event)
+                            await self._update_manual_request(event, manual_ticket, "executing", "")
+                        accepted = self._enqueue_flow_observation(flow_session, event)
                         flow_owns_cleanup = True
+                        flow_owns_manual = manual_ticket is not None and accepted
+                        if not accepted:
+                            manual_detail = "flow_observation_dropped"
                         return
 
             # Step.2 评估独立唤醒规则并记录命中原因
@@ -870,14 +888,12 @@ class PipelineScheduler:
             if self.error_feedback:
                 await self._send_feedback(event, info.text)
         finally:
-            self._record_send_diagnostic(event, manual_detail)
-            ticket = self.manual_wakes.tickets.get(event)
-            if ticket is not None:
-                if ticket.status == "pending":
-                    ticket.status = "processed"
-                if self.manual_wake_store is not None:
-                    final_status, final_detail = await self._adjudicate_manual_request(event, ticket, manual_detail)
-                    await self._update_manual_request(event, ticket, final_status, final_detail, refine=True)
+            if not flow_owns_manual:
+                ticket = self.manual_wakes.tickets.get(event)
+                if ticket is not None:
+                    await self._finish_manual_request(event, manual_detail)
+                else:
+                    self._record_send_diagnostic(event, manual_detail)
             if not flow_owns_cleanup:
                 event.cleanup_temporary_local_files()
 
@@ -1024,14 +1040,68 @@ class PipelineScheduler:
             if entry is not None:
                 manager.pool.release(entry)
 
-    def _enqueue_flow_observation(self, session: Any, event: MessageEvent) -> None:
-        """锁内只向目标会话投递; 会话拥有的单个任务按投递顺序观察。"""
+    async def _finish_manual_request(self, event: MessageEvent, manual_detail: str | None) -> None:
+        """在普通管线或 flow 完整结束后统一归并发送证据并推进票据终态"""
+        ticket = self.manual_wakes.tickets.get(event)
+        if ticket is None:
+            return
+        self._record_send_diagnostic(event, manual_detail)
+        if ticket.status == "pending":
+            ticket.status = "processed"
+        if self.manual_wake_store is not None:
+            final_status, final_detail = await self._adjudicate_manual_request(event, ticket, manual_detail)
+            await self._update_manual_request(event, ticket, final_status, final_detail, refine=True)
+
+    def _spawn_flow_manual_task(self, coro: Any, event: MessageEvent) -> None:
+        """创建有引用的手动请求后台任务; 完成回调负责移除并接收任务异常"""
+        try:
+            task = asyncio.create_task(coro, name=f"flow-manual-finalize-{event.call_origin.request_id}")
+        except BaseException:
+            coro.close()
+            raise
+        self._flow_manual_tasks.add(task)
+
+        def finished(done: asyncio.Task[Any]) -> None:
+            self._flow_manual_tasks.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if error is not None:
+                logger.error(f"[PipelineScheduler] flow 手动请求收尾失败: {error}")
+        task.add_done_callback(finished)
+
+    def _spawn_flow_manual_finalizer(self, event: MessageEvent, reason: str) -> None:
+        """队列回调无法 await 时, 独立收尾被丢弃的手动请求并接收任务异常"""
+        self._spawn_flow_manual_task(self._finish_manual_request(event, reason), event)
+
+    def _spawn_flow_manual_settlement(self, session: Any, event: MessageEvent) -> None:
+        """手动观察已投递: 独立任务等待后台 WF 收尾并归并终态, 临时文件所有权随之移交"""
+        async def settle() -> None:
+            detail: str | None = None
+            try:
+                detail = await session.wait_for_manual_observation(event)
+            except asyncio.CancelledError:
+                detail = "cancelled"
+                raise
+            except Exception as error:
+                detail = "flow_observation_failed"
+                logger.error(f"[PipelineScheduler] flow 手动观察等待失败: {error}")
+            finally:
+                try:
+                    await self._finish_manual_request(event, detail)
+                finally:
+                    event.cleanup_temporary_local_files()
+
+        self._spawn_flow_manual_task(settle(), event)
+
+    def _enqueue_flow_observation(self, session: Any, event: MessageEvent) -> bool:
+        """锁内只向目标会话投递; 返回事件是否进入会话拥有的串行观察队列。"""
         if getattr(session, "_closed", False):
             event.cleanup_temporary_local_files()
             record_debug("flow_observation", "queue_drop", status="dropped", metadata={
                 "session": session.session_id, "reason": "session_closed", "dropped_messages": 1,
             })
-            return
+            return False
         queue = getattr(session, "_scheduler_observations", None)
         if queue is None:
             queue = deque()
@@ -1039,6 +1109,7 @@ class PipelineScheduler:
         if len(queue) >= _FLOW_OBSERVATION_QUEUE_LIMIT:
             dropped = queue.popleft()
             dropped.cleanup_temporary_local_files()
+            self._spawn_flow_manual_finalizer(dropped, "flow_observation_dropped")
             record_debug("flow_new", "queue_drop", metadata={
                 "session": session.session_id, "reason": "scheduler_queue_capacity",
                 "capacity": _FLOW_OBSERVATION_QUEUE_LIMIT,
@@ -1054,23 +1125,46 @@ class PipelineScheduler:
                 try:
                     while queue:
                         current = queue.popleft()
+                        manual_detail: str | None = None
+                        ticket = self.manual_wakes.tickets.get(current)
+                        spawned = False
                         try:
-                            await session.observe(current)
-                            # /new 的 observe 会将当前消息交给独立结算任务;
-                            # 等待它完成再消费后续消息, 避免回放期间插队或提前清理文件。
-                            settle_task = getattr(session, "_settle_task", None)
-                            if settle_task is not None:
-                                await settle_task
+                            if ticket is not None and ticket.cancelled:
+                                manual_detail = "cancelled"
+                            else:
+                                await session.observe(current)
+                                # /new 的 observe 会将当前消息交给独立结算任务;
+                                # 等待它完成再消费后续消息, 避免回放期间插队或提前清理文件。
+                                settle_task = getattr(session, "_settle_task", None)
+                                if settle_task is not None:
+                                    await settle_task
+                            if ticket is not None and manual_detail is None:
+                                # 手动唤醒的 WF 等待转入独立结算任务, 串行观察立即继续;
+                                # 临时文件的清理责任一并移交, 本循环不再触碰。
+                                try:
+                                    self._spawn_flow_manual_settlement(session, current)
+                                except Exception as error:
+                                    manual_detail = "flow_observation_failed"
+                                    logger.error(f"[PipelineScheduler] flow 手动结算任务创建失败: {error}")
+                                else:
+                                    spawned = True
                         except asyncio.CancelledError:
+                            manual_detail = "cancelled"
                             raise
                         except Exception as error:
+                            manual_detail = "flow_observation_failed" if ticket is not None else None
                             logger.error(f"[PipelineScheduler] flow 消息观察失败: {error}")
                         finally:
-                            current.cleanup_temporary_local_files()
+                            if not spawned:
+                                if ticket is not None:
+                                    await self._finish_manual_request(current, manual_detail)
+                                current.cleanup_temporary_local_files()
                 finally:
                     # 关闭会话时取消任务, 尚未观察的事件也必须释放临时文件。
                     while queue:
-                        queue.popleft().cleanup_temporary_local_files()
+                        dropped = queue.popleft()
+                        await self._finish_manual_request(dropped, "flow_observation_dropped")
+                        dropped.cleanup_temporary_local_files()
                     session._scheduler_observer_task = None
 
             coro = drain()
@@ -1078,15 +1172,20 @@ class PipelineScheduler:
                 task = session._spawn_observer_task(coro, name=f"flow-scheduler-{session.session_id}")
                 if task is None:
                     while queue:
-                        queue.popleft().cleanup_temporary_local_files()
-                    return
+                        dropped = queue.popleft()
+                        if dropped is not event:
+                            self._spawn_flow_manual_finalizer(dropped, "flow_observation_dropped")
+                        dropped.cleanup_temporary_local_files()
+                    return False
                 session._scheduler_observer_task = task
 
                 def cleanup_unstarted(done: asyncio.Task[Any]) -> None:
                     # 协程首次运行前被 close 取消时, drain 的 finally 不会执行。
                     if session._scheduler_observer_task is done:
                         while queue:
-                            queue.popleft().cleanup_temporary_local_files()
+                            dropped = queue.popleft()
+                            self._spawn_flow_manual_finalizer(dropped, "flow_observation_dropped")
+                            dropped.cleanup_temporary_local_files()
                         session._scheduler_observer_task = None
 
                 task.add_done_callback(cleanup_unstarted)
@@ -1094,6 +1193,7 @@ class PipelineScheduler:
                 coro.close()
                 queue.pop()
                 raise
+        return True
 
     def _adopt_flow_session(self, session: Any) -> None:
         """把调度器的 error_feedback 开关同步给流程会话"""
