@@ -10,7 +10,10 @@ from satrap.core.utils.file_snapshot import file_fingerprint
 
 import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from satrap.core.config.model_snapshot import ModelConfigReader
 from copy import deepcopy
 import json
 import os
@@ -43,6 +46,7 @@ class EdictumConfigManager:
         *,
         auto_create: bool = True,
         plugin_catalog: PluginCatalog | None = None,
+        models: ModelConfigReader | None = None,
     ) -> None:
         """
         初始化 Edictum 冷配置管理器
@@ -52,10 +56,12 @@ class EdictumConfigManager:
         - storage_path: 配置文件路径
         - auto_create: 是否自动创建父目录和空配置文件
         - plugin_catalog: 可选的已加载目录快照, 用于单次请求内一致读取
+        - models: 保存时校验 WF 模型引用和上下文窗口的只读来源; 磁盘 reload 不检查其当前状态
         """
         self.type_registry = type_registry
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
         self.plugin_catalog = plugin_catalog or PluginCatalog()
+        self.models = models
         self._configs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         if auto_create:
@@ -138,6 +144,7 @@ class EdictumConfigManager:
         issues = validate(
             definition, registry, plugin_catalog=plugin_catalog,
             plugin_execution_enabled=execution_enabled,
+            models=self.models if check_execution else None,
         )
         if any(i.level == "error" for i in issues):
             raise ValueError(

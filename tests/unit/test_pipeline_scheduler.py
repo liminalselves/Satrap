@@ -25,6 +25,7 @@ from satrap.core.platform import PlatformConfig
 from satrap.core.components import Plain
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
 from support.adapters import RecorderAdapter
+from tests.support.flow_runtime import static_model_resolver
 
 
 def _as_session_manager(fake: Any) -> SessionManager:
@@ -913,7 +914,7 @@ def _manual_real_runtime(
     adapter = FlowAdapter(store)
 
     def factory(session_id: str) -> AsyncFlowSession:
-        return AsyncFlowSession(session_id, llm, flow=flow, db_path=str(store.database),
+        return AsyncFlowSession(session_id, model_resolver=static_model_resolver(llm), flow=flow, db_path=str(store.database),
                                 message_store=store, flow_name="manual-real", **session_kwargs)
 
     manager = _RealFlowSchedulerManager(factory)
@@ -969,7 +970,7 @@ async def test_flow_scheduler_real_session_observes_serially(tmp_path: Path):
     }
 
     def factory(session_id: str) -> AsyncFlowSession:
-        return AsyncFlowSession(session_id, llm, flow=flow, db_path=str(store.database),
+        return AsyncFlowSession(session_id, model_resolver=static_model_resolver(llm), flow=flow, db_path=str(store.database),
                                 message_store=store, flow_name="scheduler-real")
 
     manager = _RealFlowSchedulerManager(factory)
@@ -1021,7 +1022,7 @@ async def test_flow_manual_wake_real_scheduler_inputs_and_reply(
     flow = _manual_flow(use_platform_policy=use_platform_policy)
 
     def factory(session_id: str) -> AsyncFlowSession:
-        return AsyncFlowSession(session_id, llm, flow=flow, db_path=str(store.database),
+        return AsyncFlowSession(session_id, model_resolver=static_model_resolver(llm), flow=flow, db_path=str(store.database),
                                 message_store=store, flow_name="manual-real")
 
     manager = _RealFlowSchedulerManager(factory)
@@ -1443,7 +1444,7 @@ async def test_flow_scheduler_real_session_close_drops_queued_observation_with_d
     llm = MockLLM(slow)
 
     def factory(session_id: str) -> AsyncFlowSession:
-        return AsyncFlowSession(session_id, llm, flow=flow, db_path=str(db), new_from="old",
+        return AsyncFlowSession(session_id, model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db), new_from="old",
                                 message_store=store, flow_name="scheduler-close")
 
     manager = _RealFlowSchedulerManager(factory)

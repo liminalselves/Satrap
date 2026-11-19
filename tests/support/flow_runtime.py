@@ -37,6 +37,11 @@ class MockLLM:
         raise NotImplementedError
 
 
+def static_model_resolver(llm: Any = None) -> Any:
+    """为直接构造的 flow 测试显式提供模型, 不经过生产配置或 default 回退"""
+    return lambda _name: llm if llm is not None else MockLLM()
+
+
 class FlowAdapter(PlatformAdapter):
     """真实适配器基类上的最底层发送替身"""
 

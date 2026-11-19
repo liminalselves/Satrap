@@ -17,7 +17,7 @@ from satrap.edictum.flow.node_resources import MeteredClient
 from satrap.edictum.flow.session import AsyncFlowSession, current_flow_run
 from satrap.edictum.flow.store import FlowConflictError, FlowStore, StateCommit
 from tests.support.flow_runtime import (
-    FlowAdapter, MockLLM, archive_event, database, make_event, response, tool_call, wait_until, workflow_flow,
+    FlowAdapter, MockLLM, archive_event, database, make_event, response, static_model_resolver, tool_call, wait_until, workflow_flow,
 )
 
 
@@ -35,7 +35,8 @@ def _archive(db: Path, n: int, scope=SCOPE) -> PlatformMessageStore:
 
 
 def _init_session(flow: dict, db: Path, store: PlatformMessageStore, **kw: Any) -> AsyncFlowSession:
-    session = AsyncFlowSession("s1", llm=None, flow=flow, message_store=store, **kw)
+    kw.setdefault("model_resolver", static_model_resolver())
+    session = AsyncFlowSession("s1", flow=flow, message_store=store, **kw)
     session._flow_store = FlowStore(db, "a", session._flow_name())
     session._flow_store.scope_key = SCOPE.key
     session._scope_key = SCOPE.key
@@ -109,7 +110,7 @@ def _seed_positions(db: Path, flow_name: str, tile: str, wf_ids: Any, seq=0, sco
 
 class TestBudget:
     def _session_for_spend(self, resolved: dict | None = None) -> AsyncFlowSession:
-        session = AsyncFlowSession("s", llm=None, flow={"version": 3, "nodes": [], "edges": []})
+        session = AsyncFlowSession("s", flow={"version": 3, "nodes": [], "edges": []})
         session._budget = FlowCallBudget(max_calls=0)
         session._resolved = resolved or {}
         # _config 需要 _definition 为 None 短路 -> 直接覆盖
@@ -122,7 +123,7 @@ class TestBudget:
         budget = FlowCallBudget(max_calls=0)
         token = current_flow_run.set(("w1", "e1", "r1"))
         try:
-            session = AsyncFlowSession("s", llm=None, flow={"version": 3, "nodes": [], "edges": []})
+            session = AsyncFlowSession("s", flow={"version": 3, "nodes": [], "edges": []})
             session._budget = budget
             session._definition = None
             session._resolved = {}
@@ -141,7 +142,7 @@ class TestBudget:
         budget = FlowCallBudget(max_calls=0)
         token = current_flow_run.set(("w1", "e1", "r1"))
         try:
-            session = AsyncFlowSession("s", llm=None, flow={"version": 3, "nodes": [], "edges": []})
+            session = AsyncFlowSession("s", flow={"version": 3, "nodes": [], "edges": []})
             session._budget = budget
             session._definition = None
             session._resolved = {"w1": {"max_calls_per_run": 2}}
@@ -177,7 +178,7 @@ class TestRealWorkflowCommit:
             "state_id": "state", "content": "不应提交"})]))
         flow = _threshold_flow(snapshot=True)
         flow["nodes"][2]["config"]["max_calls_per_run"] = 1
-        session = AsyncFlowSession("budget", llm, flow=flow, db_path=str(db),
+        session = AsyncFlowSession("budget", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db),
                                    message_store=store, flow_name="budget")
         session.error_feedback = False
         try:
@@ -223,7 +224,7 @@ class TestRealWorkflowCommit:
             return response("done")
 
         llm = MockLLM(script)
-        session = AsyncFlowSession("cas", llm, flow=_threshold_flow(snapshot=True),
+        session = AsyncFlowSession("cas", model_resolver=static_model_resolver(llm), flow=_threshold_flow(snapshot=True),
                                    db_path=str(db), message_store=store, flow_name="cas")
         session.error_feedback = False
         writer = None
@@ -315,7 +316,7 @@ class TestThresholdPerWF:
         store = _archive(db, 2)
         adapter = FlowAdapter(store)
         llm = MockLLM(response("ok"))
-        session = AsyncFlowSession("fresh", llm, flow=_threshold_flow(), db_path=str(db),
+        session = AsyncFlowSession("fresh", model_resolver=static_model_resolver(llm), flow=_threshold_flow(), db_path=str(db),
                                    message_store=store, flow_name="fresh")
         session.error_feedback = False
         try:
@@ -349,7 +350,7 @@ class TestThresholdPerWF:
 
         wb = MockLLM(wb_script)
         session = AsyncFlowSession(
-            "retry", wb, flow=_threshold_flow(("wa", "wb")), db_path=str(db),
+            "retry", flow=_threshold_flow(("wa", "wb")), db_path=str(db),
             model_resolver=lambda name: wa if name == "wa" else wb,
             message_store=store, flow_name="retry")
         session.error_feedback = False
@@ -389,7 +390,7 @@ class TestThresholdPerWF:
         adapter = FlowAdapter(store)
         _seed_positions(db, "once", "t1", ("w1",))
         llm = MockLLM(response("ok"))
-        session = AsyncFlowSession("once", llm, flow=_threshold_flow(), db_path=str(db),
+        session = AsyncFlowSession("once", model_resolver=static_model_resolver(llm), flow=_threshold_flow(), db_path=str(db),
                                    message_store=store, flow_name="once")
         session.error_feedback = False
         try:
@@ -433,7 +434,7 @@ class TestRealBusyAndIdle:
                 active -= 1
 
         llm = MockLLM(script)
-        session = AsyncFlowSession("busy", llm, flow=_threshold_flow(on_busy=mode, messages=1),
+        session = AsyncFlowSession("busy", model_resolver=static_model_resolver(llm), flow=_threshold_flow(on_busy=mode, messages=1),
                                    db_path=str(db), message_store=store, flow_name="busy")
         session.error_feedback = False
         try:
@@ -462,7 +463,7 @@ class TestRealBusyAndIdle:
         flow = _threshold_flow(("wa", "wb"), messages=0)
         flow["nodes"][1]["config"]["idle_seconds"] = 1
         llm = MockLLM(response("ok"))
-        session = AsyncFlowSession("idle", llm, flow=flow, db_path=str(db),
+        session = AsyncFlowSession("idle", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db),
                                    message_store=store, flow_name="idle")
         session.error_feedback = False
         try:
@@ -494,7 +495,7 @@ class TestRealFailureFeedback:
             return response("ok")
 
         llm = MockLLM(script)
-        session = AsyncFlowSession("feedback", llm, flow=_wake_flow(),
+        session = AsyncFlowSession("feedback", model_resolver=static_model_resolver(llm), flow=_wake_flow(),
                                    db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="feedback")
         try:
@@ -518,7 +519,7 @@ class TestRealFailureFeedback:
         adapter = FlowAdapter(store)
         _seed_positions(db, "background-error", "t1", ("w1",))
         llm = MockLLM(lambda messages, tools, count: (_ for _ in ()).throw(RuntimeError("offline")))
-        session = AsyncFlowSession("background-error", llm,
+        session = AsyncFlowSession("background-error", model_resolver=static_model_resolver(llm),
                                    flow=_threshold_flow(messages=1), db_path=str(db),
                                    message_store=store, flow_name="background-error")
         try:
@@ -542,7 +543,7 @@ class TestRealFailureFeedback:
         _seed_positions(db, "background-no-feedback", "t1", ("w1",))
         llm = MockLLM(lambda messages, tools, count: (_ for _ in ()).throw(RuntimeError("offline")))
         session = AsyncFlowSession(
-            "background-no-feedback", llm, flow=_threshold_flow(messages=1), db_path=str(db),
+            "background-no-feedback", model_resolver=static_model_resolver(llm), flow=_threshold_flow(messages=1), db_path=str(db),
             message_store=store, flow_name="background-no-feedback")
         session.error_feedback = False
         try:
@@ -565,10 +566,10 @@ class TestObservationBinding:
         adapter = FlowAdapter(store)
         other = MessageScope(SCOPE.adapter_id, SCOPE.self_id, "group", "other")
         first_llm, second_llm = MockLLM(response("one")), MockLLM(response("two"))
-        first = AsyncFlowSession("first", first_llm, flow=_threshold_flow(messages=1),
+        first = AsyncFlowSession("first", model_resolver=static_model_resolver(first_llm), flow=_threshold_flow(messages=1),
                                  db_path=str(database(tmp_path / "messages.db")),
                                  message_store=store, flow_name="first")
-        second = AsyncFlowSession("second", second_llm, flow=_threshold_flow(messages=1),
+        second = AsyncFlowSession("second", model_resolver=static_model_resolver(second_llm), flow=_threshold_flow(messages=1),
                                   db_path=str(database(tmp_path / "messages.db")),
                                   message_store=store, flow_name="second")
         first.error_feedback = second.error_feedback = False
@@ -601,7 +602,7 @@ class TestObservationBinding:
         """source 无查询参数也不翻页读全量, 默认只返回最新 200 条。"""
         store = _archive(database(tmp_path / "messages.db"), 1005)
         adapter = FlowAdapter(store)
-        session = AsyncFlowSession("paging", MockLLM(), flow=_wake_flow(),
+        session = AsyncFlowSession("paging", model_resolver=static_model_resolver(MockLLM()), flow=_wake_flow(),
                                    db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="paging")
         try:
@@ -624,7 +625,7 @@ class TestObservationBinding:
         flow = _wake_flow()
         flow["nodes"][0]["config"]["max_messages"] = limit
         flow["edges"].append({"from": "src.out", "to": "w1.input"})
-        session = AsyncFlowSession("source-limit", MockLLM(), flow=flow, db_path=str(db),
+        session = AsyncFlowSession("source-limit", model_resolver=static_model_resolver(MockLLM()), flow=flow, db_path=str(db),
                                    message_store=store, flow_name="source-limit")
         try:
             await session.observe(make_event(adapter, SCOPE, "绑定", 2))
@@ -670,7 +671,7 @@ class TestObservationBinding:
         """assemble 的有界请求只取最新未覆盖段与 latest_n, 不翻页构造整段保留期档案"""
         store = _archive(database(tmp_path / "messages.db"), 20)
         adapter = FlowAdapter(store)
-        session = AsyncFlowSession("window", MockLLM(), flow=_wake_flow(),
+        session = AsyncFlowSession("window", model_resolver=static_model_resolver(MockLLM()), flow=_wake_flow(),
                                    db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="window")
         try:
@@ -692,7 +693,7 @@ class TestObservationBinding:
         store = PlatformMessageStore(database(tmp_path / "messages.db"), SCOPE.adapter_id)
         adapter = FlowAdapter(store)
         llm = MockLLM(response("ok"))
-        session = AsyncFlowSession("mentions", llm, flow=_wake_flow(),
+        session = AsyncFlowSession("mentions", model_resolver=static_model_resolver(llm), flow=_wake_flow(),
                                    db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="mentions")
         try:
@@ -710,7 +711,7 @@ class TestObservationBinding:
 
         private = MessageScope(SCOPE.adapter_id, SCOPE.self_id, "private", "u1")
         private_llm = MockLLM(response("private"))
-        session = AsyncFlowSession("private", private_llm, flow=_wake_flow(),
+        session = AsyncFlowSession("private", model_resolver=static_model_resolver(private_llm), flow=_wake_flow(),
                                    db_path=str(database(tmp_path / "messages.db")),
                                    message_store=store, flow_name="private")
         try:
@@ -735,7 +736,7 @@ class TestRuntimeIntegration:
         adapter.supports_scheduled_private_send = kind != "private"
         scope = MessageScope(SCOPE.adapter_id, SCOPE.self_id, kind, "target")
         session = AsyncFlowSession(
-            f"validation-{kind}", MockLLM(), flow=_threshold_flow(messages=1),
+            f"validation-{kind}", model_resolver=static_model_resolver(MockLLM()), flow=_threshold_flow(messages=1),
             db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name=f"validation-{kind}")
         try:
@@ -764,7 +765,7 @@ class TestRuntimeIntegration:
         store = PlatformMessageStore(database(tmp_path / "messages.db"), SCOPE.adapter_id)
         adapter = FlowAdapter(store)
         session = AsyncFlowSession(
-            "diagnostics", MockLLM(), flow=_wake_flow(),
+            "diagnostics", model_resolver=static_model_resolver(MockLLM()), flow=_wake_flow(),
             db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name="diagnostics")
         writer = None
@@ -810,7 +811,7 @@ class TestRuntimeIntegration:
     async def test_runtime_status_falls_back_to_memory_when_debug_events_empty(self, tmp_path):
         """诊断关闭或该流程没有持久化事件时, 状态接口如实使用内存摘要"""
         session = AsyncFlowSession(
-            "empty-diagnostics", MockLLM(), flow=_wake_flow(),
+            "empty-diagnostics", model_resolver=static_model_resolver(MockLLM()), flow=_wake_flow(),
             db_path=str(database(tmp_path / "messages.db")), flow_name="empty-diagnostics")
         session._events.append({"at": 123.0, "kind": "run_end", "status": "ok", "run_id": "r1"})
         try:
@@ -833,9 +834,9 @@ class TestRuntimeIntegration:
         flow = _wake_flow()
         flow["budget"] = {"max_calls": 5, "window_minutes": 30, "count": "wf"}
         llm = MockLLM()
-        session = AsyncFlowSession("budget", llm, flow=flow, db_path=str(db),
+        session = AsyncFlowSession("budget", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db),
                                    message_store=store, flow_name="budget")
-        plain = AsyncFlowSession("plain", MockLLM(), flow=_wake_flow(), db_path=str(db),
+        plain = AsyncFlowSession("plain", model_resolver=static_model_resolver(MockLLM()), flow=_wake_flow(), db_path=str(db),
                                  message_store=store, flow_name="plain")
         try:
             event = make_event(adapter, SCOPE, "@bot 你好", 1, mention=True)
@@ -865,7 +866,7 @@ class TestRuntimeIntegration:
         }, allow_unicode=True), encoding="utf-8")
         db = database(tmp_path / "messages.db")
         session = AsyncFlowSession(
-            "invalid-catalog", MockLLM(), flow=workflow_flow(),
+            "invalid-catalog", model_resolver=static_model_resolver(MockLLM()), flow=workflow_flow(),
             plugin_catalog=PluginCatalog(tmp_path / "plugins", tmp_path / "unused"),
             plugin_config=PluginConfigManager(tmp_path / "plugin-config"),
             db_path=str(db), message_store=PlatformMessageStore(db, SCOPE.adapter_id))
@@ -894,7 +895,7 @@ class TestRuntimeIntegration:
         store = PlatformMessageStore(db, SCOPE.adapter_id)
         installer = AsyncMock()
         disabled = AsyncFlowSession(
-            "disabled-workflow-plugin", MockLLM(), flow=workflow_flow(plugins="probe"),
+            "disabled-workflow-plugin", model_resolver=static_model_resolver(MockLLM()), flow=workflow_flow(plugins="probe"),
             plugin_catalog=catalog, plugin_config=configs, plugin_installer=installer,
             db_path=str(db), message_store=store)
         try:
@@ -909,7 +910,7 @@ class TestRuntimeIntegration:
 
         configs.save_execution("probe", True, 1)
         enabled = AsyncFlowSession(
-            "enabled-workflow-plugin", MockLLM(), flow=workflow_flow(plugins="probe"),
+            "enabled-workflow-plugin", model_resolver=static_model_resolver(MockLLM()), flow=workflow_flow(plugins="probe"),
             plugin_catalog=catalog, plugin_config=configs, plugin_installer=installer,
             db_path=str(db), message_store=store)
         try:
@@ -928,7 +929,7 @@ class TestRuntimeIntegration:
         adapter = FlowAdapter(store)
         catalog = PluginCatalog(tmp_path / "empty-plugins", tmp_path / "empty-user-plugins")
         session = AsyncFlowSession(
-            "unchanged", MockLLM(), flow=_wake_flow(), plugin_catalog=catalog,
+            "unchanged", model_resolver=static_model_resolver(MockLLM()), flow=_wake_flow(), plugin_catalog=catalog,
             db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name="unchanged")
         try:
@@ -979,7 +980,7 @@ class TestRuntimeIntegration:
         store = PlatformMessageStore(database(tmp_path / "messages.db"), SCOPE.adapter_id)
         adapter = FlowAdapter(store)
         session = AsyncFlowSession(
-            "stamp", MockLLM(), flow=flow,
+            "stamp", model_resolver=static_model_resolver(MockLLM()), flow=flow,
             plugin_catalog=PluginCatalog(tmp_path / "plugins", tmp_path / "unused"),
             plugin_config=configs, db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name="stamp")
@@ -1056,7 +1057,7 @@ class TestRuntimeIntegration:
         adapter = FlowAdapter(store)
         llm = MockLLM(response("不应调用"))
         session = AsyncFlowSession(
-            "input-timeout", llm, flow=flow,
+            "input-timeout", model_resolver=static_model_resolver(llm), flow=flow,
             plugin_catalog=PluginCatalog(tmp_path / "plugins", tmp_path / "unused"),
             db_path=str(database(tmp_path / "messages.db")),
             message_store=store, flow_name="input-timeout")
@@ -1091,7 +1092,7 @@ class TestWorkflowNodeConfig:
         flow["nodes"][1]["config"]["cooldown"] = 0
         flow["nodes"][2]["config"].update(prompt="你是小萨", thinking="low", keep_history=keep_history)
         llm = MockLLM(response("好"))
-        session = AsyncFlowSession("cfg", llm, flow=flow, db_path=str(db), message_store=store, flow_name="cfg")
+        session = AsyncFlowSession("cfg", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db), message_store=store, flow_name="cfg")
         session.error_feedback = False
         try:
             for index in (1, 2):
@@ -1126,7 +1127,7 @@ class TestWorkflowNodeConfig:
         flow["edges"].append({"from": "src.out", "to": "bucket.in"})
         flow["edges"].append({"from": "bucket.out", "to": "w1.input"})
         llm = MockLLM(response("好"))
-        session = AsyncFlowSession("pv", llm, flow=flow, db_path=str(db), message_store=store, flow_name="pv")
+        session = AsyncFlowSession("pv", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db), message_store=store, flow_name="pv")
         session.error_feedback = False
         try:
             event = make_event(adapter, private, "你在吗", 1)

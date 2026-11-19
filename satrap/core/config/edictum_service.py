@@ -206,6 +206,7 @@ class EdictumConfigService:
             conversation_kinds=[str(k) for k in kinds] if kinds else None,
             scheduled_send_group=group if type(group) is bool else None,
             scheduled_send_private=private if type(private) is bool else None,
+            models=self.models,
         )]
         issues = [{"code": e.code, "level": "error", "category": "结构", "message": str(e), "node": e.node, "field": e.field} for e in errors] + issues
         return {"ok": not any(i["level"] == "error" for i in issues), "issues": issues}

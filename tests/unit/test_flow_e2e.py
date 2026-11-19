@@ -14,7 +14,7 @@ from satrap.core.config.platform_messages import MessageScope, PlatformMessageSt
 from satrap.edictum.flow.session import AsyncFlowSession
 from satrap.edictum.flow.store import FlowStore
 from tests.support.flow_runtime import (
-    FlowAdapter, MockLLM, archive_event, database, make_event, response, tool_call, wait_until,
+    FlowAdapter, MockLLM, archive_event, database, make_event, response, static_model_resolver, tool_call, wait_until,
 )
 
 
@@ -116,7 +116,7 @@ async def test_agent_rp_17_messages_real_observe_snapshot_and_reply_turn(tmp_pat
     agent = MockLLM(agent_script)
     rp = MockLLM(rp_script)
     session = AsyncFlowSession(
-        "unused-route-id", rp, flow=agent_rp_flow(), db_path=str(db),
+        "unused-route-id", flow=agent_rp_flow(), db_path=str(db),
         model_resolver=lambda name: agent if name == "agent" else rp,
         message_store=store, flow_name="agent-rp",
     )
@@ -248,7 +248,7 @@ async def test_logic_17_messages_handoff_and_foreground_reply_turn(tmp_path):
     catalog = PluginCatalog(Path(__file__).resolve().parents[2] / "satrap/expend/plugins",
                             tmp_path / "user-plugins")
     session = AsyncFlowSession(
-        "logic", rp, flow=logic_flow(), db_path=str(store.database),
+        "logic", flow=logic_flow(), db_path=str(store.database),
         model_resolver=lambda name: agent if name == "agent" else rp,
         plugin_catalog=catalog, message_store=store, flow_name="logic",
     )
@@ -290,7 +290,7 @@ async def test_logic_reminder_handoff_preserves_foreground_source_event(tmp_path
     catalog = PluginCatalog(Path(__file__).resolve().parents[2] / "satrap/expend/plugins",
                             tmp_path / "user-plugins")
     session = AsyncFlowSession(
-        "logic-foreground", rp, flow=flow, db_path=str(store.database),
+        "logic-foreground", flow=flow, db_path=str(store.database),
         model_resolver=lambda name: agent if name == "agent" else rp,
         plugin_catalog=catalog, message_store=store, flow_name="logic-foreground",
     )
@@ -333,7 +333,7 @@ async def test_handoff_17_messages_expert_payload_and_done_polish(tmp_path):
     host, expert, polish = MockLLM(host_script), MockLLM(response(answer)), MockLLM(polish_script)
     models = {"host": host, "expert": expert, "polish": polish}
     session = AsyncFlowSession(
-        "handoff", host, flow=handoff_flow(), db_path=str(store.database),
+        "handoff", flow=handoff_flow(), db_path=str(store.database),
         model_resolver=models.__getitem__, message_store=store, flow_name="handoff",
     )
     try:
@@ -383,7 +383,7 @@ async def test_background_threshold_scheduled_send_is_recorded(tmp_path, mode):
         return response("")
 
     llm = MockLLM(script)
-    session = AsyncFlowSession("background", llm, flow=flow,
+    session = AsyncFlowSession("background", model_resolver=static_model_resolver(llm), flow=flow,
                                db_path=str(store.database),
                                message_store=store, flow_name="background")
     try:
@@ -452,7 +452,7 @@ async def test_first_deployment_threshold_covers_only_messages_after_initial_bou
         return response("done")
 
     llm = MockLLM(script)
-    session = AsyncFlowSession("first-deployment", llm, flow=flow, db_path=str(db),
+    session = AsyncFlowSession("first-deployment", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db),
                                message_store=store, flow_name="first-deployment")
     try:
         first = make_event(adapter, SCOPE, "首次部署历史", 1)

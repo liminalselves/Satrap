@@ -98,13 +98,16 @@ class SessionProvider(Protocol):
         self,
         session_config: SessionConfig,
         llm: LLM | AsyncLLM | None = None,
+        *,
+        model_resolver: Any = None,
     ) -> Session | AsyncSession:
         """
         根据实例配置创建运行时会话
 
         参数:
         - session_config: 持久化的会话实例配置
-        - llm: 已按同步或异步形态构建的模型实例
+        - llm: 已按同步或异步形态构建的顶层模型实例
+        - model_resolver: 多工作流会话按节点模型名解析客户端的可选可调用对象
 
         返回:
         - Session | AsyncSession: 运行时会话实例

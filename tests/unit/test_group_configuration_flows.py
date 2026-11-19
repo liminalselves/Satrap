@@ -508,7 +508,9 @@ async def test_group_prompt_overrides_and_instance_prompt_priority() -> None:
             return {"main": self.context}
 
     provider = SimpleNamespace()
-    definition = SimpleNamespace(params={"model_name": "base"})
+    definition = SimpleNamespace(
+        params={"model_name": "base"}, provider_name="edictum", metadata={"edictum_type": "simple"},
+    )
     manager = object.__new__(SessionManager)
     manager.provider_registry = cast(Any, SimpleNamespace(resolve_definition=lambda *_: (provider, definition)))
     manager._model_cfg_mgr = None
@@ -539,7 +541,10 @@ async def test_model_reload_reapplies_group_override_and_same_name_config(monkey
     monkeypatch.setattr(module, "build_llm_from_config", lambda config, **_: (config.name, versions[config.name]))
     manager = object.__new__(SessionManager)
     cfg = SessionConfig(session_id="sid", session_type_name="named", provider_name="edictum")
-    definition = SimpleNamespace(params={"model_name": "base"}, model_key="model_name")
+    definition = SimpleNamespace(
+        params={"model_name": "base"}, model_key="model_name",
+        provider_name="edictum", metadata={"edictum_type": "simple"},
+    )
     manager.provider_registry = cast(Any, SimpleNamespace(resolve_definition=lambda *_: (SimpleNamespace(), definition)))
     manager._model_cfg_mgr = cast(Any, SimpleNamespace(
         get_llm_config=lambda name: LLMConfig(name=name, api_key="test-key"),

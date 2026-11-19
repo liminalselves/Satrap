@@ -283,7 +283,7 @@
                 "nullable": false,
                 "session_overridable": true,
                 "minimum": 200,
-                "maximum": 50000,
+                "maximum": 1000000,
                 "integer": true,
                 "scope": "",
                 "label": "长度上限"
@@ -414,7 +414,7 @@
                 "nullable": false,
                 "session_overridable": true,
                 "minimum": 500,
-                "maximum": 100000,
+                "maximum": 1000000,
                 "integer": true,
                 "scope": "",
                 "label": "字符预算",

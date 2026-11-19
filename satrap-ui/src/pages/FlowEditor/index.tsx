@@ -414,7 +414,8 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
         edictum_type: 'flow',
         enabled: base?.enabled ?? search.get('enabled') !== '0',
         description: base?.description ?? search.get('description') ?? '',
-        model_name: base?.model_name ?? search.get('model') ?? meta.models[0]?.name ?? '',
+        // 模型由各 WF 节点决定, 命名配置顶层不保存模型
+        model_name: '',
         params: { ...(base?.params ?? {}), flow },
         plugins: [],
       };
@@ -452,7 +453,7 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
     } finally {
       setSaving(false);
     }
-  }, [acceptEdictumConfig, application, askConfirm, creating, isRunning, loaded.config, meta.models, name, navigate, revision, saving, search, types, validateNow]);
+  }, [acceptEdictumConfig, application, askConfirm, creating, isRunning, loaded.config, name, navigate, revision, saving, search, types, validateNow]);
 
   const saveRef = useRef(save);
   saveRef.current = save;

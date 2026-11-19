@@ -659,6 +659,7 @@ async def test_flow_provider_installs_directory_plugins_per_workflow(tmp_path):
     session: Any = provider.create_session(
         SessionConfig(session_id="flow-test", session_type_name="flow", provider_name="edictum"),
         cast(Any, object()),
+        model_resolver=lambda _: cast(Any, object()),
     )
     try:
         await provider.prepare_session_async(session)
@@ -701,6 +702,7 @@ def test_flow_provider_rejects_top_level_plugins(tmp_path, instance_override):
             SessionConfig(session_id="flow-test", session_type_name="flow", provider_name="edictum",
                           session_config={"plugins": ["missing"]} if instance_override else {}),
             cast(Any, object()),
+            model_resolver=lambda _: cast(Any, object()),
         )
 
 

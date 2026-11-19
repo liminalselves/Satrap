@@ -33,12 +33,12 @@ def _catalog(**plugins):
     }
 
 
-def _validate(raw, registry=None, catalog=None, kinds=None, archive=True, execution_enabled=None):
+def _validate(raw, registry=None, catalog=None, kinds=None, archive=True, execution_enabled=None, models=None):
     reg = registry or FlowNodeRegistry()
     d, _, _ = migrate_flow_definition(parse_flow_definition(raw), reg)
     return validate(
         d, reg, plugin_catalog=catalog or {}, plugin_execution_enabled=execution_enabled,
-        conversation_kinds=kinds, archive_enabled=archive,
+        conversation_kinds=kinds, archive_enabled=archive, models=models,
     )
 
 
@@ -478,3 +478,94 @@ def test_disabled_workflow_plugin_reports_unavailable_and_recovers(tmp_path, mon
     assert not any(issue.code == "flow_plugin_unavailable" for issue in issues)
     result = service.validate_flow({"flow": flow})
     assert result["ok"] is True
+
+
+def _model_budget_flow(model_name="actual", *, after_coverage=True, pending=900, snapshot=300):
+    """构造由真实命名模型驱动、同时包含快照与待处理消息预算的最小图"""
+    flow = workflow_flow()
+    flow["nodes"][2]["config"]["model_name"] = model_name
+    flow["nodes"].extend([
+        {"id": "state", "type": "state", "title": "状态", "config": {"max_chars": snapshot}},
+        {"id": "assemble", "type": "assemble", "title": "输入", "config": {
+            "after_coverage": after_coverage, "max_pending_chars": pending,
+        }},
+    ])
+    flow["edges"].extend([
+        {"from": "state.read", "to": "assemble.snapshot"},
+        {"from": "src.out", "to": "assemble.messages"},
+        {"from": "assemble.context", "to": "w1.input"},
+    ])
+    return flow
+
+
+@pytest.mark.parametrize(
+    "context_window,pending,snapshot,after_coverage,expected",
+    [
+        (1000, 600, 300, True, False),
+        (1000, 901, 300, True, True),
+        (None, 1000000, 1000000, True, False),
+        (1000, 8000, 1000, False, True),
+    ],
+)
+def test_context_budget_uses_named_model_configuration(
+        tmp_path, context_window, pending, snapshot, after_coverage, expected):
+    """真实 context_window 驱动 60% 提醒, 无窗口跳过且快照始终计入"""
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.type.model_config import LLMConfig
+
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.set_llm_config(LLMConfig(name="actual", context_window=context_window))
+    issues = _validate(
+        _model_budget_flow(after_coverage=after_coverage, pending=pending, snapshot=snapshot),
+        models=models,
+    )
+    assert any(issue.code == "flow_assemble_budget" for issue in issues) is expected
+    assert not any(issue.code == "flow_model_not_found" for issue in issues)
+
+
+def test_unknown_model_is_error_without_api_key_requirement(tmp_path):
+    """存在但无凭据的配置可静态检查, 不存在的名称必须明确报错"""
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.type.model_config import LLMConfig
+
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.set_llm_config(LLMConfig(name="actual", context_window=1000))
+    issues = _validate(_model_budget_flow("missing"), models=models)
+    assert any(issue.code == "flow_model_not_found" and issue.level == "error"
+               and issue.node == "w1" and issue.field == "model_name" for issue in issues)
+
+
+@pytest.mark.parametrize("field", ["max_chars", "max_pending_chars"])
+def test_character_budget_schema_accepts_one_million_and_rejects_above(tmp_path, field):
+    """两个字符字段共用一百万硬上限, 默认值和图结构不需要迁移"""
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.type.model_config import LLMConfig
+
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.set_llm_config(LLMConfig(name="actual"))
+    flow = _model_budget_flow(pending=8000, snapshot=6000)
+    node = next(item for item in flow["nodes"] if item["id"] == ("state" if field == "max_chars" else "assemble"))
+    node["config"][field] = 1000000
+    assert not any(issue.level == "error" and issue.field == field for issue in _validate(flow, models=models))
+    node["config"][field] = 1000001
+    assert any(issue.level == "error" and issue.field == field for issue in _validate(flow, models=models))
+
+
+def test_save_checks_current_models_but_reload_keeps_existing_flow(tmp_path):
+    """写入拒绝未知模型, 模型后来删除时既有配置仍能 reload 供诊断"""
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.type.model_config import LLMConfig
+    from satrap.edictum.config import EdictumConfigManager
+    from satrap.edictum.registry import create_default_edictum_type_registry
+
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.set_llm_config(LLMConfig(name="actual"))
+    manager = EdictumConfigManager(
+        create_default_edictum_type_registry(), tmp_path / "edictum.json", models=models,
+    )
+    manager.create("saved", {"edictum_type": "flow", "params": {"flow": _model_budget_flow()}})
+    with pytest.raises(ValueError, match="flow_model_not_found"):
+        manager.create("bad", {"edictum_type": "flow", "params": {"flow": _model_budget_flow("missing")}})
+    assert models.remove_llm_config("actual")
+    manager.reload()
+    assert manager.get_config("saved") is not None

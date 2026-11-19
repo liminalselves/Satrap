@@ -16,7 +16,10 @@ from satrap.core.type.flow.registry import FlowNodeType
 from satrap.core.type.plugin.catalog import PluginCatalogEntry
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from satrap.core.config.model_snapshot import ModelConfigReader
 
 
 from satrap.core.type.flow.validation import IssueLevel, IssueCategory, Issue, Origin, WfInfo, Analysis
@@ -76,6 +79,7 @@ def validate(
     analysis: Analysis | None = None,
     scheduled_send_group: bool | None = None,
     scheduled_send_private: bool | None = None,
+    models: ModelConfigReader | None = None,
 ) -> list[Issue]:
     """
     对流程定义做静态检查
@@ -91,6 +95,7 @@ def validate(
     - analysis: 可选的预计算分析
     - scheduled_send_group / scheduled_send_private: 平台适配器的后台发送能力;
       None 表示未检测 (跳过 flow_background_send_unsupported 检查)
+    - models: 可选只读模型来源, 用于检查命名引用及真实 context_window; None 跳过环境检查
 
     返回:
     - list[Issue]: 全部问题, 顺序与 demo validate 对齐
@@ -371,6 +376,9 @@ def validate(
             add(Issue(code="flow_model_missing", level="error", category="workflow", node=w.id, field="model_name",
                       message=f"{name(w.id)} 没有可用模型 (本节点和流程默认都未设置)"))
         model_name = str(v.get("model_name") or "")
+        if model_name and models is not None and not models.has_config("llm", model_name):
+            add(Issue(code="flow_model_not_found", level="error", category="workflow", node=w.id, field="model_name",
+                      message=f"{name(w.id)} 引用的模型配置不存在: {model_name}"))
         needs_tools = any((plugin_catalog.get(p) and _workflow_plugin_tools(plugin_catalog[p])) for p in plugins) \
             or bool(w.handoff_tools)
         if w.writes_state and not any(_plugin_provides_by_name(p, plugin_catalog.get(p), "state_write") for p in plugins):
@@ -457,6 +465,9 @@ def validate(
             if not cfg(node.id).get("model_name"):
                 add(Issue(code="flow_plugin_model_missing", level="error", category="配置", node=node.id, field="model_name",
                           message=f"{name(node.id)} 需要插件模型, 本节点和插件默认都未设置"))
+            elif models is not None and not models.has_config("llm", str(cfg(node.id).get("model_name"))):
+                add(Issue(code="flow_model_not_found", level="error", category="配置", node=node.id, field="model_name",
+                          message=f"{name(node.id)} 引用的模型配置不存在: {cfg(node.id).get('model_name')}"))
             pullers = ", ".join(name(pid) for pid in pulled_by.get(node.id, set())) or "拉取方"
             add(Issue(code="flow_plugin_calls_model", level="warning", category="成本", node=node.id,
                       message=f"{name(node.id)} 会调用插件模型 {cfg(node.id).get('model_name') or '(未设置)'}, 属于插件行为, 不计入流程的 LLM 触发",
@@ -465,9 +476,10 @@ def validate(
         v = cfg(asm.id)
         for wid in pulled_by.get(asm.id, set()):
             snap_chars = sum(int(cfg(e.source).get("max_chars") or 0) for e in in_e(asm.id, "snapshot") if e.source in nodes)
-            tokens = (int(v.get("max_pending_chars") or 0) if v.get("after_coverage") else 0 + snap_chars) / 1.5
+            pending_chars = int(v.get("max_pending_chars") or 0) if v.get("after_coverage") else 0
+            tokens = (pending_chars + snap_chars) / 1.5
             if model_name := str(wfs.get(wid).values.get("model_name") or ""):
-                ctx_size = _model_ctx_size(model_name)
+                ctx_size = _model_ctx_size(models, model_name)
                 if ctx_size and tokens > ctx_size * 0.6:
                     add(Issue(code="flow_assemble_budget", level="warning", category="配置",
                               node=asm.id, field="max_pending_chars",
@@ -602,13 +614,12 @@ def _plugin_disabled(entry: PluginCatalogEntry, execution_enabled: dict[str, boo
     return execution_enabled.get(entry.name, True) is False
 
 
-def _model_ctx_size(model_name: str) -> int | None:
-    """模型上下文长度表 (首版写死 demo 的表, 后续由模型配置提供)"""
-    table = {
-        "claude-sonnet-4.5": 200_000, "deepseek-v3": 64_000, "deepseek-r1": 64_000,
-        "gpt-5-mini": 128_000, "qwen3-max": 32_000, "gemma-3-12b": 8_192,
-    }
-    return table.get(model_name)
+def _model_ctx_size(models: ModelConfigReader | None, model_name: str) -> int | None:
+    """从命名模型配置读取有效窗口; 无来源、缺配置或未设置窗口时跳过预算检查"""
+    if models is None or not models.has_config("llm", model_name):
+        return None
+    value = models.get_llm_config(model_name).context_window
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 def _config_obj(t: FlowNodeType, node: Any, definition: FlowDefinition):

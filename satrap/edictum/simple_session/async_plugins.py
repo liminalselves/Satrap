@@ -78,7 +78,7 @@ async def install_workflow_plugin(
     host = hosts.get(wf)
     if host is None:
         host = AsyncSimpleSession(
-            session.session_id, session._init_llm, db_path=session.session_ctx.db_path,
+            session.session_id, wf.llm, db_path=session.session_ctx.db_path,
             enable_checkpoint=False, plugin_environment=getattr(session, "plugin_environment", None),
         )
         host._wf = wf

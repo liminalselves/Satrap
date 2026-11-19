@@ -13,6 +13,8 @@ from satrap.core.platform.event import MessageChain
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.utils.TCBuilder import AsyncToolsManager
 from satrap.core.type.flow.definition import FlowDefinition, FlowNodeInstance
+from satrap.core.type.flow.workflow import ResolvedFlowModel
+from satrap.core.utils.context_policy import apply_context_policy
 from satrap.edictum.flow.definition import parse_flow_definition
 from satrap.edictum.flow.instances import FlowNodeInstancePool, config_fingerprint
 from satrap.edictum.flow.message_projection import (
@@ -31,6 +33,7 @@ from collections import deque
 from typing import Any
 import asyncio
 import contextvars
+import inspect
 import time
 import uuid
 
@@ -56,7 +59,6 @@ class AsyncFlowSession(AsyncSession):
     def __init__(
         self,
         session_id: str,
-        llm: Any,
         *,
         flow: dict[str, Any] | None = None,
         content_callback: Any = None,
@@ -77,12 +79,11 @@ class AsyncFlowSession(AsyncSession):
 
         参数:
         - session_id: 会话 ID
-        - llm: 默认模型实例; 节点 model_name 缺省时使用
         - flow: params.flow 原始定义
         - content_callback: 内容回调
         - db_path: 上下文数据库路径
         - enable_checkpoint: 是否启用会话级检查点
-        - model_resolver: 按 model_name 解析 AsyncLLM 的可调用对象, 缺省使用 llm
+        - model_resolver: 按节点生效 model_name 解析 ResolvedFlowModel 或测试模型对象的可调用对象
         - plugin_installer: 往指定 WF 安装一个插件的可调用对象 (session, wf, path, config)
         - plugin_catalog: 插件目录 (PluginCatalog); 插件节点实现经它定位
         - plugin_config: 插件配置管理器 (PluginConfigManager); 插件节点全局默认经它读取
@@ -97,7 +98,6 @@ class AsyncFlowSession(AsyncSession):
         if db_path is not None:
             init_kwargs["db_path"] = db_path
         super().__init__(session_id, content_callback, **init_kwargs)
-        self._init_llm = llm
         self._model_resolver = model_resolver
         self._plugin_installer = plugin_installer
         self._plugin_catalog = plugin_catalog
@@ -119,6 +119,8 @@ class AsyncFlowSession(AsyncSession):
         """{磁贴 id: 它实际驱动的 WF 集合} (经逻辑门传播, 来自静态分析)"""
         self._workflows: dict[str, AsyncModelWorkflowFramework] = {}
         """节点 id -> WF 实例"""
+        self._owned_workflow_clients: dict[str, Any] = {}
+        """节点 id -> 由生产 resolver 构建并需随会话释放的原始模型客户端"""
         self._flow_store: FlowStore | None = None
         self._invalidated_run_ids: set[str] = set()
         """持久化作废失败时的内存第二道防护; 提交线程与发送边界共同检查。"""
@@ -252,14 +254,18 @@ class AsyncFlowSession(AsyncSession):
             if node_type is None or node_type.role != "workflow":
                 continue
             wf_id = self.workflow_id_assign(node.id)
-            resolved_llm = self._resolve_llm(node, self._registry)
+            resolved = self._resolve_model(node)
             wf = AsyncModelWorkflowFramework(
-                resolved_llm,
+                resolved.client,
                 context_id=wf_id,
                 tools_manager=AsyncToolsManager(),
                 db_path=self.session_ctx.db_path,
             )
             await wf.initialize()
+            if resolved.config is not None:
+                apply_context_policy(wf.ctx, resolved.config)
+            if resolved.owned:
+                self._owned_workflow_clients[node.id] = resolved.client
             # 计量包装: 每次模型调用前检查预算 (P2-1)
             node_id = node.id
             wf.llm = MeteredClient(wf.llm, lambda nid=node_id: self._spend("wf", nid, per_run=True))
@@ -582,23 +588,19 @@ class AsyncFlowSession(AsyncSession):
         """流程配置名, 用作持久化分组的第二维; 缺省退化为 session_id"""
         return self._named_flow or self.session_id
 
-    def _resolve_llm(self, node: FlowNodeInstance, registry: FlowNodeRegistry) -> Any:
-        """
-        按节点 model_name 解析模型实例, 未设置时用会话默认
-
-        参数:
-        - node: WF 节点实例
-        - registry: 节点类型注册表
-
-        返回:
-        - AsyncLLM: 模型实例
-        """
-        model_name = str(self._config(node.id).get("model_name") or "")
-        if self._model_resolver is not None and model_name:
-            resolved = self._model_resolver(model_name)
-            if resolved is not None:
-                return resolved
-        return self._init_llm
+    def _resolve_model(self, node: FlowNodeInstance) -> ResolvedFlowModel:
+        """严格解析 WF 的生效模型, 缺名、缺解析器或空结果均不回退"""
+        model_name = str(self._config(node.id).get("model_name") or "").strip()
+        if not model_name:
+            raise ValueError(f"WF 节点 {node.id} 未配置模型")
+        if self._model_resolver is None:
+            raise ValueError(f"WF 节点 {node.id} 的模型 {model_name} 缺少配置解析器")
+        resolved = self._model_resolver(model_name)
+        if resolved is None:
+            raise ValueError(f"WF 节点 {node.id} 的模型配置不存在: {model_name}")
+        if isinstance(resolved, ResolvedFlowModel):
+            return resolved
+        return ResolvedFlowModel(client=resolved)
 
     def workflow_for(self, node_id: str) -> AsyncModelWorkflowFramework:
         """
@@ -615,6 +617,55 @@ class AsyncFlowSession(AsyncSession):
     def workflows(self) -> dict[str, AsyncModelWorkflowFramework]:
         """全部 WF 实例 {节点 id: WF}"""
         return dict(self._workflows)
+
+    async def reload_models(self, model_resolver: Any) -> None:
+        """用当前模型来源逐 WF 重建客户端, 任一解析失败时保留全部旧模型"""
+        self._model_resolver = model_resolver
+        if not self._workflows or self._definition is None:
+            return
+        prepared: list[tuple[str, AsyncModelWorkflowFramework, ResolvedFlowModel]] = []
+        try:
+            for node_id, wf in self._workflows.items():
+                node = self._definition.nodes.get(node_id)
+                if node is not None:
+                    prepared.append((node_id, wf, self._resolve_model(node)))
+        except Exception:
+            for _, _, resolved in prepared:
+                if resolved.owned:
+                    await self._close_model_client(resolved.client)
+            raise
+
+        previous: list[Any] = []
+        for node_id, wf, resolved in prepared:
+            old_owned = self._owned_workflow_clients.pop(node_id, None)
+            if old_owned is not None:
+                previous.append(old_owned)
+            if resolved.owned:
+                self._owned_workflow_clients[node_id] = resolved.client
+            wf.llm = MeteredClient(
+                resolved.client, lambda nid=node_id: self._spend("wf", nid, per_run=True),
+            )
+            if resolved.config is not None:
+                apply_context_policy(wf.ctx, resolved.config)
+            host = getattr(self, "_workflow_plugin_hosts", {}).get(wf)
+            if host is not None:
+                host._init_llm = wf.llm
+        for client in previous:
+            await self._close_model_client(client)
+
+    @staticmethod
+    async def _close_model_client(client: Any) -> None:
+        """关闭 flow 自建的同步或异步模型客户端, 外部测试替身不进入此路径"""
+        target = getattr(client, "client", client)
+        close = getattr(target, "aclose", None) or getattr(target, "close", None)
+        if not callable(close):
+            return
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as error:
+            logger.warning(f"[流程会话] 模型客户端关闭失败: {error}")
 
     # ---------- 消息入口 ----------
 
@@ -1651,6 +1702,10 @@ class AsyncFlowSession(AsyncSession):
         await self._instances.close_all()
         from satrap.edictum.simple_session.async_plugins import close_workflow_plugin_hosts
         await close_workflow_plugin_hosts(self)
+        owned_clients = list(self._owned_workflow_clients.values())
+        self._owned_workflow_clients.clear()
+        for client in owned_clients:
+            await self._close_model_client(client)
 
     @staticmethod
     def _runtime_event(event: dict[str, Any], *, persisted: bool) -> dict[str, Any]:

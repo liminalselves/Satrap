@@ -3280,6 +3280,7 @@ class BackendManager:
         self._edictum_cfg = EdictumConfigManager(
             self._edictum_types,
             storage_path=self.config.edictum_config_path,
+            models=self._model_cfg,
         )
         logger.info("[BackendManager] EdictumConfigManager 就绪")
 

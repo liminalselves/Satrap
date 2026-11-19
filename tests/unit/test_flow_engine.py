@@ -114,7 +114,7 @@ class TestConditionEvaluator:
         from satrap.edictum.flow.budget import FlowCallBudget
         from satrap.edictum.flow.session import AsyncFlowSession
 
-        session = AsyncFlowSession("s", llm=None, flow={"version": 3, "nodes": [], "edges": []})
+        session = AsyncFlowSession("s", flow={"version": 3, "nodes": [], "edges": []})
         session._budget = FlowCallBudget(max_calls=0)
         session._budget.check_and_spend(source="wf", node_id="w1", event_id="e", run_id="r")
         seen = []

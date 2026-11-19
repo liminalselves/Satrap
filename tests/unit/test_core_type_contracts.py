@@ -52,6 +52,7 @@ def test_current_contract_pickle_and_runtime_annotations() -> None:
     hints = typing.get_type_hints(
         contracts.SessionProvider.create_session,
         globalns={
+            "Any": typing.Any,
             "SessionConfig": contracts.SessionConfig,
             "LLM": LLM,
             "AsyncLLM": AsyncLLM,

@@ -12,7 +12,7 @@ from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.edictum.flow.session import AsyncFlowSession
 from satrap.edictum.flow.store import FlowStore, StateCommit
 from tests.support.flow_runtime import (
-    FlowAdapter, MockLLM, archive_event, database, make_event, response, tool_call, wait_until,
+    FlowAdapter, MockLLM, archive_event, database, make_event, response, static_model_resolver, tool_call, wait_until,
 )
 
 
@@ -112,7 +112,7 @@ async def test_restart_recovers_positions_states_and_retriggers_batch(tmp_path):
         return response("done")
 
     llm = MockLLM(script)
-    session = AsyncFlowSession("sess1", llm=llm, flow=_flow_definition(),
+    session = AsyncFlowSession("sess1", model_resolver=static_model_resolver(llm), flow=_flow_definition(),
                                db_path=str(session_db), message_store=store, flow_name="sess1")
     session.error_feedback = False
     try:
@@ -203,7 +203,7 @@ def test_new_settle_clear_state_and_drop_position():
     flow = _flow_with_state_and_threshold()
     flow["nodes"][1]["config"]["on_new"] = "drop"
     flow["nodes"][2]["config"]["on_new"] = "clear"
-    session = AsyncFlowSession("s2", llm=None, flow=flow, message_store=store, flow_name="f1")
+    session = AsyncFlowSession("s2", model_resolver=static_model_resolver(), flow=flow, message_store=store, flow_name="f1")
     _bind_session(session, db, scope, store, new_from="s1")
     asyncio.run(_init_def(session))
     asyncio.run(session._settle_new())
@@ -233,7 +233,7 @@ async def test_new_settle_keep_state_and_drain(tmp_path):
     flow["nodes"][1]["config"]["on_new"] = "drain"
     flow["nodes"][2]["config"]["on_new"] = "keep"
     llm = MockLLM(response("done"))
-    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(session_db),
+    session = AsyncFlowSession("s2", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(session_db),
                                message_store=store, flow_name="f1", new_from="s1")
     session.error_feedback = False
     try:
@@ -265,7 +265,7 @@ async def test_new_drain_failure_falls_back_to_drop(tmp_path):
     flow = _flow_with_state_and_threshold()
     flow["nodes"][1]["config"]["on_new"] = "drain"
     llm = MockLLM(lambda messages, tools, count: (_ for _ in ()).throw(RuntimeError("offline")))
-    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(session_db),
+    session = AsyncFlowSession("s2", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(session_db),
                                message_store=store, flow_name="f1", new_from="s1")
     session.error_feedback = False
     try:
@@ -310,7 +310,7 @@ async def test_new_observe_nonblocking_and_replay_respects_busy(tmp_path):
             active -= 1
 
     llm = MockLLM(script)
-    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(session_db),
+    session = AsyncFlowSession("s2", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(session_db),
                                message_store=store, flow_name="f1", new_from="s1")
     session.error_feedback = False
     try:
@@ -374,7 +374,7 @@ async def test_new_drain_deadline_cancels_old_workflow_then_drops(tmp_path, monk
 
     monkeypatch.setattr(session_module.asyncio, "wait_for", drain_wait_for)
     llm = MockLLM(slow)
-    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(db),
+    session = AsyncFlowSession("s2", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db),
                                message_store=store, flow_name="f1", new_from="s1")
     session.error_feedback = False
     diagnostics = []
@@ -428,7 +428,7 @@ async def test_new_drain_timeout_invalidates_commit_thread_before_drop(
         response("", [tool_call("snapshot_write", {
             "state_id": "s1", "content": "超时运行的状态"})])
         if count == 1 else response("done")))
-    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(db),
+    session = AsyncFlowSession("s2", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db),
                                message_store=store, flow_name="f1", new_from="s1")
     session.error_feedback = False
     commit_entered, allow_commit, commit_finished = (
@@ -472,7 +472,7 @@ async def test_invalidated_run_does_not_start_scheduled_send(tmp_path):
     scope = MessageScope("a", "s", "group", "c")
     store = _archive(db, scope, 1)
     adapter = FlowAdapter(store)
-    session = AsyncFlowSession("send-generation", MockLLM(), flow=_flow_definition(),
+    session = AsyncFlowSession("send-generation", model_resolver=static_model_resolver(MockLLM()), flow=_flow_definition(),
                                db_path=str(db), message_store=store, flow_name="f1")
     try:
         event = make_event(adapter, scope, "历史", 2)
@@ -499,7 +499,7 @@ async def test_invalidated_flow_reply_does_not_start_scheduled_send(tmp_path):
     scope = MessageScope("a", "s", "group", "c")
     store = _archive(db, scope, 1)
     adapter = FlowAdapter(store)
-    session = AsyncFlowSession("reply-generation", MockLLM(), flow=_flow_definition(),
+    session = AsyncFlowSession("reply-generation", model_resolver=static_model_resolver(MockLLM()), flow=_flow_definition(),
                                db_path=str(db), message_store=store, flow_name="f1")
     run_token = event_token = None
     try:
@@ -533,7 +533,7 @@ async def test_session_startup_clears_stale_run_tokens(tmp_path):
     other = FlowStore(db, scope.adapter_id, "f2")
     await asyncio.to_thread(current.begin_run_token, scope.key, "w1", "stale-run")
     await asyncio.to_thread(other.begin_run_token, scope.key, "w1", "other-flow-run")
-    session = AsyncFlowSession("restart", MockLLM(), flow=_flow_definition(),
+    session = AsyncFlowSession("restart", model_resolver=static_model_resolver(MockLLM()), flow=_flow_definition(),
                                db_path=str(db), message_store=store, flow_name="f1")
     try:
         event = make_event(adapter, scope, "重启", 2)
@@ -567,7 +567,7 @@ async def test_commit_holding_write_lock_finishes_before_drain_drop(tmp_path, mo
         response("", [tool_call("snapshot_write", {
             "state_id": "s1", "content": "已持锁提交的状态"})])
         if count == 1 else response("done")))
-    session = AsyncFlowSession("s2", llm=llm, flow=flow, db_path=str(db),
+    session = AsyncFlowSession("s2", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db),
                                message_store=store, flow_name="f1", new_from="s1")
     session.error_feedback = False
     lock_held = threading.Event()
@@ -644,7 +644,7 @@ async def test_new_observation_queue_overflow_drops_and_stays_bounded(tmp_path, 
         return response("done")
 
     llm = MockLLM(slow)
-    session = AsyncFlowSession("bounded", llm=llm, flow=flow, db_path=str(db),
+    session = AsyncFlowSession("bounded", model_resolver=static_model_resolver(llm), flow=flow, db_path=str(db),
                                message_store=store, flow_name="f1", new_from="s1")
     session.error_feedback = False
     diagnostics = []

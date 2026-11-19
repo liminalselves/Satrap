@@ -821,11 +821,11 @@ def _edictum_config_service(catalog: PluginCatalog | None = None) -> EdictumConf
         storage_path = Path(str(raw_path))
         if not storage_path.is_absolute():
             storage_path = PROJECT_ROOT / storage_path
-    with timings.phase('edictum_read_ms'):
-        registry = create_default_edictum_type_registry()
-        manager = EdictumConfigManager(registry, storage_path=storage_path, plugin_catalog=catalog)
     with timings.phase('dependencies_ms'):
         models = _model_config_service().manager
+    with timings.phase('edictum_read_ms'):
+        registry = create_default_edictum_type_registry()
+        manager = EdictumConfigManager(registry, storage_path=storage_path, plugin_catalog=catalog, models=models)
         service = EdictumConfigService(
             manager, registry, models=models, rag=RagService(_configured_storage_layout(), models, "local"),
             reference_checker=lambda name: _named_group_references("edictum", name),

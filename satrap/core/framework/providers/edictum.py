@@ -225,14 +225,16 @@ class EdictumProvider:
         session_config: SessionConfig,
         llm: LLM | AsyncLLM | None = None,
         *, apply_snapshot: EdictumPluginApplySnapshot | None = None,
+        model_resolver: Any = None,
     ) -> Session | AsyncSession:
         """
         根据实例配置创建 Edictum 会话
 
         参数:
         - session_config: 持久化的会话实例配置
-        - llm: 已按类型构建的同步或异步模型
+        - llm: 非 flow 类型已按类型构建的同步或异步模型
         - apply_snapshot: 可选候选实例来源, 不进入会话持久化或工具执行上下文
+        - model_resolver: flow 按 WF 生效模型名严格解析客户端及配置的可调用对象
 
         返回:
         - Session | AsyncSession: 已创建的 Edictum 会话实例
@@ -243,10 +245,13 @@ class EdictumProvider:
             raise ValueError(f"未知 Edictum 配置: {name}")
         if not definition.enabled:
             raise ValueError(f"Edictum 配置已禁用: {name}")
-        if llm is None:
-            raise ValueError(f"Edictum 配置缺少可用 LLM: {name}")
 
         type_name = str(definition.metadata.get("edictum_type", ""))
+        if type_name == "flow":
+            if model_resolver is None:
+                raise ValueError(f"流程配置缺少模型配置解析器: {name}")
+        elif llm is None:
+            raise ValueError(f"Edictum 配置缺少可用 LLM: {name}")
         type_definition = self.type_registry.require(type_name)
         if type_name == "flow" and (definition.metadata.get("plugins") or (session_config.session_config or {}).get("plugins")):
             raise ValueError("流程会话不支持顶层 plugins, 请将插件配置到 WF 节点")
@@ -263,6 +268,7 @@ class EdictumProvider:
             payload.setdefault("flow_name", name)
             # 插件目录与配置管理器由宿主注入, 会话据此解析插件节点与全局默认
             payload.setdefault("plugin_catalog", self.plugin_catalog)
+            payload["model_resolver"] = model_resolver
             from satrap.edictum.plugin.config import PluginConfigManager
             payload.setdefault("plugin_config", PluginConfigManager())
             from satrap.edictum.simple_session.async_plugins import install_workflow_plugin
@@ -280,11 +286,10 @@ class EdictumProvider:
             payload["db_path"] = self.default_checkpoint_db
         if not has_var_kw:
             payload = {key: value for key, value in payload.items() if key in parameters}
-        session = factory(
-            session_id=session_config.session_id or "",
-            llm=llm,
-            **payload,
-        )
+        factory_kwargs = {"session_id": session_config.session_id or "", **payload}
+        if type_name != "flow":
+            factory_kwargs["llm"] = llm
+        session = factory(**factory_kwargs)
         if not isinstance(session, (Session, AsyncSession)):
             raise TypeError(f"Edictum 工厂返回了无效会话类型: {type(session).__name__}")
         plugin_states = self._normalize_plugin_states(definition.metadata.get("plugins", []),

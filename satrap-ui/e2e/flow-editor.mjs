@@ -137,6 +137,7 @@ async function flow_agent_editor_entry(runtime) {
   await page.locator('button').filter({ hasText: /^flow/ }).first().click();
   const drawer = page.getByRole('dialog');
   assert.equal(await drawer.getByRole('button', { name: '打开流程编辑器' }).count(), 0, '新建时只有底部一个流程入口');
+  assert.equal(await drawer.getByText('绑定 LLM').count(), 0, 'flow 不显示顶层模型');
   assert.equal(await drawer.getByLabel('其他会话参数 (JSON 对象)').count(), 0, 'flow 不显示 JSON 参数');
   assert.equal(await drawer.getByRole('button', { name: '管理插件' }).count(), 0, 'flow 不显示顶层插件');
   await drawer.getByPlaceholder('如: platform-assistant').fill('group-rp');
@@ -154,6 +155,7 @@ async function flow_agent_editor_entry(runtime) {
   const created = requests.find((item) => item.method === 'POST' && item.path === '/config/edictum/sessions');
   assert.equal(created.body.edictum_type, 'flow');
   assert.equal(created.body.description, '群聊 RP');
+  assert.equal(created.body.model_name, '', '流程不保存顶层模型');
   assert.deepEqual(created.body.plugins, []);
   assert.equal(created.body.params.flow.version, 3);
   assert.ok(created.body.params.flow.nodes.some((node) => node.id === 'agent' && node.config.plugins === 'flow_snapshot'));
@@ -191,6 +193,7 @@ async function flow_drawer_edit_entry(runtime) {
   await page.waitForURL(`${origin}/agents/rp/flow`);
   await page.locator('[data-flow-node="agent"]').waitFor();
   assert.equal(state.sessions.rp.description, '群聊 RP 改');
+  assert.equal(state.sessions.rp.model_name, '', '抽屉保存流程时清空顶层模型');
   assert.equal(state.sessions.rp.params.flow.nodes.find((node) => node.id === 'agent').title, 'Agent 快捷键', '抽屉保存保留流程');
   assert.deepEqual(errors, []);
   console.log('PASS: 抽屉一个入口直达流程编辑器, 未保存修改先保存再进入; Ctrl+S 保存留在编辑器');
