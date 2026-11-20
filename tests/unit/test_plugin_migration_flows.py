@@ -7,10 +7,10 @@ import json
 from copy import deepcopy
 import pytest
 from satrap.edictum.friend_migration import FRIEND_SWITCHES, GLOBAL_RECEIPT, migrate_friend_globals
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_spec import parse_plugin_specs
-from satrap.edictum.plugin_settings import resolve_runtime_specs, PluginSettingsService
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.spec import parse_plugin_specs
+from satrap.edictum.plugin.settings import resolve_runtime_specs, PluginSettingsService
 from satrap.core.config.session_overrides import SessionOverrideStore, OverrideConflictError
 from dataclasses import replace
 from typing import Any, cast
@@ -19,7 +19,7 @@ from aiocqhttp.exceptions import ActionFailed
 import asyncio
 from satrap.edictum import AsyncSimpleSession
 from satrap.core.call_context import bind_call_origin
-from satrap.core.group_chat.types import GroupChatLimits
+from satrap.core.type.group_chat import GroupChatLimits
 from satrap.core.platform import current_adapter_manager, set_current_adapter_manager
 from satrap.expend.plugins.group_chat.tools import get_tools
 from support.group_read import _setup
@@ -29,7 +29,7 @@ from support.plugin_runtime import runtime
 def config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path / "plugins"
     root.mkdir()
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", root)
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", root)
     return PluginConfigManager(root), PluginCatalog(user_dir=tmp_path / "user")
 
 @pytest.mark.parametrize("field,tool", list(FRIEND_SWITCHES.items()))
@@ -392,10 +392,10 @@ async def test_member_list_character_budget_paginates_without_skipping(tmp_path)
 
 @pytest.mark.usefixtures('restore_manager')
 def test_migration_preserves_global_group_restrictions(tmp_path, monkeypatch):
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
 
     catalog = PluginCatalog(user_dir=tmp_path)
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "plugin-configs")
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", tmp_path / "plugin-configs")
     manager = PluginConfigManager()
     manager.save_global("group_admin", catalog.get("group_admin").config_schema, {"allowed_groups": "456\n789"})
     manager.save_global("group_chat", catalog.get("group_chat").config_schema, {"allowed_groups": "456\n999"})
@@ -408,7 +408,7 @@ def test_migration_preserves_global_group_restrictions(tmp_path, monkeypatch):
 async def test_new_queries_support_another_platform_and_private_route_revocation(tmp_path):
     from satrap.core.call_context import CallOrigin
     from satrap.core.group_chat.service import GroupChatService
-    from satrap.core.group_chat.types import GroupRecord, GroupSnapshot, VerifiedGroup
+    from satrap.core.type.group_chat import GroupRecord, GroupSnapshot, VerifiedGroup
     from satrap.core.platform import PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig
     from support.group_read import _FutureAdapter, NOW
 

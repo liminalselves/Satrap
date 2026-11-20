@@ -24,7 +24,7 @@ from satrap.core.storage.layout import StorageLayout
 from satrap.core.call_context import CallOrigin, is_group_origin, is_private_origin
 from satrap.core.log.managed import LogFileLock, report_failure
 from satrap.core.log.stream import standard_log_stream
-from .contracts import ActivityEvent, JsonValue, MessageMetric, MetricScope, ModelCall, Service, TelemetrySettings
+from satrap.core.type.telemetry import ActivityEvent, JsonValue, MessageMetric, MetricScope, ModelCall, Service, TelemetrySettings
 from .health import ServiceRuntime
 from .store import SettingsStore, TelemetryStore, json_text
 

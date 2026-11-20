@@ -82,7 +82,7 @@ async def test_service_health_is_independent_authenticated_and_stable_without_ba
         assert status == 200 and body["health"] == {"running": False}
         assert body["running"] is False and body["probe"]["state"] == "offline"
         assert body["probe"]["latency_ms"] is None
-        from satrap.core.telemetry.contracts import MetricScope, ModelCall
+        from satrap.core.type.telemetry import MetricScope, ModelCall
         from satrap.core.telemetry.store import TelemetryStore
         from urllib.parse import urlencode
         from urllib.request import Request, urlopen
@@ -150,7 +150,7 @@ async def test_adapter_connection_health_counts_only_confirmed_reconnections_and
 def test_metric_storage_deduplicates_calls_corrects_message_direction_and_retains_rollups(tmp_path):
     """调用去重和方向纠正与汇总同事务, 明细过期不抹去历史计数, 配置采用 CAS"""
     from dataclasses import replace
-    from satrap.core.telemetry.contracts import MessageMetric, MetricScope, ModelCall, TelemetrySettings
+    from satrap.core.type.telemetry import MessageMetric, MetricScope, ModelCall, TelemetrySettings
     from satrap.core.telemetry.store import SettingsConflict, SettingsStore, TelemetryStore
 
     settings = SettingsStore(tmp_path / "config" / "telemetry.json")
@@ -190,7 +190,7 @@ def test_metric_windows_preserve_dst_boundaries_and_reject_unbounded_queries():
     """时区自然日允许 23/25 小时, 重复小时有独立 UTC 桶, 超长查询不分配大列表"""
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    from satrap.core.telemetry.contracts import MetricWindow
+    from satrap.core.type.telemetry import MetricWindow
 
     zone = ZoneInfo("America/New_York")
     for start, end, hours in (("2026-03-08", "2026-03-09", 23), ("2026-11-01", "2026-11-02", 25)):
@@ -211,7 +211,7 @@ def test_metric_writer_keeps_a_bounded_queue_and_records_missing_coverage(tmp_pa
     import threading
     from dataclasses import replace
     from satrap.core.telemetry.capture import TelemetryWriter
-    from satrap.core.telemetry.contracts import MetricScope, ModelCall
+    from satrap.core.type.telemetry import MetricScope, ModelCall
     from satrap.core.telemetry.health import ServiceRuntime
     from satrap.core.telemetry.store import SettingsStore, TelemetryStore
 
@@ -251,7 +251,7 @@ async def test_model_metering_records_real_usage_and_cancellation_with_debug_dis
     from types import SimpleNamespace
     from satrap.core.telemetry import model
     from satrap.core.telemetry.capture import TelemetryWriter, bind_scope
-    from satrap.core.telemetry.contracts import MetricScope
+    from satrap.core.type.telemetry import MetricScope
     from satrap.core.telemetry.health import ServiceRuntime
     from satrap.core.telemetry.store import SettingsStore, TelemetryStore
 
@@ -329,7 +329,7 @@ async def test_aggregate_statistics_are_exact_at_edges_paginated_and_isolate_fai
     from satrap.core.storage import StorageLayout
     from satrap.core.telemetry import api
     from satrap.core.telemetry.api import SourceUnavailable, telemetry_response
-    from satrap.core.telemetry.contracts import MessageMetric, MetricScope, ModelCall
+    from satrap.core.type.telemetry import MessageMetric, MetricScope, ModelCall
     from satrap.core.telemetry.query import MetricQuery, local_metrics
     from satrap.core.telemetry.store import TelemetryStore
 
@@ -408,7 +408,7 @@ def test_activity_only_storage_budget_and_context_occupancy_survive_later_writes
     """仅有活动时仍执行空间预算, 后续心跳不抹去清理证据, 摘要不覆盖主对话占用"""
     from dataclasses import replace
     import time
-    from satrap.core.telemetry.contracts import ActivityEvent, MetricScope, ModelCall, TelemetrySettings
+    from satrap.core.type.telemetry import ActivityEvent, MetricScope, ModelCall, TelemetrySettings
     from satrap.core.telemetry.query import MetricQuery, local_metrics
     from satrap.core.telemetry.store import TelemetryStore
 
@@ -454,7 +454,7 @@ async def test_activity_aggregation_is_deduplicated_filtered_and_cursor_stable(t
     from urllib.parse import parse_qs, urlencode, urlsplit
     from satrap.core.storage import StorageLayout
     from satrap.core.telemetry.api import telemetry_response
-    from satrap.core.telemetry.contracts import ActivityEvent, MetricScope
+    from satrap.core.type.telemetry import ActivityEvent, MetricScope
     from satrap.core.telemetry.query import ActivityQuery, local_activity
     from satrap.core.telemetry.store import TelemetryStore
     import time
@@ -498,7 +498,7 @@ async def test_activity_records_committed_memory_plugin_and_coalesced_completion
     """Debug 关闭时仍记录已提交业务, 普通完成按对象合并计数, 事件不保存记忆正文或配置"""
     from satrap.core.telemetry import capture
     from satrap.core.telemetry.capture import TelemetryWriter, bind_scope, record_session_completed
-    from satrap.core.telemetry.contracts import MetricScope
+    from satrap.core.type.telemetry import MetricScope
     from satrap.core.telemetry.store import SettingsStore, TelemetryStore
     from satrap.core.telemetry.health import ServiceRuntime
     from satrap.core.config.platform_messages import PlatformMessageStore, MessageScope, ArchiveMessage
@@ -543,7 +543,7 @@ def test_telemetry_v1_upgrade_preserves_activity_without_initializing_readonly(t
     """旧遥测库只读时不迁移, 写宿主升级后保留原活动且支持合并计数"""
     import sqlite3
     import time
-    from satrap.core.telemetry.contracts import ActivityEvent, MetricScope
+    from satrap.core.type.telemetry import ActivityEvent, MetricScope
     from satrap.core.telemetry.store import TelemetryStore
     from satrap.core.telemetry.query import ActivityQuery, local_activity
     path = tmp_path / 'telemetry.sqlite'
@@ -624,7 +624,7 @@ async def test_incomplete_read_isolates_single_source_and_keeps_others(tmp_path)
     from urllib.parse import parse_qs, urlsplit
     from satrap.core.storage import StorageLayout
     from satrap.core.telemetry.api import _source
-    from satrap.core.telemetry.contracts import MetricScope, ModelCall
+    from satrap.core.type.telemetry import MetricScope, ModelCall
     from satrap.core.telemetry.query import MetricQuery, local_metrics
     from satrap.core.telemetry.store import TelemetryStore
 

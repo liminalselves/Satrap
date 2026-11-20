@@ -12,7 +12,9 @@ from datetime import datetime
 from satrap.core.platform.event import MessageChain
 from satrap.core.utils.paths import MediaSourcePermissionError, normalize_media_source
 from satrap.core.components import At, File, Image, Plain, PlatformComponentType, Record, Video
-from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str
+from satrap.core.type.platform import Group, MessageMember, PlatformMessage, PlatformMessageType
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 from satrap.core.log import logger
 
 

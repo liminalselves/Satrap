@@ -1,0 +1,12 @@
+name: flow_snapshot
+version: 0.1.0
+author: Satrap Team
+description: "状态槽读写: WF 通过工具读写它连着的状态槽"
+
+flow:
+  workflow:
+    provides: [state_write]
+
+tools:
+  snapshot_write: 写入所连状态槽; WF 成功结束时按 CAS 提交
+  snapshot_read: 读取所连状态槽当前版本

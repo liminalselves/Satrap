@@ -1,6 +1,6 @@
 """按显式配置选择模型协议, 不执行网络探测"""
 
-from .base import ModelProtocol
+from satrap.core.type.model_protocol import ModelProtocol
 from .chat_completions import ChatCompletionsProtocol
 from .responses import ResponsesProtocol
 

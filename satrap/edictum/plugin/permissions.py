@@ -1,0 +1,145 @@
+"""
+插件管理权限声明
+
+目录扫描与实际安装共用严格解析, 管理入口通过显式映射关联权限;
+未声明接入的旧插件保持原有授权规则
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any
+
+
+from satrap.core.type.plugin.permissions import ManagementPermission, CommandPermissions, PluginPermissions, EMPTY_PERMISSIONS
+
+def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str, Any]) -> PluginPermissions:
+    """
+    严格解析插件管理声明, 对无声明旧插件保持兼容
+
+    参数:
+    - meta: 实际插件元数据
+    - config_schema: 同一插件已解析配置 schema
+
+    返回:
+    - 不可变规则; 声明不合法时抛出 ValueError 供加载边界记录
+    """
+    keys = {"permission_schema_version", "management_permissions", "tool_permissions", "service_permissions", "command_permissions"}
+    if not keys.intersection(meta):
+        return EMPTY_PERMISSIONS
+    if type(meta.get("permission_schema_version")) is not int or meta["permission_schema_version"] != 1:
+        raise ValueError("插件权限声明需要 permission_schema_version: 1")
+    raw_rules = meta.get("management_permissions")
+    if not isinstance(raw_rules, dict) or not raw_rules:
+        raise ValueError("management_permissions 必须是非空对象")
+    rules: dict[str, ManagementPermission] = {}
+    for name, value in raw_rules.items():
+        if not isinstance(name, str) or not name.strip() or name != name.strip() or not isinstance(value, dict):
+            raise ValueError("管理权限名称或定义无效")
+        if set(value) - {"description", "caller_list", "empty_policy", "system_admin", "requirements", "platform_group_admin"}:
+            raise ValueError(f"管理权限 {name} 含有未知字段")
+        description = value.get("description")
+        if not isinstance(description, str) or not description.strip() or type(value.get("system_admin")) is not bool:
+            raise ValueError(f"管理权限 {name} 需要用途说明和 system_admin 布尔值")
+        caller_list = value.get("caller_list")
+        policy = value.get("empty_policy", "deny")
+        if caller_list is None:
+            if "caller_list" in value or "empty_policy" in value:
+                raise ValueError(f"管理权限 {name} 未关联名单时不能声明 caller_list 或 empty_policy")
+        else:
+            config_field = config_schema.get(caller_list) if isinstance(caller_list, str) else None
+            field_type = config_field.get("type") if isinstance(config_field, dict) else getattr(config_field, "type", None)
+            if config_field is None or field_type not in ("string", "textarea") or value.get("empty_policy") not in ("allow", "deny"):
+                raise ValueError(f"管理权限 {name} 的名单引用或空值规则无效")
+        requirements = value.get("requirements", [])
+        if not isinstance(requirements, list) or len(requirements) > 32 or any(not isinstance(item, str) or not item.strip() for item in requirements):
+            raise ValueError(f"管理权限 {name} 的业务条件说明无效")
+        group_admin = value.get("platform_group_admin")
+        if "platform_group_admin" in value:
+            group_field = config_schema.get(group_admin) if isinstance(group_admin, str) else None
+            field_type = group_field.get("type") if isinstance(group_field, dict) else getattr(group_field, "type", None)
+            if group_field is None or field_type != "bool":
+                raise ValueError(f"管理权限 {name} 的平台群管理员开关必须引用 bool 配置")
+        rules[name] = ManagementPermission(description.strip(), caller_list, policy, value["system_admin"],
+                                           tuple(item.strip() for item in requirements), group_admin)
+
+    def permission_ids(value: object) -> tuple[str, ...]:
+        """
+        校验同一插件内的权限引用
+
+        参数:
+        - value: 入口声明的权限列表
+
+        返回:
+        - 不含重复引用的非空元组, 错误时抛出 ValueError
+        """
+        if not isinstance(value, list) or not value or any(not isinstance(item, str) or item not in rules for item in value):
+            raise ValueError("管理入口权限列表为空或引用不存在的权限")
+        if len(set(value)) != len(value):
+            raise ValueError("管理入口权限列表含有重复项")
+        return tuple(value)
+
+    tools: dict[str, tuple[str, ...]] = {}
+    raw_tools = meta.get("tool_permissions", {})
+    if not isinstance(raw_tools, dict):
+        raise ValueError("tool_permissions 必须是对象")
+    declared_tools = meta.get("tools", {})
+    if not isinstance(declared_tools, dict):
+        raise ValueError("接入管理权限的工具声明必须是对象")
+    for name, value in raw_tools.items():
+        if not isinstance(name, str) or not isinstance(declared_tools, dict) or name not in declared_tools:
+            raise ValueError("管理工具映射引用未声明工具")
+        tools[name] = permission_ids(value)
+    services: dict[str, tuple[str, ...]] = {}
+    raw_services = meta.get("service_permissions", {})
+    declared_services = meta.get("services", {})
+    if not isinstance(raw_services, dict) or not isinstance(declared_services, dict):
+        raise ValueError("service_permissions 和服务描述声明必须是对象")
+    for name, value in raw_services.items():
+        if not isinstance(name, str) or name not in declared_services:
+            raise ValueError("管理服务映射引用未声明服务")
+        services[name] = permission_ids(value)
+    commands: dict[str, CommandPermissions] = {}
+    raw_commands = meta.get("command_permissions", {})
+    if not isinstance(raw_commands, dict):
+        raise ValueError("command_permissions 必须是对象")
+    declared_commands = meta.get("commands", {})
+    if not isinstance(declared_commands, dict):
+        raise ValueError("接入管理权限的命令声明必须是对象")
+    for name, value in raw_commands.items():
+        if not isinstance(name, str) or not isinstance(declared_commands, dict) or name not in declared_commands:
+            raise ValueError("管理命令映射引用未声明命令")
+        if not isinstance(value, dict) or not value or set(value) - {"default", "subcommands"}:
+            raise ValueError("管理命令权限结构无效")
+        default = permission_ids(value["default"]) if "default" in value else ()
+        children = value.get("subcommands", {})
+        if not isinstance(children, dict) or any(not isinstance(key, str) or not key or any(c.isspace() for c in key) for key in children):
+            raise ValueError("管理子命令名称或映射无效")
+        if not default and not children:
+            raise ValueError("管理命令需要至少一项权限映射")
+        commands[name] = CommandPermissions(default, MappingProxyType({key: permission_ids(item) for key, item in children.items()}))
+    return PluginPermissions(1, MappingProxyType(rules), MappingProxyType(tools), MappingProxyType(commands),
+                             frozenset(declared_tools), frozenset(declared_commands),
+                             MappingProxyType(services), frozenset(declared_services))
+
+
+def validate_permission_install(
+    spec: PluginPermissions, tools: Mapping[str, Any], commands: Mapping[str, Any],
+    services: Mapping[str, object] | None = None,
+) -> None:
+    """
+    安装时核验权限绑定到实际注册入口
+
+    参数:
+    - spec: 目录解析的权限规则
+    - tools: 实际创建的工具
+    - commands: 实际创建的命令处理函数
+    - services: 实际创建的插件专用服务, 默认空映射
+    """
+    if set(spec.tools) - set(tools) or set(spec.commands) - set(commands) or set(spec.services) - set(services or {}):
+        raise ValueError("插件管理权限映射未匹配实际注册入口")
+    for name, rule in spec.commands.items():
+        children = getattr(commands[name], "subcommands", ())
+        if not isinstance(children, (list, tuple, dict)) or set(rule.subcommands) - set(children):
+            raise ValueError(f"管理命令 {name} 的子命令没有注册说明")

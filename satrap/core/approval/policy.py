@@ -13,7 +13,7 @@ from enum import IntEnum
 import json
 import time
 
-from satrap.core.approval.contracts import APPROVAL_MODES, ApprovalMode, ApprovalRequest, ApprovalResult
+from satrap.core.type.approval import APPROVAL_MODES, ApprovalMode, ApprovalRequest, ApprovalResult
 from satrap.core.utils.paths import get_data_dir
 
 from satrap.core.log import logger

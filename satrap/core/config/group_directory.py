@@ -16,7 +16,8 @@ import time
 from satrap.core.config.group_store import GroupConfigStore, _identity
 
 from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
-from satrap.core.type import GroupDirectoryRecord, GroupSyncState, ScopedSessionSummary
+from satrap.core.type.control import GroupDirectoryRecord, GroupSyncState, ScopedSessionSummary
+
 
 
 class GroupDirectoryBinding(TypedDict):

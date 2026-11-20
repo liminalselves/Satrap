@@ -19,7 +19,7 @@ import json
 import math
 import time
 
-from satrap.core.telemetry.contracts import JsonValue, MetricWindow
+from satrap.core.type.telemetry import JsonValue, MetricWindow
 from satrap.core.utils.async_worker import BoundedAsyncWorker
 from satrap.core.telemetry.store import json_text
 from satrap.core.storage.layout import StorageLayout

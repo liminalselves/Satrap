@@ -41,7 +41,7 @@ def _configuration(session: object) -> Mapping[str, object] | None:
     返回:
     - 已启用权限插件的配置, 尚未成功安装时返回 None
     """
-    from satrap.core.plugin_authorization import PluginEntryBinding
+    from satrap.core.type.plugin.authorization import PluginEntryBinding
 
     plugins = getattr(session, "_plugins", {})
     plugin = plugins.get("permissions") if isinstance(plugins, Mapping) else None

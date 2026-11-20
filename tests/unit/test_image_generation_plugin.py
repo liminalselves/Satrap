@@ -23,7 +23,7 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.edictum.plugin import load_plugin_meta
-from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
 from satrap.expend.plugins.image_generation.artifacts import load_image
 from satrap.expend.plugins.image_generation.policy import ImagePolicy
 
@@ -208,6 +208,19 @@ def test_range_schema_and_runtime_share_bounds_steps_and_pixel_limit():
                       {"width": True, "height": 768}):
         with pytest.raises(ValueError):
             policy.resolve(arguments)
+
+
+async def test_optional_group_chat_absent_does_not_block_real_install_or_generation(image_host):
+    """未安装群聊插件时, 同步和异步 simple 会话仍能安装并实际生图"""
+    session, install, execute, requests, received, _, _ = image_host
+    assert not session.list_plugins()
+    plugin_meta = load_plugin_meta(PLUGIN)
+    assert plugin_meta["interop"]["requires"]["group_chat"]["optional"] is True
+    await install()
+    assert {plugin.name for plugin in session.list_plugins()} == {"image_generation"}
+    result = await execute(prompt="an orange cat")
+    assert result["ok"] and result["generation_status"] == "succeeded"
+    assert result["delivery_status"] == "succeeded" and len(requests) == len(received) == 1
 
 
 async def test_generate_uses_model_defaults_policy_overrides_and_current_receiver(image_host):

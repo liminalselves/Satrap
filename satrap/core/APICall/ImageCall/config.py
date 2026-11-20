@@ -8,10 +8,11 @@ from typing import TYPE_CHECKING, Any, overload, Literal
 
 from .media import validate_url
 from .request import build_request, validate_params
-from .types import CharacterPrompt, ImageGenParams, NovelAIParams
+from satrap.core.type.image import CharacterPrompt, ImageGenParams, NovelAIParams
 
 if TYPE_CHECKING:
-    from satrap.core.type import ImgConfig
+    from satrap.core.type.model_config import ImgConfig
+
     from .sync import ImageGen
     from .async_ import AsyncImageGen
 

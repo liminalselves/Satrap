@@ -463,11 +463,11 @@ def test_protocol_payload_checkpoint_fork_and_edit(clients, tmp_path):
 async def test_responses_debug_and_metering_track_terminal_failures(clients, tmp_path, monkeypatch, async_mode):
     from satrap.core.telemetry import model
     from satrap.core.telemetry.capture import TelemetryWriter, bind_scope
-    from satrap.core.telemetry.contracts import MetricScope
+    from satrap.core.type.telemetry import MetricScope
     from satrap.core.telemetry.health import ServiceRuntime
     from satrap.core.telemetry.store import TelemetryStore, SettingsStore
     from satrap.core.log.debug import capture
-    from satrap.core.log.debug.contracts import DebugObject
+    from satrap.core.type.debug import DebugObject
     from satrap.core.log.debug.policy import DebugPolicy
     from satrap.core.log.debug.store import DebugStore
 

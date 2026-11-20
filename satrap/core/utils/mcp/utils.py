@@ -29,7 +29,8 @@ await mcp.close()   # 断开连接并自动注销已注册工具
 
 from __future__ import annotations
 from typing import Any, Awaitable, Dict, List, Optional, Protocol, Tuple, cast
-from satrap.core.type import safe_getattr, safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 
 
 TYPE_MAP: dict[str, type] = {

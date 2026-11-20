@@ -15,7 +15,9 @@ from typing import (
     cast,
 )
 
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, safe_getattr_str
+from satrap.core.type.model import LLMCallResponse, LLMCallStreamEvent
+from satrap.core.utils.attributes import safe_getattr_str
+
 from .utils import (
     _stream_usage_option_unsupported,
     prepare_structured_messages,

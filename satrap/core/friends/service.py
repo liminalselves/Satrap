@@ -486,7 +486,7 @@ class FriendService:
         - user_id: 已知的实际好友对象, 缺少时不伪造对象
         """
         from satrap.core.telemetry.capture import record_approval
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         record_approval("friend", action_id, state, MetricScope(platform_id=self.adapter_id, self_id=account,
                         conversation_kind="private" if user_id else "", target_id=user_id))

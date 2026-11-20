@@ -229,7 +229,7 @@ async def test_skill_management_http_and_control_share_crud(tmp_path, monkeypatc
     assert (await request("GET"))[1]["items"] == []
 
     from satrap.expend.plugins.skills import catalog as skill_catalog
-    from satrap.edictum.plugin_catalog import PluginCatalog
+    from satrap.edictum.plugin.catalog import PluginCatalog
     plugin_root = tmp_path / "catalog-plugins"
     sample = plugin_root / "sample"
     sample.mkdir(parents=True)

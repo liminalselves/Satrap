@@ -9,7 +9,7 @@ import time
 from dataclasses import replace
 
 from satrap.core.config.platform_messages import MessageScope
-from satrap.core.group_chat.types import GroupChatError, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
+from satrap.core.type.group_chat import GroupChatError, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
 from satrap.core.platform.message_archive import archive_snapshot
 from satrap.core.platform.onebot.validation import decimal_digits
 from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction

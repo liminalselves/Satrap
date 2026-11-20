@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from satrap.core.approval.contracts import APPROVAL_MODES
+from satrap.core.type.approval import APPROVAL_MODES
 from satrap.core.approval.state import validate_approval_root
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 

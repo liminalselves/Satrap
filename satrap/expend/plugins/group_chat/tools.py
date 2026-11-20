@@ -18,11 +18,12 @@ from satrap.core.group_chat.reminder_service import execute_reminder_tool, REMIN
 from satrap.core.config.group_action_origin import bind_model_action_authorization
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, plugin_tool_live, permission_id_list
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, plugin_tool_live, permission_id_list
 from satrap.core.group_chat.service import group_chat_service, HISTORY_OPERATIONS
 from satrap.core.group_chat.reply import current_reply_turn
-from satrap.core.group_chat.types import GroupChatLimits
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatLimits
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.group_chat.sdk import register_group_chat_asset
 from satrap.core.plugin_interop import PluginHost, PluginInteractionError
@@ -270,7 +271,8 @@ class _GroupChatMixin(_ToolBase):
 
             input_budget = 24000
             if self.tool_name == "group_chat_prepare_summary":
-                workflow = getattr(self.session, "_wf", None)
+                from satrap.core.call_context import current_flow_workflow
+                workflow = current_flow_workflow.get() or getattr(self.session, "_wf", None)
                 context = getattr(workflow, "ctx", None)
                 usage = context.get_context_usage(method="experience") if workflow is not None and context is not None else None
                 if workflow is not None and usage is not None:
@@ -343,7 +345,9 @@ class _GroupChatMixin(_ToolBase):
             raise GroupChatError("invalid_argument", "仅接受当前会话沙箱内的相对图片路径 path")
         turn = current_reply_turn()
         origin = current_call_origin()
-        if turn is None or origin is None or turn.workflow is not getattr(self.session, "_wf", None):
+        from satrap.core.call_context import current_flow_workflow
+        bound = current_flow_workflow.get() or getattr(self.session, "_wf", None)
+        if turn is None or origin is None or turn.workflow is not bound:
             raise GroupChatError("wrong_executor", "仅允许当前主会话登记沙箱图片")
         turn.require_main_tool("group_chat_import_sandbox_image")
         plugin_host = self._plugin_host

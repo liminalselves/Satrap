@@ -2,7 +2,9 @@
 
 from typing import Any
 
-from satrap.core.type import ASRConfig, ASRResponse, safe_getattr, safe_getattr_str
+from satrap.core.type.model_config import ASRConfig, ASRResponse
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 from .async_ import AsyncASR
 from .sync import ASR
 from .utils import ALLOWED_AUDIO_SUFFIXES, MAX_AUDIO_BYTES

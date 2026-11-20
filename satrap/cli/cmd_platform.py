@@ -17,7 +17,8 @@ from satrap.core.config.document import (
 from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table, render_data
 from satrap.cli.common import daemon_client_from_args, parse_kv_pairs
 from satrap.cli.client import DaemonError
-from satrap.core.type import safe_getattr
+from satrap.core.utils.attributes import safe_getattr
+
 
 
 def _warn_if_backend_running(args: argparse.Namespace):

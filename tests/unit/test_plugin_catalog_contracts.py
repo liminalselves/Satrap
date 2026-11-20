@@ -9,17 +9,20 @@ import time
 import pytest
 from satrap.core.utils.async_worker import BoundedAsyncWorker, WorkerBusyError
 from satrap.core.utils.snapshot_cache import SnapshotCache
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 from typing import Any, cast
 import yaml
-from satrap.edictum.plugin_runtime import PluginRuntimeState, apply_plugin_capabilities_async
-from satrap.edictum.plugin_runtime import preview_plugin_reconciliation, reconcile_plugin_states_async
-from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
-from satrap.edictum.plugin_compatibility import PluginEnvironment, check_plugin_compatibility
+from satrap.edictum.plugin.runtime import PluginRuntimeState, apply_plugin_capabilities_async
+from satrap.edictum.plugin.runtime import preview_plugin_reconciliation, reconcile_plugin_states_async
+from satrap.core.type.plugin.spec import PluginSpec
+from satrap.edictum.plugin.spec import parse_plugin_specs, plugin_specs_fingerprint
+from satrap.core.type.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.compatibility import check_plugin_compatibility
 from unittest.mock import Mock
 import io
 import logging
-from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
+from satrap.edictum.plugin.config import parse_config_schema
+from satrap.core.type.plugin.config import schema_to_payload
 from satrap.core.log import Logger
 from satrap.core.log.stream import standard_log_stream
 
@@ -81,6 +84,35 @@ def test_presentation_fields_are_relaxed_but_identity_and_schema_stay_strict(tmp
         catalog = PluginCatalog(preset_dir=preset, user_dir=tmp_path / 'user')
         assert catalog.get('demo') is None
         assert catalog.scan_errors
+
+
+@pytest.mark.parametrize('name', ['中文插件', 'bad name', 'bad/name', '-bad', 'a' * 65])
+def test_invalid_plugin_names_are_quarantined(tmp_path, name):
+    """非法稳定名称只淘汰对应目录, 不影响同目录的合法插件"""
+    preset = tmp_path / 'preset'
+    invalid = preset / 'invalid-directory'
+    invalid.mkdir(parents=True)
+    (invalid / 'meta.yaml').write_text(yaml.safe_dump({
+        'name': name, 'version': '1',
+    }, allow_unicode=True), encoding='utf-8')
+    write_meta(preset, 'valid_probe')
+    catalog = PluginCatalog(preset, tmp_path / 'user')
+    assert [entry.name for entry in catalog.scan()] == ['valid_probe']
+    assert catalog.get(name) is None
+    assert catalog.get('valid_probe') is not None
+    assert len(catalog.scan_errors) == 1
+    assert catalog.scan_errors[0]['name'] == 'invalid-directory'
+    assert '非法插件名称' in catalog.scan_errors[0]['error']
+    assert catalog.snapshot().scan_errors == catalog.scan_errors
+
+
+@pytest.mark.parametrize('name', ['a', 'A_0.-z', 'a' * 64])
+def test_valid_plugin_name_boundaries_remain_available(tmp_path, name):
+    """稳定名称规则的一字符和六十四字符边界仍可扫描"""
+    write_meta(tmp_path, name)
+    catalog = PluginCatalog(tmp_path, tmp_path / 'missing')
+    assert catalog.get(name) is not None
+    assert catalog.scan_errors == []
 
 
 def test_broken_metadata_recovers_and_preserves_errors(tmp_path):
@@ -208,7 +240,7 @@ async def test_slow_source_probe_does_not_block_event_loop():
 
 @pytest.mark.asyncio
 async def test_incompatible_upgrade_is_blocked_before_uninstall():
-    from satrap.edictum.plugin_compatibility import CompatibilityResult
+    from satrap.core.type.plugin.compatibility import CompatibilityResult
 
     old = PluginSpec(name="demo", version="1", path="original")
     handle = object()
@@ -482,7 +514,7 @@ def test_environment_validation(session_type, platform):
 @pytest.mark.parametrize("async_mode", [False, True])
 async def test_incompatible_plugin_never_imported(tmp_path, async_mode):
     from satrap import LLM, AsyncLLM, SimpleSession, AsyncSimpleSession
-    from satrap.edictum.plugin_compatibility import PluginCompatibilityError
+    from satrap.core.type.plugin.compatibility import PluginCompatibilityError
 
     plugin = tmp_path / "platform_plugin"
     plugin.mkdir()
@@ -519,7 +551,7 @@ async def test_incompatible_plugin_never_imported(tmp_path, async_mode):
 
 def test_boolean_alias_keeps_switch_boolean_without_repeated_warning(monkeypatch):
     warning = Mock()
-    monkeypatch.setattr("satrap.edictum.plugin_config.logger.warning", warning)
+    monkeypatch.setattr("satrap.edictum.plugin.config.logger.warning", warning)
     schema = parse_config_schema({"config_schema": {"summary_enabled": {"type": "boolean", "default": True}}})
     field = schema["summary_enabled"]
     assert field.validate(False) is False and field.validate(True) is True

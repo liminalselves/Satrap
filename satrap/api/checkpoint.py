@@ -12,7 +12,8 @@ from typing import Any, Iterator
 
 from satrap.core.utils.context import ContextManager
 from satrap.core.state import StateStore
-from satrap.core.type import StateCheckpoint, StateScope
+from satrap.core.type.state import StateCheckpoint, StateScope
+
 
 
 def _cp_to_dict(cp: StateCheckpoint) -> dict[str, Any]:

@@ -10,7 +10,7 @@ from .base import _ImageGenBase
 from .media import MAX_IMAGE_BYTES, MAX_RESPONSE_BYTES, b64, decode_image, local_image, validate_url
 from .request import build_request, source_key
 from .response import parse_response
-from .types import GeneratedImage, ImageGenError, ImageGenParams, ImageGenResponse, ImageInput, VibeEncoding
+from satrap.core.type.image import GeneratedImage, ImageGenError, ImageGenParams, ImageGenResponse, ImageInput, VibeEncoding
 
 
 class AsyncImageGen(_ImageGenBase[httpx.AsyncClient]):

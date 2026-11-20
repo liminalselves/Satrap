@@ -6,7 +6,8 @@
 """
 from typing import Dict, Mapping, Tuple, Any
 import inspect
-from satrap.core.type import safe_getattr
+from satrap.core.utils.attributes import safe_getattr
+
 from satrap.core.log import logger
 from .utils import create_tool_defined
 

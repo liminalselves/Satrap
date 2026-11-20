@@ -23,13 +23,8 @@ from satrap.core.state.mutation import current_mutation_context
 from satrap.core.state.registry import DomainRegistry
 from satrap.core.state.snapshot import build_id_map, build_snapshot, restore_snapshot
 from satrap.core.utils.paths import get_db_path
-from satrap.core.type import (
-    RestoreOptions,
-    SnapshotDomain,
-    StateCheckpoint,
-    StateScope,
-    StateSnapshot,
-)
+from satrap.core.type.state import RestoreOptions, SnapshotDomain, StateCheckpoint, StateScope, StateSnapshot
+
 
 from satrap.core.log import logger
 

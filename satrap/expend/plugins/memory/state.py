@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 from satrap.core.memory.service import MemoryService
 from satrap.core.memory.store import DEFAULT_MEMORY_DB, MemoryStore
-from satrap.core.type import safe_getattr
+from satrap.core.utils.attributes import safe_getattr
+
 
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession

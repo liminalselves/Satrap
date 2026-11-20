@@ -20,7 +20,7 @@ import threading
 import time
 from typing import cast
 
-from .models import MAX_MESSAGE_BYTES, Request, SandboxResult, failure_result
+from satrap.core.type.sandbox import MAX_MESSAGE_BYTES, Request, SandboxResult, failure_result
 from ..proc_env import sanitized_child_env
 
 

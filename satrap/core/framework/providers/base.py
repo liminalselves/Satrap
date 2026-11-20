@@ -1,109 +1,14 @@
-"""
-会话 Provider 公共契约与注册表
-
-定义命名会话配置到运行时会话实例之间的统一边界,
-使扫描式 Session 类和 Edictum 会话可以共享 SessionManager
-"""
+"""会话 Provider 注册表与命名定义分发"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
 import threading
-from typing import Any, Protocol, runtime_checkable
 
-from satrap.core.APICall.LLMCall import AsyncLLM, LLM
-from satrap.core.framework.Base import AsyncSession, Session
-from satrap.core.type import SessionConfig
-
-
-SESSION_CLASS_PROVIDER = "session_class"
-"""传统扫描式 Session 类 Provider 名称"""
-
-
-class BindingState(str, Enum):
-    """命名会话绑定在运行时是否可执行的判定结果"""
-
-    RUNNABLE = "runnable"
-    """定义存在且未被禁用, 可以创建并运行会话"""
-
-    DISABLED = "disabled"
-    """定义存在但被禁用, 属于正常配置状态而非配置错误"""
-
-    INVALID = "invalid"
-    """Provider 未注册, 定义不存在或名称歧义, 属于配置错误"""
-
-
-@dataclass(frozen=True)
-class BindingStatus:
-    """绑定判定结果, 保留既有诊断文本供生命周期与诊断输出复用"""
-
-    state: BindingState
-    reason: str = ""
-
-
-@dataclass(frozen=True)
-class SessionProviderDefinition:
-    """Provider 暴露给运行时的统一命名会话定义"""
-
-    name: str
-    provider_name: str
-    is_async: bool
-    enabled: bool = True
-    model_key: str = "model_name"
-    params: dict[str, Any] = field(default_factory=dict[str, Any])
-    description: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
-
-
-@runtime_checkable
-class SessionProvider(Protocol):
-    """命名会话定义的运行时 Provider 契约"""
-
-    @property
-    def provider_name(self) -> str:
-        """返回 Provider 唯一名称"""
-        ...
-
-    def has_definition(self, name: str) -> bool:
-        """
-        判断命名会话定义是否存在
-
-        参数:
-        - name: 命名会话定义名称
-
-        返回:
-        - bool: 命名会话定义是否存在
-        """
-        ...
-
-    def get_definition(self, name: str) -> SessionProviderDefinition | None:
-        """
-        获取统一命名会话定义
-
-        参数:
-        - name: 命名会话定义名称
-
-        返回:
-        - SessionProviderDefinition | None: 定义不存在时返回 None
-        """
-        ...
-
-    def create_session(
-        self,
-        session_config: SessionConfig,
-        llm: LLM | AsyncLLM | None = None,
-    ) -> Session | AsyncSession:
-        """
-        根据实例配置创建运行时会话
-
-        参数:
-        - session_config: 持久化的会话实例配置
-        - llm: 已按同步或异步形态构建的模型实例
-
-        返回:
-        - Session | AsyncSession: 运行时会话实例
-        """
-        ...
+from satrap.core.type.session_provider import (
+    BindingState,
+    BindingStatus,
+    SessionProvider,
+    SessionProviderDefinition,
+)
 
 
 class SessionProviderRegistry:

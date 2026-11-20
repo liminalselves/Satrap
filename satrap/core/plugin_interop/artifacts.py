@@ -13,8 +13,8 @@ import asyncio
 import stat
 import os
 
-from satrap.core.plugin_interop.contracts import ImageArtifact, PluginInteractionError
-from satrap.core.call_context import current_call_origin, current_tool_workflow
+from satrap.core.type.plugin_interop import ImageArtifact, PluginInteractionError
+from satrap.core.call_context import current_call_origin, current_flow_workflow, current_tool_workflow
 from satrap.core.file_access.artifacts import FileArtifact, artifact_lease, current_file_receiver, file_receiver_loop, open_artifact
 
 if TYPE_CHECKING:
@@ -105,7 +105,8 @@ class ArtifactAccess:
         """
         from satrap.core.platform import current_adapter_manager
         from satrap.core.file_access.reads import source_check
-        from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission
+        from satrap.core.type.plugin.authorization import PluginEntryBinding
+        from satrap.core.plugin_authorization import require_plugin_entry_permission
         from satrap.core.approval.state import session_approval
 
         runtime = self._host._runtime()
@@ -126,7 +127,8 @@ class ArtifactAccess:
             while scope is not None:
                 entry: object = None
                 if scope.kind == "tools":
-                    entry_workflow = scope.runtime.session()._wf
+                    # 流程会话里"当前 WF"经 contextvar 传递; simple 会话回退 session._wf
+                    entry_workflow = current_flow_workflow.get() or getattr(scope.runtime.session(), "_wf", None)
                     entry = entry_workflow.tools_manager.tools.get(scope.name) if entry_workflow is not None else None
                 elif scope.kind == "services":
                     entry = (scope.runtime.bindings[scope.plugin].services or {}).get(scope.name)

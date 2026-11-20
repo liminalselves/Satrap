@@ -11,7 +11,8 @@ import time
 import math
 
 from satrap.core.config.group_store import GroupConfigConflict, GroupConfigStore, _identity
-from satrap.core.type import GroupActionPage, GroupActionRecord
+from satrap.core.type.control import GroupActionPage, GroupActionRecord
+
 
 
 ACTION_CAPACITY = 10000

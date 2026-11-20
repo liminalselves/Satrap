@@ -2,12 +2,9 @@
 
 from typing import Any, cast
 
-from satrap.core.type import (
-    LLMCallResponse,
-    LLMCallStreamEvent,
-    TokenUsage,
-    safe_getattr,
-)
+from satrap.core.type.model import LLMCallResponse, LLMCallStreamEvent, TokenUsage
+from satrap.core.utils.attributes import safe_getattr
+
 from .responses import _extract_token_usage, parse_call_response
 
 

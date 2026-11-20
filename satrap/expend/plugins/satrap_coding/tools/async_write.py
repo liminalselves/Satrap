@@ -11,7 +11,7 @@ import asyncio
 from satrap.core.approval.policy import PermissionEngine, RiskLevel
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
-from .contracts import require_bound_session
+from .validation import require_bound_session
 from .approval import _approve_async
 from .file_io import prepare_change
 from .paths import _tool_root, _resolve_path, _FileProtectionMixin, _execution_guard, _full_access, _in_sandbox

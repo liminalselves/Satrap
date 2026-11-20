@@ -10,7 +10,9 @@ from typing import List, Dict, Optional, Any
 import copy
 
 from satrap.core.state import StateStore
-from satrap.core.type import ContextUsageSnapshot, StateScope
+from satrap.core.type.model import ContextUsageSnapshot
+from satrap.core.type.state import StateScope
+
 from .utils import _SUMMARY_PROMPT_VERSION, TokenEstimateMethod, _ContextRuntimeState, _estimate_request_tokens
 
 from satrap.core.log import logger

@@ -18,7 +18,7 @@ from unittest.mock import patch
 import psutil
 
 from satrap.core.log.debug import capture
-from satrap.core.log.debug.contracts import DebugData, DebugEvent, DebugObject
+from satrap.core.type.debug import DebugData, DebugEvent, DebugObject
 from satrap.core.log.debug.policy import DebugPolicy
 from satrap.core.log.debug.model import complete_sync
 from satrap.core.log.debug.store import DebugStore

@@ -52,8 +52,8 @@ from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.framework.SessionManager import SessionConfigStore
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
-from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
+from satrap.core.config.edictum_service import EdictumConfigService, config_revision, split_expected_revision
 from satrap.core.config.conversation_catalog import MAX_CONVERSATION_ID_LENGTH, platform_catalog, filter_records, record_facets, conversation_aggregates
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict, MessagePageTooLarge
 from satrap.core.config.platform_message_data import platform_archive_catalog, platform_archive_operation
@@ -62,7 +62,7 @@ from satrap.core.memory.management import memory_management
 from satrap.core.memory.scoped import MemoryError
 from satrap.core.group_chat.stickers import StickerStore
 from satrap.core.group_chat.assets import MAX_IMAGE_BYTES
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.group_chat.reminder_management import reminder_management
 from satrap.core.group_chat.reminders import ReminderError
 from satrap.core.config.platform_messages import MessageArchiveError
@@ -78,10 +78,10 @@ from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
 from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError, progress_phase
 from satrap.core.telemetry.health import ServiceRuntime
-from satrap.core.telemetry.contracts import ServiceProbe
+from satrap.core.type.telemetry import ServiceProbe
 from satrap.core.backend.plugin_application import relay_plugin_application, runtime_result
 from satrap.core.config.versions import ConfigVersionService, ConfigVersionsResult
-from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
+from satrap.edictum.plugin.settings import PluginSettingsService, model_options, validate_model_values
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.config.document import (
@@ -113,9 +113,9 @@ from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin_archive import PluginAlreadyInstalled, PluginArchiveInstaller, MAX_ARCHIVE_BYTES
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.archive import PluginAlreadyInstalled, PluginArchiveInstaller, MAX_ARCHIVE_BYTES
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.core.config.plugin_service import PluginHealth, PluginHealthCoverage, PluginHealthSource, PluginManagementService
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageLayout, StorageMaintenanceService
@@ -821,11 +821,11 @@ def _edictum_config_service(catalog: PluginCatalog | None = None) -> EdictumConf
         storage_path = Path(str(raw_path))
         if not storage_path.is_absolute():
             storage_path = PROJECT_ROOT / storage_path
-    with timings.phase('edictum_read_ms'):
-        registry = create_default_edictum_type_registry()
-        manager = EdictumConfigManager(registry, storage_path=storage_path, plugin_catalog=catalog)
     with timings.phase('dependencies_ms'):
         models = _model_config_service().manager
+    with timings.phase('edictum_read_ms'):
+        registry = create_default_edictum_type_registry()
+        manager = EdictumConfigManager(registry, storage_path=storage_path, plugin_catalog=catalog, models=models)
         service = EdictumConfigService(
             manager, registry, models=models, rag=RagService(_configured_storage_layout(), models, "local"),
             reference_checker=lambda name: _named_group_references("edictum", name),
@@ -1208,7 +1208,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
             record = await asyncio.to_thread(store.read_account, self_id)
             if record is None:
                 return 404, {"error": "账号群配置不存在", "reason": "account_not_found"}
-            from satrap.core.platform.onebot.group_action_types import action_metadata
+            from satrap.core.platform.onebot.group_actions import action_metadata
 
             counts = await asyncio.to_thread(store.approval_inheritance_counts, self_id)
             return 200, {**record, "current": current == self_id, "offline_snapshot": True,
@@ -1231,7 +1231,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 store.patch_account, expected_self_id, expected_revision=revision,
                 mode=mode, approval_defaults=cast(dict[str, object], defaults),
             )
-            from satrap.core.platform.onebot.group_action_types import action_metadata
+            from satrap.core.platform.onebot.group_actions import action_metadata
 
             counts = await asyncio.to_thread(store.approval_inheritance_counts, expected_self_id)
             return 200, {**saved, "current": True, "offline_snapshot": True,
@@ -1722,7 +1722,7 @@ async def _route_telemetry(ctx: _RouteContext) -> ControlResponse | None:
     if not ctx.path.startswith("/api/stats/") and ctx.path not in {"/config/telemetry", "/api/activity", "/api/activity/local"}:
         return None
     from satrap.core.telemetry.api import QUERY_WORKERS, telemetry_response
-    from satrap.core.telemetry.contracts import JsonValue, Service
+    from satrap.core.type.telemetry import JsonValue, Service
     from collections.abc import Callable
 
     try:
@@ -1735,13 +1735,16 @@ async def _route_telemetry(ctx: _RouteContext) -> ControlResponse | None:
                                     fetch=cast(Callable[[Service, str], dict[str, JsonValue]], _read_telemetry_source))
 
 
-async def _action_backend_request(path: str, payload: object = None) -> tuple[int, dict[str, object]]:
+async def _action_backend_request(
+    path: str, payload: object = None, *, pass_through_not_found: bool = False,
+) -> tuple[int, dict[str, object]]:
     """
     异步访问固定 Backend, 长审批等待不占用统计或 SQLite 工作线程
 
     参数:
     - path: 宿主生成的审批接口路径
     - payload: 可选的已校验决策批次, 缺少时为 GET
+    - pass_through_not_found: 为真时 404 按业务结果原样返回 (如会话未激活); 默认视为后端版本不支持该接口
 
     返回:
     - 有界 JSON 响应, 发送后连接不确定时不重试或改走其它执行路径
@@ -1768,7 +1771,7 @@ async def _action_backend_request(path: str, payload: object = None) -> tuple[in
             async with session.request('POST' if payload is not None else 'GET', url, json=payload, headers=headers) as response:
                 if response.status in {401, 403}:
                     raise SourceUnavailable('auth_required', 'service_auth_required')
-                if response.status == 404:
+                if response.status == 404 and not pass_through_not_found:
                     raise SourceUnavailable('error', 'unsupported_version')
                 data = bytearray()
                 async for chunk in response.content.iter_chunked(65536):
@@ -3534,6 +3537,28 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
             except ApplicationProgressError as error:
                 return error.status, {"error": str(error)}
         return 200, {"ok": True, "runtime": await _apply_plugin_runtime(**scope)}
+    if ctx.path.startswith("/config/plugins/") and ctx.path.endswith("/flow-nodes") and ctx.method in {"GET", "PUT"}:
+        name = urllib.parse.unquote(ctx.path[len("/config/plugins/"):-len("/flow-nodes")])
+        try:
+            catalog = await PluginCatalog().snapshot_async()
+            service = await RAG_WORKERS.run(_plugin_management_service, catalog)
+            if ctx.method == "GET":
+                return 200, await RAG_WORKERS.run(service.get_flow_nodes, name)
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            nodes = payload.get("config")
+            revision = payload.get("expected_revision")
+            if not isinstance(nodes, dict) or not isinstance(revision, str):
+                raise ValueError("缺少 config 对象或 expected_revision")
+            return 200, await RAG_WORKERS.run(service.save_flow_nodes, name, nodes, revision)
+        except ConfigRevisionConflict as error:
+            return 409, {"error": str(error)}
+        except KeyError as error:
+            return 404, {"error": str(error)}
+        except WorkerBusyError as error:
+            return 503, {"error": str(error)}
+        except (OSError, TypeError, ValueError) as error:
+            return 400, {"error": str(error)}
+
     prefix = "/config/plugins/"
     if not ctx.path.startswith(prefix) or not ctx.path.endswith("/config") or ctx.method not in {"GET", "PUT"}:
         return None
@@ -3759,12 +3784,43 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "GET" and ctx.path == "/config/edictum/types":
         try:
-            return 200, {"types": await RAG_WORKERS.run(lambda: create_default_edictum_type_registry().list_types())}
+            # 走共享服务: flow 类型需要附带节点/端口契约, 编辑器据此渲染节点面板
+            return 200, {"types": await RAG_WORKERS.run(lambda: _edictum_config_service().list_types())}
         except WorkerBusyError as e:
             logger.warning(f"[Edictum 类型] 工作队列已满: {e}")
             return 503, {"error": str(e)}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/config/edictum/flow/validate":
+        try:
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            if isinstance(payload, dict) and payload.get("platform_id"):
+                from satrap.core.telemetry.api import SourceUnavailable
+                try:
+                    return await asyncio.wait_for(
+                        _action_backend_request("/api/config/edictum/flow/validate", payload), timeout=3
+                    )
+                except (OSError, TimeoutError, SourceUnavailable):
+                    pass  # 后端不可用时仍允许冷校验, 能力未知
+            service = _edictum_config_service()
+            return 200, await RAG_WORKERS.run(lambda: service.validate_flow(payload))
+        except WorkerBusyError as e:
+            logger.warning(f"[Edictum 流程校验] 工作队列已满: {e}")
+            return 503, {"error": str(e)}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "GET" and ctx.path == "/config/edictum/flow/runtime":
+        # 运行状态只存在于后端进程内的活会话, 控制服务代理到后端
+        query = urllib.parse.urlsplit(ctx.raw_path).query
+        try:
+            # 404 是业务结果 (平台未运行/会话未激活), 原样透传, 前端据此显示"会话未运行"
+            status, result = await _action_backend_request(
+                f"/api/config/edictum/flow/runtime?{query}", pass_through_not_found=True)
+            return status, result
+        except Exception as error:
+            return 503, {"error": f"后端不可用: {error}"}
 
     if ctx.method == "GET" and ctx.path == "/config/edictum/plugins":
         try:
@@ -3826,7 +3882,7 @@ async def _route_session_plugin_config(ctx: _RouteContext) -> ControlResponse | 
         tool_settings: dict[str, Any] = {}
         spec = None
         if name == "friend_manager":
-            from satrap.edictum.plugin_spec import parse_plugin_specs
+            from satrap.edictum.plugin.spec import parse_plugin_specs
             spec = next((item for item in parse_plugin_specs(plugin_specs, edictum.plugin_catalog) if item.name == name), None)
             if spec is None:
                 spec = parse_plugin_specs([{"name": name, "config_version": entry.config_version}], edictum.plugin_catalog)[0]
@@ -4053,7 +4109,7 @@ async def _route_edictum_mutations(ctx: _RouteContext) -> ControlResponse | None
             created = _edictum_config_service().create(
                 await _read_json_body(ctx.reader, ctx.raw_request)
             )
-            return 200, {"ok": True, "config": created}
+            return 200, {"ok": True, "config": created, "revision": config_revision(created)}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
@@ -4073,11 +4129,19 @@ async def _route_edictum_mutations(ctx: _RouteContext) -> ControlResponse | None
                 config_entry = service.get(name)
                 if config_entry is None:
                     return 404, {"error": "not found"}
-                return 200, config_entry
+                return 200, {**config_entry, "revision": config_revision(config_entry)}
             if ctx.method == "PATCH" and not action:
-                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                payload, expected_revision = split_expected_revision(
+                    await _read_json_body(ctx.reader, ctx.raw_request))
                 previous = service.get(name)
-                final_name, updated = service.update(name, payload)
+                try:
+                    final_name, updated = service.update(name, payload, expected_revision=expected_revision)
+                except ConfigRevisionConflict as e:
+                    current = service.get(name)
+                    return 409, {
+                        "error": str(e), "code": "config_revision_conflict",
+                        "revision": config_revision(current) if current is not None else None,
+                    }
                 migrated_refs: list[dict[str, str]] = []
                 if final_name != name:
                     try:
@@ -4093,11 +4157,12 @@ async def _route_edictum_mutations(ctx: _RouteContext) -> ControlResponse | None
                     "ok": True,
                     "name": final_name,
                     "config": updated,
+                    "revision": config_revision(updated),
                     "migrated_refs": migrated_refs,
                 }
             if ctx.method == "POST" and action:
                 updated = service.set_enabled(name, action == "enable")
-                return 200, {"ok": True, "config": updated}
+                return 200, {"ok": True, "config": updated, "revision": config_revision(updated)}
             if ctx.method == "DELETE" and not action:
                 references = _edictum_config_references(name)
                 if references:

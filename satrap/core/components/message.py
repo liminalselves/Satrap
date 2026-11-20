@@ -7,12 +7,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from pathlib import Path
 import asyncio
 from typing import Any, Dict
 import base64
-from enum import Enum
 import json
 import uuid
 import time
@@ -28,6 +27,7 @@ from satrap.core.utils.paths import MediaSourcePermissionError, ensure_allowed_m
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout
 
 from satrap.core.log import logger
+from satrap.core.type.platform import BaseMessageComponent, ComponentType, PlatformComponentType
 
 
 _callback_api_base: str = ""
@@ -209,101 +209,6 @@ class SatrapFileTokenService:
 file_token_service = SatrapFileTokenService()
 
 
-class PlatformComponentType(str, Enum):
-    """平台消息组件类型枚举"""
-
-    Plain = "Plain"
-    """普通文本消息"""
-    Image = "Image"
-    """图片消息"""
-    Record = "Record"
-    """语音消息"""
-    Video = "Video"
-    """视频消息"""
-    File = "File"
-    """文件消息"""
-    Face = "Face"
-    """表情消息"""
-    At = "At"
-    """@ 消息"""
-    Node = "Node"
-    """转发消息节点"""
-    Nodes = "Nodes"
-    """转发消息节点列表"""
-    Poke = "Poke"
-    """戳消息"""
-    Reply = "Reply"
-    """回复消息"""
-    Forward = "Forward"
-    """转发消息"""
-    RPS = "RPS"
-    """RPS 消息"""
-    Dice = "Dice"
-    """骰子消息"""
-    Shake = "Shake"
-    """抖动消息"""
-    Contact = "Contact"
-    """联系人消息"""
-    Share = "Share"
-    """分享消息"""
-    Location = "Location"
-    """位置消息"""
-    Music = "Music"
-    """音乐消息"""
-    Json = "Json"
-    """JSON 消息"""
-    Unknown = "Unknown"
-    """未知消息"""
-
-
-ComponentType = PlatformComponentType
-
-
-class BaseMessageComponent(BaseModel):
-    """消息组件基类, 提供 Pydantic 校验与统一序列化"""
-
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        extra="allow",
-        populate_by_name=True,
-    )
-
-    type: PlatformComponentType
-
-    def __init__(self, **data: Any) -> None:
-        """
-        初始化 BaseMessageComponent
-
-        参数:
-        - data: 输入数据
-        """
-        super().__init__(**data)
-
-    def toDict(self) -> Dict[str, Any]:
-        """
-        同步转换为通用消息组件格式
-
-        返回:
-        - Dict[str, Any]: 同步转换为通用消息组件格式
-        """
-        data = self.model_dump(exclude_none=True, exclude={"type"}, by_alias=False)
-        extras = self.__pydantic_extra__ or {}
-        data.update({k: v for k, v in extras.items() if v is not None})
-        if "type_" in data:
-            data["type"] = data.pop("type_")
-        if "_type" in data:
-            data["type"] = data.pop("_type")
-        type_str = self.type.value if hasattr(self.type, "value") else str(self.type)
-        return {"type": type_str.lower(), "data": data}
-
-    async def to_dict(self) -> dict[str, Any]:
-        """
-        异步转换接口, 默认回退到同步 toDict()
-
-        返回:
-        - dict[str, Any]: 异步转换接口, 默认回退到同步 toDict()
-        """
-        return self.toDict()
 
 
 class Plain(BaseMessageComponent):

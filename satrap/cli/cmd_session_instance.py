@@ -19,7 +19,8 @@ from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested
 from satrap.cli.output import CliError, dispatch_action, ok, print_table, render_data
-from satrap.core.type import safe_getattr_list, safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr_list, safe_getattr_str
+
 
 
 def _configured_platform_ids(config: BackendConfig) -> list[str]:

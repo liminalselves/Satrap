@@ -13,10 +13,12 @@ import inspect
 import copy
 from typing import Any, Generator, TYPE_CHECKING, TypedDict, Unpack, cast
 
-from satrap.core.type import RequestContextBlock
+from satrap.core.type.model import RequestContextBlock
+
 from satrap.core.utils.context.request import freeze_request_blocks, serialize_request_blocks, restore_request_blocks, compose_agent_system_suffix
 from satrap.core.utils.context import PreparedModelContext
-from satrap.core.type import LLMCallResponse, LLMErrorInfo, TokenUsage
+from satrap.core.type.model import LLMCallResponse, LLMErrorInfo, TokenUsage
+
 from satrap.core.utils.media import user_media_content, freeze_tool_result, project_messages
 from .errors import ModelCallError
 from satrap.core.call_context import bind_tool_workflow

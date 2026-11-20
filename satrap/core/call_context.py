@@ -10,27 +10,23 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from collections.abc import Iterator, Mapping, Sequence
 import copy
+from satrap.core.type.conversation import CallOrigin
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from satrap.core.framework.Base import AsyncModelWorkflowFramework
 
 
-@dataclass(frozen=True)
-class CallOrigin:
-    """在入站边界冻结的来源身份, 不包含可继承的管理员权限"""
+current_flow_workflow: ContextVar[AsyncModelWorkflowFramework | None] = ContextVar(
+    "satrap_flow_current_workflow", default=None,
+)
+"""流程会话当前运行的 WF; 未绑定时回退到 session._wf"""
 
-    adapter_id: str
-    self_id: str
-    chat_type: str
-    chat_id: str
-    actor_id: str
-    source_message_id: str
-    request_id: str
-    actor_kind: str = "platform_user"
-    route_user_id: str = ""
-    conversation_kind: str = ""
-    conversation_id: str = ""
-    agent_route_generation: int = 0
-    group_route_generation: int = 0
-    group_role: str = ""
+current_flow_run: ContextVar[tuple[str, str, str] | None] = ContextVar(
+    "satrap_flow_current_run", default=None,
+)
+"""当前运行的 (wf_id, event_id, run_id), 用于计量和来源归属"""
 
 
 @dataclass

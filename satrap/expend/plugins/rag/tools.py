@@ -6,7 +6,7 @@ from typing import Any
 
 import traceback
 
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 from satrap.core.utils.async_worker import RAG_WORKERS
 from satrap.core.utils.documents import extract_document
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error

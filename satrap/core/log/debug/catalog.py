@@ -7,7 +7,7 @@ import json
 import sqlite3
 
 from satrap.core.storage.layout import StorageLayout
-from .contracts import DebugObject
+from satrap.core.type.debug import DebugObject
 
 
 def available_contexts(layout: StorageLayout, platform_id: str = "chat", *, cursor: str = "", limit: int = 50) -> dict[str, object]:

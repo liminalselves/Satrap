@@ -26,7 +26,9 @@ from satrap.core.components import PlatformComponentType, Record
 from satrap.core.utils.documents import SUPPORTED_EXTENSIONS, extract_text
 from satrap.core.platform.event import MessageEvent
 from satrap.core.platform import PlatformAdapter
-from satrap.core.type import ASRConfig, safe_getattr, safe_getattr_str
+from satrap.core.type.model_config import ASRConfig
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 
 from satrap.core.log import logger
 

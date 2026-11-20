@@ -12,7 +12,7 @@ from satrap.core.call_context import current_call_origin, current_tool_workflow
 from satrap.core.group_chat.reminder_validation import validate_reminder_text, validate_reminder_mentions
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError
 from satrap.core.group_chat.service import group_chat_service
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.group_chat.reminder_management import annotate_reminder_sources
 from satrap.core.platform import current_adapter_manager
 from satrap.core.log import logger
@@ -57,8 +57,11 @@ async def execute_reminder_tool(
         if context.store is None:
             raise ReminderError("unavailable", "当前平台没有提醒存储")
         writing = operation in {"group_chat_create_reminder", "group_chat_cancel_reminder"}
-        if writing and (current_tool_workflow() is None or current_tool_workflow() is not getattr(session, "_wf", None)):
-            raise ReminderError("read_only_workflow", "只有当前主工作流可以创建或取消提醒")
+        if writing:
+            from satrap.core.call_context import current_flow_workflow
+            bound = current_flow_workflow.get() or getattr(session, "_wf", None)
+            if current_tool_workflow() is None or current_tool_workflow() is not bound:
+                raise ReminderError("read_only_workflow", "只有当前主工作流可以创建或取消提醒")
         captured_config = dict(config)
         connection = context.adapter.group_chat_connection_token()
         repository = await asyncio.to_thread(ReminderStore, context.store.database)

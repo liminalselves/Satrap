@@ -13,10 +13,11 @@ import secrets
 import string
 import time
 
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
 from satrap.edictum.registry import EDICTUM_PROVIDER
 from satrap.core.storage import StorageMaintenanceService, StorageScope
-from satrap.core.type import SessionConfig
+from satrap.core.type.session import SessionConfig
+
 from satrap.core.config.session_routes import read_session_routes
 
 if TYPE_CHECKING:

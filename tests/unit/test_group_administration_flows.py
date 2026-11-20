@@ -17,7 +17,7 @@ from support.administration import _async_tools, _origin, _setup_adapter
 from dataclasses import replace
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.utils.TCBuilder.manager import ToolsManager
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.framework.providers import EdictumProvider
@@ -32,10 +32,19 @@ from satrap.core.config.group_actions import GroupActionStore
 from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
 from satrap.core.log import logger
 from satrap.core.platform.onebot.admin import AdminActionUnconfirmed
-from satrap.core.platform.onebot.group_action_types import normalize_action_params
+from satrap.core.platform.onebot.group_actions import normalize_action_params
 from satrap.core.platform.receipt import SendReceipt
 from satrap.edictum.simple_session.async_ import AsyncSimpleSession as _group_actions_AsyncSimpleSession
 from satrap.expend.plugins.group_admin.tools import _build_tools
+
+def test_group_action_metadata_uses_public_contract():
+    from satrap.core.platform.onebot.group_actions import action_metadata
+    from satrap.core.type.group_actions import ACTION_FIELDS
+
+    assert action_metadata("ban_group_member")["schema"] is ACTION_FIELDS["ban_group_member"]
+    with pytest.raises(ValueError, match="未知群管理动作"):
+        action_metadata("unknown")
+
 
 @pytest.fixture()
 def _clear_manager():
@@ -45,7 +54,7 @@ def _clear_manager():
 @pytest.mark.usefixtures('_clear_manager')
 def test_meta_declares_implemented_tools_and_bool_switch():
     """meta.yaml 声明的工具与实现一致, 写开关解析为真实布尔"""
-    from satrap.edictum.plugin_config import parse_config_schema
+    from satrap.edictum.plugin.config import parse_config_schema
     meta_path = Path(__file__).parent.parent.parent / "satrap" / "expend" / "plugins" / "group_admin" / "meta.yaml"
     meta = cast(dict[str, Any], yaml.safe_load(meta_path.read_text(encoding="utf-8")))
     assert set(meta["tools"]) == set(_DEFINITIONS)

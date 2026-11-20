@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { create } from 'zustand';
-import { CornerDownLeft, MessageSquarePlus, Moon, PanelLeft, Play, RefreshCw, Search, Square } from 'lucide-react';
+import { CornerDownLeft, MessageSquarePlus, Moon, PanelLeft, Play, RefreshCw, Search, Square, Workflow } from 'lucide-react';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { usePrefsStore } from '@/stores/usePrefsStore';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { switchTheme } from '@/hooks/useTheme';
 import { toast } from '@/components/ui/Toast';
 import { cn } from '@/utils/cn';
@@ -55,6 +56,7 @@ export function CommandPalette() {
   const toggleSidebar = usePrefsStore((state) => state.toggleSidebar);
   const isRunning = useBackendStore((state) => state.isRunning);
   const busy = useBackendStore((state) => state.operation !== null);
+  const edictumConfigs = useConfigStore((state) => state.edictumConfigs);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -75,6 +77,8 @@ export function CommandPalette() {
     if (!open) return;
     setQuery('');
     setActive(0);
+    // 流程编辑器入口来自命名配置列表; 打开面板时刷新, 读取失败只是少了这些入口
+    void useConfigStore.getState().fetchEdictumConfigs().catch(() => undefined);
     const restore = document.activeElement as HTMLElement | null;
     requestAnimationFrame(() => inputRef.current?.focus());
     return () => restore?.focus?.();
@@ -85,6 +89,12 @@ export function CommandPalette() {
       id: item.path, section: '页面' as const, label: item.label, hint: group.label, keywords: item.keywords,
       icon: <item.icon className="h-4 w-4" />, tint: group.tint, run: () => navigate(item.path),
     })));
+    const flows: Command[] = Object.entries(edictumConfigs)
+      .filter(([, config]) => config.edictum_type === 'flow')
+      .map(([name]) => ({
+        id: `flow:${name}`, section: '页面' as const, label: `编辑流程 · ${name}`, hint: 'Agent 配置', keywords: `flow lcbj ${name}`,
+        icon: <Workflow className="h-4 w-4" />, tint: 'purple' as const, run: () => navigate(`/agents/${encodeURIComponent(name)}/flow`),
+      }));
     const backend = async (action: 'start' | 'stop' | 'restart') => {
       const result = await useBackendStore.getState().controlBackend(action);
       toast(result.ok ? 'success' : 'error', result.ok ? { start: '后端已启动', stop: '后端已停止', restart: '后端已重启' }[action] : result.error || '操作未成功');
@@ -100,8 +110,8 @@ export function CommandPalette() {
       { id: 'theme', section: '操作', label: '切换主题', keywords: 'theme dark light qhzt', icon: <Moon className="h-4 w-4" />, run: () => switchTheme() },
       { id: 'sidebar', section: '操作', label: '展开 / 收起侧栏', keywords: 'sidebar cl', icon: <PanelLeft className="h-4 w-4" />, shortcut: ['Ctrl', 'B'], run: toggleSidebar },
     ];
-    return [...pages, ...actions];
-  }, [navigate, isRunning, busy, toggleSidebar]);
+    return [...pages, ...flows, ...actions];
+  }, [navigate, isRunning, busy, toggleSidebar, edictumConfigs]);
 
   const results = useMemo(() => {
     const needle = query.trim();

@@ -2,7 +2,7 @@
 
 平台机器人身份, 群聊环境资料和管理者私聊的群查询说明使用 `RequestContextBlock` 列表传递. 名称与生产者联合唯一, 内容只作为数据附到当前轮用户消息的请求副本中, 不写入 `chat_history`, 不参与历史摘要. 发送者标记, 消息 ID, 引用及媒体仍保存在历史中. memory/goal 本次保留原有行为
 
-共享数据结构定义在 `satrap/core/type.py`, 校验, 快照序列化与请求副本拼接位于 `satrap/core/utils/context/request.py`. 插件继续从 `satrap.edictum` 导入公开类型, 共享类型模块不依赖上下文管理器
+共享数据结构定义在 `satrap/core/type/model.py`, 校验, 快照序列化与请求副本拼接位于 `satrap/core/utils/context/request.py`. 插件继续从 `satrap.edictum` 导入公开类型, 共享类型模块不依赖上下文管理器
 
 每个 Agent 执行固定一份资料快照. 工具循环的每次模型请求都包含该快照一次, 恢复任务使用执行 payload 中的原快照. 执行记录可以保存请求资料用于恢复和审计; 它们与对话历史是不同的数据. 资料不替代来源核验, 路由检查或工具授权
 

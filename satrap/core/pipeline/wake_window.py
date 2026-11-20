@@ -7,7 +7,8 @@ from satrap.core.platform.event import MessageEvent
 from satrap.core.config.platform_policy import policy_default
 from satrap.core.pipeline.wake_policy import WakeDecision, resolve_message_threshold
 from satrap.core.components import Image, Plain, PlatformComponentType
-from satrap.core.type import safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr_str
+
 
 
 MEDIA_REFERENCE_LIMIT = 4096

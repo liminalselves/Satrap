@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, Optional, Dict, List, Tuple
 from collections.abc import Callable
 
 if TYPE_CHECKING:
-    from satrap.core.plugin_authorization import PluginEntryBinding
+    from satrap.core.type.plugin.authorization import PluginEntryBinding
 
 DEFAULT_COMMAND_PREFIX = "/"
 """默认命令前缀, 命令处理器构造默认值与平台命令入口判定共用同一事实来源"""

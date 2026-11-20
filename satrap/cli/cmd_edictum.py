@@ -17,7 +17,8 @@ from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table, render_data
-from satrap.core.type import safe_getattr, safe_getattr_str, safe_getattr_list
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str, safe_getattr_list
+
 
 
 def _edictum_service(args: argparse.Namespace) -> EdictumConfigService:
@@ -32,10 +33,12 @@ def _edictum_service(args: argparse.Namespace) -> EdictumConfigService:
     """
     config = load_cli_config(args)
     registry = create_default_edictum_type_registry()
-    manager = EdictumConfigManager(registry, storage_path=config.edictum_config_path)
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    models = ModelConfigManager(storage_path=config.model_config_path)
+    manager = EdictumConfigManager(registry, storage_path=config.edictum_config_path, models=models)
     from satrap.core.config.reference_checkers import build_reference_checker
 
-    return EdictumConfigService(manager, registry, reference_checker=build_reference_checker("edictum", config))
+    return EdictumConfigService(manager, registry, models=models, reference_checker=build_reference_checker("edictum", config))
 
 
 def _online_client(args: argparse.Namespace):

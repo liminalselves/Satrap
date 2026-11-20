@@ -13,8 +13,8 @@ import yaml
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.storage.session_fork import fork_session_settings
-from satrap.edictum.plugin_settings import PluginSettingsService
-from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
+from satrap.edictum.plugin.settings import PluginSettingsService
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.core.storage import StorageLayout, StorageMaintenanceService

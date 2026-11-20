@@ -6,7 +6,8 @@ from urllib.parse import urlsplit
 from satrap.core.utils.validation import is_bounded_text
 from satrap.core.components.message import PlatformComponentType
 from satrap.core.config.platform_messages import ArchiveMessage
-from satrap.core.type import PlatformMessage
+from satrap.core.type.platform import PlatformMessage
+
 from satrap.core.log import logger
 
 

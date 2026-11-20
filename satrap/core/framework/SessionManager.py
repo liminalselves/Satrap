@@ -34,7 +34,7 @@ from satrap.core.framework.providers import (
     SessionProvider,
     SessionProviderRegistry,
 )
-from satrap.core.framework.providers.base import SessionProviderDefinition
+from satrap.core.type.session_provider import SessionProviderDefinition
 from satrap.core.config.model_snapshot import llm_config_fingerprint
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
@@ -44,7 +44,7 @@ from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.paths import get_db_path
 from satrap.edictum.registry import EDICTUM_PROVIDER
-from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
+from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
 from satrap.core.storage import (
     LOCAL_PLATFORM_ID,
     StorageLayout,
@@ -52,7 +52,13 @@ from satrap.core.storage import (
     StorageScope,
     default_storage_layout,
 )
-from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
+from satrap.core.type.session import SessionConfig
+from satrap.core.type.model import UserCall
+from satrap.core.type.model_config import LLMConfig
+from satrap.core.type.flow.workflow import ResolvedFlowModel
+from satrap.core.type.platform import CommandAction
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_callable
+
 from satrap.core.call_context import bind_call_origin
 from satrap.core.conversation import bind_conversation_route, HistoryWindow
 from satrap.core.group_chat.reply import bind_session_reply, abort_reply_turn
@@ -62,10 +68,11 @@ from satrap.core.log import logger
 if TYPE_CHECKING:
     from satrap.core.framework.BackGroundManager import ModelConfigManager
     from satrap.core.framework.UserManager import UserManager
+    from satrap.core.config.model_snapshot import ModelConfigReader
 
 _UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.core.config.group_session import resolve_group_session
 
 
@@ -1719,6 +1726,10 @@ class SessionManager:
                 async with entry.async_operation_lock:
                     group_plugins = self._group_plugin_target(target, user_call)
                     setattr(entry.session, "_satrap_group_plugins", group_plugins)
+                    # 流程会话接管 /new: 记档案起点与旧会话, 首个 observe 按各节点 on_new 结算
+                    if action.action in {"new_session", "switch"}:
+                        setattr(entry.session, "_flow_new_from", source.session_id)
+                        setattr(entry.session, "_flow_history_start", target.history_started_at)
                     await self._prepare_session_async(entry.session)
                     await self._apply_group_session_overrides(target, entry.session, user_call, group_plugins)
                     result = self._publish_transition(user_call, source, target, action)
@@ -1829,15 +1840,16 @@ class SessionManager:
             raise ValueError("群会话命名配置不可用")
         provider, definition = resolved
         instance = session_cfg.session_config or {}
-        base_model = instance.get("model_name") or definition.params.get("model_name") or "default"
-        model_name = str(base_model if "model_name" in instance else overrides.get("model", base_model))
-        applied_model = getattr(session, "_satrap_group_model_name", str(base_model))
-        if model_name != applied_model:
-            model_cfg = self._model_cfg_mgr.get_llm_config(name=model_name) if self._model_cfg_mgr else None
-            if model_cfg is None or not model_cfg.api_key:
-                raise ValueError("群模型配置不存在或缺少必要凭据")
-            llm = build_llm_from_config(model_cfg, async_=isinstance(session, AsyncSession))
-            self._apply_model_reload(session_cfg.session_id or "", session, llm, model_cfg)
+        if not self._is_flow_definition(definition):
+            base_model = instance.get("model_name") or definition.params.get("model_name") or "default"
+            model_name = str(base_model if "model_name" in instance else overrides.get("model", base_model))
+            applied_model = getattr(session, "_satrap_group_model_name", str(base_model))
+            if model_name != applied_model:
+                model_cfg = self._model_cfg_mgr.get_llm_config(name=model_name) if self._model_cfg_mgr else None
+                if model_cfg is None or not model_cfg.api_key:
+                    raise ValueError("群模型配置不存在或缺少必要凭据")
+                llm = build_llm_from_config(model_cfg, async_=isinstance(session, AsyncSession))
+                self._apply_model_reload(session_cfg.session_id or "", session, llm, model_cfg)
         base_prompt = instance.get("system_prompt", definition.params.get("system_prompt"))
         prompt = base_prompt if "system_prompt" in instance else overrides.get("prompt", base_prompt)
         if prompt is None and hasattr(session, "_satrap_group_prompt"):
@@ -1860,6 +1872,21 @@ class SessionManager:
                     outcome = await outcome
                 if not isinstance(outcome, dict) or not outcome.get("ok", False):
                     raise RuntimeError("群插件配置应用失败")
+
+    def _prepare_flow_model_reload(
+        self, session_id: str, entry: SessionEntry,
+    ) -> Callable[[str], ResolvedFlowModel] | None:
+        """为活跃 flow 准备当前配置来源的逐 WF resolver, 非 flow 返回 None"""
+        session_cfg = self.store.get(session_id)
+        if self._model_cfg_mgr is None or session_cfg is None:
+            return None
+        session_type = session_cfg.session_type_name or entry.session_type
+        provider_name = session_cfg.provider_name or SESSION_CLASS_PROVIDER
+        resolved = self.provider_registry.resolve_definition(session_type, provider_name)
+        definition = resolved[1] if resolved is not None else None
+        if not self._is_flow_definition(definition):
+            return None
+        return self._flow_model_resolver(self._model_cfg_mgr)
 
     def reload_model_configs(self) -> None:
         """同步重载活跃同步会话的 LLM 实例"""
@@ -1889,6 +1916,15 @@ class SessionManager:
             return
 
         for session_id, entry in self.pool.list_entries().items():
+            flow_resolver = self._prepare_flow_model_reload(session_id, entry)
+            if flow_resolver is not None:
+                async with entry.async_operation_lock:
+                    if self.pool.list_entries().get(session_id) is not entry:
+                        continue
+                    reload_models = safe_getattr_callable(entry.session, "reload_models")
+                    if reload_models is not None:
+                        await reload_models(flow_resolver)
+                continue
             prepared = self._prepare_model_reload(session_id, entry)
             if prepared is None:
                 continue
@@ -2296,7 +2332,9 @@ class SessionManager:
                     definition = getter(planned_name, apply_snapshot=apply_snapshot) if getter is not None else None
                     if definition is None:
                         raise RuntimeError("Agent 定义在模型核验时不存在")
-                    llm_config = self._model_config_for(stored, definition, apply_snapshot=apply_snapshot)
+                    llm_config = None if self._is_flow_definition(definition) else self._model_config_for(
+                        stored, definition, apply_snapshot=apply_snapshot,
+                    )
                     if llm_config is not None and safe_getattr(entry.session, "_satrap_model_config_fingerprint") != llm_config_fingerprint(llm_config):
                         plan["action"] = "restart"
                         plan["changed_fields"] = [*plan.get("changed_fields", []), "model_config"]
@@ -2692,11 +2730,15 @@ class SessionManager:
             # 合并 Provider 定义参数到实例级配置 (实例级优先)
 
             model_cfg_mgr = self._model_cfg_mgr
-            # 读取 model_name -> 通过 ModelConfigManager 构建 LLM/AsyncLLM 实例
-
+            is_flow = self._is_flow_definition(definition)
+            # flow 的模型由 WF 生效配置分别解析; 其他会话仍构建唯一顶层模型。
             llm_instance = None
             llm_cfg = None
-            if model_cfg_mgr:
+            model_resolver = None
+            if is_flow:
+                models = apply_snapshot.models_for(model_cfg_mgr) if apply_snapshot is not None and model_cfg_mgr is not None else model_cfg_mgr
+                model_resolver = self._flow_model_resolver(models)
+            elif model_cfg_mgr:
                 llm_cfg = self._model_config_for(session_cfg, definition, apply_snapshot=apply_snapshot)
                 if llm_cfg and llm_cfg.api_key:
                     with progress_phase("model_build_ms"):
@@ -2709,6 +2751,8 @@ class SessionManager:
                         f"请先通过 'satrap model set' 配置"
                     )
             snapshot_args = {"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}
+            if is_flow:
+                snapshot_args["model_resolver"] = model_resolver
             session = provider.create_session(session_cfg, llm=llm_instance, **snapshot_args)
             setattr(session, "plugin_environment", self.plugin_environment)
             if llm_cfg is not None:
@@ -2772,6 +2816,31 @@ class SessionManager:
             logger.error(f"[SessionManager] 创建会话条目失败：session_id={session_id}")
             return None
         return entry
+
+    @staticmethod
+    def _is_flow_definition(definition: SessionProviderDefinition | None) -> bool:
+        """判断定义是否为 Edictum flow, 其他 Provider 的同名元数据不参与"""
+        return bool(
+            definition is not None
+            and definition.provider_name == EDICTUM_PROVIDER
+            and definition.metadata.get("edictum_type") == "flow"
+        )
+
+    @staticmethod
+    def _flow_model_resolver(models: ModelConfigReader | None) -> Callable[[str], ResolvedFlowModel] | None:
+        """创建严格按名称解析的 WF 模型工厂, 不引入 default 回退"""
+        if models is None:
+            return None
+
+        def resolve(name: str) -> ResolvedFlowModel:
+            """读取完整配置并构建由 flow 会话持有生命周期的异步客户端"""
+            from satrap.edictum.plugin.resources import named_model_config
+
+            config = named_model_config(models, "llm", name)
+            client = build_llm_from_config(config, async_=True)
+            return ResolvedFlowModel(client=client, config=config, owned=True)
+
+        return resolve
 
     def _model_config_for(self, session_cfg: SessionConfig, definition: SessionProviderDefinition, *,
                           apply_snapshot: EdictumPluginApplySnapshot | None = None) -> LLMConfig | None:

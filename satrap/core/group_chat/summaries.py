@@ -19,7 +19,7 @@ import uuid
 
 from satrap.core.config.platform_messages import PlatformMessageStore, MessageScope, archive_time
 from satrap.core.conversation import HistoryWindow
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 
 
 def _digest(item: Mapping[str, Any]) -> str:

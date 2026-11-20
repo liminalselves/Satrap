@@ -27,10 +27,10 @@ from satrap.core.config.session_routes import read_session_routes
 from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
 from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
 from satrap.core.framework.SessionClassManager import SessionClassConfigUnavailable
-from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.config.edictum_service import EdictumConfigService, config_revision, split_expected_revision
 from satrap.core.config.model_service import ModelConfigService
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
@@ -56,7 +56,7 @@ RouteResponse = tuple[int, Mapping[str, Any]]
 # 管理 API 响应: (状态码, JSON 体)
 
 from satrap.core.group_chat.reminders import ReminderError
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 
 
 def _parse_json_object(body: bytes) -> dict[str, Any]:
@@ -1403,10 +1403,51 @@ class BackendHTTPServer(MiniHTTPServer):
                     models=backend.model_config_manager,
                 )
                 created = service.create(_parse_json_object(body))
-                return 200, {"ok": True, "config": created}
+                return 200, {"ok": True, "config": created, "revision": config_revision(created)}
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: POST /api/config/edictum/sessions
+
+        if (
+            method == "POST"
+            and path == "/api/config/edictum/flow/validate"
+            and backend.edictum_config_manager
+            and backend.edictum_type_registry
+        ):
+            try:
+                service = EdictumConfigService(
+                    backend.edictum_config_manager,
+                    backend.edictum_type_registry,
+                    models=backend.model_config_manager,
+                    adapter_resolver=lambda platform_id: (
+                        backend.adapter_manager.get_adapter(platform_id) if backend.adapter_manager else None
+                    ),
+                )
+                return 200, service.validate_flow(_parse_json_object(body))
+            except Exception as e:
+                return 400, {"error": str(e)}
+        # 接口: POST /api/config/edictum/flow/validate
+
+        if method == "GET" and path.startswith("/api/config/edictum/flow/runtime"):
+            try:
+                query = parse_qs(urlsplit(path).query)
+                platform_id = query.get("platform_id", [""])[0].strip()
+                session_id = query.get("session_id", [""])[0].strip()
+                if not platform_id or not session_id:
+                    return 400, {"error": "platform_id 与 session_id 必填"}
+                runtime = backend.get_platform_runtime(platform_id)
+                if runtime is None:
+                    return 404, {"error": f"平台实例未运行: {platform_id}"}
+                entry = runtime[0].pool.list_entries().get(session_id)
+                if entry is None:
+                    return 404, {"error": f"会话未激活: {session_id}"}
+                from satrap.edictum.flow.session import AsyncFlowSession
+                if not isinstance(entry.session, AsyncFlowSession):
+                    return 400, {"error": f"会话不是流程类型: {session_id}"}
+                return 200, await entry.session.runtime_status()
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: GET /api/config/edictum/flow/runtime?platform_id&session_id
 
         edictum_prefix = "/api/config/edictum/sessions/"
         if (
@@ -1434,11 +1475,21 @@ class BackendHTTPServer(MiniHTTPServer):
                     config_entry = service.get(name)
                     if config_entry is None:
                         return 404, {"error": "not found"}
-                    return 200, config_entry
+                    return 200, {**config_entry, "revision": config_revision(config_entry)}
                 if method in {"PATCH", "PUT"} and not action:
-                    payload = _parse_json_object(body)
+                    # 局部导入: config.document 顶层依赖后端包, 模块级导入会形成循环
+                    from satrap.core.config.document import ConfigRevisionConflict
+
+                    payload, expected_revision = split_expected_revision(_parse_json_object(body))
                     previous = service.get(name)
-                    final_name, updated = service.update(name, payload)
+                    try:
+                        final_name, updated = service.update(name, payload, expected_revision=expected_revision)
+                    except ConfigRevisionConflict as e:
+                        current = service.get(name)
+                        return 409, {
+                            "error": str(e), "code": "config_revision_conflict",
+                            "revision": config_revision(current) if current is not None else None,
+                        }
                     migrated_refs: list[dict[str, str]] = []
                     if final_name != name:
                         try:
@@ -1454,11 +1505,12 @@ class BackendHTTPServer(MiniHTTPServer):
                         "ok": True,
                         "name": final_name,
                         "config": updated,
+                        "revision": config_revision(updated),
                         "migrated_refs": migrated_refs,
                     }
                 if method == "POST" and action:
                     updated = service.set_enabled(name, action == "enable")
-                    return 200, {"ok": True, "config": updated}
+                    return 200, {"ok": True, "config": updated, "revision": config_revision(updated)}
                 if method == "DELETE" and not action:
                     references = backend.list_edictum_config_references(name)
                     if references:

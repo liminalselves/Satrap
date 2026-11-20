@@ -10,7 +10,9 @@ from satrap.core.utils.context import (
     PreparedModelContext,
 )
 from satrap.core.state import StateStore
-from satrap.core.type import LLMConfig, ModelContextTurnStats, TokenUsage
+from satrap.core.type.model_config import LLMConfig
+from satrap.core.type.model import ModelContextTurnStats, TokenUsage
+
 from satrap.core.log import logger
 from .utils import _build_context_request_stats
 

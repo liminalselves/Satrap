@@ -5,13 +5,14 @@ from pathlib import Path
 import pytest
 from typing import Any, Iterator
 import json
-from satrap.edictum.plugin_config import ConfigField, PluginConfigManager, parse_config_schema, schema_to_payload
+from satrap.core.type.plugin.config import ConfigField, schema_to_payload
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import SimpleSession
 from satrap.core.config.plugin_service import PluginManagementService
 from satrap.display.plugins import ChatPluginRegistry
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.core.config.document import ConfigRevisionConflict
 from copy import deepcopy
 from contextvars import copy_context
@@ -27,7 +28,8 @@ from satrap.core.plugin_authorization import bind_authorization_step, bind_nativ
 from satrap.core.plugin_authorization import evaluate_plugin_permissions
 from satrap.core.utils.TCBuilder.manager import ToolsManager
 from satrap.core.utils.TCBuilder.tool import Tool
-from satrap.edictum.plugin_permissions import PluginPermissions, parse_plugin_permissions, validate_permission_install
+from satrap.core.type.plugin.permissions import PluginPermissions
+from satrap.edictum.plugin.permissions import parse_plugin_permissions, validate_permission_install
 
 class _FakeLLM(LLM):
     """最小同步 fake LLM"""
@@ -417,7 +419,7 @@ async def test_plugin_host_execution_http_cas_and_batched_health(configured_serv
     token = "host-plugin-test-token-longer-than-32-characters"
     auth = ServerAuth.create("127.0.0.1", 0, token=token)
     monkeypatch.setattr(control_server, "_CONTROL_AUTH", auth)
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", service.manager._dir)
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", service.manager._dir)
     monkeypatch.setattr(control_server.PluginCatalog, "snapshot_async", lambda _: asyncio.sleep(0, result=service.catalog))
     monkeypatch.setattr(control_server, "_plugin_runtime_targets", lambda *args: [("Chat", "http://chat/api/chat/plugins/reconcile"), ("Edictum", "http://backend/api/edictum/plugins/reconcile")])
     calls = []
@@ -958,3 +960,55 @@ def test_factory_declarations_do_not_survive_missing_meta_yaml(monkeypatch: pyte
         bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
     # 文件消失后仍走真实读取并抛出既有错误, 不返回缓存声明
     assert loads == [str(plugin_dir)] * 2
+
+def test_config_field_time_group_and_visible_when():
+    """time 校验 HH:MM, group/visible_when 解析校验并进入 payload"""
+    meta: dict[str, Any] = {
+        "config_schema": {
+            "start": {"type": "time", "label": "开始", "default": "22:00"},
+            "end": {"type": "time", "label": "结束", "default": "07:00", "group": "时段"},
+            "mask_char": {
+                "type": "string", "default": "*", "group": "遮盖",
+                "visible_when": {"mode": "mask"},
+            },
+            "mode": {"type": "select", "default": "drop", "options": ["drop", "mask"]},
+            "allow": {
+                "type": "textarea", "default": "",
+                "visible_when": {"mode": ["drop", "mask"], "level": 2},
+            },
+            "level": {"type": "number", "default": 1},
+        }
+    }
+    schema = parse_config_schema(meta)
+    assert schema["start"].type == "time"
+    assert schema["end"].group == "时段"
+    assert schema["mask_char"].visible_when == {"mode": "mask"}
+    assert schema["allow"].visible_when == {"mode": ["drop", "mask"], "level": 2}
+
+    time_field = schema["start"]
+    assert time_field.validate("23:30") == "23:30"
+    assert time_field.validate("24:00") == "24:00"
+    assert time_field.validate("24:30") == "22:00"   # 非法值回退默认
+    assert time_field.validate("9:00") == "22:00"    # 必须两位小时
+    assert time_field.validate_strict("00:00") == "00:00"
+    with pytest.raises(ValueError, match="HH:MM"):
+        time_field.validate_strict("25:00")
+    with pytest.raises(ValueError, match="字符串"):
+        time_field.validate_strict(900)
+
+    payload = schema_to_payload(schema)
+    assert payload["end"]["group"] == "时段"
+    assert payload["mask_char"]["visible_when"] == {"mode": "mask"}
+    assert "group" not in payload["start"] and "visible_when" not in payload["start"]
+    json.dumps(payload)
+
+def test_parse_config_schema_visible_when_errors():
+    """visible_when 引用未知字段或结构非法时报错"""
+    with pytest.raises(ValueError, match="不存在的字段"):
+        parse_config_schema({"config_schema": {"a": {"type": "string", "visible_when": {"ghost": "x"}}}})
+    with pytest.raises(ValueError, match="非空映射"):
+        parse_config_schema({"config_schema": {"a": {"type": "string", "visible_when": {}}}})
+    with pytest.raises(ValueError, match="标量或标量数组"):
+        parse_config_schema({"config_schema": {"a": {"type": "string", "b": {"type": "string"}, "visible_when": {"b": {"x": 1}}}}})
+    with pytest.raises(ValueError, match="标量数组"):
+        parse_config_schema({"config_schema": {"a": {"type": "string", "b": {"type": "string"}, "visible_when": {"b": []}}}})

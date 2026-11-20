@@ -1,0 +1,638 @@
+"""
+插件配置机制: YAML 声明, 全局 JSON 与命名配置, SQLite 会话覆盖
+
+插件在 meta.yaml 用 config_schema 声明可配项 (键 -> type/default/description):
+    config_schema:
+      sandbox_root:
+        type: path            # string/path/textarea/number/bool/select
+        default: ""
+        description: "沙箱根目录"
+
+配置存储:
+- 全局默认: .satrap/config/plugins/<plugin_name>.json (所有会话共享)
+- 会话覆盖: platform.db 按会话和配置域保存显式字段, 安装时读取
+
+合成顺序: schema.default < 全局 JSON < Edictum 命名配置 < 会话覆盖
+"""
+from __future__ import annotations
+
+from satrap.core.storage.persist import atomic_write_json
+
+from pathlib import Path
+from typing import Any, Callable, cast
+import hashlib
+import threading
+import time
+import json
+import math
+import re
+
+from satrap.edictum.migration_keys import GLOBAL_RECEIPT
+from satrap.core.config_paths import get_config_path
+
+from satrap.core.log import logger
+
+CONFIG_DIR = get_config_path("plugins", legacy_name="plugin_config")
+"""插件全局配置目录, 与其它 JSON 配置共用项目 .satrap/config"""
+
+_FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "time", "llm", "embed", "rerank", "asr", "img", "knowledge_base", "knowledge_bases")
+"""支持的配置字段类型"""
+
+_PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+"""插件配置文件使用的稳定名称格式"""
+
+
+def is_valid_plugin_name(name: str) -> bool:
+    """判断名称是否符合目录、配置和宿主状态共用的稳定插件名规则"""
+    return _PLUGIN_NAME_RE.fullmatch(name) is not None
+
+
+from satrap.core.storage.file_lock import FileLock
+
+
+from satrap.core.type.plugin.config import PluginHostState, ConfigField, schema_to_payload
+
+_HOST_CACHE_LOCK = threading.RLock()
+_HOST_CACHE: dict[Path, tuple[tuple[int, int, int] | None, dict[str, PluginHostState], bool]] = {}
+"""宿主状态缓存: 文件指纹, 可读取的显式状态, 顶层损坏时是否整体禁用"""
+
+
+def _disabled_host_state() -> PluginHostState:
+    """返回损坏条目或整体损坏时使用的 fail-closed 状态"""
+    return PluginHostState(execution_enabled=False, revision=0, updated_at=None, execution_updated_at=None)
+
+
+def parse_config_schema(meta: dict[str, Any]) -> dict[str, ConfigField]:
+    """
+    从 meta.yaml 解析 config_schema (键 -> ConfigField)
+
+    参数:
+    - meta: 元数据
+
+    非字典的 config_schema 跳过并警告; 单个字段非字典用默认 string 类型
+
+    返回:
+    - dict[str, ConfigField]: 从 meta.yaml 解析 config_schema (键 -> ConfigField)
+    """
+    raw = meta.get("config_schema")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning(f"[插件配置] config_schema 应为字典, 已跳过: {raw!r}")
+        return {}
+    fields: dict[str, ConfigField] = {}
+    for key, spec in cast(dict[Any, Any], raw).items():
+        name = str(key)
+        if isinstance(spec, dict):
+            spec_dict = cast(dict[str, Any], spec)
+            ftype = str(spec_dict.get("type") or "string")
+            if ftype == "boolean":
+                ftype = "bool"   # 兼容 JSON Schema 的类型名, 对外仍使用统一的 bool
+            if ftype not in _FIELD_TYPES:
+                logger.warning(f"[插件配置] {name} 类型 {ftype} 非法, 按 string 处理")
+                ftype = "string"
+            options_raw = spec_dict.get("options")
+            options = [str(o) for o in cast(list[Any], options_raw)] if isinstance(options_raw, list) else []
+            labels_raw: object = spec_dict.get("option_labels")
+            labels = {key: value for key, value in cast(dict[object, object], labels_raw).items()
+                      if isinstance(key, str) and isinstance(value, str)} if isinstance(labels_raw, dict) else {}
+            fields[name] = ConfigField(
+                name=name,
+                type=ftype,
+                default=spec_dict.get("default"),
+                description=str(spec_dict.get("description") or ""),
+                options=options,
+                required=bool(spec_dict.get("required", False)),
+                nullable=bool(spec_dict.get("nullable", False)),
+                session_overridable=bool(spec_dict.get("session_overridable", True)),
+                minimum=spec_dict.get("minimum"),
+                maximum=spec_dict.get("maximum"),
+                integer=bool(spec_dict.get("integer", False)),
+                scope=str(spec_dict.get("scope") or ""),
+                label=str(spec_dict.get("label") or ""),
+                option_labels=labels,
+                strict=spec_dict.get("strict") is True,
+                group=str(spec_dict.get("group") or ""),
+                visible_when=parse_visible_when(name, spec_dict.get("visible_when")),
+            )
+        else:
+            fields[name] = ConfigField(name=name, type="string", default=spec)
+            # 简写: key: 默认值 (类型按 string)
+    for fname, fld in fields.items():
+        if fld.visible_when is None:
+            continue
+        for ref in fld.visible_when:
+            if ref not in fields:
+                raise ValueError(f"配置字段 {fname} 的 visible_when 引用了不存在的字段 {ref}")
+    return fields
+
+
+def parse_visible_when(field_name: str, raw: object) -> dict[str, Any | list[Any]] | None:
+    """
+    解析 visible_when 显示条件, 每项为 {字段: 值} 或 {字段: [值, ...]}
+
+    参数:
+    - field_name: 声明该条件的配置字段名, 仅用于报错定位
+    - raw: meta.yaml 中的 visible_when 原始值
+
+    返回:
+    - 规范化后的条件映射; 未声明返回 None, 非法结构抛出 ValueError
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"配置字段 {field_name} 的 visible_when 必须是非空映射")
+    parsed: dict[str, Any] = {}
+    for key, value in cast(dict[object, object], raw).items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"配置字段 {field_name} 的 visible_when 引用了非法字段名")
+        if isinstance(value, list):
+            items = cast(list[object], value)
+            if not items or any(not isinstance(item, (str, int, float)) for item in items):
+                raise ValueError(f"配置字段 {field_name} 的 visible_when.{key} 列表必须是非空标量数组")
+            parsed[key] = list(items)
+        elif isinstance(value, (str, int, float)):
+            parsed[key] = value
+        else:
+            raise ValueError(f"配置字段 {field_name} 的 visible_when.{key} 必须是标量或标量数组")
+    return parsed
+
+
+class PluginConfigManager:
+    """
+    插件配置管理器: 全局 json 读写 + 两级合成
+
+    全局配置存 .satrap/config/plugins/<name>.json; 会话覆盖由调用方传入
+    """
+
+    def __init__(self, config_dir: str | Path | None = None) -> None:
+        """
+        初始化 PluginConfigManager
+
+        参数:
+        - config_dir: 配置dir
+        """
+        self._dir = Path(config_dir) if config_dir is not None else CONFIG_DIR
+
+    def global_path(self, name: str) -> Path:
+        """
+        校验插件名称并返回配置目录内的真实路径
+
+        参数:
+        - name: 插件稳定名称
+
+        返回:
+        - Path: 严格位于全局配置目录内的 JSON 路径
+        """
+        if not is_valid_plugin_name(name):
+            raise ValueError(f"非法插件名称: {name}")
+        root = self._dir.resolve()
+        path = (root / f"{name}.json").resolve()
+        if path.parent != root:
+            raise ValueError(f"非法插件配置路径: {name}")
+        return path
+
+    def _parse_host_states(self, path: Path, *, strict: bool) -> tuple[dict[str, PluginHostState], bool]:
+        """
+        解析宿主状态文件, 读取路径容忍损坏而写入路径严格拒绝
+
+        参数:
+        - path: .host-state.json 路径
+        - strict: 为写入事务准备数据时任何损坏都抛出 ValueError
+
+        返回:
+        - 可读取的显式状态及顶层是否整体损坏; 损坏条目以停用状态保留
+        """
+        def fail(message: str) -> tuple[dict[str, PluginHostState], bool]:
+            """按读取或写入路径统一处理损坏文件"""
+            if strict:
+                raise ValueError(message)
+            logger.error(f"[插件配置] {message}, 宿主状态按禁用处理")
+            return {}, True
+
+        if not path.is_file():
+            return {}, False
+        try:
+            if path.stat().st_size > 512 * 1024:
+                return fail("插件宿主状态超过大小限制")
+            raw: object = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            return fail(f"插件宿主状态无法读取: {type(error).__name__}")
+        if not isinstance(raw, dict):
+            return fail("插件宿主状态必须为对象")
+        raw = cast(dict[str, object], raw)
+        if set(raw) != {"version", "plugins"} or raw["version"] != 1 or not isinstance(raw["plugins"], dict):
+            return fail("插件宿主状态无效")
+        result: dict[str, PluginHostState] = {}
+        for name, state in cast(dict[str, object], raw["plugins"]).items():
+            if not isinstance(name, str) or _PLUGIN_NAME_RE.fullmatch(name) is None:
+                if strict:
+                    raise ValueError("插件宿主条目无效")
+                logger.warning("[插件配置] 插件宿主条目名称无效, 已忽略")
+                continue
+            valid = isinstance(state, dict)
+            if valid:
+                entry = cast(dict[str, object], state)
+                revision = entry.get("revision")
+                valid = (
+                    set(entry) == set(PluginHostState.__annotations__)
+                    and type(entry.get("execution_enabled")) is bool
+                    and isinstance(revision, int) and not isinstance(revision, bool) and revision >= 1
+                    and all(value is None or (isinstance(value, (int, float)) and not isinstance(value, bool)
+                                              and math.isfinite(value) and value >= 0)
+                            for value in (entry["updated_at"], entry["execution_updated_at"]))
+                )
+            if not valid:
+                if strict:
+                    raise ValueError("插件宿主条目无效")
+                logger.error(f"[插件配置] 插件宿主条目损坏, 已禁用插件: {name}")
+                result[name] = _disabled_host_state()
+                continue
+            result[name] = cast(PluginHostState, state)
+        return result, False
+
+    def _host_snapshot(self, *, strict: bool = False) -> tuple[dict[str, PluginHostState], bool]:
+        """
+        按文件版本复用可读取快照, 写入事务直接读取严格结果
+
+        参数:
+        - strict: 为写入事务校验当前文件, 损坏时抛出 ValueError
+
+        返回:
+        - 显式状态和顶层损坏标记
+        """
+        path = self._dir.resolve() / ".host-state.json"
+        if strict:
+            return self._parse_host_states(path, strict=True)
+        with _HOST_CACHE_LOCK:
+            try:
+                stat = path.stat()
+                fingerprint = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+            except FileNotFoundError:
+                fingerprint = None
+            previous = _HOST_CACHE.get(path)
+            if previous is not None and previous[0] == fingerprint:
+                return previous[1], previous[2]
+            result, degraded = self._parse_host_states(path, strict=False)
+            if len(_HOST_CACHE) >= 8 and path not in _HOST_CACHE:
+                _HOST_CACHE.pop(next(iter(_HOST_CACHE)))
+            _HOST_CACHE[path] = (fingerprint, result, degraded)
+            return result, degraded
+
+    def host_states(self) -> dict[str, PluginHostState]:
+        """
+        批量取得可独立修改的宿主状态
+
+        返回:
+        - 当前全部显式状态的副本; 可解析条目保留, 损坏条目以停用状态返回
+        """
+        states, _ = self._host_snapshot()
+        return {name: PluginHostState(**state) for name, state in states.items()}
+
+    def host_state(self, name: str) -> PluginHostState:
+        """
+        查询单插件宿主状态, 旧插件默认可执行且更新时间未知
+
+        参数:
+        - name: 已注册的插件名称
+
+        返回:
+        - 总闸和宿主修订; 宿主状态整体损坏时返回停用状态
+        """
+        self.global_path(name)
+        states, degraded = self._host_snapshot()
+        state = states.get(name)
+        if state is not None:
+            return PluginHostState(**state)
+        if degraded:
+            return _disabled_host_state()
+        return PluginHostState(execution_enabled=True, revision=0, updated_at=None, execution_updated_at=None)
+
+    def save_execution(self, name: str, enabled: bool, expected_revision: int) -> PluginHostState:
+        """
+        只修改宿主总闸, 不改写任何位置配置
+
+        参数:
+        - name: 已验证存在的插件
+        - enabled: 新的执行总闸
+        - expected_revision: 单插件宿主修订
+
+        返回:
+        - 原子保存后的宿主状态, 并发修改或文件损坏时拒绝覆盖
+        """
+        from satrap.core.config.document import ConfigRevisionConflict
+
+        if type(enabled) is not bool or type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("总闸必须为布尔值, expected_revision 必须为非负整数")
+        self.global_path(name)
+        path = self._dir.resolve() / ".host-state.json"
+        with FileLock(path.with_suffix(".lock")):
+            states, _ = self._host_snapshot(strict=True)
+            current = states.get(name, PluginHostState(execution_enabled=True, revision=0, updated_at=None, execution_updated_at=None))
+            if current["revision"] != expected_revision:
+                raise ConfigRevisionConflict("插件宿主状态已变化, 请刷新")
+            updated = PluginHostState(execution_enabled=enabled, execution_updated_at=time.time(), revision=current["revision"] + 1, updated_at=current["updated_at"])
+            states[name] = updated
+            atomic_write_json(path, {"version": 1, "plugins": states}, indent=2)
+            return updated
+
+    def _record_config_update(self, name: str) -> None:
+        """
+        记录本次真实参数保存, 旧文件不使用 mtime 冒充管理时间
+
+        参数:
+        - name: 已完成全局参数写入的插件
+        """
+        path = self._dir.resolve() / ".host-state.json"
+        with FileLock(path.with_suffix(".lock")):
+            states, _ = self._host_snapshot(strict=True)
+            current = states.get(name, PluginHostState(execution_enabled=True, revision=0, updated_at=None, execution_updated_at=None))
+            states[name] = PluginHostState(execution_enabled=current["execution_enabled"], execution_updated_at=current["execution_updated_at"], updated_at=time.time(), revision=current["revision"] + 1)
+            atomic_write_json(path, {"version": 1, "plugins": states}, indent=2)
+
+    def load_global(self, name: str, schema: dict[str, ConfigField]) -> dict[str, Any]:
+        """
+        读全局 json 并按 schema 校验 + 补默认 (无文件时全默认)
+
+        参数:
+        - name: 名称
+        - schema: 数据结构定义
+
+        返回:
+        - dict[str, Any]: 读全局 json 并按 schema 校验 + 补默认 (无文件时全默认)
+        """
+        merged = {key: fld.default for key, fld in schema.items()}
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
+        if name in {"satrap_coding", "permissions"}:
+            from satrap.edictum.approval_migration import migrate_approval_globals
+            migrate_approval_globals(self)
+        if name in {"base_take", "memory"}:
+            from satrap.edictum.memory_migration import migrate_memory_globals
+            migrate_memory_globals(self)
+        path = self.global_path(name)
+        if not path.is_file():
+            return merged
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw: Any = json.load(f)
+        except Exception as e:
+            logger.error(f"[插件配置] 读取 {name} 全局配置失败: {e}")
+            return merged
+        if not isinstance(raw, dict):
+            logger.warning(f"[插件配置] {name} 全局配置应为字典, 已忽略")
+            return merged
+        for key, value in cast(dict[str, Any], raw).items():
+            if name == "friend_manager" and key == GLOBAL_RECEIPT:
+                continue
+            fld = schema.get(key)
+            if fld is None:
+                logger.warning(f"[插件配置] {name} 配置键 {key} 未在 schema 声明, 忽略")
+                continue
+            merged[key] = fld.validate(value)
+        return merged
+
+    def load_global_explicit(self, name: str, schema: dict[str, ConfigField]) -> dict[str, Any]:
+        """仅读取全局显式字段, 用于区分默认值和全局值来源"""
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
+        if name in {"satrap_coding", "permissions"}:
+            from satrap.edictum.approval_migration import migrate_approval_globals
+            migrate_approval_globals(self)
+        if name in {"base_take", "memory"}:
+            from satrap.edictum.memory_migration import migrate_memory_globals
+            migrate_memory_globals(self)
+        path = self.global_path(name)
+        if not path.is_file():
+            return {}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError(f"插件 {name} 全局配置必须是对象")
+        return {key: schema[key].validate(value) for key, value in cast(dict[str, Any], raw).items() if key in schema}
+
+    def save_global(self, name: str, schema: dict[str, ConfigField], config: dict[str, Any]) -> dict[str, Any]:
+        """
+        校验并写全局 json, 返回合成后的生效配置
+
+        参数:
+        - name: 名称
+        - schema: 数据结构定义
+        - config: 配置信息
+
+        返回:
+        - dict[str, Any]: 合成后的生效配置
+        """
+        self._dir.mkdir(parents=True, exist_ok=True)
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
+        if name in {"satrap_coding", "permissions"}:
+            from satrap.edictum.approval_migration import migrate_approval_globals
+            migrate_approval_globals(self)
+        cleaned: dict[str, Any] = {}
+        for key, value in config.items():
+            fld = schema.get(key)
+            if fld is None:
+                logger.warning(f"[插件配置] {name} 配置键 {key} 未在 schema 声明, 忽略")
+                continue
+            cleaned[key] = fld.validate(value)
+        path = self.global_path(name)
+        # 与 ASR 引用扫描共用同一把锁: 扫描判定无引用与删除配置之间不允许写入新引用
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
+            if name == "friend_manager" and path.is_file():
+                previous = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(previous, dict) and GLOBAL_RECEIPT in previous:
+                    cleaned[GLOBAL_RECEIPT] = previous[GLOBAL_RECEIPT]
+            atomic_write_json(path, cleaned, indent=2)
+            self._record_config_update(name)
+        return self.load_global(name, schema)
+
+    # ---------- 插件节点全局默认 (<插件名>.flow_nodes.json) ----------
+
+    def flow_nodes_path(self, name: str) -> Path:
+        """
+        校验插件名称并返回节点默认文件路径
+
+        参数:
+        - name: 插件稳定名称
+
+        返回:
+        - Path: 严格位于全局配置目录内的 <插件名>.flow_nodes.json
+        """
+        if not is_valid_plugin_name(name):
+            raise ValueError(f"非法插件名称: {name}")
+        root = self._dir.resolve()
+        path = (root / f"{name}.flow_nodes.json").resolve()
+        if path.parent != root:
+            raise ValueError(f"非法插件配置路径: {name}")
+        return path
+
+    def load_flow_nodes_global(self, name: str) -> dict[str, dict[str, Any]]:
+        """
+        读取插件节点全局默认, 缺失时返回空表
+
+        参数:
+        - name: 插件稳定名称
+
+        返回:
+        - {节点名: {"version": int, "config": dict}}; 文件损坏按空表处理并警告
+        """
+        path = self.flow_nodes_path(name)
+        if not path.is_file():
+            return {}
+        try:
+            raw: object = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            logger.warning(f"[插件配置] {name} 节点默认文件损坏, 按空处理: {error}")
+            return {}
+        if not isinstance(raw, dict) or raw.get("format") != 1 or not isinstance(raw.get("nodes"), dict):
+            logger.warning(f"[插件配置] {name} 节点默认文件格式非法, 按空处理")
+            return {}
+        nodes: dict[str, dict[str, Any]] = {}
+        for node_name, entry in cast(dict[str, Any], raw["nodes"]).items():
+            if not isinstance(entry, dict):
+                continue
+            entry_map = cast(dict[str, Any], entry)
+            config = entry_map.get("config")
+            if not isinstance(config, dict):
+                config = {}
+            version = entry_map.get("version", 1)
+            if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+                version = 1
+            nodes[str(node_name)] = {"version": version, "config": dict(cast(dict[str, Any], config))}
+        return nodes
+
+    def flow_nodes_file_stamp(self, name: str) -> tuple[int, int] | None:
+        """运行期变更检测只读 stat, 不在每条消息上读取并哈希默认文件"""
+        try:
+            stat = self.flow_nodes_path(name).stat()
+        except FileNotFoundError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    def flow_nodes_revision(self, name: str) -> str:
+        """
+        节点默认文件的并发版本, 缺失时为 "missing"
+
+        参数:
+        - name: 插件稳定名称
+
+        返回:
+        - 原始文件内容的 SHA256 或 "missing"
+        """
+        path = self.flow_nodes_path(name)
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "missing"
+
+    def save_flow_nodes_global(
+        self,
+        name: str,
+        nodes: dict[str, dict[str, Any]],
+        *,
+        expected_revision: str,
+    ) -> dict[str, dict[str, Any]]:
+        """
+        原子写插件节点默认文件, 并发修改时拒绝
+
+        参数:
+        - name: 插件稳定名称
+        - nodes: {节点名: {"version": int, "config": dict}}; 写完整内容, 空节点表清空文件
+        - expected_revision: 编辑开始时读取的文件版本
+
+        返回:
+        - 保存后的节点默认表; 并发冲突抛 ConfigRevisionConflict
+        """
+        from satrap.core.config.document import ConfigRevisionConflict
+
+        path = self.flow_nodes_path(name)
+        with FileLock(path.with_suffix(".lock")):
+            if self.flow_nodes_revision(name) != expected_revision:
+                raise ConfigRevisionConflict("节点默认已被修改, 请重新读取后合并")
+            if not nodes:
+                if path.is_file():
+                    path.unlink()
+                return {}
+            self._dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(path, {"format": 1, "nodes": nodes}, indent=2)
+        return self.load_flow_nodes_global(name)
+
+    def migrate_flow_nodes_global(
+        self,
+        name: str,
+        migrate: Callable[[dict[str, dict[str, Any]]], dict[str, dict[str, Any]]],
+    ) -> dict[str, dict[str, Any]]:
+        """
+        插件升级后首次加载时迁移节点默认并原子写回, 写前备份原文件 (P0-7)
+
+        参数:
+        - name: 插件稳定名称
+        - migrate: {节点名: {version, config}} -> 迁移后表; 抛异常则保留原样并写警告
+
+        返回:
+        - 迁移后的节点默认表; 迁移失败返回原表
+        """
+        path = self.flow_nodes_path(name)
+        current = self.load_flow_nodes_global(name)
+        if not current:
+            return {}
+        try:
+            migrated = migrate(current)
+        except Exception as error:
+            logger.warning(f"[插件配置] {name} 节点默认迁移失败, 保留原文件: {error}")
+            return current
+        if migrated == current:
+            return current
+        with FileLock(path.with_suffix(".lock")):
+            if path.is_file():
+                # 写前备份: 与原子写同目录, 保留最近一次原文件
+                backup = path.with_suffix(path.suffix + ".bak")
+                backup.write_bytes(path.read_bytes())
+            atomic_write_json(path, {"format": 1, "nodes": migrated}, indent=2)
+        return self.load_flow_nodes_global(name)
+
+    def resolve(
+        self,
+        name: str,
+        schema: dict[str, ConfigField],
+        session_override: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        合成最终配置: 全局 (含默认) + 会话覆盖
+
+        参数:
+        - name: 名称
+        - schema: 数据结构定义
+        - session_override: 会话override
+
+        返回:
+        - dict[str, Any]: 合成最终配置: 全局 (含默认) + 会话覆盖
+        """
+        resolved = self.load_global(name, schema)
+        if session_override:
+            for key, value in session_override.items():
+                fld = schema.get(key)
+                if fld is None:
+                    logger.warning(f"[插件配置] {name} 会话覆盖键 {key} 未在 schema 声明, 忽略")
+                    continue
+                resolved[key] = fld.validate(value)
+        return resolved
+
+
+def validate_config_values(
+    schema: dict[str, ConfigField], values: dict[str, Any], *, session_override: bool = False,
+) -> dict[str, Any]:
+    """校验声明字段, 显式覆盖不能修改禁止会话修改的字段"""
+    if not isinstance(values, dict):
+        raise ValueError("插件配置必须是对象")
+    cleaned: dict[str, Any] = {}
+    for key, value in values.items():
+        definition = schema.get(key)
+        if definition is None:
+            raise ValueError(f"未声明配置项: {key}")
+        if session_override and not definition.session_overridable:
+            raise ValueError(f"配置项不允许会话覆盖: {key}")
+        cleaned[key] = definition.validate_strict(value)
+    return cleaned

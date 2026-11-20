@@ -15,12 +15,12 @@ from typing import Any, cast, Iterator, TYPE_CHECKING
 import json
 import time
 
-from satrap.core.framework.providers.base import SessionProviderDefinition
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
-from satrap.edictum.plugin_settings import resolve_runtime_specs
+from satrap.core.type.session_provider import SessionProviderDefinition
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
+from satrap.edictum.plugin.settings import resolve_runtime_specs
 from satrap.core.utils.performance import PhaseTimings
-from satrap.edictum.plugin_runtime import (
+from satrap.edictum.plugin.runtime import (
     PluginRuntimeState,
     preview_plugin_reconciliation,
     reconcile_plugin_states_async,
@@ -28,7 +28,8 @@ from satrap.edictum.plugin_runtime import (
 )
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncSession, Session
-from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
+from satrap.core.type.plugin.spec import PluginSpec
+from satrap.edictum.plugin.spec import parse_plugin_specs, plugin_specs_fingerprint
 from satrap.edictum.registry import (
     EDICTUM_PROVIDER,
     EdictumTypeDefinition,
@@ -36,7 +37,8 @@ from satrap.edictum.registry import (
 )
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.settings import normalize_session_settings
-from satrap.core.type import SessionConfig
+from satrap.core.type.session import SessionConfig
+
 
 from satrap.core.log import logger
 
@@ -223,14 +225,16 @@ class EdictumProvider:
         session_config: SessionConfig,
         llm: LLM | AsyncLLM | None = None,
         *, apply_snapshot: EdictumPluginApplySnapshot | None = None,
+        model_resolver: Any = None,
     ) -> Session | AsyncSession:
         """
         根据实例配置创建 Edictum 会话
 
         参数:
         - session_config: 持久化的会话实例配置
-        - llm: 已按类型构建的同步或异步模型
+        - llm: 非 flow 类型已按类型构建的同步或异步模型
         - apply_snapshot: 可选候选实例来源, 不进入会话持久化或工具执行上下文
+        - model_resolver: flow 按 WF 生效模型名严格解析客户端及配置的可调用对象
 
         返回:
         - Session | AsyncSession: 已创建的 Edictum 会话实例
@@ -241,11 +245,16 @@ class EdictumProvider:
             raise ValueError(f"未知 Edictum 配置: {name}")
         if not definition.enabled:
             raise ValueError(f"Edictum 配置已禁用: {name}")
-        if llm is None:
-            raise ValueError(f"Edictum 配置缺少可用 LLM: {name}")
 
         type_name = str(definition.metadata.get("edictum_type", ""))
+        if type_name == "flow":
+            if model_resolver is None:
+                raise ValueError(f"流程配置缺少模型配置解析器: {name}")
+        elif llm is None:
+            raise ValueError(f"Edictum 配置缺少可用 LLM: {name}")
         type_definition = self.type_registry.require(type_name)
+        if type_name == "flow" and (definition.metadata.get("plugins") or (session_config.session_config or {}).get("plugins")):
+            raise ValueError("流程会话不支持顶层 plugins, 请将插件配置到 WF 节点")
         factory = type_definition.factory
         signature = inspect.signature(factory)
         parameters = signature.parameters
@@ -253,6 +262,17 @@ class EdictumProvider:
         payload = {**definition.params, **(session_config.session_config or {})}
         if type_name in {"simple", "async_simple"}:
             payload = normalize_session_settings(payload)
+        elif type_name == "flow":
+            # 流程会话不走 simple 的参数归一化; params.flow 由工厂按节点解析;
+            # flow_name 用命名配置名, 同一配置跨会话共享阈值位置与状态槽
+            payload.setdefault("flow_name", name)
+            # 插件目录与配置管理器由宿主注入, 会话据此解析插件节点与全局默认
+            payload.setdefault("plugin_catalog", self.plugin_catalog)
+            payload["model_resolver"] = model_resolver
+            from satrap.edictum.plugin.config import PluginConfigManager
+            payload.setdefault("plugin_config", PluginConfigManager())
+            from satrap.edictum.simple_session.async_plugins import install_workflow_plugin
+            payload["plugin_installer"] = install_workflow_plugin
         payload.pop("model_name", None)
         payload.pop("plugins", None)
         payload.pop("plugin_environment", None)
@@ -266,11 +286,10 @@ class EdictumProvider:
             payload["db_path"] = self.default_checkpoint_db
         if not has_var_kw:
             payload = {key: value for key, value in payload.items() if key in parameters}
-        session = factory(
-            session_id=session_config.session_id or "",
-            llm=llm,
-            **payload,
-        )
+        factory_kwargs = {"session_id": session_config.session_id or "", **payload}
+        if type_name != "flow":
+            factory_kwargs["llm"] = llm
+        session = factory(**factory_kwargs)
         if not isinstance(session, (Session, AsyncSession)):
             raise TypeError(f"Edictum 工厂返回了无效会话类型: {type(session).__name__}")
         plugin_states = self._normalize_plugin_states(definition.metadata.get("plugins", []),
@@ -346,6 +365,11 @@ class EdictumProvider:
         - apply_snapshot: 可选完整应用目标, 默认保持正常会话准备流程
         """
         state = self._get_runtime_state(session)
+        if state is not None and state.type_definition.name == "flow":
+            config = (apply_snapshot.config_for(state.config_name) if apply_snapshot is not None
+                      else self.config_manager.get_config(state.config_name)) or {}
+            if config.get("plugins") or getattr(session, "_satrap_group_plugins", None):
+                raise ValueError("流程会话不支持顶层 plugins, 请将插件配置到 WF 节点")
         if state is None or state.type_definition.plugin_installer is None:
             return
         if apply_snapshot is not None:
@@ -400,6 +424,11 @@ class EdictumProvider:
         - apply_snapshot: 可选完整应用目标, 默认保持正常会话准备流程
         """
         state = self._get_runtime_state(session)
+        if state is not None and state.type_definition.name == "flow":
+            config = (apply_snapshot.config_for(state.config_name) if apply_snapshot is not None
+                      else self.config_manager.get_config(state.config_name)) or {}
+            if config.get("plugins") or getattr(session, "_satrap_group_plugins", None):
+                raise ValueError("流程会话不支持顶层 plugins, 请将插件配置到 WF 节点")
         if state is None or state.type_definition.plugin_installer is None:
             return
         if apply_snapshot is not None:
@@ -440,6 +469,18 @@ class EdictumProvider:
         - session: 待释放的 Edictum 会话
         """
         state = self._pop_runtime_state(session)
+        # 流程会话的插件节点实例在池子里; 同步路径只能尽力调度, 完整关闭走异步释放
+        close_nodes = getattr(session, "close_flow_nodes", None)
+        if callable(close_nodes):
+            try:
+                result = close_nodes()
+                if inspect.isawaitable(result):
+                    close = getattr(result, "close", None)
+                    if callable(close):
+                        close()
+                    logger.warning("[EdictumProvider] 同步释放路径无法等待流程节点关闭")
+            except Exception as error:
+                logger.warning(f"[EdictumProvider] 流程节点实例关闭失败: {error}")
         if state is None or state.type_definition.plugin_uninstaller is None:
             return
         for plugin_state in reversed(state.plugins):
@@ -465,6 +506,18 @@ class EdictumProvider:
         - session: 待释放的 Edictum 会话
         """
         state = self._pop_runtime_state(session)
+        # 流程会话的插件节点实例在池子里, 不走 plugin_uninstaller; 先统一 close
+        close_nodes = getattr(session, "close_flow_nodes", None)
+        if callable(close_nodes):
+            try:
+                result = close_nodes()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as error:
+                logger.warning(f"[EdictumProvider] 流程节点实例关闭失败: {error}")
+        if state is not None and state.type_definition.name == "flow":
+            from satrap.edictum.simple_session.async_plugins import close_workflow_plugin_hosts
+            await close_workflow_plugin_hosts(session)
         if state is None or state.type_definition.plugin_uninstaller is None:
             return
         for plugin_state in reversed(state.plugins):

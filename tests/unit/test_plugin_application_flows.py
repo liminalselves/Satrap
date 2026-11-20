@@ -12,17 +12,17 @@ from satrap.core.framework.providers.edictum import EdictumProvider
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.display.service import ChatService
 from satrap.display import service as service_module
-from satrap.edictum.plugin_spec import PluginSpec
+from satrap.core.type.plugin.spec import PluginSpec
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.edictum.plugin_apply import PluginApplySnapshot, logger as _plugin_apply_snapshot_logger
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_settings import resolve_runtime_specs
+from satrap.edictum.plugin.apply import PluginApplySnapshot, logger as _plugin_apply_snapshot_logger
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.settings import resolve_runtime_specs
 from pathlib import Path
 from satrap.core.backend.BackendManager import BackendManager, logger as _scoped_plugin_apply_logger
-from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
+from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
 from contextvars import copy_context
 from contextlib import nullcontext
 import urllib.error
@@ -272,7 +272,7 @@ def test_snapshot_capture_global_models_and_override_invariants(tmp_path, monkey
         """固定快照解析不能再构造实时参数来源"""
         raise AssertionError("已有快照不应构造实时配置管理器")
 
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", unexpected_manager)
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", unexpected_manager)
     for index in range(5):
         session: Any = SimpleNamespace(session_id=str(index))
         result = resolve_runtime_specs(session, [PluginSpec(name="probe")], snapshot.catalog, snapshot=snapshot)

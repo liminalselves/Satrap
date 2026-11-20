@@ -14,7 +14,7 @@ from typing import Any
 from satrap.core.group_chat.service import group_chat_service
 from satrap.core.group_chat.assets import AssetStore, MAX_IMAGE_BYTES
 from satrap.core.group_chat.reply import current_reply_turn
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.call_context import current_call_origin, current_tool_workflow
 
 from satrap.core.log import logger

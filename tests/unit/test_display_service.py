@@ -16,7 +16,7 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.memory.store import MemoryStore
-from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.display.recorder import DisplayRecorder, list_conversations, get_conversation_meta
 from satrap.display.plugins import ChatPluginRegistry
@@ -24,7 +24,7 @@ from satrap.display.service import ChatService
 from satrap.display.server import ChatHTTPServer
 from satrap.display.settings import ChatSettingsStore
 from satrap.edictum.plugin import load_plugin_meta
-from satrap.edictum.plugin_apply import PluginApplySnapshot
+from satrap.edictum.plugin.apply import PluginApplySnapshot
 from satrap.core.storage import StorageLayout
 from satrap.core.memory import store as ms_mod
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig
@@ -941,7 +941,7 @@ async def test_chat_override_api_defers_busy_session_and_fork_inherits_parameter
     manager.set_llm_config(LLMConfig(model="test", api_key="secret-test-key"), "default")
     svc._model_cfg = manager
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
     cid = await svc.create_conversation()
     conv = svc.get_conversation(cid)
     assert conv is not None
@@ -981,7 +981,7 @@ async def test_chat_friend_instance_tools_api_preserves_revision_and_restores_in
     svc._model_cfg = models
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
     monkeypatch.setattr("satrap.display.plugins.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
     cid = await svc.create_conversation()
     server = ChatHTTPServer(svc)
     url = f"/api/chat/session-plugin-config?conversation_id={cid}&plugin=friend_manager"
@@ -1734,7 +1734,7 @@ async def test_chat_model_resources_share_capture_reject_stale_source_and_rollba
     """三个真实 Chat 实例共享四类模型来源, 排队变化拒绝且失败回滚旧资源"""
     globals_ = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: globals_)
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: globals_)
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: globals_)
     _write_chat_commands(tmp_path, monkeypatch)
     plugin = tmp_path / "chat_plugins" / "model_probe"
     plugin.mkdir()

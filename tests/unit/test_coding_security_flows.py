@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from satrap.core.plugin_interop.environment import bind_environment, environment_snapshot
 import json
-from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+from satrap.core.type.approval import ApprovalRequest, ApprovalResult
 
 from pathlib import Path
 import pytest
@@ -288,6 +288,24 @@ def test_sandbox_protocol_limits_and_links(tmp_path: Path, monkeypatch) -> None:
     assert sandbox.run("print('no')")["error_code"]=="output_limit_exceeded"
 
 
+def test_sandbox_worker_fails_closed_without_central_contract(tmp_path: Path) -> None:
+    """隔离 worker 缺少固定协议文件时不得搜索其他路径或回退执行"""
+    import subprocess
+
+    source = Path(__file__).parents[2] / "satrap/core/utils/sandbox"
+    target = tmp_path / "core/utils/sandbox"
+    shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-X", "utf8", str(target / "worker.py")],
+        input=b"{}",
+        capture_output=True,
+        timeout=15,
+    )
+    assert result.returncode != 0
+    assert result.stdout == b""
+    assert b"sandbox.py" in result.stderr
+
+
 def test_sandbox_real_network_and_process_guards(tmp_path: Path) -> None:
     """可信子进程直接探测补丁, 不用模型导入拒绝代替真实禁网验证"""
     import json
@@ -309,10 +327,15 @@ def test_sandbox_real_network_and_process_guards(tmp_path: Path) -> None:
     assert udp.recvfrom(1024)[0] == b"baseline"
 
     guard_dir = Path(__file__).parents[2] / "satrap/core/utils/sandbox"
+    contract_path = guard_dir.parents[1] / "type" / "sandbox.py"
     source = f"""
-import sys,json,os
+import sys,json,os,importlib.util
 sys.path.insert(0,{str(guard_dir)!r})
-from models import Violations, PolicyViolation
+spec=importlib.util.spec_from_file_location("_satrap_sandbox_contract",{str(contract_path)!r})
+contract=importlib.util.module_from_spec(spec)
+sys.modules[spec.name]=contract
+spec.loader.exec_module(contract)
+from _satrap_sandbox_contract import Violations, PolicyViolation
 from guards import install
 v=Violations()
 installed=install(v)

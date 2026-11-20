@@ -27,6 +27,7 @@
 - [SimpleSession 用法](edictum/simple-session.md): SimpleSession / AsyncSimpleSession, 处理器, MCP 接入与流式
 - [插件系统](edictum/plugin-system.md): 目录插件结构, meta.yaml 能力声明, 能力收集约定, 双层启停与错误处理
 - [会话 Provider](edictum/session-providers.md): SessionProvider 契约, 命名会话定义与 Edictum 冷配置
+- [多 workflow 编排会话 (flow)](edictum/flow/README.md): issue #4, 验收用例, [运行时契约](edictum/flow/runtime-contract.md), [插件节点契约](edictum/flow/node-contract.md)
 
 ### plugins/ 内置插件与扩展
 

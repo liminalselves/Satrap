@@ -15,7 +15,7 @@ from satrap.core.call_context import CallOrigin, bind_call_origin
 from satrap.core.config.agent_routing import AgentRouteStore
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.service import GroupChatService
-from satrap.core.group_chat.types import GroupChatLimits
+from satrap.core.type.group_chat import GroupChatLimits
 from satrap.core.conversation import HistoryWindow, bind_conversation_route
 from satrap.core.group_chat.service import HISTORY_OPERATIONS
 from satrap.core.platform import PlatformAdapter, PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig
@@ -26,7 +26,7 @@ from satrap.core.platform.event import PlatformMetadata
 from types import SimpleNamespace
 from unittest.mock import Mock
 import threading
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from support.group_read import NOW, _FutureAdapter, _setup
 from typing import cast
 from satrap.core.group_chat.reply import current_reply_turn
@@ -37,13 +37,21 @@ from satrap.core.platform.event import MessageEvent
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
 from support.group_reply import COMPONENTS, SCOPE as _group_chat_reply_SCOPE, owner, restore_manager, send_mock, setup
 import yaml
-from satrap.edictum.plugin_compatibility import PluginEnvironment
-from satrap.edictum.plugin_config import parse_config_schema
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.core.type.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.config import parse_config_schema
+from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.type import LLMCallResponse
 from support.group_models import AsyncModel, Invoker, Model, PLUGIN, Script, session
+
+def test_group_chat_contracts_reference_canonical_archive_types():
+    from satrap.core.type.archive import ArchiveMessage as CanonicalMessage, MessageScope as CanonicalScope
+    from satrap.core.type.group_chat import ArchiveMessage as GroupMessage, MessageScope as GroupScope
+
+    assert GroupMessage is CanonicalMessage is ArchiveMessage
+    assert GroupScope is CanonicalScope is MessageScope
+
 
 _group_chat_service_SCOPE = MessageScope("ob", "10000", "group", "456")
 
@@ -880,6 +888,25 @@ async def test_structured_reply_uses_actual_onebot_split_queue_and_archives_conf
     assert adapter.message_archive is not None
     assert adapter.message_archive.get(_group_chat_reply_SCOPE, "900") is not None
     assert (adapter.message_archive.get(_group_chat_reply_SCOPE, "901") is None) == failed
+
+@pytest.mark.usefixtures('restore_manager')
+@pytest.mark.asyncio
+async def test_error_feedback_send_is_not_archived_as_conversation(tmp_path):
+    """错误反馈确认发出但不进消息档案, 否则下一轮会作为机器人发言喂回模型"""
+    from satrap.core.platform import error_feedback_send
+    from satrap.core.platform.event import MessageChain
+    adapter, event, service = setup(tmp_path)
+    adapter.send_message = OneBotAdapter.send_message.__get__(adapter)
+    adapter._bot.send_group_msg.side_effect = [{"message_id": 910}, {"message_id": 911}, {"message_id": 912}]
+    await event.send(MessageChain.from_text("运行失败"), purpose="error_feedback")
+    await event.send(MessageChain.from_text("正常回复"))
+    with error_feedback_send():
+        await adapter.send_message(event.session_id, MessageChain.from_text("后台失败告知"))
+    await adapter.drain_message_archive()
+    assert adapter._bot.send_group_msg.await_count == 3
+    assert adapter.message_archive.get(_group_chat_reply_SCOPE, "910") is None
+    assert adapter.message_archive.get(_group_chat_reply_SCOPE, "911") is not None
+    assert adapter.message_archive.get(_group_chat_reply_SCOPE, "912") is None
 
 @pytest.mark.usefixtures('restore_manager')
 @pytest.mark.asyncio

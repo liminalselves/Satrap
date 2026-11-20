@@ -12,7 +12,7 @@ import sqlite3
 import zlib
 from typing import cast
 
-from .contracts import DebugData
+from satrap.core.type.debug import DebugData
 
 
 def encoded_json(value: DebugData) -> bytes:

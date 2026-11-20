@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
-  Bot, Boxes, BrainCircuit, Code2, Info, MessageSquareText, PauseCircle, Puzzle, Save, Sparkles, X,
+  Bot, Boxes, BrainCircuit, Code2, Info, MessageSquareText, PauseCircle, Puzzle, Save, Sparkles, Workflow, X,
 } from 'lucide-react';
 import { Badge } from '@/components/kit/Badge';
 import { Button, IconButton } from '@/components/kit/Button';
@@ -22,6 +22,8 @@ const MANAGED_KEYS = [
 ];
 
 const managesPrompt = (typeName: string): boolean => ['simple', 'async_simple'].includes(typeName);
+// 流程会话的参数和插件都在流程编辑器里配置, 抽屉只管名称、描述和默认模型
+const isFlowType = (typeName: string): boolean => typeName === 'flow';
 
 interface Draft {
   name: string;
@@ -71,7 +73,8 @@ export interface AgentEditorProps {
   saving: boolean;
   statusContent?: ReactNode;
   onClose: () => void;
-  onSave: (input: AgentSaveInput) => void;
+  /** after 为 'flow' 时保存成功后进入该配置的流程编辑器 */
+  onSave: (input: AgentSaveInput, after?: 'flow') => void;
   onManagePlugins: (name: string) => void;
 }
 
@@ -134,6 +137,7 @@ export function AgentEditor({
   const [draft, setDraft] = useState<Draft>(baseline);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState('');
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (!open) return;
@@ -147,6 +151,7 @@ export function AgentEditor({
 
   const isEdictum = provider === 'edictum';
   const managePrompt = isEdictum && managesPrompt(draft.edictum_type);
+  const flow = isEdictum && isFlowType(draft.edictum_type);
   const typeDef = types.find((item) => item.name === draft.edictum_type);
   const thinkingOptions = getThinkingOptions(llmConfigs[draft.model_name]);
   const thinkingUnsupported = Boolean(draft.thinking) && managePrompt
@@ -193,7 +198,20 @@ export function AgentEditor({
     }
   };
 
-  const submit = () => {
+  // 新建流程时先进入编辑器, 第一次保存流程时才创建命名配置; 编辑时有未保存修改先保存再进入
+  const openFlowEditor = () => {
+    if (mode === 'create') {
+      if (!draft.name.trim()) { setError('请填写配置名称'); return; }
+      const query = new URLSearchParams({ create: '1', description: draft.description.trim(), enabled: draft.enabled ? '1' : '0' });
+      navigate(`/agents/${encodeURIComponent(draft.name.trim())}/flow?${query}`);
+      return;
+    }
+    if (dirty) { submit('flow'); return; }
+    if (initial) navigate(`/agents/${encodeURIComponent(initial.name)}/flow`);
+  };
+
+  const submit = (after?: 'flow') => {
+    if (flow && mode === 'create') { openFlowEditor(); return; }
     if (!draft.name.trim()) { setError('请填写配置名称'); return; }
     if (isEdictum && !draft.edictum_type.trim()) { setError('请选择 Edictum 类型'); return; }
     if (!isEdictum && !draft.class_path.trim()) { setError('名称和 Class Path 为必填项'); return; }
@@ -231,7 +249,8 @@ export function AgentEditor({
       name: draft.name.trim(),
       enabled: draft.enabled,
       description: draft.description.trim(),
-      model_name: draft.model_name,
+      // 流程的模型由各 WF 节点决定, 顶层不再保存模型
+      model_name: flow ? '' : draft.model_name,
       class_path: isEdictum ? undefined : draft.class_path.trim(),
       is_async: isEdictum ? undefined : draft.is_async,
       context_key: isEdictum ? undefined : draft.context_key.trim(),
@@ -239,7 +258,7 @@ export function AgentEditor({
       edictum_type: isEdictum ? draft.edictum_type : undefined,
       params,
       plugins,
-    });
+    }, after);
   };
 
   return (
@@ -332,14 +351,14 @@ export function AgentEditor({
           )}
         </Section>
 
-        <Section icon={<Sparkles className="h-3.5 w-3.5" />} title="模型" description="绑定 LLM 与默认采样参数; 留空则继承模型配置">
+        {!flow && <Section icon={<Sparkles className="h-3.5 w-3.5" />} title="模型" description="绑定 LLM 与默认采样参数; 留空则继承模型配置">
           <Field label="绑定 LLM" hint={draft.model_name ? `当前绑定 ${draft.model_name}` : '未绑定时使用平台默认模型'}>
             <KitSelect className="field w-full" value={draft.model_name} onChange={(value) => set('model_name', value)} disabled={saving}>
               <option value="">暂不绑定</option>
               {llmNames.map((name) => <option key={name} value={name}>{name}</option>)}
             </KitSelect>
           </Field>
-          {isEdictum && (
+          {isEdictum && !flow && (
             <Field label="默认思考强度" hint={draft.model_name ? '可选值取决于绑定模型的思考能力' : '绑定模型后可选择思考强度'}>
               <KitSelect className="field w-full" value={draft.thinking} onChange={(value) => set('thinking', value)} disabled={saving}>
                 <option value="">默认 (不发送思考参数)</option>
@@ -365,7 +384,7 @@ export function AgentEditor({
               </Field>
             </div>
           )}
-        </Section>
+        </Section>}
 
         {isEdictum && managePrompt && (
           <Section icon={<MessageSquareText className="h-3.5 w-3.5" />} title="提示词与上下文" description="系统提示词、内置 Agent 规则与命令历史">
@@ -412,7 +431,17 @@ export function AgentEditor({
           </Section>
         )}
 
-        {isEdictum && (
+        {flow && (
+          <Section icon={<Workflow className="h-3.5 w-3.5" />} title="流程" description="节点、连线、WF 插件和预算在流程编辑器里配置">
+            <p className="rounded-xl border border-line bg-glass px-3.5 py-3 text-[12.5px] text-fg-3">
+              {mode === 'create'
+                ? '填好名称后点下方"下一步: 编辑流程", 选择模板或空白画布; 第一次保存流程时创建配置. 模型和插件在各个 WF 节点上选择'
+                : '流程的模型和插件都在各个 WF 节点上配置, 没有顶层模型和插件; 点下方"编辑流程"打开编辑器, 抽屉里未保存的修改会先保存'}
+            </p>
+          </Section>
+        )}
+
+        {isEdictum && !flow && (
           <Section icon={<Puzzle className="h-3.5 w-3.5" />} title="插件" description="插件配置属于当前命名会话, 保存后由运行时同步到活跃会话" inactive={mode === 'create'}>
             {plugins.length === 0 ? (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-dashed border-[var(--glass-border-strong)] px-3.5 py-3">
@@ -463,7 +492,7 @@ export function AgentEditor({
           )}
         </Section>
 
-        <Section
+        {!flow && <Section
           icon={<Boxes className="h-3.5 w-3.5" />}
           title="参数"
           description={isEdictum ? '高级会话参数, 系统提示词与模型参数已在上面单独配置' : '会话类初始化参数; 模型字段会按模型键自动写入'}
@@ -484,7 +513,7 @@ export function AgentEditor({
           {!isEdictum && (
             <p className="text-[11px] text-fg-4">模型键为 <code className="font-mono">{draft.model_key || '未设置'}</code>, 绑定的 LLM 会自动写入该字段.</p>
           )}
-        </Section>
+        </Section>}
       </div>
 
       <div className="border-t border-line px-5 py-3.5">
@@ -499,9 +528,20 @@ export function AgentEditor({
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
-            <Button variant="tinted" tint="teal" icon={<Save className="h-4 w-4" />} loading={saving} onClick={submit}>
-              {mode === 'create' ? '创建' : '保存'}
-            </Button>
+            {flow ? (
+              <>
+                {mode === 'edit' && (
+                  <Button variant="ghost" icon={<Save className="h-4 w-4" />} disabled={saving || !dirty} onClick={() => submit()}>保存</Button>
+                )}
+                <Button variant="tinted" tint="purple" icon={<Workflow className="h-4 w-4" />} loading={saving} onClick={openFlowEditor}>
+                  {mode === 'create' ? '下一步: 编辑流程' : dirty ? '保存并编辑流程' : '编辑流程'}
+                </Button>
+              </>
+            ) : (
+              <Button variant="tinted" tint="teal" icon={<Save className="h-4 w-4" />} loading={saving} onClick={() => submit()}>
+                {mode === 'create' ? '创建' : '保存'}
+              </Button>
+            )}
           </div>
         </div>
       </div>

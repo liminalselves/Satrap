@@ -11,18 +11,19 @@ SimpleSession / AsyncSimpleSession: 基于 Session 的高可扩展单 workflow A
 """
 
 from __future__ import annotations
-from satrap.core.type import RequestContextBlock
+from satrap.core.type.model import RequestContextBlock
+
 from dataclasses import dataclass, field
 import inspect
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 import sys
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.core.log import logger
 
 
 if TYPE_CHECKING:
-    from satrap.core.approval.contracts import ApprovalRequest, ApprovalResult
+    from satrap.core.type.approval import ApprovalRequest, ApprovalResult
 
 SyncApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult"]
 AsyncApprovalProvider = Callable[["ApprovalRequest"], "ApprovalResult | Awaitable[ApprovalResult]"]

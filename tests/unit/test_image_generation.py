@@ -21,6 +21,17 @@ from satrap.core.APICall.ImageCall.request import NAI_DEFAULT_NEGATIVE_PROMPT, N
 from satrap.core.APICall.ImageCall.response import parse_response
 
 
+def test_image_contracts_share_canonical_types_and_public_facade():
+    from satrap.core.APICall import ImageCall
+    from satrap.core.type.telemetry import JsonValue as telemetry_json_value
+    from satrap.core.type.image import ImageGenError as canonical_error, ImageInput as canonical_input
+    from satrap.core.type.json_value import JsonValue
+
+    assert ImageCall.ImageInput is canonical_input is ImageInput
+    assert ImageCall.ImageGenError is canonical_error is ImageGenError
+    assert ImageCall.JsonValue is telemetry_json_value is JsonValue
+
+
 def png(color="white", size=(32, 48)):
     """构造可验证的离线图片"""
     output = BytesIO()

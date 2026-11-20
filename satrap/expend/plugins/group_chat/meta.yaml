@@ -175,3 +175,7 @@ compatibility:
 applicability:
   session_types: [platform]
   platforms: "*"
+
+flow:
+  workflow:
+    foreground_only: true

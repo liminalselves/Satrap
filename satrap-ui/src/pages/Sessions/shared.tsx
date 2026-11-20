@@ -79,6 +79,28 @@ export interface AgentEntry {
   };
 }
 
+/**
+ * 流程配置里各 WF 实际使用的模型名 (节点设置优先, 其次流程默认), 去重后按出现顺序返回
+ *
+ * 非流程配置或无法读取时返回空数组
+ */
+export function flowModels(agent: Pick<AgentEntry, 'edictum_type' | 'params'>): string[] {
+  if (agent.edictum_type !== 'flow') return [];
+  const flow = agent.params?.flow as { nodes?: Array<{ type?: string; config?: Record<string, unknown> }>; defaults?: Record<string, { config?: Record<string, unknown> }> } | undefined;
+  const fallback = flow?.defaults?.react_workflow?.config?.model_name;
+  const names = (flow?.nodes ?? [])
+    .filter((node) => node.type === 'react_workflow')
+    .map((node) => String(node.config?.model_name || fallback || '').trim())
+    .filter(Boolean);
+  return [...new Set(names)];
+}
+
+/** 卡片和列表上显示的模型: 流程显示各 WF 的模型, 其他配置显示顶层绑定 */
+export function agentModelLabel(agent: Pick<AgentEntry, 'edictum_type' | 'params' | 'model_name'>): string {
+  if (agent.edictum_type === 'flow') return flowModels(agent).join(', ');
+  return agent.model_name;
+}
+
 /** 后端目录附带的实例计数与更新时间; 运行服务离线时计数为 null */
 export interface AgentConfigMetadata {
   updated_at?: number | null;

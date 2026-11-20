@@ -15,7 +15,7 @@ import sys
 
 from satrap.expend.plugins.base_take.core.docread import extract_text
 from satrap.core.plugin_interop.environment import environment_snapshot
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 from satrap.core.utils.config_text import comma_names
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.utils.sandbox import CodeSandbox
@@ -28,7 +28,8 @@ from satrap.expend.tools import (
     FetchPageTool,
     SearchTool,
 )
-from satrap.core.type import safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 from .async_ import (
     AsyncReadDocumentTool,

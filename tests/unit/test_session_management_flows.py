@@ -10,7 +10,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager as _session_manager_config_SessionManager
 from satrap.core.framework.Base import Session as _session_manager_config_Session
 from satrap.core.type import LLMConfig
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 import importlib
 import sqlite3
 from typing import cast
@@ -23,7 +23,7 @@ from satrap.core.framework.SessionManager import SessionManager as _session_prov
 from satrap.core.framework.providers import BindingState, BindingStatus, EdictumProvider, SessionClassProvider
 from satrap.core.framework.providers import SessionProviderDefinition, SessionProviderRegistry
 from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
-from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.framework.Base import AsyncSession as _session_providers_AsyncSession
 from satrap.core.framework.Base import Session as _session_providers_Session
@@ -38,9 +38,9 @@ from satrap.core.config.loader import ConfigLoader
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from satrap.core.config.session_overrides import OverrideConflictError
-from satrap.edictum.plugin_settings import PluginSettingsService
+from satrap.edictum.plugin.settings import PluginSettingsService
 from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain
-from satrap.edictum.plugin_config import ConfigField
+from satrap.core.type.plugin.config import ConfigField
 from satrap.core.storage import StorageMaintenanceService, maintenance as module
 import asyncio
 from satrap.core.framework import AsyncSession as _multisession_AsyncSession, Session as _multisession_Session
@@ -249,7 +249,7 @@ async def test_provider_refreshes_inherited_plugin_values_and_model_references(t
     schema = parse_config_schema(meta)
     global_config = PluginConfigManager(tmp_path / "plugin-config")
     global_config.save_global("rag", schema, {"candidate_k": 21, "top_k": 4})
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: global_config)
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: global_config)
     monkeypatch.setattr("satrap.edictum.simple_session.PluginConfigManager", lambda: global_config)
     registry = create_default_edictum_type_registry()
     manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
@@ -889,6 +889,105 @@ async def test_full_agent_apply_does_not_build_models_for_unchanged_effective_co
     repeated = await backend.reconcile_edictum_runtime_async(config_name="target")
     assert all(item["ok"] and item["action"] == "noop" for item in repeated)
     assert len(builds) == 4
+
+@pytest.mark.asyncio
+async def test_flow_provider_builds_each_workflow_model_without_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """真实创建链按节点/流程默认选择模型, 热重载逐 WF 生效且未知模型不回落"""
+    from satrap.edictum.flow.session import AsyncFlowSession
+    from tests.support.flow_runtime import MockLLM
+
+    flow = {
+        "version": 3,
+        "defaults": {"react_workflow": {"version": 1, "config": {"model_name": "beta"}}},
+        "nodes": [
+            {"id": "src", "type": "source", "title": "消息", "config": {}},
+            {"id": "wake", "type": "wake", "title": "唤醒", "config": {}},
+            {"id": "wa", "type": "react_workflow", "title": "A", "config": {
+                "model_name": "alpha", "prompt": "A",
+            }},
+            {"id": "wb", "type": "react_workflow", "title": "B", "config": {"prompt": "B"}},
+        ],
+        "edges": [
+            {"from": "src.out", "to": "wake.messages"},
+            {"from": "wake.event", "to": "wa.trigger"},
+            {"from": "wake.event", "to": "wb.trigger"},
+        ],
+    }
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.set_llm_config(LLMConfig(name="alpha", model="alpha-model", api_key="a", context_window=32000))
+    models.set_llm_config(LLMConfig(name="beta", model="beta-model", api_key="b", context_window=64000))
+    registry = create_default_edictum_type_registry()
+    configs = EdictumConfigManager(registry, tmp_path / "edictum.json", models=models)
+    configs.create("two-models", {"edictum_type": "flow", "params": {"flow": flow}})
+    manager = _session_providers_SessionManager(
+        db_path=tmp_path / "sessions.db", platform_id="local",
+        storage_layout=StorageLayout(tmp_path / "data"),
+    )
+    manager.model_config_manager = models
+    manager.register_provider(EdictumProvider(
+        configs, registry, default_checkpoint_db=str(tmp_path / "sessions.db"),
+    ))
+    builds: list[str] = []
+
+    def build(config: LLMConfig, *, async_: bool):
+        """只替代模型客户端构造, 保留真实配置解析和全部会话初始化"""
+        assert async_ is True
+        builds.append(config.name)
+        client = MockLLM()
+        client.model_name = config.name
+        return client
+
+    monkeypatch.setattr(
+        importlib.import_module("satrap.core.framework.SessionManager"),
+        "build_llm_from_config", build,
+    )
+    manager.register_session_from_provider_config("edictum", "two-models", session_id="flow-models")
+    assert await manager.activate_session_async("flow-models")
+    entry = manager.pool.get("flow-models")
+    assert entry is not None and isinstance(entry.session, AsyncFlowSession)
+    session = entry.session
+    await session.initialize()
+    workflows = session.workflows()
+    assert builds == ["alpha", "beta"]
+    assert workflows["wa"].llm._inner.model_name == "alpha"
+    assert workflows["wb"].llm._inner.model_name == "beta"
+    assert workflows["wa"].ctx.max_context == 32000
+    assert workflows["wb"].ctx.max_context == 64000
+    assert not hasattr(session, "_satrap_model_config_fingerprint")
+
+    from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
+    snapshot = EdictumPluginApplySnapshot.capture(
+        configs, {"two-models"}, model_managers=(models,),
+    )
+    manager.register_session_from_provider_config("edictum", "two-models", session_id="flow-candidate")
+    models.update_llm_config("alpha", context_window=96000)
+    candidate_config = manager.get_session_config("flow-candidate")
+    assert candidate_config is not None
+    candidate = manager._create_entry(candidate_config, apply_snapshot=snapshot, add_to_pool=False)
+    assert candidate is not None and isinstance(candidate.session, AsyncFlowSession)
+    await candidate.session.initialize()
+    assert candidate.session.workflow_for("wa").ctx.max_context == 32000
+    await candidate.session.close_flow_nodes()
+
+    previous_alpha = workflows["wa"].llm._inner
+    await manager.reload_model_configs_async()
+    assert builds == ["alpha", "beta", "alpha", "beta", "alpha", "beta"]
+    assert workflows["wa"].llm._inner is not previous_alpha
+    assert workflows["wa"].ctx.max_context == 96000
+    assert workflows["wb"].ctx.max_context == 64000
+
+    assert models.remove_llm_config("alpha")
+    builds.clear()
+    manager.register_session_from_provider_config("edictum", "two-models", session_id="flow-missing")
+    assert await manager.activate_session_async("flow-missing")
+    missing_entry = manager.pool.get("flow-missing")
+    assert missing_entry is not None and isinstance(missing_entry.session, AsyncFlowSession)
+    with pytest.raises(ValueError, match="模型配置不存在: llm/alpha"):
+        await missing_entry.session.initialize()
+    assert "default" not in builds
+    await manager.remove_session_async("flow-missing", remove_config=True)
+    await manager.remove_session_async("flow-models", remove_config=True)
+
 
 def _write_session_file(root: Path, name: str, content: str) -> Path:
     """写入测试用 session 文件"""

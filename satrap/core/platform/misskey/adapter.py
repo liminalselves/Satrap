@@ -42,7 +42,9 @@ from satrap.core.platform import (
     PlatformConfig,
     register_platform_adapter,
 )
-from satrap.core.type import PlatformMessage, safe_getattr, safe_getattr_str
+from satrap.core.type.platform import PlatformMessage
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, archive_time
 from satrap.core.config.group_directory import GroupDirectoryStore
 
@@ -54,7 +56,7 @@ MAX_FILE_UPLOAD_COUNT = 16
 DEFAULT_UPLOAD_CONCURRENCY = 3
 """Misskey 默认上传并发数"""
 
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.call_context import current_call_origin
 from satrap.core.call_context import CallOrigin

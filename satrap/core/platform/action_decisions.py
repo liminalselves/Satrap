@@ -19,7 +19,7 @@ import time
 import json
 
 from satrap.core.platform.action_catalog import ACTION_READS, ActionScope
-from satrap.core.telemetry.contracts import JsonValue
+from satrap.core.type.telemetry import JsonValue
 
 from satrap.core.log import logger
 

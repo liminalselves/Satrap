@@ -1,0 +1,1748 @@
+{
+  "types": [
+    {
+      "name": "async_simple",
+      "is_async": true,
+      "description": "异步单工作流 Edictum 会话",
+      "config_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_agent_prompt_enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "thinking": {
+            "type": "string",
+            "enum": [
+              "default",
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ]
+          },
+          "command_history_enabled": {
+            "type": "boolean"
+          },
+          "max_iterations": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "model_params": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "temperature": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 2
+              },
+              "top_p": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "db_path": {
+            "type": "string"
+          },
+          "enable_checkpoint": {
+            "type": "boolean"
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "return_thinking": {
+            "type": "boolean"
+          }
+        }
+      },
+      "capabilities": {
+        "plugins": true,
+        "mcp": true,
+        "stream": true
+      }
+    },
+    {
+      "name": "flow",
+      "is_async": true,
+      "description": "流程会话: 多个 workflow 由节点图编排 (issue #4)",
+      "config_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "flow": {
+            "type": "object"
+          }
+        }
+      },
+      "capabilities": {
+        "plugins": true,
+        "mcp": false,
+        "stream": false
+      },
+      "flow": {
+        "node_types": [
+          {
+            "type": "source",
+            "version": 1,
+            "label": "对话消息",
+            "description": "当前对话 (群聊或私聊) 的消息档案, 包含已确认发出的机器人消息",
+            "role": "source",
+            "category": "数据",
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "消息",
+                "types": [
+                  "messages"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "max_messages": {
+                "type": "number",
+                "default": 200,
+                "description": "直连 WF 或自定义 transform 时最多读取最新多少条; assemble 使用自己的窗口",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": 5000,
+                "integer": true,
+                "scope": "",
+                "label": "直连消息上限"
+              }
+            },
+            "maxPerFlow": 1
+          },
+          {
+            "type": "bucket",
+            "version": 2,
+            "label": "桶",
+            "description": "档案上的只读视图; 游标属于消费它的阈值磁贴",
+            "role": "transform",
+            "category": "数据",
+            "inputs": [
+              {
+                "name": "in",
+                "label": "消息",
+                "types": [
+                  "messages"
+                ],
+                "required": true,
+                "multiple": false
+              },
+              {
+                "name": "when",
+                "label": "启用条件",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": true,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "消息",
+                "types": [
+                  "messages"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "include_outbound": {
+                "type": "bool",
+                "default": true,
+                "description": "机器人已确认发出的消息也进入桶",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "包含机器人发言"
+              },
+              "max_messages": {
+                "type": "number",
+                "default": 200,
+                "description": "直连 WF 或自定义 transform 时最多输出最新多少条; assemble 使用自己的窗口",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": 5000,
+                "integer": true,
+                "scope": "",
+                "label": "直连消息上限"
+              }
+            }
+          },
+          {
+            "type": "state",
+            "version": 2,
+            "label": "状态槽",
+            "description": "每个版本记录内容, 版本号和覆盖到的消息位置; 只能有一个写入方",
+            "role": "state",
+            "category": "数据",
+            "inputs": [
+              {
+                "name": "write",
+                "label": "写入",
+                "types": [
+                  "text"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "outputs": [
+              {
+                "name": "read",
+                "label": "读取",
+                "types": [
+                  "state"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "schema": {
+                "type": "select",
+                "default": "text",
+                "description": "",
+                "options": [
+                  "text",
+                  "sections"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "格式",
+                "option_labels": {
+                  "text": "自由文本",
+                  "sections": "分段"
+                }
+              },
+              "sections": {
+                "type": "textarea",
+                "default": "",
+                "description": "每行一个段名, 提示词可以按段引用",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "段落",
+                "visible_when": {
+                  "schema": "sections"
+                }
+              },
+              "max_chars": {
+                "type": "number",
+                "default": 6000,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 200,
+                "maximum": 1000000,
+                "integer": true,
+                "scope": "",
+                "label": "长度上限"
+              },
+              "writer_reads_previous": {
+                "type": "bool",
+                "default": true,
+                "description": "写入它的 WF 每次运行时自动拿到上一次提交的版本, 用于增量更新; 不需要再连回读线",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "写入方读取上一版"
+              },
+              "on_new": {
+                "type": "select",
+                "default": "keep",
+                "description": "clear 时 /new 生效后版本回到 0, 内容为空",
+                "options": [
+                  "keep",
+                  "clear"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "/new 时",
+                "option_labels": {
+                  "keep": "保留内容",
+                  "clear": "清空并回到版本 0"
+                }
+              }
+            }
+          },
+          {
+            "type": "assemble",
+            "version": 2,
+            "label": "上下文拼装",
+            "description": "被 WF 拉取时, 把快照, 快照未覆盖的消息和最新对话拼成模型输入",
+            "role": "transform",
+            "category": "数据",
+            "inputs": [
+              {
+                "name": "snapshot",
+                "label": "快照",
+                "types": [
+                  "state"
+                ],
+                "required": false,
+                "multiple": true
+              },
+              {
+                "name": "messages",
+                "label": "消息",
+                "types": [
+                  "messages"
+                ],
+                "required": true,
+                "multiple": false
+              },
+              {
+                "name": "when",
+                "label": "启用条件",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": true,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "context",
+                "label": "上下文",
+                "types": [
+                  "context"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "after_coverage": {
+                "type": "bool",
+                "default": true,
+                "description": "从所连快照覆盖到的位置之后开始截取",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "快照未覆盖的消息"
+              },
+              "max_pending": {
+                "type": "number",
+                "default": 80,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": 500,
+                "integer": true,
+                "scope": "",
+                "label": "最多条数",
+                "visible_when": {
+                  "after_coverage": true
+                }
+              },
+              "max_pending_chars": {
+                "type": "number",
+                "default": 8000,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 500,
+                "maximum": 1000000,
+                "integer": true,
+                "scope": "",
+                "label": "字符预算",
+                "visible_when": {
+                  "after_coverage": true
+                }
+              },
+              "latest_n": {
+                "type": "number",
+                "default": 20,
+                "description": "不足 n 条时补入覆盖位置之前的消息",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 0,
+                "maximum": 200,
+                "integer": true,
+                "scope": "",
+                "label": "最新 n 条对话"
+              },
+              "dedupe": {
+                "type": "bool",
+                "default": true,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "按消息 ID 去重"
+              }
+            }
+          },
+          {
+            "type": "react_workflow",
+            "version": 3,
+            "label": "ReAct Workflow",
+            "description": "模型和工具循环调用, 直到模型不再调用工具 (现有 SimpleWorkflow); 流程里会调用 LLM 的节点",
+            "role": "workflow",
+            "category": "Workflow",
+            "inputs": [
+              {
+                "name": "input",
+                "label": "数据",
+                "types": [
+                  "context",
+                  "messages",
+                  "text",
+                  "state"
+                ],
+                "required": false,
+                "multiple": true
+              },
+              {
+                "name": "trigger",
+                "label": "触发",
+                "types": [
+                  "event"
+                ],
+                "required": false,
+                "multiple": true,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "text",
+                "label": "输出",
+                "types": [
+                  "text"
+                ],
+                "required": false,
+                "multiple": false
+              },
+              {
+                "name": "done",
+                "label": "完成",
+                "types": [
+                  "event"
+                ],
+                "required": false,
+                "multiple": false,
+                "side": "right"
+              },
+              {
+                "name": "tool",
+                "label": "交接",
+                "types": [
+                  "handoff"
+                ],
+                "required": false,
+                "multiple": true,
+                "side": "right"
+              }
+            ],
+            "schema": {
+              "model_name": {
+                "type": "llm",
+                "default": "",
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "模型配置",
+                "group": "模型"
+              },
+              "thinking": {
+                "type": "select",
+                "default": "default",
+                "description": "",
+                "options": [
+                  "default",
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "思考强度",
+                "option_labels": {
+                  "default": "跟随模型默认",
+                  "off": "关闭",
+                  "low": "低",
+                  "medium": "中",
+                  "high": "高"
+                },
+                "group": "模型"
+              },
+              "max_steps": {
+                "type": "number",
+                "default": 8,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": 64,
+                "integer": true,
+                "scope": "",
+                "label": "最大工具轮数",
+                "group": "模型"
+              },
+              "max_calls_per_run": {
+                "type": "number",
+                "default": 0,
+                "description": "0 表示不限制; 只算本 WF 自己发起的模型调用",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 0,
+                "maximum": 1000,
+                "integer": true,
+                "scope": "",
+                "label": "单次运行模型调用上限",
+                "group": "运行"
+              },
+              "timeout_seconds": {
+                "type": "number",
+                "default": 60,
+                "description": "包含输入拉取和模型工具循环; 超时后本次运行失败",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": 3600,
+                "integer": true,
+                "scope": "",
+                "label": "单次运行超时",
+                "group": "运行"
+              },
+              "on_busy": {
+                "type": "select",
+                "default": "queue",
+                "description": "",
+                "options": [
+                  "queue",
+                  "merge",
+                  "drop"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "运行中再次触发",
+                "option_labels": {
+                  "queue": "排队依次运行",
+                  "merge": "合并为一次重跑",
+                  "drop": "丢弃"
+                },
+                "group": "运行"
+              },
+              "prompt": {
+                "type": "textarea",
+                "default": "",
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "系统提示词",
+                "group": "提示词"
+              },
+              "plugins": {
+                "type": "textarea",
+                "default": "",
+                "description": "每行一个插件名, 只装在这个 WF 上, 其他节点看不到这些工具",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "节点插件",
+                "group": "插件"
+              },
+              "keep_history": {
+                "type": "bool",
+                "default": false,
+                "description": "关闭时每次只用拉取到的输入和触发带来的上游输出",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "保留对话历史",
+                "group": "运行"
+              }
+            }
+          },
+          {
+            "type": "output",
+            "version": 2,
+            "label": "平台回复",
+            "description": "通过流程自带的发送通道回复, 可接多个 WF; 可接发送条件",
+            "role": "sink",
+            "category": "输出",
+            "inputs": [
+              {
+                "name": "reply",
+                "label": "回复",
+                "types": [
+                  "text"
+                ],
+                "required": true,
+                "multiple": true
+              },
+              {
+                "name": "when",
+                "label": "发送条件",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": true,
+                "side": "left"
+              }
+            ],
+            "outputs": [],
+            "schema": {
+              "send_mode": {
+                "type": "select",
+                "default": "flow_reply",
+                "description": "group_chat_reply 仅群聊前台运行可用, 需要 WF 装 group_chat",
+                "options": [
+                  "flow_reply",
+                  "group_chat_reply",
+                  "final_text"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "发送方式",
+                "option_labels": {
+                  "flow_reply": "工具发送 (可沉默)",
+                  "group_chat_reply": "群聊富消息",
+                  "final_text": "直发最终文本"
+                }
+              }
+            }
+          },
+          {
+            "type": "wake",
+            "version": 1,
+            "label": "唤醒",
+            "description": "每条消息到达时判断是否唤醒; 沿用平台策略时群聊按 @, 唤醒词和频率, 私聊每条都唤醒; 一个磁贴可以驱动多个 WF",
+            "role": "trigger",
+            "category": "触发",
+            "inputs": [
+              {
+                "name": "messages",
+                "label": "消息",
+                "types": [
+                  "messages"
+                ],
+                "required": true,
+                "multiple": false
+              },
+              {
+                "name": "when",
+                "label": "条件",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": true,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "event",
+                "label": "触发",
+                "types": [
+                  "event"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "use_platform_policy": {
+                "type": "bool",
+                "default": true,
+                "description": "群聊使用平台管理里该群的 @, 唤醒词, 频率和冷却; 私聊每条消息都唤醒",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "沿用平台唤醒策略"
+              },
+              "mention": {
+                "type": "bool",
+                "default": true,
+                "description": "私聊消息视为已 @",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "被 @ 时唤醒",
+                "visible_when": {
+                  "use_platform_policy": false
+                }
+              },
+              "wake_words": {
+                "type": "textarea",
+                "default": "",
+                "description": "每行一个",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "唤醒词",
+                "visible_when": {
+                  "use_platform_policy": false
+                }
+              },
+              "new_messages": {
+                "type": "number",
+                "default": 5,
+                "description": "上次唤醒后累计到这么多条也唤醒, 0 表示不按数量",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 0,
+                "maximum": null,
+                "integer": true,
+                "scope": "",
+                "label": "新消息数",
+                "visible_when": {
+                  "use_platform_policy": false
+                }
+              },
+              "cooldown": {
+                "type": "number",
+                "default": 30,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 0,
+                "maximum": 3600,
+                "integer": true,
+                "scope": "",
+                "label": "冷却"
+              }
+            },
+            "emits": "message"
+          },
+          {
+            "type": "threshold",
+            "version": 1,
+            "label": "阈值",
+            "description": "游标之后的消息满足任一阈值时触发; 每个被驱动的 WF 各有一份已提交位置",
+            "role": "trigger",
+            "category": "触发",
+            "inputs": [
+              {
+                "name": "messages",
+                "label": "消息",
+                "types": [
+                  "messages"
+                ],
+                "required": true,
+                "multiple": false
+              },
+              {
+                "name": "when",
+                "label": "条件",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": true,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "event",
+                "label": "触发",
+                "types": [
+                  "event"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "messages": {
+                "type": "number",
+                "default": 30,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 0,
+                "maximum": null,
+                "integer": true,
+                "scope": "",
+                "label": "消息数"
+              },
+              "chars": {
+                "type": "number",
+                "default": 4000,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 0,
+                "maximum": null,
+                "integer": true,
+                "scope": "",
+                "label": "字符数"
+              },
+              "idle_seconds": {
+                "type": "number",
+                "default": 600,
+                "description": "0 表示不按时间",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 0,
+                "maximum": null,
+                "integer": true,
+                "scope": "",
+                "label": "距上次触发"
+              },
+              "min_messages": {
+                "type": "number",
+                "default": 1,
+                "description": "按时间触发时游标后至少要有的新消息数",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": null,
+                "integer": true,
+                "scope": "",
+                "label": "最少消息"
+              },
+              "max_batch": {
+                "type": "number",
+                "default": 200,
+                "description": "积压超过时分批触发",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 10,
+                "maximum": 1000,
+                "integer": true,
+                "scope": "",
+                "label": "单批上限"
+              },
+              "on_new": {
+                "type": "select",
+                "default": "drop",
+                "description": "drain 在档案起点更新前先把每个落后 WF 的积压批次跑完",
+                "options": [
+                  "drop",
+                  "drain"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "/new 时",
+                "option_labels": {
+                  "drop": "跳到最新位置",
+                  "drain": "先跑完积压批次"
+                }
+              }
+            },
+            "emits": "batch"
+          },
+          {
+            "type": "tool",
+            "version": 1,
+            "label": "交接工具",
+            "description": "调用方 WF 运行时获得这个工具, 由调用方模型决定是否调用; 调用时触发下游 WF, 工具参数作为输入",
+            "role": "trigger",
+            "category": "触发",
+            "inputs": [
+              {
+                "name": "caller",
+                "label": "调用方",
+                "types": [
+                  "handoff"
+                ],
+                "required": true,
+                "multiple": true,
+                "side": "left"
+              },
+              {
+                "name": "when",
+                "label": "条件",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": true,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "event",
+                "label": "触发",
+                "types": [
+                  "event"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "tool_name": {
+                "type": "string",
+                "default": "",
+                "description": "留空时为 handoff_<节点 id>",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "工具名"
+              },
+              "tool_description": {
+                "type": "textarea",
+                "default": "",
+                "description": "调用方模型看到的说明, 写清什么时候应该交接",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "工具说明"
+              },
+              "max_calls": {
+                "type": "number",
+                "default": 1,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": 10,
+                "integer": true,
+                "scope": "",
+                "label": "每次运行最多调用"
+              }
+            },
+            "emits": "call"
+          },
+          {
+            "type": "cond_message",
+            "version": 1,
+            "label": "消息条件",
+            "description": "检查触发时的那条消息; 没有单条消息的触发 (阈值, 交接) 里恒为假",
+            "role": "condition",
+            "category": "条件",
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "真/假",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "kind": {
+                "type": "select",
+                "default": "mention",
+                "description": "私聊消息视为已 @",
+                "options": [
+                  "mention",
+                  "keyword",
+                  "sender"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "判断",
+                "option_labels": {
+                  "mention": "被 @",
+                  "keyword": "包含关键词",
+                  "sender": "发言人在名单中"
+                }
+              },
+              "keywords": {
+                "type": "textarea",
+                "default": "",
+                "description": "每行一个, 命中任一即为真",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "关键词",
+                "visible_when": {
+                  "kind": "keyword"
+                }
+              },
+              "senders": {
+                "type": "textarea",
+                "default": "",
+                "description": "每行一个成员 ID 或昵称",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "成员名单",
+                "visible_when": {
+                  "kind": "sender"
+                }
+              }
+            },
+            "needs": "message"
+          },
+          {
+            "type": "cond_time",
+            "version": 1,
+            "label": "时间段",
+            "description": "触发时刻在时间段内为真",
+            "role": "condition",
+            "category": "条件",
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "真/假",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "start": {
+                "type": "time",
+                "default": "09:00",
+                "description": "HH:MM, 跨零点时按次日计算",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "开始"
+              },
+              "end": {
+                "type": "time",
+                "default": "22:00",
+                "description": "HH:MM, 跨零点时按次日计算",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "结束"
+              }
+            }
+          },
+          {
+            "type": "cond_state",
+            "version": 1,
+            "label": "快照条件",
+            "description": "读取状态槽当前版本判断",
+            "role": "condition",
+            "category": "条件",
+            "inputs": [
+              {
+                "name": "state",
+                "label": "状态",
+                "types": [
+                  "state"
+                ],
+                "required": true,
+                "multiple": false
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "真/假",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {
+              "check": {
+                "type": "select",
+                "default": "nonempty",
+                "description": "",
+                "options": [
+                  "nonempty",
+                  "version"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "判断",
+                "option_labels": {
+                  "nonempty": "已有内容",
+                  "version": "版本不低于"
+                }
+              },
+              "min_version": {
+                "type": "number",
+                "default": 1,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": null,
+                "integer": true,
+                "scope": "",
+                "label": "最低版本",
+                "visible_when": {
+                  "check": "version"
+                }
+              }
+            }
+          },
+          {
+            "type": "and",
+            "version": 2,
+            "label": "AND",
+            "description": "A 和 B 都为真才为真. 一个触发加一个条件: 条件为真才放行触发; 两个触发: 在时间窗内都发生才触发. 更多输入时串联多个门",
+            "role": "logic",
+            "category": "逻辑",
+            "inputs": [
+              {
+                "name": "a",
+                "label": "A",
+                "types": [
+                  "event",
+                  "condition"
+                ],
+                "required": true,
+                "multiple": false,
+                "side": "left"
+              },
+              {
+                "name": "b",
+                "label": "B",
+                "types": [
+                  "event",
+                  "condition"
+                ],
+                "required": true,
+                "multiple": false,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "输出",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": false,
+                "side": "right",
+                "derived": true
+              }
+            ],
+            "schema": {
+              "window_seconds": {
+                "type": "number",
+                "default": 120,
+                "description": "仅在有多个触发输入时使用",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": 86400,
+                "integer": true,
+                "scope": "",
+                "label": "触发时间窗"
+              }
+            }
+          },
+          {
+            "type": "or",
+            "version": 2,
+            "label": "OR",
+            "description": "A 或 B 为真即为真. 两个输入必须同为触发或同为条件: 都是触发时任一触发都放行. 更多输入时串联多个门",
+            "role": "logic",
+            "category": "逻辑",
+            "inputs": [
+              {
+                "name": "a",
+                "label": "A",
+                "types": [
+                  "event",
+                  "condition"
+                ],
+                "required": true,
+                "multiple": false,
+                "side": "left"
+              },
+              {
+                "name": "b",
+                "label": "B",
+                "types": [
+                  "event",
+                  "condition"
+                ],
+                "required": true,
+                "multiple": false,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "输出",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": false,
+                "side": "right",
+                "derived": true
+              }
+            ],
+            "schema": {}
+          },
+          {
+            "type": "not",
+            "version": 1,
+            "label": "NOT",
+            "description": "取反, 只接受一个条件; 触发不能取反",
+            "role": "logic",
+            "category": "逻辑",
+            "inputs": [
+              {
+                "name": "in",
+                "label": "输入",
+                "types": [
+                  "condition"
+                ],
+                "required": true,
+                "multiple": false,
+                "side": "left"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "输出",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": false
+              }
+            ],
+            "schema": {}
+          },
+          {
+            "type": "note",
+            "version": 1,
+            "label": "注释",
+            "description": "画布上的说明文字, 不参与运行和检查",
+            "role": "note",
+            "category": "其他",
+            "inputs": [],
+            "outputs": [],
+            "schema": {
+              "text": {
+                "type": "textarea",
+                "default": "",
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "内容"
+              },
+              "color": {
+                "type": "select",
+                "default": "orange",
+                "description": "",
+                "options": [
+                  "orange",
+                  "accent",
+                  "green",
+                  "pink",
+                  "neutral"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "颜色",
+                "option_labels": {
+                  "orange": "黄",
+                  "accent": "蓝",
+                  "green": "绿",
+                  "pink": "粉",
+                  "neutral": "灰"
+                }
+              }
+            }
+          },
+          {
+            "type": "llm_budget.within",
+            "version": 1,
+            "label": "调用预算内",
+            "description": "最近一段时间的模型调用次数低于上限时为真",
+            "role": "condition",
+            "category": "条件",
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "真/假",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": false,
+                "side": "right"
+              }
+            ],
+            "schema": {
+              "max_calls": {
+                "type": "number",
+                "default": 30,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": null,
+                "integer": true,
+                "scope": "",
+                "label": "上限"
+              },
+              "window_minutes": {
+                "type": "number",
+                "default": 60,
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": 1,
+                "maximum": 1440,
+                "integer": true,
+                "scope": "",
+                "label": "统计窗口"
+              },
+              "count": {
+                "type": "select",
+                "default": "all",
+                "description": "",
+                "options": [
+                  "wf",
+                  "all"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "计入",
+                "option_labels": {
+                  "wf": "只算 WF 调用",
+                  "all": "WF 和插件模型调用"
+                }
+              },
+              "scope": {
+                "type": "select",
+                "default": "target",
+                "description": "",
+                "options": [
+                  "target",
+                  "flow"
+                ],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "统计范围",
+                "option_labels": {
+                  "target": "本次将被触发的 WF",
+                  "flow": "整个流程"
+                }
+              }
+            },
+            "plugin": "llm_budget"
+          },
+          {
+            "type": "quiet_hours.in_hours",
+            "version": 1,
+            "label": "免打扰时段内",
+            "description": "触发时刻在时段内为真, 通常接 NOT 使用",
+            "role": "condition",
+            "category": "条件",
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "out",
+                "label": "真/假",
+                "types": [
+                  "condition"
+                ],
+                "required": false,
+                "multiple": false,
+                "side": "right"
+              }
+            ],
+            "schema": {
+              "start": {
+                "type": "time",
+                "default": "22:00",
+                "description": "",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "开始"
+              },
+              "end": {
+                "type": "time",
+                "default": "07:00",
+                "description": "早于开始时间表示跨零点",
+                "options": [],
+                "required": false,
+                "nullable": false,
+                "session_overridable": true,
+                "minimum": null,
+                "maximum": null,
+                "integer": false,
+                "scope": "",
+                "label": "结束"
+              }
+            },
+            "plugin": "quiet_hours"
+          }
+        ],
+        "port_types": {
+          "messages": {
+            "label": "消息流",
+            "signal": false
+          },
+          "context": {
+            "label": "上下文",
+            "signal": false
+          },
+          "text": {
+            "label": "文本",
+            "signal": false
+          },
+          "state": {
+            "label": "状态",
+            "signal": false
+          },
+          "condition": {
+            "label": "真/假",
+            "signal": true
+          },
+          "event": {
+            "label": "触发",
+            "signal": true
+          },
+          "handoff": {
+            "label": "交接",
+            "signal": true
+          }
+        },
+        "defaults": {
+          "flow": {},
+          "plugin": {
+            "llm_budget": {
+              "within": {}
+            },
+            "quiet_hours": {
+              "in_hours": {}
+            }
+          }
+        },
+        "models": [
+          {
+            "name": "deepseek-v3",
+            "ctx": 64000,
+            "tools": true
+          },
+          {
+            "name": "claude-sonnet-4.5",
+            "ctx": 200000,
+            "tools": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "simple",
+      "is_async": false,
+      "description": "同步单工作流 Edictum 会话",
+      "config_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "system_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_agent_prompt_enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "thinking": {
+            "type": "string",
+            "enum": [
+              "default",
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ]
+          },
+          "command_history_enabled": {
+            "type": "boolean"
+          },
+          "max_iterations": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "model_params": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "temperature": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 2
+              },
+              "top_p": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "db_path": {
+            "type": "string"
+          },
+          "enable_checkpoint": {
+            "type": "boolean"
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "return_thinking": {
+            "type": "boolean"
+          }
+        }
+      },
+      "capabilities": {
+        "plugins": true,
+        "mcp": true,
+        "stream": true
+      }
+    }
+  ]
+}

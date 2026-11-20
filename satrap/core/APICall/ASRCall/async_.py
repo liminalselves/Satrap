@@ -7,7 +7,8 @@ from typing import cast
 from openai import APIError, AsyncOpenAI
 
 from satrap.core.log import logger
-from satrap.core.type import ASRResponse
+from satrap.core.type.model_config import ASRResponse
+
 
 from .base import _ASRBase
 from .utils import parse_transcription, prepare_audio_input

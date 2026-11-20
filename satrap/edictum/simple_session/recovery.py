@@ -10,7 +10,7 @@ import hashlib
 from satrap.core.framework.Base.execution.engine import run_async, run_sync
 from satrap.core.framework.Base.execution.store import RunStore, fingerprint
 
-from satrap.edictum.plugin_resources import model_reference_fingerprint
+from satrap.edictum.plugin.resources import model_reference_fingerprint
 
 
 def plugin_fingerprint(path: Path, config: dict[str, Any], models: Any = None, schema: Any = None) -> str:

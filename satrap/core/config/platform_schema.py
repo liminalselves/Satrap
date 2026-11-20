@@ -11,7 +11,7 @@ import sqlite3
 from satrap.core.schema_names import SESSION_OVERRIDE_TABLE
 
 
-PLATFORM_SCHEMA_VERSION = 12
+PLATFORM_SCHEMA_VERSION = 14
 
 _OVERRIDE_TABLE = SESSION_OVERRIDE_TABLE
 _GROUP_TABLES = frozenset({
@@ -53,7 +53,8 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     required = (({_OVERRIDE_TABLE} if version >= 1 else set()) | (_GROUP_TABLES if version >= 2 else set())
                 | (_MESSAGE_TABLES if version >= 4 else set())
                 | ({"platform_message_policy"} if version >= 5 else set())
-                | (_SUMMARY_TABLES if version >= 6 else set()))
+                | (_SUMMARY_TABLES if version >= 6 else set())
+                | ({"flow_run_tokens"} if version >= 14 else set()))
     required |= {"group_chat_assets"} if version >= 7 else set()
     required |= {"friend_actions", "friend_policies"} if version >= 8 else set()
     required |= {"memories", "memory_refs", "memory_proposals", "memory_operations", "memory_audit"} if version >= 9 else set()
@@ -71,6 +72,14 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
             columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
             if not fields <= columns:
                 raise RuntimeError(f"平台数据库结构损坏: {table} 缺少动作项修订或决策字段")
+    if version >= 13:
+        chat_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(platform_message_chats)")}
+        if "next_seq" not in chat_columns:
+            raise RuntimeError("平台数据库结构损坏: 会话表缺少 next_seq")
+        message_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(platform_messages)")}
+        if "seq" not in message_columns:
+            raise RuntimeError("平台数据库结构损坏: 消息表缺少 seq 序号")
+        required |= {"flow_threshold_positions", "flow_states"}
 
     if version < 1:
         connection.execute(
@@ -273,3 +282,65 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
             connection.execute(f"CREATE TRIGGER {table}_action_revision AFTER UPDATE ON {table} WHEN {changed} "
                                f"BEGIN UPDATE {table} SET action_revision=OLD.action_revision+1 WHERE {identity}=NEW.{identity}{account}; END")
         connection.execute("PRAGMA user_version = 12")
+    if version < 13:
+        # 消息单调序号: 不能直接用 rowid, 删除恢复流程会删行再写回导致 rowid 变化
+        chat_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(platform_message_chats)")}
+        if "next_seq" not in chat_columns:
+            connection.execute("ALTER TABLE platform_message_chats ADD COLUMN next_seq INTEGER NOT NULL DEFAULT 1")
+        message_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(platform_messages)")}
+        if "seq" not in message_columns:
+            connection.execute("ALTER TABLE platform_messages ADD COLUMN seq INTEGER")
+        # 旧数据按 (message_time, message_id) 回填, 同事务更新 next_seq; 已回填的行不重复处理
+        for row in connection.execute("SELECT scope_key FROM platform_message_chats"):
+            scope_key = str(row[0])
+            max_seq = int(connection.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM platform_messages WHERE scope_key=?", (scope_key,),
+            ).fetchone()[0])
+            next_seq = max_seq + 1
+            for msg in connection.execute(
+                "SELECT message_id FROM platform_messages WHERE scope_key=? AND seq IS NULL ORDER BY message_time, message_id",
+                (scope_key,),
+            ):
+                connection.execute(
+                    "UPDATE platform_messages SET seq=? WHERE scope_key=? AND message_id=?",
+                    (next_seq, scope_key, str(msg[0])),
+                )
+                next_seq += 1
+            connection.execute(
+                "UPDATE platform_message_chats SET next_seq=? WHERE scope_key=?",
+                (next_seq, scope_key),
+            )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_platform_messages_seq ON platform_messages(scope_key, seq)")
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS flow_threshold_positions ("
+            "scope_key TEXT NOT NULL, flow_name TEXT NOT NULL, tile_id TEXT NOT NULL, wf_id TEXT NOT NULL, "
+            "committed_seq INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL, "
+            "PRIMARY KEY(scope_key, flow_name, tile_id, wf_id))"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS flow_states ("
+            "scope_key TEXT NOT NULL, flow_name TEXT NOT NULL, state_id TEXT NOT NULL, "
+            "version INTEGER NOT NULL DEFAULT 0, content TEXT NOT NULL DEFAULT '', "
+            "covers_to INTEGER NOT NULL DEFAULT 0, committed_at REAL NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '', "
+            "PRIMARY KEY(scope_key, flow_name, state_id))"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS flow_send_log ("
+            "attempt_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, "
+            "status TEXT NOT NULL, segments_json TEXT NOT NULL DEFAULT '[]', "
+            "created_at REAL NOT NULL, updated_at REAL NOT NULL)"
+        )
+        connection.execute("PRAGMA user_version = 13")
+
+    if version < 14:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS flow_run_tokens ("
+            "scope_key TEXT NOT NULL, flow_name TEXT NOT NULL, run_id TEXT NOT NULL, "
+            "wf_id TEXT NOT NULL, created_at REAL NOT NULL, "
+            "PRIMARY KEY(scope_key, flow_name, run_id))"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_flow_run_tokens_wf "
+            "ON flow_run_tokens(scope_key, flow_name, wf_id)"
+        )
+        connection.execute("PRAGMA user_version = 14")

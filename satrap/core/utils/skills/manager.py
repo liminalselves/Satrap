@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, cast
 import os
 from satrap.core.log import logger
-from satrap.core.type import safe_getattr, safe_getattr_dict
-from satrap.core.type import RequestContextBlock
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_dict
+
+from satrap.core.type.model import RequestContextBlock
+
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, ToolsManager, AsyncToolsManager
 from .utils import (
     _yaml_loader,

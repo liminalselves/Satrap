@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, Protocol, cast
+from typing import Any, TYPE_CHECKING, cast
 import hashlib
 import json
 import weakref
@@ -19,40 +19,21 @@ import traceback
 
 from satrap.core.call_context import current_call_origin, current_tool_workflow, is_group_origin, CallOrigin
 from satrap.core.log import logger
+from satrap.core.type.plugin.authorization import (
+    AuthorizationDecision,
+    BoundPluginTool,
+    PermissionGrant,
+    PluginEntryBinding,
+)
+
 if TYPE_CHECKING:
-    from satrap.edictum.plugin_permissions import PluginPermissions
+    from satrap.core.type.plugin.permissions import PluginPermissions
     from satrap.core.config.administrator_groups import AdministratorService
     from satrap.core.utils.TCBuilder.tool_base import _ToolBase
     from satrap.core.plugin_interop.service import Service, AsyncService
     from satrap.edictum import AsyncSimpleSession, SimpleSession
 
     SessionType = SimpleSession | AsyncSimpleSession
-
-
-@dataclass(frozen=True)
-class PermissionGrant:
-    """一项管理权限的实际授权来源"""
-
-    permission: str
-    allowed: bool
-    source: str = ""
-    group_ids: tuple[str, ...] = ()
-    override_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class AuthorizationDecision:
-    """单次授权结果, 不作为之后免检执行的凭证"""
-
-    status: str
-    plugin_name: str
-    entry_kind: str
-    entry_name: str
-    required_permissions: tuple[str, ...] = ()
-    grants: tuple[PermissionGrant, ...] = ()
-    reason_code: str = ""
-    policy_revision: str = ""
-    permission_fingerprint: str = ""
 
 
 class PluginPermissionDenied(PermissionError):
@@ -156,41 +137,14 @@ def evaluate_plugin_permissions(
                                  "" if permitted else "permission_denied", admin.revision if admin else "", fingerprint)
 
 
-@dataclass(frozen=True)
-class PluginEntryBinding:
-    """宿主绑定的入口, 配置和弱引用均不可由模型参数替换"""
-
-    plugin_name: str
-    kind: str
-    name: str
-    permissions: PluginPermissions
-    config: Mapping[str, Any]
-    entry_ref: Callable[[], object | None]
-    session_ref: Callable[[], SessionType | None] | None = None
-
-
-class BoundPluginTool(Protocol):
-    """
-    bind_plugin_tool 绑定后的插件工具面
-
-    config 与 _plugin_entry_binding 由安装流程注入, 各插件工具类以属性声明满足本契约;
-    授权复核只依赖此面, 不绑定具体工具实现
-    """
-
-    tool_name: str | None
-    _plugin_entry_binding: PluginEntryBinding
-    is_enabled: Callable[[], bool]
-
-    @property
-    def config(self) -> Mapping[str, Any]: ...
-
-
 @dataclass
 class _CommandScope:
     """可撤销的原生命令作用域, 防止复制上下文后继续使用授权"""
 
     binding: PluginEntryBinding
+    """宿主为当前原生命令固定的入口绑定"""
     active: bool = True
+    """命令作用域是否仍有效, 退出时撤销以防复制的上下文继续使用"""
 
 
 _NATIVE_COMMAND: ContextVar[_CommandScope | None] = ContextVar("satrap_native_management_command", default=None)
@@ -202,7 +156,9 @@ class _AuthorizationStep:
 
     decisions: list[tuple[PluginEntryBinding, str | None, CallOrigin | None, AuthorizationDecision]] = field(
         default_factory=list[tuple[PluginEntryBinding, str | None, CallOrigin | None, AuthorizationDecision]])
+    """当前步骤按入口绑定, 子命令和调用来源保存的授权结果, 初始为空"""
     active: bool = True
+    """步骤作用域是否仍有效, 外层退出时撤销以阻止跨步骤复用"""
 
 
 _AUTHORIZATION_STEP: ContextVar[_AuthorizationStep | None] = ContextVar(
@@ -308,8 +264,8 @@ def _factory_declarations(meta_path: Path) -> tuple[str, PluginPermissions]:
     - 插件名与已严格解析的声明; 文件缺失或声明非法时抛出与直接解析一致的错误
     """
     from satrap.edictum.plugin import load_plugin_meta
-    from satrap.edictum.plugin_config import parse_config_schema
-    from satrap.edictum.plugin_permissions import parse_plugin_permissions
+    from satrap.edictum.plugin.config import parse_config_schema
+    from satrap.edictum.plugin.permissions import parse_plugin_permissions
 
     try:
         stat = meta_path.stat()
@@ -361,7 +317,9 @@ def plugin_tool_live(session: SessionType, plugin_name: str, name: str, tool: Bo
     plugin = next((item for item in session.list_plugins() if item.name == plugin_name), None)
     if plugin is None or not plugin.enabled or not plugin.tools.get(name, False):
         return "entry_disabled"
-    manager = getattr(getattr(session, "_wf", None), "tools_manager", None)
+    from satrap.core.call_context import current_flow_workflow
+    workflow = current_flow_workflow.get() or getattr(session, "_wf", None)
+    manager = getattr(workflow, "tools_manager", None)
     if manager is None or manager.tools.get(name) is not tool or not manager.is_tool_enabled(name) or not tool.is_enabled():
         return "stale_authorization"
     return None
@@ -442,7 +400,7 @@ def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None, 
         administrators = getattr(adapter_manager, "administrator_service", None)
         spec = binding.permissions
         if additional_permissions:
-            from satrap.edictum.plugin_permissions import CommandPermissions
+            from satrap.core.type.plugin.permissions import CommandPermissions
             required = tuple(dict.fromkeys((*spec.required(binding.kind, binding.name, subcommand), *additional_permissions)))
             if binding.kind == "tools":
                 spec = replace(spec, tools={**spec.tools, binding.name: required})

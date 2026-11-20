@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Bot, CheckCircle2, Clock3, Layers, Route, Save, UserCheck } from 'lucide-react';
+import { AlertTriangle, Bot, CheckCircle2, Clock3, Layers, Route, Save, UserCheck, Workflow } from 'lucide-react';
 import { groupApi, type GroupPolicyValue } from '@/api/groups';
 import { Card } from '@/components/kit/Card';
 import { Badge } from '@/components/kit/Badge';
@@ -8,6 +8,9 @@ import { Button } from '@/components/kit/Button';
 import { Modal } from '@/components/kit/Modal';
 import { Textarea } from '@/components/kit/Field';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { FlowRuntimePanel } from '@/components/common/FlowRuntimePanel';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { errorText } from '@/utils/errorText';
 import { useGroupContext } from './GroupLayout';
 import { FieldBlock, Note, SectionHead } from './shared';
@@ -95,6 +98,11 @@ export function GroupSession() {
 
   const binding = config.effective.session.binding as { provider?: string; config_name?: string } | undefined;
   const instanceSummary = config.session_instances;
+  useConfigWatch(['edictum']);
+  const edictumConfigs = useConfigStore((state) => state.edictumConfigs);
+  // 绑定的是流程命名配置时, 显示本群当前实例的运行状态
+  const flowSession = binding?.provider === 'edictum' && edictumConfigs[binding.config_name || '']?.edictum_type === 'flow'
+    ? instanceSummary?.session_ids[0] : undefined;
   const effectiveScope = String(config.effective.session.scope || 'legacy_user');
   const selected = options.find((item) => item.provider === draft.provider && item.config_name === draft.configName);
   const previousRoute = fromConfig(config.explicit.session || {});
@@ -230,6 +238,15 @@ export function GroupSession() {
       </div>
       <p className="mt-2 text-[11px] text-fg-4">旧版按用户共享的历史无法可靠按群统计。</p>
     </Card>
+
+    {flowSession && (
+      <Card padding="lg">
+        <SectionHead tint="purple" title="流程运行状态" icon={<Workflow className="h-4 w-4" />} description={`流程 ${binding?.config_name} · 实例 ${flowSession}`} />
+        {isRunning ? <FlowRuntimePanel platformId={adapterId} sessionId={flowSession} />
+          : <p role="status" className="text-[12.5px] text-fg-3">后端未运行, 会话未运行。</p>}
+        <Link className="mt-3 inline-block text-[12px] text-pink hover:underline" to={`/agents/${encodeURIComponent(binding?.config_name || '')}/flow`}>打开流程编辑器</Link>
+      </Card>
+    )}
 
     <Card padding="lg">
       <SectionHead tint="pink" title="模型与提示词" icon={<Bot className="h-4 w-4" />}

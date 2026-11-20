@@ -11,14 +11,9 @@ from typing import (
 import re
 
 from satrap.core.utils import parse_tool_arguments
-from satrap.core.type import (
-    LLMCallResponse,
-    LLMErrorInfo,
-    TokenUsage,
-    safe_getattr,
-    safe_getattr_str,
-    safe_getattr_list,
-)
+from satrap.core.type.model import LLMCallResponse, LLMErrorInfo, TokenUsage
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str, safe_getattr_list
+
 
 from satrap.core.log import logger
 

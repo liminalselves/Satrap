@@ -2,7 +2,8 @@ from __future__ import annotations
 import asyncio
 from typing import List, Optional, TYPE_CHECKING
 from satrap.core.state.mutation import state_mutation_context
-from satrap.core.type import StateCheckpoint
+from satrap.core.type.state import StateCheckpoint
+
 from satrap.core.log import logger
 
 if TYPE_CHECKING:

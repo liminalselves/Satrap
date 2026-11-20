@@ -26,8 +26,8 @@ from satrap.core.platform import PlatformAdapter
 from satrap.core.platform.event import MessageChain, PlatformMetadata
 from satrap.core.plugin_authorization import evaluate_plugin_permissions
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
-from satrap.edictum.plugin_config import parse_config_schema
-from satrap.edictum.plugin_permissions import parse_plugin_permissions
+from satrap.edictum.plugin.config import parse_config_schema
+from satrap.edictum.plugin.permissions import parse_plugin_permissions
 from support.providers import RunnableRegistry
 
 async def event(adapter: OneBotAdapter, message_id: str, actor: str = "30", group: str = "20", text: str = "正文") -> MessageEvent:

@@ -24,7 +24,8 @@ from satrap.core.utils.outbound import (
     safe_async_get,
     same_origin,
 )
-from satrap.core.type import safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr_str
+
 
 from satrap.core.log import logger
 from satrap.core.platform.receipt import public_delivery_message

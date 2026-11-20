@@ -16,9 +16,11 @@ import inspect
 import weakref
 import traceback
 
-from satrap.core.plugin_interop.contracts import (
-    CapabilityKind, HandlerInfo, InteropSpec, ServiceValue, PluginInfo, PluginInteractionError, SkillInfo, copy_data,
+from satrap.core.call_context import current_flow_workflow
+from satrap.core.type.plugin_interop import (
+    CapabilityKind, HandlerInfo, InteropSpec, ServiceValue, PluginInfo, PluginInteractionError, SkillInfo,
 )
+from satrap.core.plugin_interop.codec import copy_data
 from satrap.core.plugin_interop.environment import EnvironmentSnapshot, environment_snapshot
 from satrap.core.plugin_interop.service import AsyncService, Service
 
@@ -776,6 +778,20 @@ class PluginInterop:
             raise PluginInteractionError("capability_stale", "宿主会话已结束")
         return session
 
+    @staticmethod
+    def _bound_workflow(session: SessionType) -> object | None:
+        """
+        当前会话里应绑到的工作流; 流程会话正在运行的 WF 优先, 否则回退 session._wf
+
+        参数:
+        - session: 宿主会话
+
+        返回:
+        - 正在运行的 WF 或 None
+        """
+        current = current_flow_workflow.get()
+        return current if current is not None else getattr(session, "_wf", None)
+
     def prepare(self, name: str, spec: InteropSpec) -> PluginHost:
         """
         为正在安装的插件创建宿主接口
@@ -882,8 +898,8 @@ class PluginInterop:
         返回:
         - 同一会话内的插件目标节点
         """
-        from satrap.core.plugin_interop.contracts import CAPABILITY_KINDS
-        from satrap.edictum.plugin_config import PluginConfigManager
+        from satrap.core.type.plugin_interop import CAPABILITY_KINDS
+        from satrap.edictum.plugin.config import PluginConfigManager
 
         result: dict[str, _RelationNode] = {}
         host_config = PluginConfigManager()
@@ -988,7 +1004,7 @@ class PluginInterop:
         返回:
         - 已激活且所有必需依赖可用时为 True
         """
-        from satrap.edictum.plugin_config import PluginConfigManager
+        from satrap.edictum.plugin.config import PluginConfigManager
 
         if not PluginConfigManager().host_state(name)["execution_enabled"]:
             return False
@@ -1033,7 +1049,7 @@ class PluginInterop:
             service = (binding.services or {}).get(name)
             return service is not None and service.is_enabled()
         if kind == "tools":
-            workflow = self.session()._wf
+            workflow = self._bound_workflow(self.session())
             tool = workflow.tools_manager.tools.get(name) if workflow is not None else None
             return tool is not None and tool.owner_plugin == provider and tool.is_enabled()
         if kind == "handlers":
@@ -1060,7 +1076,8 @@ class PluginInterop:
         if self._configuration_update() is not None:
             return []
         session = self.session()
-        manager, workflow = session._skills_manager, session._wf
+        manager = session._skills_manager
+        workflow = self._bound_workflow(session)
         if manager is None or workflow is None:
             return []
         view = _RelationView(self._relation_nodes())
@@ -1079,7 +1096,8 @@ class PluginInterop:
     def synchronize_skills(self) -> None:
         """同步装配关系变更后的有效技能, 保留原用户开关"""
         session = self.session()
-        manager, workflow = session._skills_manager, session._wf
+        manager = session._skills_manager
+        workflow = self._bound_workflow(session)
         if manager is None or workflow is None:
             return
         for name, enabled in self._skill_changes():
@@ -1090,7 +1108,8 @@ class PluginInterop:
     async def synchronize_skills_async(self) -> None:
         """异步装配关系变更后的有效技能, 保留原用户开关"""
         session = self.session()
-        manager, workflow = session._skills_manager, session._wf
+        manager = session._skills_manager
+        workflow = self._bound_workflow(session)
         if manager is None or workflow is None:
             return
         for name, enabled in self._skill_changes():
@@ -1205,7 +1224,7 @@ class PluginInterop:
         plugin = binding.plugin if binding else None
         if plugin is None:
             return "not_installed", ()
-        from satrap.edictum.plugin_config import PluginConfigManager
+        from satrap.edictum.plugin.config import PluginConfigManager
 
         if not PluginConfigManager().host_state(owner)["execution_enabled"]:
             return "execution_disabled", ()
@@ -1322,7 +1341,8 @@ class PluginInterop:
         self.require_execution(reference._host)
         self.reference(reference._host, reference._plugin, reference._kind, reference._name)
         if reference._kind == "services":
-            from satrap.core.plugin_authorization import PluginEntryBinding, require_plugin_entry_permission, PluginPermissionDenied
+            from satrap.core.type.plugin.authorization import PluginEntryBinding
+            from satrap.core.plugin_authorization import require_plugin_entry_permission, PluginPermissionDenied
             service = (binding.services or {}).get(reference._name)
             authorization: object = getattr(service, "_plugin_entry_binding", None)
             if not isinstance(authorization, PluginEntryBinding):
@@ -1394,7 +1414,7 @@ class PluginInterop:
             if self.async_:
                 raise PluginInteractionError("dependency_unavailable", "异步会话不提供隐式同步适配")
             if reference._kind in ("tools", "mcp"):
-                workflow = self.session()._wf
+                workflow = self._bound_workflow(self.session())
                 if workflow is None:
                     raise PluginInteractionError("dependency_unavailable", "工作流尚未初始化")
                 from satrap.core.utils.TCBuilder.manager import ToolsManager
@@ -1438,7 +1458,7 @@ class PluginInterop:
             if not self.async_:
                 raise PluginInteractionError("dependency_unavailable", "同步会话不提供隐式异步适配")
             if reference._kind in ("tools", "mcp"):
-                workflow = self.session()._wf
+                workflow = self._bound_workflow(self.session())
                 if workflow is None:
                     raise PluginInteractionError("dependency_unavailable", "工作流尚未初始化")
                 from satrap.core.utils.TCBuilder.async_manager import AsyncToolsManager
@@ -1481,7 +1501,7 @@ class PluginInterop:
         binding = self.bindings[reference._plugin]
         plugin = binding.plugin
         adapters = plugin._mcp_clients.get(reference._name, (None, []))[1] if plugin else []
-        workflow = self.session()._wf
+        workflow = self._bound_workflow(self.session())
         if (not reference._adapter or workflow is None
                 or not any(adapter.get_tool_name() == reference._adapter
                            and workflow.tools_manager.tools.get(reference._adapter) is adapter
@@ -1501,7 +1521,7 @@ def bind_tool_plugin(tool: object) -> Iterator[None]:
     返回:
     - 当前工具的插件执行作用域; 非目录插件工具保持原行为
     """
-    from satrap.core.plugin_authorization import PluginEntryBinding
+    from satrap.core.type.plugin.authorization import PluginEntryBinding
 
     binding: object = getattr(tool, "_plugin_entry_binding", None)
     session = binding.session_ref() if isinstance(binding, PluginEntryBinding) and binding.session_ref else None

@@ -18,12 +18,12 @@ from types import SimpleNamespace
 import json
 import time
 
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.core.backend import control_server
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.type import SessionConfig, EmbeddingConfig
-from satrap.edictum.plugin_archive import PluginArchiveInstaller
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.archive import PluginArchiveInstaller
+from satrap.edictum.plugin.catalog import PluginCatalog
 
 
 
@@ -174,7 +174,7 @@ async def test_single_plugin_read_does_not_construct_unrelated_services(monkeypa
 async def test_control_rag_and_session_overrides_share_scope_and_revision(tmp_path, monkeypatch):
     """冷管理接口共用真实数据库, 拒绝跨会话引用与过期覆盖请求"""
     _use_config(monkeypatch, tmp_path)
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
     instances = control_server._session_instance_config_service("local")
     for name in ("one", "two"):
         instances.store.upsert(SessionConfig(session_id=name, session_type_name="example"))
@@ -205,7 +205,7 @@ async def test_control_rag_and_session_overrides_share_scope_and_revision(tmp_pa
 async def test_control_friend_instance_tool_overrides_share_atomic_revisions(tmp_path, monkeypatch):
     """好友实例工具覆盖可通过控制接口修改, 冲突时不写入部分参数"""
     _use_config(monkeypatch, tmp_path)
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
     instances = control_server._session_instance_config_service("local")
     instances.store.upsert(SessionConfig(session_id="one", session_type_name="example"))
     url = "/config/session-plugin-config?platform_id=local&session_id=one&plugin=friend_manager"

@@ -17,7 +17,8 @@ from satrap.core.plugin_interop.environment import environment_snapshot
 from satrap.core.approval.state import session_approval
 from satrap.core.utils.paths import get_project_root
 from satrap.core.storage import storage_key
-from satrap.core.type import safe_getattr
+from satrap.core.utils.attributes import safe_getattr
+
 
 
 if TYPE_CHECKING:

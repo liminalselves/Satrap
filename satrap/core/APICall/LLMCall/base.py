@@ -5,7 +5,8 @@ from typing import Any, Generic, TypeVar, List, Optional, Iterable, Literal
 from satrap.core.utils import normalize_openai_base_url
 from .utils import _build_thinking_extra_body
 from .errors import log_model_error, model_error_info
-from satrap.core.type import LLMErrorInfo, LLMCallResponse
+from satrap.core.type.model import LLMErrorInfo, LLMCallResponse
+
 from .protocols import select_protocol
 from .utils import prepare_call_messages
 

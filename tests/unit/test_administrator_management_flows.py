@@ -119,7 +119,7 @@ async def test_stale_general_configuration_cannot_overwrite_new_admin_groups(tmp
     assert result[0] == 409 and load_config_document(path) == saved
 
 def test_invalid_plugin_declaration_is_visible_but_other_catalog_entries_remain(tmp_path):
-    from satrap.edictum.plugin_catalog import PluginCatalog
+    from satrap.edictum.plugin.catalog import PluginCatalog
     for name, contents in [("valid", "name: valid\n"), ("invalid", "name: invalid\npermission_schema_version: 1\nmanagement_permissions: {}\n")]:
         folder = tmp_path / "plugins" / name
         folder.mkdir(parents=True)
@@ -129,7 +129,7 @@ def test_invalid_plugin_declaration_is_visible_but_other_catalog_entries_remain(
     assert snapshot["plugin_errors"][0]["name"] == "invalid"
 
 def test_snapshot_marks_plugin_enabled_only_when_enabled_set_given(tmp_path):
-    from satrap.edictum.plugin_catalog import PluginCatalog
+    from satrap.edictum.plugin.catalog import PluginCatalog
     for name in ["alpha", "beta"]:
         folder = tmp_path / "plugins" / name
         folder.mkdir(parents=True)

@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from satrap.core.utils import _is_loopback_api_host
-from .types import GeneratedImage, ImageGenError, ImageInput
+from satrap.core.type.image import GeneratedImage, ImageGenError, ImageInput
 
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_RESPONSE_BYTES = 128 * 1024 * 1024

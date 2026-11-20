@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from numbers import Real
 
 from satrap.core.utils.context import AsyncContextManager, ContextManager
-from satrap.core.type import LLMConfig
+from satrap.core.type.model_config import LLMConfig
+
 
 
 CONTEXT_STRATEGIES = ("sliding", "mid_truncate", "summarize")

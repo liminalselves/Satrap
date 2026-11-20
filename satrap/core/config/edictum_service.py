@@ -5,9 +5,10 @@ from collections.abc import Callable
 from typing import Any, cast
 
 
-from satrap.edictum.plugin_settings import validate_plugin_settings
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_config import PluginConfigManager, validate_config_values
+from satrap.core.log import logger
+from satrap.edictum.plugin.settings import validate_plugin_settings
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager, validate_config_values
 from satrap.edictum.registry import EdictumTypeRegistry
 from satrap.edictum.config import EdictumConfigManager
 
@@ -26,6 +27,42 @@ _ALLOWED_FIELDS = {
 from satrap.core.config.reference_guard import guard_agent_reference
 
 
+def config_revision(config: dict[str, Any]) -> str:
+    """
+    计算命名配置的修订值, 与 EdictumConfigManager.update 的 expected_revision 校验口径一致
+
+    参数:
+    - config: get_config 返回的公开配置 (不含 _updated_at)
+
+    返回:
+    - str: 与字段顺序无关的 sha256 摘要
+    """
+    from satrap.core.config.document import config_document_revision
+
+    return config_document_revision(config)
+
+
+def split_expected_revision(payload: object) -> tuple[object, str | None]:
+    """
+    从更新请求体中取出 expected_revision, 其余字段原样交给配置校验
+
+    参数:
+    - payload: 原始请求体
+
+    返回:
+    - tuple[object, str | None]: 去掉修订字段后的请求体与期望修订; 未提供时为 None
+    """
+    if not isinstance(payload, dict) or "expected_revision" not in payload:
+        return payload, None
+    body = dict(cast(dict[str, Any], payload))
+    expected = body.pop("expected_revision")
+    if expected is None:
+        return body, None
+    if not isinstance(expected, str) or not expected.strip():
+        raise ValueError("expected_revision 必须是非空字符串")
+    return body, expected
+
+
 class EdictumConfigService:
     """供平台后端和控制服务共用的 Edictum 冷配置服务"""
 
@@ -35,6 +72,7 @@ class EdictumConfigService:
         type_registry: EdictumTypeRegistry,
         *, models: Any = None, rag: Any = None,
         reference_checker: Callable[[str], list[dict[str, str]]] | None = None,
+        adapter_resolver: Callable[[str], Any] | None = None,
     ) -> None:
         """
         初始化 Edictum 冷配置服务
@@ -49,6 +87,7 @@ class EdictumConfigService:
         self.models = models
         self.rag = rag
         self.reference_checker = reference_checker
+        self.adapter_resolver = adapter_resolver
 
     def _guard_reference(self, name: str) -> None:
         """
@@ -62,12 +101,115 @@ class EdictumConfigService:
 
     def list_types(self) -> list[dict[str, Any]]:
         """
-        列出可创建的 Edictum 类型
+        列出可创建的 Edictum 类型, flow 类型附带节点注册表与端口类型表
 
         返回:
-        - list[dict[str, Any]]: 类型能力与配置元数据
+        - list[dict[str, Any]]: 类型能力与配置元数据; flow 项包含
+          node_types (内置+插件), port_types, defaults, models
         """
-        return self.type_registry.list_types()
+        types = self.type_registry.list_types()
+        for item in types:
+            if item.get("name") == "flow":
+                item["flow"] = self._flow_type_metadata()
+        return types
+
+    def _flow_type_metadata(self) -> dict[str, Any]:
+        """
+        组装 flow 类型的前端元数据: 节点类型, 端口类型表, 各层默认值, 模型能力
+
+        返回:
+        - dict[str, Any]: 编辑器需要的完整契约
+        """
+        from satrap.edictum.flow.registry import FlowNodeRegistry
+        from satrap.core.type.flow.ports import DATA_PORT_TYPES, PORT_TYPE_LABELS, SIGNAL_PORT_TYPES
+
+        registry = FlowNodeRegistry()
+        plugin_catalog = {e.name: e for e in self.plugin_catalog.scan()}
+        for entry in plugin_catalog.values():
+            if entry.flow_nodes:
+                registry.register_plugin_nodes(entry.name, list(entry.flow_nodes))
+        node_types = [t.to_payload() for t in registry.all_types()]
+        port_types = {
+            t: {"label": PORT_TYPE_LABELS[t], "signal": t in SIGNAL_PORT_TYPES}
+            for t in DATA_PORT_TYPES
+        }
+        defaults = {
+            "flow": {},   # 流程默认, 编辑器初始为空
+            "plugin": {   # 插件全局默认 (P0-7 接口读写, 当前返回当前值)
+                name: {node.type.rsplit(".", 1)[-1]: {} for node in entry.flow_nodes}
+                for name, entry in plugin_catalog.items() if entry.flow_nodes
+            },
+        }
+        models = []
+        if self.models is not None:
+            try:
+                configs = self.models.list_llm_configs(mask_api_key=True)
+                for name, cfg in sorted(configs.items()):
+                    models.append({
+                        "name": name,
+                        "ctx": int(cfg.get("context_window") or 0),
+                        "tools": True,   # LLM 配置没有工具能力开关, 工具调用一律视为可用
+                    })
+            except Exception as error:
+                logger.warning(f"[Edictum 类型] 读取模型列表失败, 流程编辑器模型选项为空: {error}")
+                models = []
+        return {
+            "node_types": node_types,
+            "port_types": port_types,
+            "defaults": defaults,
+            "models": models,
+        }
+
+    def validate_flow(self, payload: object) -> dict[str, Any]:
+        """
+        只校验不保存: 解析 + 迁移 + 静态检查, 返回问题列表
+
+        参数:
+        - payload: {flow: params.flow, conversation_kinds?: ["group","private"], platform_id?: 平台实例}
+
+        返回:
+        - dict[str, Any]: {"ok": bool, "issues": [...]}
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("校验请求必须是对象")
+        body = dict(cast(dict[str, Any], payload))
+        raw_flow = body.get("flow")
+        if raw_flow is None:
+            raise ValueError("缺少 flow 字段")
+        kinds = body.get("conversation_kinds")
+        if kinds is not None and not (isinstance(kinds, list) and all(k in ("group", "private") for k in kinds)):
+            raise ValueError("conversation_kinds 只能是 group/private 列表")
+        platform_id = body.get("platform_id")
+        if platform_id is not None and (not isinstance(platform_id, str) or not platform_id.strip()):
+            raise ValueError("platform_id 必须是非空字符串")
+        adapter = self.adapter_resolver(platform_id.strip()) if platform_id and self.adapter_resolver else None
+        group = getattr(adapter, "supports_scheduled_group_send", None)
+        private = getattr(adapter, "supports_scheduled_private_send", None)
+        from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition
+        from satrap.edictum.flow.registry import FlowNodeRegistry
+        from satrap.edictum.flow.validate import validate
+
+        registry = FlowNodeRegistry()
+        plugin_catalog = {e.name: e for e in self.plugin_catalog.scan()}
+        for entry in plugin_catalog.values():
+            if entry.flow_nodes:
+                registry.register_plugin_nodes(entry.name, list(entry.flow_nodes))
+        try:
+            definition, _, errors = migrate_flow_definition(parse_flow_definition(raw_flow), registry)
+        except Exception as error:
+            return {"ok": False, "issues": [{"code": "flow_parse_error", "level": "error", "category": "结构", "message": str(error)}]}
+        plugin_config = PluginConfigManager()
+        execution_enabled = {name: plugin_config.host_state(name)["execution_enabled"] for name in plugin_catalog}
+        issues = [i.to_payload() for i in validate(
+            definition, registry, plugin_catalog=plugin_catalog,
+            plugin_execution_enabled=execution_enabled,
+            conversation_kinds=[str(k) for k in kinds] if kinds else None,
+            scheduled_send_group=group if type(group) is bool else None,
+            scheduled_send_private=private if type(private) is bool else None,
+            models=self.models,
+        )]
+        issues = [{"code": e.code, "level": "error", "category": "结构", "message": str(e), "node": e.node, "field": e.field} for e in errors] + issues
+        return {"ok": not any(i["level"] == "error" for i in issues), "issues": issues}
 
     def list_configs(self) -> dict[str, dict[str, Any]]:
         """
@@ -85,7 +227,10 @@ class EdictumConfigService:
         返回:
         - 命名配置及实际保存时间, 旧记录的时间为空
         """
-        return {name: {**config, "updated_at": self.manager.config_updated_at(name)} for name, config in self.manager.list_configs().items()}
+        return {
+            name: {**config, "updated_at": self.manager.config_updated_at(name), "revision": config_revision(config)}
+            for name, config in self.manager.list_configs().items()
+        }
 
     def list_plugins(self) -> list[dict[str, Any]]:
         """

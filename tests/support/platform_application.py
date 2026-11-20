@@ -10,15 +10,15 @@ from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 from satrap.core.framework.providers.edictum import EdictumProvider
 from satrap.core.type import SessionConfig
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin_compatibility import PluginEnvironment
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.core.type.plugin.compatibility import PluginEnvironment
+from satrap.edictum.plugin.config import PluginConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
 
 async def _platforms(tmp_path: Path, monkeypatch: Any, *, plugin_name: str = "session_commands", globals_manager: PluginConfigManager | None = None) -> tuple[Any, EdictumConfigManager, PluginConfigManager, list[Any], list[EdictumProvider]]:
     """创建两个隔离平台及三个实际 Edictum 实例, 不连接模型或适配器"""
     globals_ = globals_manager or PluginConfigManager(tmp_path / "globals")
-    monkeypatch.setattr("satrap.edictum.plugin_apply.PluginConfigManager", lambda: globals_)
-    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: globals_)
+    monkeypatch.setattr("satrap.edictum.plugin.apply.PluginConfigManager", lambda: globals_)
+    monkeypatch.setattr("satrap.edictum.plugin.settings.PluginConfigManager", lambda: globals_)
     registry = create_default_edictum_type_registry()
     configs = EdictumConfigManager(registry, tmp_path / "named.json")
     for name in ("agent-a", "agent-b"):

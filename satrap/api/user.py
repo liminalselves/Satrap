@@ -10,7 +10,8 @@ from __future__ import annotations
 from typing import Any
 
 from satrap.core.framework.UserManager import UserInfoStore
-from satrap.core.type import UserInfo
+from satrap.core.type.session import UserInfo
+
 
 
 def _user_to_dict(info: UserInfo) -> dict[str, Any]:

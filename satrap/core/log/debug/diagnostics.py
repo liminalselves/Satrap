@@ -5,7 +5,7 @@ from collections.abc import Mapping
 import re
 from typing import Literal, cast
 
-from .contracts import DebugData
+from satrap.core.type.debug import DebugData
 
 
 DiagnosticLevel = Literal["info", "warning", "error", "unknown"]

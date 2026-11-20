@@ -12,7 +12,8 @@ from satrap.core.config.loader import ConfigLoader
 from satrap.cli.backend_lock import BackendInstanceLock
 from satrap.core.log.stream import install_standard_stream_capture
 from satrap.cli.client import DaemonClient, DaemonInfo
-from satrap.core.type import safe_getattr
+from satrap.core.utils.attributes import safe_getattr
+
 
 from satrap.core.log import logger
 

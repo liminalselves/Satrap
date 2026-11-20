@@ -424,7 +424,7 @@ async def test_real_edictum_new_history_switch_and_route_isolation(tmp_path, mon
     from satrap.core.framework.providers import EdictumProvider
     from satrap.edictum.registry import create_default_edictum_type_registry
     from satrap.edictum.config import EdictumConfigManager
-    from satrap.edictum.plugin_compatibility import PluginEnvironment
+    from satrap.core.type.plugin.compatibility import PluginEnvironment
     from satrap.core.type import LLMCallResponse, UserCall
     from support.group_models import Script, Model, AsyncModel
 

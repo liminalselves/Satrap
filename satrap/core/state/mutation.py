@@ -9,7 +9,8 @@ from contextlib import contextmanager
 from typing import Generator, Optional, Union
 import uuid
 
-from satrap.core.type import MutationContext
+from satrap.core.type.state import MutationContext
+
 
 _MUTATION_CONTEXT: ContextVar[Optional[MutationContext]] = ContextVar(
     "satrap_state_mutation_context",

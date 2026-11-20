@@ -10,16 +10,13 @@ from typing import Any, Awaitable, Callable, Iterable
 import time
 from uuid import uuid4
 import sys
-from satrap.edictum.plugin_config import (
-    PluginConfigManager,
-    parse_config_schema,
-    schema_to_payload,
-)
-from satrap.edictum.plugin_settings import (
+from satrap.edictum.plugin.config import PluginConfigManager, parse_config_schema
+from satrap.core.type.plugin.config import schema_to_payload
+from satrap.edictum.plugin.settings import (
     EffectivePluginConfig,
     resolve_session_plugin_config,
 )
-from satrap.edictum.plugin_resources import PluginResources, MODEL_TYPES
+from satrap.edictum.plugin.resources import PluginResources, MODEL_TYPES
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
@@ -42,7 +39,9 @@ from satrap.edictum.plugin import (
     load_plugin_meta,
     parse_capability_descriptions,
 )
-from satrap.core.type import CommandAction, safe_getattr_callable
+from satrap.core.type.platform import CommandAction
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from satrap.core.log import logger
 from .utils import (
     SyncUserInputProvider,

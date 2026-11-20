@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from satrap.core.log.managed import log_root, report_failure
 from satrap.core.log.stream import standard_log_stream
-from .contracts import DebugData, DebugEvent, DebugObject
+from satrap.core.type.debug import DebugData, DebugEvent, DebugObject
 from .policy import DebugSelection, policy_store
 from .store import DebugStore
 from .runtime import RuntimeLease

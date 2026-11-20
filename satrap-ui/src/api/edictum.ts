@@ -29,7 +29,13 @@ export const edictumApi = {
     model_name?: string;
     params?: Record<string, unknown>;
     plugins?: EdictumSessionConfig['plugins'];
-  }) => controlApi.updateEdictumSession(name, data),
+  }, expectedRevision?: string) => expectedRevision === undefined
+    ? controlApi.updateEdictumSession(name, data)
+    : controlApi.updateEdictumSession(name, data, expectedRevision),
+
+  validateFlow: (...args: Parameters<typeof controlApi.validateFlow>) => controlApi.validateFlow(...args),
+
+  getFlowRuntime: (...args: Parameters<typeof controlApi.getFlowRuntime>) => controlApi.getFlowRuntime(...args),
 
   enable: (name: string) => controlApi.setEdictumSessionEnabled(name, true),
 

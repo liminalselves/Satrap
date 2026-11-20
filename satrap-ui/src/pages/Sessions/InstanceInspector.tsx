@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import {
-  Activity, BookOpen, Boxes, Clock, Database, Gauge, Hash, MessageSquare, RotateCcw, Settings2, Trash2, X, Zap,
+  Activity, BookOpen, Boxes, Clock, Database, Gauge, Hash, MessageSquare, RotateCcw, Settings2, Trash2, Workflow, X, Zap,
 } from 'lucide-react';
 import { Badge, StatusDot } from '@/components/kit/Badge';
 import { Button, IconButton } from '@/components/kit/Button';
@@ -8,6 +9,9 @@ import { Drawer } from '@/components/kit/Drawer';
 import { Tabs } from '@/components/kit/Tabs';
 import { EmptyState, Sparkline } from '@/components/kit/Feedback';
 import { cn } from '@/utils/cn';
+import { FlowRuntimePanel } from '@/components/common/FlowRuntimePanel';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 import {
   canRetryRuntime, configState, formatDateTime, formatNumber, formatUptime, pluginState,
   relativeTime, sessionTone, type SessionUsageView, type SessionView,
@@ -38,8 +42,13 @@ export interface InstanceInspectorProps {
 export function InstanceInspector({
   session, open, usage, backendRunning, retrying, onClose, onOpenRag, onOpenPlugins, onRetry, onDelete,
 }: InstanceInspectorProps) {
-  const [tab, setTab] = useState<'overview' | 'plugins' | 'config'>('overview');
+  const [tab, setTab] = useState<'overview' | 'plugins' | 'config' | 'flow'>('overview');
+  useConfigWatch(['edictum']);
+  const edictumConfigs = useConfigStore((state) => state.edictumConfigs);
   if (!session) return null;
+  // 流程会话: 命名配置的类型是 flow
+  const isFlow = session.provider === 'edictum' && edictumConfigs[session.sessionType]?.edictum_type === 'flow';
+  const activeTab = tab === 'flow' && !isFlow ? 'overview' : tab;
   const tone = sessionTone(session);
   const config = configState(session);
   const plugins = pluginState(session);
@@ -131,10 +140,11 @@ export function InstanceInspector({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <Tabs size="sm" label="实例详情" value={tab} onChange={setTab} items={[
+            <Tabs size="sm" label="实例详情" value={activeTab} onChange={setTab} items={[
               { value: 'overview', label: '概览' },
               { value: 'plugins', label: '插件', count: session.plugins.length || undefined },
               { value: 'config', label: '配置' },
+              ...(isFlow ? [{ value: 'flow' as const, label: '流程运行状态', icon: <Workflow className="h-3.5 w-3.5" /> }] : []),
             ]} />
             <span className="ml-auto flex items-center gap-2 text-[11px] text-fg-4">
               <StatusDot tone={session.active ? 'green' : 'neutral'} live={session.active} />
@@ -142,7 +152,7 @@ export function InstanceInspector({
             </span>
           </div>
 
-          {tab === 'overview' && (
+          {activeTab === 'overview' && (
             <div className="space-y-3 animate-fade">
               {(session.config.error || session.lastError) && (
                 <div className="tint-red flex gap-2 rounded-xl border border-[rgb(var(--tint)/0.25)] bg-[rgb(var(--tint)/0.08)] px-3 py-2 text-xs text-fg-2">
@@ -179,7 +189,7 @@ export function InstanceInspector({
             </div>
           )}
 
-          {tab === 'plugins' && (
+          {activeTab === 'plugins' && (
             <div className="space-y-2 animate-fade">
               {session.provider !== 'edictum' ? (
                 <div className="rounded-2xl border border-line">
@@ -226,7 +236,18 @@ export function InstanceInspector({
             </div>
           )}
 
-          {tab === 'config' && (
+          {activeTab === 'flow' && (
+            <div className="space-y-3 animate-fade">
+              {session.active && backendRunning
+                ? <FlowRuntimePanel platformId={session.platformId} sessionId={session.sessionId} />
+                : <p role="status" className="rounded-xl border border-dashed border-[var(--glass-border-strong)] px-3.5 py-3 text-[12.5px] text-fg-3">会话未运行。会话激活后这里会显示阈值积压、状态槽版本和最近事件。</p>}
+              <Link to={`/agents/${encodeURIComponent(session.sessionType)}/flow`} className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline">
+                <Workflow className="h-3.5 w-3.5" />打开流程编辑器
+              </Link>
+            </div>
+          )}
+
+          {activeTab === 'config' && (
             <div className="space-y-3 animate-fade">
               <div className="rounded-2xl border border-line bg-glass px-3.5 py-1">
                 <KeyValueRow label="模型"><span className="font-mono">{String(session.sessionConfig.model_name ?? session.sessionConfig.model ?? '—')}</span></KeyValueRow>

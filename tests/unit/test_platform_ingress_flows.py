@@ -191,11 +191,13 @@ async def test_own_group_echo_archives_but_does_not_wake_and_restart_deduplicate
     adapter = _onebot(tmp_path)
     await adapter._handle_group_message(_payload(user_id=10000))
     assert adapter._event_queue.empty()
+    await adapter.drain_message_archive()
     scope = MessageScope("ob", "10000", "group", "456")
     assert adapter.message_archive.get(scope, "10")["direction"] == "outbound"
     restarted = _onebot(tmp_path)
     await restarted._handle_group_message(_payload(user_id=10000))
     assert restarted._event_queue.empty()
+    await restarted.drain_message_archive()
     assert len(restarted.message_archive.query(scope)["items"]) == 1
 
 @pytest.mark.asyncio
@@ -271,6 +273,7 @@ async def test_misskey_own_room_echo_is_archived_without_agent_event(tmp_path: P
     adapter = _misskey(tmp_path)
     await adapter._handle_chat_message(_chat(sender="bot"))
     assert adapter._event_queue.empty()
+    await adapter.drain_message_archive()
     assert adapter.message_archive.get(MessageScope("mk", "bot", "group", "room-a"), "chat-1")["direction"] == "outbound"
 
 @pytest.mark.asyncio

@@ -49,6 +49,7 @@
   },
   "dependencies": {
     "@types/js-yaml": "^4.0.9",
+    "@xyflow/react": "^12.12.1",
     "axios": "^1.6.7",
     "clsx": "^2.1.0",
     "js-yaml": "^5.2.3",

@@ -24,14 +24,14 @@ from satrap.core.config.group_store import GroupConfigConflict
 from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_model_action_authorization
 from satrap.core.call_context import CallOrigin, bind_call_origin
 from satrap.edictum.account_request_migration import migrate_account_request_specs
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.spec import parse_plugin_specs
 from satrap.edictum import AsyncSimpleSession
 from satrap.core.framework.Base import Session
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.providers import EdictumProvider
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
 from satrap.core.type import SessionConfig
@@ -154,7 +154,7 @@ def test_plugins_have_no_cross_imports_and_only_two_account_tools(tmp_path: Path
                 assert all(not name.startswith(f"satrap.expend.plugins.{other}") for name in names for other in plugins - {plugin})
     # 旧群管理好友工具名只允许出现在迁移模块
     for path in (Path(__file__).resolve().parents[2] / "satrap").rglob("*.py"):
-        if path.name == "plugin_migrations.py":
+        if path.parts[-4:] == ("satrap", "edictum", "plugin", "migrations.py"):
             continue
         source = path.read_text(encoding="utf-8")
         assert "group_admin_list_friend_requests" not in source and "group_admin_handle_friend_request" not in source
@@ -907,7 +907,7 @@ async def test_request_cursor_bound_to_actor_and_connection(tmp_path):
 
 @pytest.mark.parametrize("old_enabled,write,callers", [(True, True, "manager"), (False, True, "manager"), (True, False, "manager"), (True, True, "other")])
 def test_migration_conservative_idempotent_and_removes_old_entries(tmp_path, monkeypatch, old_enabled, write, callers):
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     monkeypatch.setattr(PluginConfigManager, "load_global_explicit", lambda *args: {})
     catalog = PluginCatalog(user_dir=tmp_path / "plugins")
     value = [{"name": "group_admin", "enabled": old_enabled, "config": {"request_managers": "manager", "allowed_callers": callers,
@@ -927,7 +927,7 @@ def test_migration_conservative_idempotent_and_removes_old_entries(tmp_path, mon
     assert [spec.to_config() for spec in parse_plugin_specs(canonical, catalog)] == canonical
 
 def test_migration_defaults_preserve_empty_manager_and_implicit_globals(tmp_path, monkeypatch):
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
 
     monkeypatch.setattr(PluginConfigManager, "load_global_explicit", lambda *args: {})
     catalog = PluginCatalog(user_dir=tmp_path / "plugins")

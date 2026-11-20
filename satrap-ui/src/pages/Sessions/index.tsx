@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity, ArrowUpRight, Bot, Code2, Cpu, FolderPlus, LayoutGrid, List, Plus, Puzzle, RefreshCw,
   Search, Settings, ShieldCheck, Trash2, X,
@@ -37,7 +37,7 @@ import {
   type CreateSessionInput,
 } from './runtimeCreate';
 import {
-  edictumEntry, errorMessage, providerLabel, providerTone, relativeTime, sessionClassEntry, sumKnown,
+  agentModelLabel, edictumEntry, errorMessage, providerLabel, providerTone, relativeTime, sessionClassEntry, sumKnown,
   type AgentEntry, type Provider,
 } from './shared';
 import { Select as KitSelect } from '@/components/kit/Select';
@@ -83,6 +83,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
 function AgentsPage() {
   useConfigWatch(['sessions', 'edictum', 'llm']);
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const linkedName = searchParams.get('edictum');
   const openedLink = useRef<string | null>(null);
 
@@ -209,6 +210,8 @@ function AgentsPage() {
     if (!linkedName || booting || openedLink.current === linkedName) return;
     if (!edictumConfigs[linkedName]) return;
     openedLink.current = linkedName;
+    // 流程配置没有顶层插件, 链接只定位到 Edictum 页签
+    if (edictumConfigs[linkedName].edictum_type === 'flow') return;
     setPluginTarget(linkedName);
   }, [linkedName, booting, edictumConfigs]);
 
@@ -353,7 +356,7 @@ function AgentsPage() {
     }
   }, [fetchSessionClasses]);
 
-  const handleSaveAgent = useCallback(async (input: AgentSaveInput) => {
+  const handleSaveAgent = useCallback(async (input: AgentSaveInput, after?: 'flow') => {
     if (!editor) return;
     setSaving(true);
     try {
@@ -362,10 +365,11 @@ function AgentsPage() {
         ? await commitEdictum(input, editingName)
         : await commitSessionClass(input, editingName);
       if (ok) setEditor(null);
+      if (ok && after === 'flow') navigate(`/agents/${encodeURIComponent(input.name)}/flow`);
     } finally {
       setSaving(false);
     }
-  }, [commitEdictum, commitSessionClass, editor]);
+  }, [commitEdictum, commitSessionClass, editor, navigate]);
 
   const askDelete = useCallback(async (agent: AgentEntry) => {
     const message = agent.provider === 'edictum'
@@ -785,7 +789,7 @@ function AgentsPage() {
                         <div><Badge tone={providerTone(agent.provider)}>{kindLabel(agent, types)}</Badge></div>
                         <div className="mt-1 max-w-[190px] truncate font-mono text-[10px] text-fg-4">{agent.provider === 'edictum' ? agent.edictum_type : agent.class_path}</div>
                       </td>
-                      <td className="px-3 py-3 font-mono text-xs text-fg-2">{agent.model_name || '未绑定'}</td>
+                      <td className="px-3 py-3 font-mono text-xs text-fg-2">{agentModelLabel(agent) || '未绑定'}</td>
                       <td className="px-3 py-3 text-xs text-fg-2">
                         {agent.provider === 'edictum' ? `${enabledPluginCount(agent)}/${agent.plugins.length} 启用` : (
                           <>
@@ -842,7 +846,7 @@ function AgentsPage() {
         saving={saving}
         statusContent={editor && application.view?.kind === 'full' && application.view.application.label === fullApplyLabel ? progressCard : undefined}
         onClose={() => { if (!saving) setEditor(null); }}
-        onSave={(input) => void handleSaveAgent(input)}
+        onSave={(input, after) => void handleSaveAgent(input, after)}
         onManagePlugins={(name) => setPluginTarget(name)}
       />
 
@@ -940,7 +944,7 @@ function AgentCard({
       <p className="mt-3 line-clamp-2 min-h-[38px] text-[12px] leading-5 text-fg-3">{agent.description || '暂无描述'}</p>
 
       <div className="mt-3 flex flex-wrap gap-1.5">
-        <Badge tone={agent.model_name ? 'accent' : 'neutral'}><Cpu className="h-3 w-3" />{agent.model_name || '未绑定模型'}</Badge>
+        <Badge tone={agentModelLabel(agent) ? 'accent' : 'neutral'}><Cpu className="h-3 w-3" />{agentModelLabel(agent) || '未绑定模型'}</Badge>
         {isEdictum ? (
           <Badge tone={enabledPluginCount(agent) > 0 ? 'teal' : 'neutral'}><Puzzle className="h-3 w-3" />{enabledPluginCount(agent)}/{agent.plugins.length} 插件</Badge>
         ) : (
@@ -994,7 +998,7 @@ function CreateSessionModal({
     setForm({
       session_id: '',
       adapter_id: '',
-      llm_name: agent.model_name || '',
+      llm_name: agent.edictum_type === 'flow' ? '' : agent.model_name || '',
       params: '{}',
       platform_id: agent.provider === 'edictum' ? bound[0]?.id ?? '' : '',
     });
@@ -1066,12 +1070,14 @@ function CreateSessionModal({
             </KitSelect>
           </Field>
         )}
-        <Field label="LLM 模型" hint="留空使用配置绑定的模型">
-          <KitSelect className="field w-full" value={form.llm_name} onChange={(value) => setForm((current) => ({ ...current, llm_name: value }))}>
-            <option value="">使用配置绑定</option>
-            {llmNames.map((name) => <option key={name} value={name}>{name}</option>)}
-          </KitSelect>
-        </Field>
+        {agent.edictum_type !== 'flow' && (
+          <Field label="LLM 模型" hint="留空使用配置绑定的模型">
+            <KitSelect className="field w-full" value={form.llm_name} onChange={(value) => setForm((current) => ({ ...current, llm_name: value }))}>
+              <option value="">使用配置绑定</option>
+              {llmNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </KitSelect>
+          </Field>
+        )}
         <Field label="附加参数 (JSON)" error={paramsError} hint="会与此配置的 params 合并">
           <Textarea rows={5} value={form.params} onChange={(event) => { setForm((current) => ({ ...current, params: event.target.value })); setParamsError(''); }} spellCheck={false} className="font-mono text-[12px]" />
         </Field>

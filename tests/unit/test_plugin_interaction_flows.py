@@ -5,15 +5,76 @@ from pathlib import Path
 from contextvars import copy_context
 import asyncio
 import inspect
+import subprocess
+import sys
 import textwrap
 
 import pytest
 import yaml
 
 from satrap.core.call_context import CallOrigin, bind_call_origin
-from satrap.core.plugin_interop.contracts import PluginInteractionError, parse_interop
+from satrap.core.type.plugin_interop import PluginInteractionError
+from satrap.core.plugin_interop.codec import parse_interop
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap import AsyncLLM, LLM
+
+
+def test_interop_workflow_context_without_importing_flow(tmp_path):
+    """隔离进程中验证 simple 回退、嵌套绑定和三个互操作模块无需加载 flow"""
+    script = textwrap.dedent('''
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from satrap import LLM
+        from satrap.edictum import SimpleSession
+        from satrap.core.call_context import current_flow_workflow, current_flow_run
+        from satrap.core.plugin_interop.capabilities import PluginInterop
+        from satrap.core.plugin_interop.skills import SkillHostAccess
+        from satrap.core.plugin_interop import artifacts
+
+        assert "satrap.edictum.flow.session" not in sys.modules
+        simple = SimpleSession("no-flow", MagicMock(spec=LLM), db_path=sys.argv[1])
+        assert PluginInterop._bound_workflow(simple) is simple._wf
+        assert SkillHostAccess._bound_workflow(simple) is simple._wf
+        assert "satrap.edictum.flow.session" not in sys.modules
+        assert artifacts.current_flow_workflow is current_flow_workflow
+        fallback, outer, inner = object(), object(), object()
+        session = SimpleNamespace(_wf=fallback)
+        for resolver in (PluginInterop._bound_workflow, SkillHostAccess._bound_workflow):
+            assert resolver(session) is fallback
+        wf_token = current_flow_workflow.set(outer)
+        run_token = current_flow_run.set(("outer", "event", "run"))
+        try:
+            for resolver in (PluginInterop._bound_workflow, SkillHostAccess._bound_workflow):
+                assert resolver(session) is outer
+            inner_token = current_flow_workflow.set(inner)
+            try:
+                for resolver in (PluginInterop._bound_workflow, SkillHostAccess._bound_workflow):
+                    assert resolver(session) is inner
+            finally:
+                current_flow_workflow.reset(inner_token)
+            assert current_flow_workflow.get() is outer
+            assert current_flow_run.get() == ("outer", "event", "run")
+        finally:
+            current_flow_workflow.reset(wf_token)
+            current_flow_run.reset(run_token)
+        assert current_flow_workflow.get() is None and current_flow_run.get() is None
+        assert "satrap.edictum.flow.session" not in sys.modules
+    ''')
+    subprocess.run([sys.executable, "-c", script, str(tmp_path / "chat.db")],
+                   check=True, cwd=Path(__file__).resolve().parents[2])
+
+
+def test_flow_public_contextvars_share_core_objects():
+    """flow 公共入口与 core 指向同一对象, 包括历史名称及默认值"""
+    from satrap.core.call_context import current_flow_run, current_flow_workflow
+    from satrap.edictum.flow import session as flow_session
+
+    assert flow_session.current_flow_workflow is current_flow_workflow
+    assert flow_session.current_flow_run is current_flow_run
+    assert current_flow_workflow.name == "satrap_flow_current_workflow"
+    assert current_flow_run.name == "satrap_flow_current_run"
+    assert current_flow_workflow.get() is None and current_flow_run.get() is None
 
 
 async def _await(value):
@@ -32,10 +93,10 @@ def _plugin(tmp_path: Path, name: str, meta: dict, **sources: str) -> Path:
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_service_install_call_isolation_and_revocation(tmp_path, monkeypatch, asynchronous):
     """模型工具经真实分派复用服务, 保留来源并拒绝停用或失效引用"""
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     from satrap.core.config.document import ConfigRevisionConflict
 
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "plugin-config")
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", tmp_path / "plugin-config")
     base = "AsyncService" if asynchronous else "Service"
     tool_base = "AsyncTool" if asynchronous else "Tool"
     prefix, wait = ("async ", "await ") if asynchronous else ("", "")
@@ -173,9 +234,50 @@ async def test_service_install_call_isolation_and_revocation(tmp_path, monkeypat
         await _await(llm.client.close())
 
 
+def test_interop_codec_preserves_immutable_specs_and_service_data():
+    """迁移后的编解码保持声明冻结、数据隔离和错误身份。"""
+    import copy
+    from dataclasses import FrozenInstanceError
+    from satrap.core.plugin_interop import ImageArtifact, PluginInteractionError as PublicError
+    from satrap.core.plugin_interop.codec import copy_data
+
+    raw = {"name": "owner", "interop": {"exports": {"services": ["lookup"]},
+           "requires": {"provider": {"tools": ["find"]}},
+           "replaces": {"provider": {"tools": {"old": "new"}}},
+           "conflicts": {"other": True}}}
+    spec = parse_interop(raw)
+    payload = spec.to_payload()
+    raw["interop"]["exports"]["services"].append("extra")
+    assert spec.to_payload() == payload
+    assert copy.deepcopy(spec) is spec
+    with pytest.raises(TypeError):
+        spec.exports["services"] = ("changed",)
+    with pytest.raises(TypeError):
+        spec.replaces["provider"]["tools"]["old"] = "changed"
+    with pytest.raises(FrozenInstanceError):
+        spec.requires["provider"].optional = True
+    payload["exports"]["services"].append("modified")
+    assert spec.exports["services"] == ("lookup",)
+
+    value = {"items": [1, {"name": "original"}]}
+    copied = copy_data(value)
+    copied["items"][1]["name"] = "changed"
+    assert value["items"][1]["name"] == "original"
+    cycle = []
+    cycle.append(cycle)
+    for invalid in (cycle, float("nan"), object(), {1: "bad"}):
+        with pytest.raises(TypeError):
+            copy_data(invalid)
+    assert PublicError is PluginInteractionError
+    artifact = ImageArtifact(b"image", lambda: False)
+    with pytest.raises(PublicError) as error:
+        copy_data(artifact)
+    assert error.value.code == "capability_stale"
+
+
 def test_interop_static_declarations_and_factory_opt_in():
     """声明拒绝硬矛盾, 宿主注入只匹配显式仅关键字参数"""
-    from satrap.edictum.plugin import _invoke_factory
+    from satrap.edictum.plugin.base import _invoke_factory
 
     for raw in (
         {"exports": {"servcies": ["x"]}},
@@ -369,9 +471,9 @@ async def test_replacement_dependency_protection_and_conflict_rollback(tmp_path,
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_full_configuration_order_counterfactual_and_update_rollback(tmp_path, asynchronous):
     """完整目标独立于配置顺序, 目标删名在实际构造核验失败后恢复整批旧配置"""
-    from satrap.edictum.plugin_runtime import reconcile_plugin_states_async, preview_plugin_reconciliation
-    from satrap.edictum.plugin_catalog import PluginCatalog
-    from satrap.edictum.plugin_spec import parse_plugin_specs
+    from satrap.edictum.plugin.runtime import reconcile_plugin_states_async, preview_plugin_reconciliation
+    from satrap.edictum.plugin.catalog import PluginCatalog
+    from satrap.edictum.plugin.spec import parse_plugin_specs
 
     base, prefix = ("AsyncService", "async ") if asynchronous else ("Service", "")
     source_code = f'''
@@ -481,7 +583,7 @@ async def test_full_configuration_order_counterfactual_and_update_rollback(tmp_p
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_dynamic_skill_refresh_respects_execution_gate_and_uninstall(tmp_path, monkeypatch, asynchronous):
     """动态来源关闸后不再调用工厂, 恢复后重新刷新, 损坏状态与卸载均 fail-closed"""
-    monkeypatch.setattr("satrap.edictum.plugin_config.CONFIG_DIR", tmp_path / "plugin-config")
+    monkeypatch.setattr("satrap.edictum.plugin.config.CONFIG_DIR", tmp_path / "plugin-config")
     payload = tmp_path / "payload.txt"
     payload.write_text("one", encoding="utf-8")
     provider = _plugin(tmp_path, "dynamic_skills", {}, skills=f'''
@@ -494,7 +596,7 @@ async def test_dynamic_skill_refresh_respects_execution_gate_and_uninstall(tmp_p
                 return [Skill("dynamic_guide", path.read_text(encoding="utf-8"))]
             return plugin_host.skills.provide(source)
     ''')
-    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.edictum.plugin.config import PluginConfigManager
     host_config = PluginConfigManager()
     disabled = host_config.save_execution("dynamic_skills", False, 0)
     llm = AsyncLLM(api_key="test", model="test") if asynchronous else LLM(api_key="test", model="test")

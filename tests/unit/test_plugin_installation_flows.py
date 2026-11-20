@@ -6,19 +6,19 @@ from pathlib import Path
 import stat
 import zipfile
 import pytest
-from satrap.edictum import plugin_archive
-from satrap.edictum.plugin_archive import PluginArchiveInstaller
-from satrap.edictum.plugin_catalog import PluginCatalog
-import satrap.edictum.plugin as plugin_module
+from satrap.edictum.plugin import archive as plugin_archive
+from satrap.edictum.plugin.archive import PluginArchiveInstaller
+from satrap.edictum.plugin.catalog import PluginCatalog
+import satrap.edictum.plugin.base as plugin_module
 from collections.abc import Iterator
 import sys
 from unittest.mock import Mock
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.edictum.plugin_resources import PluginResources, model_reference_fingerprint
+from satrap.edictum.plugin.resources import PluginResources, model_reference_fingerprint
 from satrap.core.APICall.ReRankCall import parse_rerank_result
-from satrap.edictum.plugin_config import parse_config_schema
+from satrap.edictum.plugin.config import parse_config_schema
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from satrap.edictum.plugin import _invoke_factory
+from satrap.edictum.plugin.base import _invoke_factory
 from satrap.core.type import EmbeddingConfig
 import importlib as _plugin_skill_activation_importlib
 from typing import Any, cast
@@ -29,8 +29,8 @@ from satrap.core.type import SessionConfig, UserCall
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
-from satrap.edictum.plugin_spec import PluginSpec
-from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states, reconcile_plugin_states_async
+from satrap.core.type.plugin.spec import PluginSpec
+from satrap.edictum.plugin.runtime import PluginRuntimeState, reconcile_plugin_states, reconcile_plugin_states_async
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -39,8 +39,8 @@ async def test_command_help_metadata_legacy_fallback_and_reinstallation(tmp_path
     import inspect
     from textwrap import dedent
     from satrap.edictum import simple_session as ss_mod
-    from satrap.edictum.plugin_config import PluginConfigManager
-    from satrap.edictum.plugin_settings import PluginInstallConfig
+    from satrap.edictum.plugin.config import PluginConfigManager
+    from satrap.edictum.plugin.settings import PluginInstallConfig
 
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
     root = tmp_path / "command-help"
@@ -396,7 +396,7 @@ def test_lazy_resources_share_within_plugin_and_close(tmp_path, monkeypatch):
     schema = parse_config_schema({"config_schema": {"embed": {"type": "embed"}}})
     client = Mock()
     build = Mock(return_value=client)
-    monkeypatch.setattr("satrap.edictum.plugin_resources.build_model_client", build)
+    monkeypatch.setattr("satrap.edictum.plugin.resources.build_model_client", build)
     resources = PluginResources(manager, schema, {"embed": "test"}, async_=False)
     build.assert_not_called()
     assert resources["embed"] is resources.get("embed")
@@ -418,7 +418,7 @@ def test_installed_model_snapshot_survives_source_deletion_and_client_close(tmp_
         built.append((kind, config, client))
         return client
 
-    monkeypatch.setattr("satrap.edictum.plugin_resources.build_model_client", build)
+    monkeypatch.setattr("satrap.edictum.plugin.resources.build_model_client", build)
     original = PluginResources(manager, schema, {"embed": configured_name}, async_=False)
     old_client = original["embed"]
     snapshot = original.snapshot_models()
@@ -620,6 +620,91 @@ async def test_restart_deduplicates_persisted_skill_instructions(tmp_path, async
     else:
         old.uninstall_plugin("skill_probe")
     assert {"alpha_bundle", "alpha_mcp", "beta_bundle", "beta_mcp"} <= new._wf.tools_manager.tools.keys()
+
+@pytest.mark.asyncio
+async def test_flow_provider_installs_directory_plugins_per_workflow(tmp_path):
+    """真实目录插件只进入配置了它的 WF, 相同插件可在多个 WF 独立安装和释放"""
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    plugin = plugins / "flow_probe"
+    plugin.mkdir()
+    (plugin / "meta.yaml").write_text(
+        "name: flow_probe\ntools:\n  flow_probe_tool: 测试工具\n", encoding="utf-8",
+    )
+    (plugin / "tools.py").write_text(
+        "from satrap.core.utils.TCBuilder import AsyncTool\n"
+        "class Probe(AsyncTool):\n"
+        "    tool_name = 'flow_probe_tool'\n"
+        "    description = '测试工具'\n"
+        "    params_dict = {}\n"
+        "    async def execute(self):\n"
+        "        return 'installed'\n", encoding="utf-8",
+    )
+    catalog = PluginCatalog(plugins, tmp_path / "user")
+    registry = create_default_edictum_type_registry()
+    configs = EdictumConfigManager(registry, tmp_path / "edictum.json", plugin_catalog=catalog)
+    flow = {"version": 3, "nodes": [
+        {"id": "src", "type": "source", "title": "消息", "config": {}},
+        {"id": "wake", "type": "wake", "title": "唤醒", "config": {}},
+        *[{"id": node, "type": "react_workflow", "title": node,
+           "config": {"plugins": selected, "model_name": "test"}}
+          for node, selected in [("a", "flow_snapshot\nflow_probe"), ("b", ""), ("c", "flow_probe")]],
+        {"id": "snapshot", "type": "state", "title": "快照", "config": {}},
+    ], "edges": [{"from": "src.out", "to": "wake.messages"},
+                  *[{"from": "wake.event", "to": f"{node}.trigger"} for node in ("a", "b", "c")],
+                  {"from": "a.text", "to": "snapshot.write"}]}
+    configs.create("flow", {"edictum_type": "flow", "params": {"flow": flow}})
+    provider = EdictumProvider(configs, registry, default_checkpoint_db=str(tmp_path / "context.db"))
+    provider.plugin_catalog = catalog
+    session: Any = provider.create_session(
+        SessionConfig(session_id="flow-test", session_type_name="flow", provider_name="edictum"),
+        cast(Any, object()),
+        model_resolver=lambda _: cast(Any, object()),
+    )
+    try:
+        await provider.prepare_session_async(session)
+        await session.initialize()
+        for node in ("a", "c"):
+            manager = session._workflows[node].tools_manager
+            assert "flow_probe_tool" in manager.tools
+            assert await manager.execute_tool("flow_probe_tool", {}) == "installed"
+        visible = {
+            row["function"]["name"]
+            for row in session._workflows["a"].tools_manager.get_tools_definitions()
+        }
+        assert {"snapshot_read", "snapshot_write", "flow_probe_tool"} <= visible
+        assert "flow_probe_tool" not in session._workflows["b"].tools_manager.tools
+        assert session._workflow_plugin_hosts[session._workflows["a"]] is not session._workflow_plugin_hosts[session._workflows["c"]]
+        with pytest.raises(ValueError, match="已安装"):
+            await session.install_plugin_to_workflow("a", str(plugin))
+        assert await session._workflows["a"].tools_manager.execute_tool("flow_probe_tool", {}) == "installed"
+    finally:
+        await provider.release_session_async(session)
+    assert all("flow_probe_tool" not in wf.tools_manager.tools for wf in session._workflows.values())
+
+
+@pytest.mark.parametrize("instance_override", [False, True])
+def test_flow_provider_rejects_top_level_plugins(tmp_path, instance_override):
+    """流程顶层插件缺少 WF 目标, 创建时明确拒绝"""
+    registry = create_default_edictum_type_registry()
+    configs = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    configs.create("flow", {"edictum_type": "flow", "params": {"flow": {
+        "version": 3, "nodes": [
+            {"id": "src", "type": "source", "title": "消息", "config": {}},
+            {"id": "wake", "type": "wake", "title": "唤醒", "config": {}},
+            {"id": "a", "type": "react_workflow", "title": "a", "config": {"model_name": "test"}},
+        ], "edges": [{"from": "src.out", "to": "wake.messages"},
+                     {"from": "wake.event", "to": "a.trigger"}],
+    }}, "plugins": [] if instance_override else ["missing"]})
+    provider = EdictumProvider(configs, registry)
+    with pytest.raises(ValueError, match="顶层 plugins.*WF 节点"):
+        provider.create_session(
+            SessionConfig(session_id="flow-test", session_type_name="flow", provider_name="edictum",
+                          session_config={"plugins": ["missing"]} if instance_override else {}),
+            cast(Any, object()),
+            model_resolver=lambda _: cast(Any, object()),
+        )
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])

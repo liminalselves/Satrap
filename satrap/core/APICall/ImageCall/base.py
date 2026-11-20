@@ -11,7 +11,7 @@ from satrap.core.log import logger
 from .media import MAX_IMAGES, validate_url
 from .request import input_sources, merge_params, validate_params
 from .response import safe_request_id
-from .types import ImageGenError, ImageGenParams, ImageInput
+from satrap.core.type.image import ImageGenError, ImageGenParams, ImageInput
 
 
 _ClientT = TypeVar("_ClientT")

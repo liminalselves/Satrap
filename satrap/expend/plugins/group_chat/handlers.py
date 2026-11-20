@@ -10,7 +10,8 @@ from satrap.core.platform.identity import BotIdentity
 from satrap.core.components import PlatformComponentType
 from satrap.core.call_context import current_call_origin
 from satrap.core.platform import current_adapter_manager
-from satrap.core.type import safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr_str
+
 from satrap.edictum import AsyncSimpleSession, SimpleSession, HandlerContext, SessionHandler, RequestContextBlock
 
 from satrap.core.log import logger

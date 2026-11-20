@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import asyncio
 
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.plugin_authorization import BoundPluginTool, plugin_tool_live
+from satrap.core.type.plugin.authorization import BoundPluginTool
+from satrap.core.plugin_authorization import plugin_tool_live
 from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.memory.scoped import MemoryError
 from satrap.core.call_context import current_call_origin, is_group_origin

@@ -390,6 +390,48 @@ def test_new_same_named_platform_has_a_new_incarnation_and_updates_preserve_it()
     assert recreated["instance_id"] != legacy["instance_id"]
 
 @pytest.mark.asyncio
+async def test_flow_send_recorder_sqlite_write_does_not_block_event_loop(tmp_path):
+    """真实 FlowSendRecorder 在 SQLite 写锁期间离线程等待, 事件循环继续心跳"""
+    from satrap.edictum.flow.reply_tool import FlowSendRecorder
+    from tests.support.flow_runtime import database
+
+    path = database(tmp_path / "platform.db")
+    scope = MessageScope("flow-test", "self", "group", "chat")
+    recorder = FlowSendRecorder(path, scope.key)
+
+    async def guard():
+        return True
+
+    frozen = ScheduledTarget(
+        scope, ("connection", 1), "policy", "flow", recorder.attempt_id, guard)
+
+    async def send():
+        return SendReceipt("success", ("message",))
+
+    blocker = sqlite3.connect(path)
+    blocker.execute("BEGIN IMMEDIATE")
+    pending = asyncio.create_task(execute_scheduled_segments(
+        frozen, recorder, [{"text": "后台消息"}], [send]))
+    try:
+        await asyncio.sleep(0.05)
+        before = time.monotonic()
+        await asyncio.sleep(0.05)
+        assert time.monotonic() - before < 0.5
+        assert not pending.done()
+    finally:
+        blocker.rollback()
+        blocker.close()
+    result = await asyncio.wait_for(pending, 2)
+    assert result.status == "success"
+    with closing(sqlite3.connect(path)) as connection:
+        status = connection.execute(
+            "SELECT status FROM flow_send_log WHERE attempt_id=?",
+            (recorder.attempt_id,),
+        ).fetchone()
+    assert status == ("success",)
+
+
+@pytest.mark.asyncio
 async def test_send_checks_plan_and_each_submission_before_network(tmp_path):
     store, now = setup_store(tmp_path)
     reminder = create(store)
@@ -518,6 +560,83 @@ async def test_queue_wait_revalidates_account_before_claim(tmp_path):
     assert result.status == "failed" and result.reason == "scheduled_target_changed"
     adapter._bot.send_group_msg.assert_not_awaited()
     assert store.get(frozen.scope, reminder["reminder_id"])["reminder"]["state"] == "scheduled"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["private", "group"])
+async def test_scheduled_local_policy_rejection_is_recorded_as_failed(tmp_path, kind):
+    from satrap.edictum.flow.reply_tool import FlowSendRecorder
+
+    adapter, store, _, frozen = setup(tmp_path)
+    scope = MessageScope("onebot", "10000", kind, "123" if kind == "private" else "456")
+
+    async def guard():
+        return True
+
+    frozen = replace(frozen, scope=scope, guard=guard)
+    adapter.config.settings["enable_private" if kind == "private" else "enable_group"] = False
+    recorder = FlowSendRecorder(store.database, scope.key, frozen.attempt_id)
+    result = await adapter.group_chat_send_scheduled(frozen, MessageChain([Plain("提醒")]), recorder)
+    assert result.status == "failed" and result.reason == "scheduled_target_changed"
+    with closing(sqlite3.connect(store.database)) as connection:
+        row = connection.execute(
+            "SELECT status, segments_json FROM flow_send_log WHERE attempt_id=?",
+            (frozen.attempt_id,),
+        ).fetchone()
+    assert row is not None and row[0] == "failed"
+    segments = json.loads(row[1])
+    assert len(segments) == 1 and segments[0]["status"] == "failed"
+    adapter._bot.send_private_msg.assert_not_awaited()
+    adapter._bot.send_group_msg.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_onebot_private_scheduled_send_records_confirmed_flow_receipt(tmp_path):
+    from satrap.edictum.flow.reply_tool import FlowSendRecorder
+    from tests.support.flow_runtime import database
+
+    path = database(tmp_path / "private.db")
+    scope = MessageScope("onebot", "10000", "private", "123")
+    adapter = OneBotAdapter(PlatformConfig(
+        id="onebot", type="onebot", settings={"enable_private": True}))
+    adapter._bot = AsyncMock()
+    adapter.bot_self_id = adapter.client_self_id = scope.self_id
+    adapter._bot.send_private_msg.return_value = {"message_id": 987654}
+    recorder = FlowSendRecorder(path, scope.key)
+
+    async def guard():
+        return True
+
+    frozen = ScheduledTarget(scope, adapter.group_chat_connection_token(), "policy",
+                             "flow-private", recorder.attempt_id, guard)
+
+    result = await adapter.group_chat_send_scheduled(
+        frozen, MessageChain([Plain("私聊后台提醒")]), recorder)
+
+    assert result.status == "success" and result.message_ids == ("987654",)
+    adapter._bot.send_private_msg.assert_awaited_once_with(
+        user_id=123, message=[{"type": "text", "data": {"text": "私聊后台提醒"}}])
+    adapter._bot.send_group_msg.assert_not_awaited()
+    with closing(sqlite3.connect(path)) as connection:
+        row = connection.execute(
+            "SELECT scope_key, status, segments_json FROM flow_send_log WHERE attempt_id=?",
+            (frozen.attempt_id,),
+        ).fetchone()
+    assert row is not None and row[:2] == (scope.key, "success")
+    segments = json.loads(row[2])
+    assert len(segments) == 1
+    assert segments[0]["status"] == "success"
+    assert segments[0]["message_ids"] == ["987654"]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_private_send_preserves_existing_policy(tmp_path):
+    adapter, _, _, _ = setup(tmp_path)
+    adapter.config.settings["enable_private"] = False
+    adapter._bot.send_private_msg.return_value = {"message_id": 101}
+    result = await adapter.send_message("private%123", MessageChain([Plain("普通消息")]))
+    assert result.status == "success"
+    adapter._bot.send_private_msg.assert_awaited_once()
+
 
 @pytest.mark.asyncio
 async def test_api_unavailable_after_submission_is_unknown_and_cannot_send_again(tmp_path):

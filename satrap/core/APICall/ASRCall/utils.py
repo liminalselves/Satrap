@@ -4,7 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
-from satrap.core.type import ASRResponse
+from satrap.core.type.model_config import ASRResponse
+
 
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 """单个音频输入的最大字节数, 与 OpenAI 转录接口上限一致"""

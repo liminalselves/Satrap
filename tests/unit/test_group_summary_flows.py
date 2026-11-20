@@ -8,13 +8,13 @@ import pytest
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 from satrap.core.conversation import HistoryWindow
 from satrap.core.group_chat.summaries import SummaryLimits, SummaryStore, _cursor
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from types import SimpleNamespace
 from typing import Any, cast
 import json
 from satrap.core.call_context import bind_call_origin, bind_tool_workflow
 from satrap.core.group_chat.reply import bind_reply_turn
-from satrap.core.group_chat.types import GroupChatLimits
+from satrap.core.type.group_chat import GroupChatLimits
 from support.group_reply import setup as _group_chat_summary_service_setup, restore_manager
 from support.group_reply import SCOPE as _group_chat_summary_service_SCOPE, send_mock
 from support.group_models import session, Script, Invoker

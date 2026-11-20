@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any, TYPE_CHECKING, cast
 from satrap.core.plugin_interop.capabilities import PluginInterop
-from satrap.core.plugin_interop.contracts import CapabilityKind
+from satrap.core.type.plugin_interop import CapabilityKind
 from satrap.core.utils.skills import SkillsManager
 from satrap.edictum.plugin import Plugin
 from satrap.core.utils.context import AsyncContextManager, ContextManager

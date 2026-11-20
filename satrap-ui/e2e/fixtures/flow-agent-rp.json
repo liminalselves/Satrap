@@ -1,0 +1,241 @@
+{
+ "agent_rp": {
+  "version": 3,
+  "nodes": [
+   {
+    "id": "source",
+    "type": "source",
+    "version": 1,
+    "title": "消息到达",
+    "config": {}
+   },
+   {
+    "id": "bucket",
+    "type": "bucket",
+    "version": 2,
+    "title": "桶",
+    "config": {}
+   },
+   {
+    "id": "th",
+    "type": "threshold",
+    "version": 1,
+    "title": "Agent 阈值",
+    "config": {
+     "messages": 12,
+     "chars": 1500
+    }
+   },
+   {
+    "id": "agent",
+    "type": "react_workflow",
+    "version": 3,
+    "title": "Agent",
+    "config": {
+     "max_steps": 12,
+     "prompt": "你负责维护这个群的\"理解快照\"。触发时你会收到上一版快照和新到的一批群消息。\n输出一份完整的新快照, 包括: 当前话题, 成员近况与关系, 需要长期记住的要点。\n只用 snapshot_write 写入结果, 不要在群里发言。",
+     "plugins": "flow_snapshot",
+     "on_busy": "merge"
+    }
+   },
+   {
+    "id": "snapshot",
+    "type": "state",
+    "version": 2,
+    "title": "Agent 输出快照",
+    "config": {
+     "schema": "sections",
+     "sections": "群内理解\n成员近况\n长期要点"
+    }
+   },
+   {
+    "id": "rp_input",
+    "type": "assemble",
+    "version": 2,
+    "title": "RP 输入",
+    "config": {}
+   },
+   {
+    "id": "wake",
+    "type": "wake",
+    "version": 1,
+    "title": "RP 唤醒",
+    "config": {}
+   },
+   {
+    "id": "rp",
+    "type": "react_workflow",
+    "version": 3,
+    "title": "RP",
+    "config": {
+     "prompt": "你是群里的一员\"小萨\"。你会看到群理解快照, 快照未覆盖的新消息和最近的对话。\n先判断这次是否需要开口: 被 @ 或话题和你有关时回复, 否则保持沉默。\n需要回复时调用 flow_reply, 不回复时直接结束。"
+    }
+   },
+   {
+    "id": "reply",
+    "type": "output",
+    "version": 2,
+    "title": "最后回复",
+    "config": {}
+   },
+   {
+    "id": "note1",
+    "type": "note",
+    "version": 1,
+    "title": "说明",
+    "config": {
+     "text": "Agent 只在后台更新快照;\nRP 被唤醒时先用旧快照立即回复,\n不等 Agent。"
+    }
+   }
+  ],
+  "edges": [
+   {
+    "from": "source.out",
+    "to": "bucket.in"
+   },
+   {
+    "from": "bucket.out",
+    "to": "th.messages"
+   },
+   {
+    "from": "th.event",
+    "to": "agent.trigger"
+   },
+   {
+    "from": "agent.text",
+    "to": "snapshot.write"
+   },
+   {
+    "from": "snapshot.read",
+    "to": "rp_input.snapshot"
+   },
+   {
+    "from": "bucket.out",
+    "to": "rp_input.messages"
+   },
+   {
+    "from": "bucket.out",
+    "to": "wake.messages"
+   },
+   {
+    "from": "wake.event",
+    "to": "rp.trigger"
+   },
+   {
+    "from": "rp_input.context",
+    "to": "rp.input"
+   },
+   {
+    "from": "rp.text",
+    "to": "reply.reply"
+   }
+  ],
+  "defaults": {
+   "react_workflow": {
+    "version": 3,
+    "config": {
+     "model_name": "deepseek-v3"
+    }
+   }
+  },
+  "layout": {
+   "source": {
+    "x": 400,
+    "y": 0
+   },
+   "bucket": {
+    "x": 400,
+    "y": 150
+   },
+   "th": {
+    "x": 0,
+    "y": 330
+   },
+   "agent": {
+    "x": 260,
+    "y": 330
+   },
+   "snapshot": {
+    "x": 260,
+    "y": 540
+   },
+   "rp_input": {
+    "x": 640,
+    "y": 540
+   },
+   "wake": {
+    "x": 380,
+    "y": 730
+   },
+   "rp": {
+    "x": 640,
+    "y": 730
+   },
+   "reply": {
+    "x": 640,
+    "y": 940
+   },
+   "note1": {
+    "x": -40,
+    "y": 540
+   }
+  }
+ },
+ "agent_rp_validate": {
+  "ok": true,
+  "issues": [
+   {
+    "code": "flow_state_read_before_write",
+    "level": "warning",
+    "category": "状态槽",
+    "message": "后台 \"Agent\" 首次运行前, 前台读到的\"Agent 输出快照\"为空",
+    "hint": "这是预期行为, 请在读取方的提示词里说明快照可能为空",
+    "node": "snapshot"
+   }
+  ]
+ },
+ "broken_validate": {
+  "ok": false,
+  "issues": [
+   {
+    "code": "flow_dead_end",
+    "level": "warning",
+    "category": "结构",
+    "message": "\"RP 唤醒\" 的输出没有连到任何地方",
+    "node": "wake"
+   },
+   {
+    "code": "flow_wf_no_trigger",
+    "level": "error",
+    "category": "触发",
+    "message": "\"RP\" 没有触发输入, 永远不会运行",
+    "hint": "在左侧连接一个触发磁贴, 或上游 WF 的\"完成\"",
+    "node": "rp"
+   },
+   {
+    "code": "flow_state_read_before_write",
+    "level": "warning",
+    "category": "状态槽",
+    "message": "后台 \"Agent\" 首次运行前, 前台读到的\"Agent 输出快照\"为空",
+    "hint": "这是预期行为, 请在读取方的提示词里说明快照可能为空",
+    "node": "snapshot"
+   },
+   {
+    "code": "flow_config_invalid",
+    "level": "error",
+    "category": "配置",
+    "message": "Agent.最大工具轮数: max_steps 不能大于 64",
+    "node": "agent",
+    "field": "max_steps"
+   },
+   {
+    "code": "flow_config_invalid",
+    "level": "error",
+    "category": "配置",
+    "message": "Agent.最大工具轮数 的生效值非法 (node 层): max_steps 不能大于 64",
+    "node": "agent",
+    "field": "max_steps"
+   }
+  ]
+ }
+}

@@ -369,7 +369,7 @@ async def test_http_edictum_cold_config_routes(tmp_path: Path):
 
     status, data = await server._route("GET", "/api/config/edictum/types", b"")
     assert status == 200
-    assert {item["name"] for item in data["types"]} == {"simple", "async_simple"}
+    assert {item["name"] for item in data["types"]} == {"simple", "async_simple", "flow"}
 
     status, data = await server._route(
         "POST",

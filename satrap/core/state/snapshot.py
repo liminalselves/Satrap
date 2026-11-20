@@ -3,13 +3,8 @@ import sqlite3
 from typing import Dict, List
 
 from satrap.core.state.registry import DomainRegistry
-from satrap.core.type import (
-    JsonRow,
-    RestoreOptions,
-    SnapshotDomain,
-    StateScope,
-    StateSnapshot,
-)
+from satrap.core.type.state import JsonRow, RestoreOptions, SnapshotDomain, StateScope, StateSnapshot
+
 
 
 def build_snapshot(

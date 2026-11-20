@@ -10,8 +10,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from satrap.core.call_context import current_flow_workflow
 from satrap.core.utils.skills import Skill
-from satrap.core.type import CommandAction, RequestContextBlock
+from satrap.core.type.platform import CommandAction
+from satrap.core.type.model import RequestContextBlock
+
 
 if TYPE_CHECKING:
     from .capabilities import PluginHost
@@ -74,6 +77,20 @@ class SkillHostAccess:
         manager.sources[owner] = refresh
         return factory()
 
+    @staticmethod
+    def _bound_workflow(session: object) -> object | None:
+        """
+        当前会话里应绑到的工作流; 流程会话正在运行的 WF 优先, 否则回退 session._wf
+
+        参数:
+        - session: 宿主会话
+
+        返回:
+        - 正在运行的 WF 或 None
+        """
+        current = current_flow_workflow.get()
+        return current if current is not None else getattr(session, "_wf", None)
+
     def catalog(self) -> list[tuple[str, str]]:
         """
         查询当前模型通道允许使用的技能目录
@@ -83,7 +100,8 @@ class SkillHostAccess:
         """
         session = self._host._runtime().session()
         manager = session._get_skills_manager()
-        return [(item.skill_id or item.name, item.description) for item in manager.available_skills(session._wf)]
+        workflow = self._bound_workflow(session)
+        return [(item.skill_id or item.name, item.description) for item in manager.available_skills(workflow)]
 
     def read(self, name: str) -> str:
         """
@@ -96,7 +114,7 @@ class SkillHostAccess:
         - 技能正文, 不可用时抛出 ValueError
         """
         session = self._host._runtime().session()
-        return session._get_skills_manager().read_skill(name, session._wf)
+        return session._get_skills_manager().read_skill(name, self._bound_workflow(session))
 
     def use(self, name: str, task: str = "") -> CommandAction | str:
         """
@@ -111,12 +129,13 @@ class SkillHostAccess:
         """
         session = self._host._runtime().session()
         manager = session._get_skills_manager()
-        content = manager.read_skill(name, session._wf)
+        workflow = self._bound_workflow(session)
+        content = manager.read_skill(name, workflow)
         if task:
             manager._forced.pop(manager.caller_key(), None)
             return CommandAction("run_task", user_input=task,
                                  request_blocks=(RequestContextBlock("forced_skill", "skills", content),))
-        if session._wf is None:
+        if workflow is None:
             raise ValueError("会话尚未初始化")
-        manager.force_next(name, session._wf)
+        manager.force_next(name, workflow)
         return f"下一次由你发起的任务将使用技能: {name}"

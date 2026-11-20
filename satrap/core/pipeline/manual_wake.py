@@ -8,7 +8,8 @@ import json
 
 from satrap.core.pipeline.wake_window import PendingMessage
 from satrap.core.platform.event import MessageEvent
-from satrap.core.type import WakeSubmitResult
+from satrap.core.type.control import WakeSubmitResult
+
 from satrap.core.log import logger
 
 
@@ -104,3 +105,5 @@ class ManualWakeRequests:
             if event.call_origin.adapter_id == adapter_id:
                 ticket.cancelled = True
                 ticket.status = "cancelled"
+                # flow 的 /new 结算可能已暂存事件; 回放时也必须识别取消而不是触发 WF。
+                event.set_extra("manual_wake_cancelled", True)

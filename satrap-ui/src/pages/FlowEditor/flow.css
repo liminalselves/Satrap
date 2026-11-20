@@ -1,0 +1,112 @@
+/* 流程编辑器: React Flow 外观改为玻璃风格; 结构沿用原型, 只在本页面生效 */
+.flow-editor .react-flow { --xy-background-color: transparent; }
+.flow-editor .react-flow__node-flow { background: transparent; border: 0; padding: 0; border-radius: 14px; }
+
+.flow-node { box-shadow: var(--shadow-1); }
+.flow-node:hover { box-shadow: var(--shadow-2); }
+.flow-node-selected {
+  border-color: rgb(var(--tint) / 0.75) !important;
+  box-shadow: 0 0 0 1px rgb(var(--tint) / 0.6), 0 10px 32px -8px rgb(var(--tint) / 0.55);
+}
+.flow-node-running {
+  border-color: rgb(var(--tint) / 0.9) !important;
+  animation: flow-pulse 1.4s var(--ease-standard) infinite;
+}
+[data-ambient='off'] .flow-node-running { animation: none; }
+@keyframes flow-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgb(var(--tint) / 0.5), 0 0 0 0 rgb(var(--tint) / 0.4); }
+  50% { box-shadow: 0 0 0 1px rgb(var(--tint) / 0.8), 0 0 28px 4px rgb(var(--tint) / 0.35); }
+}
+
+.flow-handle {
+  width: 10px !important; height: 10px !important;
+  background: var(--glass-bg-strong) !important;
+  border: 1.5px solid rgb(var(--port, var(--tint)) / 0.95) !important;
+  transition: transform 150ms, opacity 150ms, box-shadow 150ms;
+}
+.flow-handle:hover { background: rgb(var(--port, var(--tint))) !important; }
+.flow-handle-required { background: rgb(var(--port, var(--tint)) / 0.35) !important; }
+.flow-handle-ok { box-shadow: 0 0 0 4px rgb(var(--port) / 0.25), 0 0 12px rgb(var(--port) / 0.8); }
+.flow-handle-dim { opacity: 0.2; }
+.flow-node-error { border-color: rgb(var(--rgb-red) / 0.55) !important; }
+.flow-editor .react-flow__handle.connectingfrom, .flow-editor .react-flow__handle.valid { background: rgb(var(--tint)) !important; }
+
+.flow-editor .react-flow__edge-textbg { fill: var(--glass-bg-strong); }
+.flow-editor .react-flow__edge-text { fill: rgb(var(--rgb-neutral) / 0.75); font-size: 10px; }
+.flow-edge-has-note .react-flow__edge-text { fill: rgb(var(--rgb-orange) / 0.95); }
+.flow-editor .react-flow__edge.selected .react-flow__edge-path { stroke-width: 3 !important; filter: drop-shadow(0 0 4px rgb(var(--rgb-accent) / 0.8)); }
+.flow-edge-issue .react-flow__edge-path { stroke: rgb(var(--rgb-red)) !important; }
+.flow-editor .react-flow__connectionline path { stroke: rgb(var(--rgb-accent)); stroke-width: 2; stroke-dasharray: 5 4; }
+
+.flow-editor .react-flow__controls { box-shadow: var(--shadow-1); border-radius: 10px; overflow: hidden; border: 1px solid var(--glass-border); }
+.flow-editor .react-flow__controls-button { background: var(--glass-bg-strong); border-bottom: 1px solid var(--glass-border); color: var(--text-2); fill: var(--text-2); }
+.flow-editor .react-flow__controls-button:hover { background: var(--glass-bg-hover); }
+.flow-editor .react-flow__minimap { background: var(--glass-bg-strong); border: 1px solid var(--glass-border); border-radius: 10px; overflow: hidden; }
+
+/* kit 的 .surface > * 会把子元素设为 relative, 连接点必须保持绝对定位 */
+.flow-node > .react-flow__handle { position: absolute; z-index: 3; }
+
+/* 信号端口: 菱形 */
+.flow-handle-signal { border-radius: 2px !important; }
+.react-flow__handle-top.flow-handle-signal, .react-flow__handle-bottom.flow-handle-signal { transform: translate(-50%, -50%) rotate(45deg); }
+.react-flow__handle-bottom.flow-handle-signal { transform: translate(-50%, 50%) rotate(45deg); }
+.react-flow__handle-left.flow-handle-signal { transform: translate(-50%, -50%) rotate(45deg); }
+.react-flow__handle-right.flow-handle-signal { transform: translate(50%, -50%) rotate(45deg); }
+.flow-port-label {
+  position: absolute; top: 50%; transform: translateY(-50%) rotate(-45deg); white-space: nowrap; pointer-events: none;
+  font-size: 10px; line-height: 1; color: rgb(var(--port)); font-weight: 600;
+}
+.flow-handle:not(.flow-handle-signal) .flow-port-label { transform: translateY(-50%); }
+.flow-port-label-left { right: 14px; }
+.flow-port-label-right { left: 14px; }
+
+.flow-node-wf { box-shadow: 0 0 0 1px rgb(var(--rgb-purple) / 0.25), var(--shadow-1); }
+
+/* 触发磁贴与条件 */
+.flow-tile {
+  width: 176px; padding: 8px 10px; border-radius: 10px; position: relative;
+  background: linear-gradient(135deg, rgb(var(--tile) / 0.16), rgb(var(--tile) / 0.04)), var(--glass-bg-strong);
+  border: 1px solid rgb(var(--tile) / 0.45);
+  box-shadow: var(--shadow-1);
+}
+.flow-tile > .react-flow__handle { position: absolute; z-index: 3; }
+.flow-tile-trigger { --tile: var(--rgb-pink); border-left-width: 3px; }
+.flow-tile-cond { --tile: var(--rgb-green); border-style: dashed; }
+
+/* 逻辑门 */
+.flow-logic {
+  min-width: 84px; min-height: 48px; padding: 0 14px 0 28px; display: flex; align-items: center; justify-content: center; gap: 6px;
+  border-radius: 999px; position: relative; color: rgb(var(--gate));
+  background: linear-gradient(rgb(var(--gate) / 0.14), rgb(var(--gate) / 0.14)), var(--glass-bg-strong);
+  border: 1.5px solid rgb(var(--gate) / 0.6);
+  box-shadow: var(--shadow-1);
+}
+.flow-logic > .react-flow__handle { position: absolute; z-index: 3; }
+.flow-logic-and { --gate: var(--rgb-accent); }
+.flow-logic-or { --gate: var(--rgb-purple); }
+.flow-logic-not { --gate: var(--rgb-red); }
+.flow-gate-pin { position: absolute; left: 11px; transform: translateY(-50%); font: 700 9px/1 ui-monospace, monospace; opacity: 0.75; pointer-events: none; }
+.flow-node-selected.flow-tile, .flow-node-selected.flow-logic { box-shadow: 0 0 0 2px rgb(var(--rgb-accent) / 0.8), 0 8px 24px -6px rgb(var(--rgb-accent) / 0.5); }
+
+/* 注释磁片 */
+.flow-note {
+  width: 220px; min-height: 64px; padding: 10px 12px; border-radius: 6px;
+  background: rgb(var(--note) / 0.13); border: 1px solid rgb(var(--note) / 0.35);
+  color: rgb(var(--note)); box-shadow: 0 6px 18px -8px rgb(0 0 0 / 0.5);
+}
+.flow-note-orange { --note: var(--rgb-orange); }
+.flow-note-accent { --note: var(--rgb-accent); }
+.flow-note-green { --note: var(--rgb-green); }
+.flow-note-pink { --note: var(--rgb-pink); }
+.flow-note-neutral { --note: var(--rgb-neutral); }
+.flow-note.flow-node-selected { box-shadow: 0 0 0 2px rgb(var(--rgb-accent) / 0.8); }
+
+/* 激活链路追踪: 链路外的节点和边淡出, 目标节点加强调环 */
+.flow-trace-dim { opacity: 0.22; transition: opacity 200ms; }
+.flow-trace-on { transition: opacity 200ms; }
+.flow-trace-target { box-shadow: 0 0 0 2px rgb(var(--rgb-accent) / 0.9), 0 10px 32px -8px rgb(var(--rgb-accent) / 0.6) !important; }
+.flow-edge-trace-dim { opacity: 0.12; }
+.flow-edge-trace-on .react-flow__edge-path { stroke-width: 2.6 !important; filter: drop-shadow(0 0 3px rgb(var(--rgb-accent) / 0.7)); }
+
+/* 从问题面板定位到的字段短暂高亮 */
+.flow-field-focus { border-radius: 10px; box-shadow: 0 0 0 2px rgb(var(--rgb-red) / 0.6); transition: box-shadow 300ms; }

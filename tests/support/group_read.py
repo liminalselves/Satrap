@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 from satrap.core.call_context import CallOrigin
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.service import GroupChatService
-from satrap.core.group_chat.types import MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage
+from satrap.core.type.group_chat import MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage
 from satrap.core.platform import PlatformAdapter, PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig, set_current_adapter_manager
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.event import PlatformMetadata

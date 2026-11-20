@@ -16,7 +16,7 @@ from satrap.core.config.administrator_groups import (AdministratorService, admin
 from satrap.core.config.document import load_config_document, config_document_revision, save_config_document, validate_platforms
 from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.call_context import CallOrigin
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 
 from satrap.core.platform import registry
 

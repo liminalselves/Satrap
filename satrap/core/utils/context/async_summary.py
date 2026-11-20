@@ -4,13 +4,15 @@
 按模型预算生成分块摘要, 保留近期对话并协调上下文回退
 """
 from __future__ import annotations
-from satrap.core.type import RequestContextBlock
+from satrap.core.type.model import RequestContextBlock
+
 from satrap.core.APICall.LLMCall.observation import bind_call_purpose
 from satrap.core.utils.context.request import freeze_request_blocks, attach_request_blocks, attach_system_suffix
 from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING
 import copy
 import asyncio
-from satrap.core.type import TokenUsage
+from satrap.core.type.model import TokenUsage
+
 from satrap.core.log import logger
 from .utils import (
     TokenEstimateMethod,

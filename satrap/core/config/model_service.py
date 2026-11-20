@@ -12,7 +12,16 @@ from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigMan
 from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.core.APICall.ASRCall import AsyncASR, build_asr_from_config
 from satrap.core.pipeline.audio_convert import AudioConvertError, convert_to_wav, probe_audio
-from satrap.core.type import ASRConfig, EmbeddingConfig, ImgConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, validate_thinking_levels
+from satrap.core.type.model_config import (
+    ASRConfig,
+    EmbeddingConfig,
+    ImgConfig,
+    LLMConfig,
+    MODEL_CONFIG_CLASSES,
+    ReRankConfig,
+)
+from satrap.core.type.model import validate_thinking_levels
+
 
 ASR_TEST_MAX_AUDIO_BYTES = 8 * 1024 * 1024
 """ASR 转录测试接受的解码后音频字节上限"""

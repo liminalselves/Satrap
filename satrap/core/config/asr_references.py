@@ -26,7 +26,7 @@ REFERENCE_SCAN_LOCK = threading.RLock()
 OVERRIDE_TABLE = SESSION_OVERRIDE_TABLE
 """会话覆盖表名, 与 session_overrides.ensure_override_tables 保持一致"""
 
-from satrap.edictum.plugin_config import CONFIG_DIR
+from satrap.edictum.plugin.config import CONFIG_DIR
 from satrap.core.config.session_overrides import OVERRIDE_SCHEMA_VERSION
 
 

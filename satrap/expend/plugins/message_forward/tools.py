@@ -12,9 +12,10 @@ from satrap.core.log import logger
 from satrap.core.message_forward import ForwardError
 from satrap.core.platform import current_adapter_manager
 from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
-from satrap.core.plugin_authorization import PluginEntryBinding, PluginPermissionDenied, authorize_management_permissions, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import PluginPermissionDenied, authorize_management_permissions, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 from satrap.core.utils.TCBuilder import Tool, AsyncTool, strict_tool_definition
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 
 ADDRESS = {"type": "object", "properties": {
     "conversation_kind": {"type": "string", "enum": ["group", "private"]},

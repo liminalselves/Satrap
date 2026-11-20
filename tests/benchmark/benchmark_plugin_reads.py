@@ -9,7 +9,7 @@ import time
 import json
 
 from satrap.core.backend import control_server
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 from satrap.edictum.config import EdictumConfigManager
 
 
@@ -26,9 +26,9 @@ async def run() -> None:
     def reject_write(self):
         raise RuntimeError('只读基准禁止配置迁移或创建文件')
 
-    def counted_normalize(self, entry, catalog=None):
+    def counted_normalize(self, entry, catalog=None, *, check_execution=True):
         counts['normalized_configs'] += 1
-        return normalize(self, entry, catalog)
+        return normalize(self, entry, catalog, check_execution=check_execution)
 
     async with await asyncio.start_server(control_server._handle_request, '127.0.0.1', 0) as server:
         port = server.sockets[0].getsockname()[1]

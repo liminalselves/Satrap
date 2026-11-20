@@ -68,6 +68,41 @@ def _run_stale_race(
         raise errors[0]
 
 
+def test_v13_to_v14_preserves_positions_and_is_idempotent(tmp_path: Path):
+    """真实 v13 库迁移两次，新增令牌表且保留既有阈值位置。"""
+    path = tmp_path / "platform-v13.db"
+    scope_key = "a:s:group:c"
+    with closing(sqlite3.connect(path)) as connection, connection:
+        ensure_platform_tables(connection)
+        connection.execute("DROP TABLE flow_run_tokens")
+        connection.execute("PRAGMA user_version = 13")
+        connection.execute(
+            "INSERT INTO flow_threshold_positions VALUES(?, ?, ?, ?, ?, ?)",
+            (scope_key, "flow", "tile", "wf", 7, 123.0),
+        )
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 13
+        ensure_platform_tables(connection)
+        connection.commit()
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert connection.execute(
+            "SELECT committed_seq FROM flow_threshold_positions "
+            "WHERE scope_key=? AND flow_name=? AND tile_id=? AND wf_id=?",
+            (scope_key, "flow", "tile", "wf"),
+        ).fetchone() == (7,)
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='flow_run_tokens'",
+        ).fetchone() == ("flow_run_tokens",)
+        ensure_platform_tables(connection)
+        connection.commit()
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert connection.execute(
+            "SELECT committed_seq FROM flow_threshold_positions "
+            "WHERE scope_key=? AND flow_name=? AND tile_id=? AND wf_id=?",
+            (scope_key, "flow", "tile", "wf"),
+        ).fetchone() == (7,)
+
+
 def test_ensure_platform_tables_rereads_version_after_write_lock(tmp_path: Path):
     """直接入口在获得写锁后重读水位, 不复用竞争前的 v11 迁移决定"""
     path = tmp_path / "platform.db"

@@ -10,9 +10,11 @@ from typing import TYPE_CHECKING
 
 from satrap.core.call_context import current_call_origin, current_tool_workflow
 from satrap.core.log import logger
-from satrap.core.log.debug.contracts import DebugMode, current_debug_object
+from satrap.core.type.debug import DebugMode
+from satrap.core.log.debug.context import current_debug_object
 from satrap.core.log.debug.policy import policy_store
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_management_permissions, require_plugin_entry_permission
+from satrap.core.type.plugin.authorization import PluginEntryBinding
+from satrap.core.plugin_authorization import authorize_management_permissions, require_plugin_entry_permission
 
 if TYPE_CHECKING:
     from .capabilities import PluginHost

@@ -52,3 +52,7 @@ compatibility:
 applicability:
   session_types: [chat, platform, embedded]
   platforms: "*"
+
+flow:
+  workflow:
+    provides: [memory_write]

@@ -58,7 +58,8 @@ class MemoryService:
             if getattr(environment, "session_type", "") == "platform" and origin is None:
                 raise MemoryError("stale_call", "平台记忆操作需要仍有效的本轮来源")
             workflow = current_tool_workflow()
-            main = getattr(self.session, "_wf", None)
+            from satrap.core.call_context import current_flow_workflow
+            main = current_flow_workflow.get() or getattr(self.session, "_wf", None)
             if writing and workflow is not None and main is not None and workflow is not main:
                 return {"ok": False, "error": "子工作流不能修改长期记忆", "error_type": "read_only_workflow"}
             if writing and self.session is not None and origin is not None:
@@ -116,8 +117,13 @@ class MemoryService:
             if writing:
                 if config.get("memory_mode", "full") != "full" or config.get("group_write_enabled") is not True:
                     raise MemoryError("write_disabled", "群记忆写入未在记忆插件中开启")
-                if principal not in {"model", "command"} or (workflow is None and principal != "command") or (workflow is not None and workflow is not getattr(self.session, "_wf", None)):
+                if principal not in {"model", "command"} or (workflow is None and principal != "command"):
                     raise MemoryError("read_only_workflow", "只有当前主工作流可以保存长期记忆")
+                if workflow is not None:
+                    from satrap.core.call_context import current_flow_workflow
+                    bound = current_flow_workflow.get() or getattr(self.session, "_wf", None)
+                    if workflow is not bound:
+                        raise MemoryError("read_only_workflow", "只有当前主工作流可以保存长期记忆")
             scope = await adapter.group_chat_scope(origin)
             archive = adapter.message_archive
             if archive is None:

@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 from contextlib import nullcontext
-from satrap.core.type import RequestContextBlock
+from satrap.core.type.model import RequestContextBlock
+
 from satrap.core.utils.context.request import freeze_request_blocks
 import asyncio
 from typing import Any, Callable, Iterable
@@ -19,7 +20,8 @@ from satrap.core.framework.Base import AsyncModelWorkflowFramework, AsyncSession
 from satrap.core.utils.skills import SkillsManager
 from satrap.core.utils.paths import get_db_path
 from satrap.edictum.plugin import Plugin
-from satrap.core.type import CommandAction
+from satrap.core.type.platform import CommandAction
+
 from satrap.core.log import logger
 from .utils import (
     AsyncUserInputProvider,
@@ -31,7 +33,7 @@ from .utils import (
     HANDLER_TIMEOUT,
     SessionHandler,
 )
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from .base import _SessionFeatures
 from . import recovery
 from satrap.edictum.settings import normalize_session_settings

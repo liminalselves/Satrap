@@ -18,7 +18,7 @@ from PIL import Image as PillowImage
 from satrap.core.utils.validation import is_bounded_text
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.group_chat.assets import AssetLease, inspect_image, lease_file, read_blob, remove_unleased_file, _LOCK, _LEASES
-from satrap.core.group_chat.types import GroupChatError
+from satrap.core.type.group_chat import GroupChatError
 from satrap.core.storage.layout import StorageLayout
 
 

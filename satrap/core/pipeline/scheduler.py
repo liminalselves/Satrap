@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import replace
@@ -58,10 +59,13 @@ from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeSt
 from satrap.core.pipeline.request_diagnostics import RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.platform import PlatformAdapter
 from satrap.core.group_chat.reply import bind_reply_turn
-from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
+from satrap.core.type.model import UserCall
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 
 from satrap.core.APICall.LLMCall.errors import model_error_info
 from satrap.core.log import logger
+from satrap.core.log.debug.hooks import record_debug
 from satrap.core.utils.validation import positive_timeout
 
 
@@ -72,6 +76,8 @@ _SETTLEMENT_WAIT_SECONDS = 1.5
 """发送收尾等待上限: 超时先按当时证据归并, 记录保持未确认可被后续确认精化"""
 _SETTLEMENT_POLL_SECONDS = 0.05
 """发送收尾等待轮询间隔"""
+_FLOW_OBSERVATION_QUEUE_LIMIT = 256
+"""单会话串行观察队列上限, 防止 /new 持续结算失败时在上游转移无界积压"""
 
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 
@@ -133,6 +139,8 @@ class PipelineScheduler:
         self.manual_wake_store: ManualWakeStore | None = None
         self.request_diagnostics = RequestDiagnosticLog()
         self.asr_resolver: AsrResolver | None = None
+        self._flow_manual_tasks: set[asyncio.Task[Any]] = set()
+        """已观察手动唤醒的独立结算任务; 串行观察不等待后台 WF, 引用由调度器持有防回收"""
 
     async def clear_manual_wakes(self, adapter_id: str) -> None:
         """
@@ -466,7 +474,7 @@ class PipelineScheduler:
         参数:
         - event: 当前实际平台消息
         """
-        from satrap.core.log.debug.contracts import DebugObject
+        from satrap.core.type.debug import DebugObject
         from satrap.core.log.debug.capture import debug_request
 
         try:
@@ -495,6 +503,8 @@ class PipelineScheduler:
         - event: 消息事件
         """
         manual_detail: str | None = None
+        flow_owns_cleanup = False
+        flow_owns_manual = False
         try:
             manual_ticket = self.manual_wakes.tickets.get(event)
             if manual_ticket is not None and manual_ticket.cancelled:
@@ -551,6 +561,48 @@ class PipelineScheduler:
                     self._record_rejection(event, "projection", binding.reason, reason_code=reason_code)
                     manual_detail = reason_code
                     return
+
+            # flow 自行决定唤醒, 但必须在稳定路由锁内解析并复核当前会话。
+            # 不持有会话执行锁, 以免阻塞流程中的其他消息。
+            if self._is_flow_definition(session_manager, event):
+                route, extra_params = self._conversation_route(event, user_manager)
+                async with AsyncExitStack() as turn:
+                    session_id = event.session_id
+                    if route is not None and user_manager is not None:
+                        await turn.enter_async_context(self._session_turn(session_manager, route.lock_key, namespace="route"))
+                        if not await self._queued_source_current(event, session_manager):
+                            return
+                        session_id = self._resolve_session(user_manager, session_manager, event, route, extra_params)
+                        if not session_id:
+                            return
+                    if not await self._queued_source_current(event, session_manager):
+                        return
+                    flow_session = await self._flow_session_for(session_manager, session_id, event, route, extra_params)
+                    if not await self._queued_source_current(event, session_manager):
+                        return
+                    if not self._is_flow_definition(session_manager, event):
+                        return
+                    if (manual_ticket is not None and manual_ticket.cancelled) or (deadline_ticket is not None and deadline_ticket.cancelled):
+                        return
+                    if flow_session is not None:
+                        if manual_ticket is not None:
+                            event.is_wake = True
+                            event.set_extra("require_send_tracking", True)
+                            if manual_ticket.snapshot:
+                                batch = self._claim_wake_batch(
+                                    event, manual_ticket.snapshot, False, False, deadline=False)
+                                if not batch:
+                                    manual_detail = "window_unavailable"
+                                    return
+                                event.set_extra("flow_manual_wake_batch", batch)
+                                self.wake_timers.cancel_route(event)
+                            await self._update_manual_request(event, manual_ticket, "executing", "")
+                        accepted = self._enqueue_flow_observation(flow_session, event)
+                        flow_owns_cleanup = True
+                        flow_owns_manual = manual_ticket is not None and accepted
+                        if not accepted:
+                            manual_detail = "flow_observation_dropped"
+                        return
 
             # Step.2 评估独立唤醒规则并记录命中原因
             if deadline_ticket is not None and not self._automatic_policy_current(event):
@@ -658,41 +710,16 @@ class PipelineScheduler:
 
             # Step.5 先取得稳定路由执行权, 再解析当前会话并取得目标会话执行权
             session_id = event.session_id
-            route: ConversationRoute | None = None
-            settings = event.policy_settings
-            scope = str(settings.get("context_scope", "legacy_user")) if not event.is_private_chat() else "legacy_user"
-            if event.agent_route_generation:
-                scope = event.agent_context_scope
-            generation = event.group_route_generation if not event.is_private_chat() else 0
-            extra_params: dict[str, str] | None = None
-            if (scope != "legacy_user" or generation > 0 or event.agent_route_generation) and (not user_manager or not event.session_type):
-                raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
-            if user_manager and event.session_type:
-                platform_id, extra_params = self._resolve_route_adapter(event)
-                route = ConversationRoute(
-                    user_id=event.get_sender_id(), platform=platform_id,
-                    session_type=event.session_type, provider=event.session_provider,
-                    scope=scope, self_id=event.get_self_id(), group_id=event.get_group_id(),
-                    generation=generation,
-                    conversation_kind=event.conversation_kind, conversation_id=event.conversation_id,
-                    binding_generation=event.agent_route_generation,
-                )
+            route, extra_params = self._conversation_route(event, user_manager)
             async with AsyncExitStack() as turn:
                 if route is not None and user_manager is not None:
                     await turn.enter_async_context(self._session_turn(session_manager, route.lock_key, namespace="route"))
                     if not await self._queued_source_current(event, session_manager):
                         return
-                    route_args = {"route": route} if route.key is not None else {}
-                    resolved = user_manager.resolve_session(
-                        user_id=event.get_sender_id(), platform=route.platform,
-                        session_provider=event.session_provider, session_type=event.session_type or "",
-                        class_cfg_mgr=safe_getattr(session_manager, 'class_cfg_mgr'),
-                        extra_params=extra_params, **route_args,
-                    )
-                    if not resolved:
-                        logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
+                    session_id = self._resolve_session(user_manager, session_manager, event, route, extra_params)
+                    if not session_id:
                         return
-                    session_id = resolved
+                # flow 会话已在 Step.1.9 提前接管; 走到这里一定不是 flow
                 await turn.enter_async_context(self._session_turn(session_manager, session_id))
                 if not await self._queued_source_current(event, session_manager):
                     return
@@ -861,15 +888,14 @@ class PipelineScheduler:
             if self.error_feedback:
                 await self._send_feedback(event, info.text)
         finally:
-            self._record_send_diagnostic(event, manual_detail)
-            ticket = self.manual_wakes.tickets.get(event)
-            if ticket is not None:
-                if ticket.status == "pending":
-                    ticket.status = "processed"
-                if self.manual_wake_store is not None:
-                    final_status, final_detail = await self._adjudicate_manual_request(event, ticket, manual_detail)
-                    await self._update_manual_request(event, ticket, final_status, final_detail, refine=True)
-            event.cleanup_temporary_local_files()
+            if not flow_owns_manual:
+                ticket = self.manual_wakes.tickets.get(event)
+                if ticket is not None:
+                    await self._finish_manual_request(event, manual_detail)
+                else:
+                    self._record_send_diagnostic(event, manual_detail)
+            if not flow_owns_cleanup:
+                event.cleanup_temporary_local_files()
 
     # ---------- 可覆写钩子 ----------
 
@@ -903,6 +929,275 @@ class PipelineScheduler:
                 del self._session_turns[key]
             else:
                 self._session_turns[key] = (lock, users - 1)
+
+    def _conversation_route(self, event: MessageEvent, user_manager: Any) -> tuple[ConversationRoute | None, dict[str, str] | None]:
+        """按事件的有效绑定和上下文范围构造稳定路由。"""
+        scope = str(event.policy_settings.get("context_scope", "legacy_user")) if not event.is_private_chat() else "legacy_user"
+        if event.agent_route_generation:
+            scope = event.agent_context_scope
+        generation = event.group_route_generation if not event.is_private_chat() else 0
+        if (scope != "legacy_user" or generation > 0 or event.agent_route_generation) and (not user_manager or not event.session_type):
+            raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
+        if not user_manager or not event.session_type:
+            return None, None
+        platform_id, extra_params = self._resolve_route_adapter(event)
+        return ConversationRoute(
+            user_id=event.get_sender_id(), platform=platform_id,
+            session_type=event.session_type, provider=event.session_provider,
+            scope=scope, self_id=event.get_self_id(), group_id=event.get_group_id(),
+            generation=generation, conversation_kind=event.conversation_kind,
+            conversation_id=event.conversation_id, binding_generation=event.agent_route_generation,
+        ), extra_params
+
+    def _resolve_session(
+        self, user_manager: Any, manager: SessionManager, event: MessageEvent,
+        route: ConversationRoute, extra_params: dict[str, str] | None,
+    ) -> str:
+        """在路由锁内解析当前映射; 无映射时记录并拒绝。"""
+        route_args = {"route": route} if route.key is not None else {}
+        resolved = user_manager.resolve_session(
+            user_id=event.get_sender_id(), platform=route.platform,
+            session_provider=event.session_provider, session_type=event.session_type or "",
+            class_cfg_mgr=safe_getattr(manager, "class_cfg_mgr"),
+            extra_params=extra_params, **route_args,
+        )
+        if not resolved:
+            logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
+        return resolved
+
+    def _is_flow_definition(self, manager: SessionManager, event: MessageEvent) -> bool:
+        """每次读取当前定义, 避免配置变更后沿用旧类型。"""
+        provider_get = getattr(getattr(manager, "provider_registry", None), "get", None)
+        if not callable(provider_get) or asyncio.iscoroutinefunction(provider_get):
+            return False
+        try:
+            provider = provider_get(event.session_provider or "edictum")
+            candidate = getattr(provider, "get_definition", None)
+            if not callable(candidate) or asyncio.iscoroutinefunction(candidate):
+                return False
+            definition = candidate(event.session_type or "")
+        except Exception as error:
+            logger.debug(f"[PipelineScheduler] flow 定义读取失败 session={event.session_id}: {error}")
+            return False
+        metadata = getattr(definition, "metadata", None)
+        return isinstance(metadata, dict) and metadata.get("edictum_type") == "flow"
+
+    async def _flow_session_for(
+        self, manager: SessionManager, session_id: str, event: MessageEvent,
+        route: ConversationRoute | None, extra_params: dict[str, str] | None,
+    ) -> Any | None:
+        """
+        按会话类型拿流程会话实例, 未激活时先走正常创建路径激活
+
+        参数:
+        - manager: 绑定本平台的会话管理器
+        - session_id: 路由解析后的最终会话 ID
+        - event: 当前消息事件
+        - route: 会话路由
+        - extra_params: 路由附加参数
+
+        返回:
+        - AsyncFlowSession | None: 流程会话; 不是 flow 类型返回 None
+        """
+        from satrap.edictum.flow.session import AsyncFlowSession
+
+        if not self._is_flow_definition(manager, event):
+            return None
+        pool = getattr(manager, "pool", None)
+        entries_fn = getattr(pool, "list_entries", None)
+        entries = entries_fn() if callable(entries_fn) and not asyncio.iscoroutinefunction(entries_fn) else {}
+        if not isinstance(entries, dict):
+            entries = {}
+        entry = entries.get(session_id)
+        if entry is not None and isinstance(entry.session, AsyncFlowSession):
+            self._adopt_flow_session(entry.session)
+            return entry.session
+        # 等待路由锁期间定义可能变化, 即使已有活跃会话也必须按当前定义判定。
+        session_type = event.session_type or ""
+        entry = None
+        try:
+            config = manager._resolve_or_create_session_config(UserCall(
+                session_id=session_id or None,
+                session_provider=event.session_provider,
+                session_type=session_type,
+                message=event.get_message_str(),
+                route=route,
+                origin=event.call_origin,
+                received_at=event.queued_at,
+                received_wall_at=event.platform_message.received_at,
+            ))
+            entry = await manager._acquire_or_create_entry_async(config)
+        except Exception as error:
+            logger.error(f"[PipelineScheduler] flow 会话创建失败 session={session_id}: {error}")
+            return None
+        try:
+            if entry is None or not isinstance(entry.session, AsyncFlowSession):
+                return None
+            self._adopt_flow_session(entry.session)
+            return entry.session
+        finally:
+            # 旁路不占会话租约: observe 由流程会话自己管理生命周期
+            if entry is not None:
+                manager.pool.release(entry)
+
+    async def _finish_manual_request(self, event: MessageEvent, manual_detail: str | None) -> None:
+        """在普通管线或 flow 完整结束后统一归并发送证据并推进票据终态"""
+        ticket = self.manual_wakes.tickets.get(event)
+        if ticket is None:
+            return
+        self._record_send_diagnostic(event, manual_detail)
+        if ticket.status == "pending":
+            ticket.status = "processed"
+        if self.manual_wake_store is not None:
+            final_status, final_detail = await self._adjudicate_manual_request(event, ticket, manual_detail)
+            await self._update_manual_request(event, ticket, final_status, final_detail, refine=True)
+
+    def _spawn_flow_manual_task(self, coro: Any, event: MessageEvent) -> None:
+        """创建有引用的手动请求后台任务; 完成回调负责移除并接收任务异常"""
+        try:
+            task = asyncio.create_task(coro, name=f"flow-manual-finalize-{event.call_origin.request_id}")
+        except BaseException:
+            coro.close()
+            raise
+        self._flow_manual_tasks.add(task)
+
+        def finished(done: asyncio.Task[Any]) -> None:
+            self._flow_manual_tasks.discard(done)
+            if done.cancelled():
+                return
+            error = done.exception()
+            if error is not None:
+                logger.error(f"[PipelineScheduler] flow 手动请求收尾失败: {error}")
+        task.add_done_callback(finished)
+
+    def _spawn_flow_manual_finalizer(self, event: MessageEvent, reason: str) -> None:
+        """队列回调无法 await 时, 独立收尾被丢弃的手动请求并接收任务异常"""
+        self._spawn_flow_manual_task(self._finish_manual_request(event, reason), event)
+
+    def _spawn_flow_manual_settlement(self, session: Any, event: MessageEvent) -> None:
+        """手动观察已投递: 独立任务等待后台 WF 收尾并归并终态, 临时文件所有权随之移交"""
+        async def settle() -> None:
+            detail: str | None = None
+            try:
+                detail = await session.wait_for_manual_observation(event)
+            except asyncio.CancelledError:
+                detail = "cancelled"
+                raise
+            except Exception as error:
+                detail = "flow_observation_failed"
+                logger.error(f"[PipelineScheduler] flow 手动观察等待失败: {error}")
+            finally:
+                try:
+                    await self._finish_manual_request(event, detail)
+                finally:
+                    event.cleanup_temporary_local_files()
+
+        self._spawn_flow_manual_task(settle(), event)
+
+    def _enqueue_flow_observation(self, session: Any, event: MessageEvent) -> bool:
+        """锁内只向目标会话投递; 返回事件是否进入会话拥有的串行观察队列。"""
+        if getattr(session, "_closed", False):
+            event.cleanup_temporary_local_files()
+            record_debug("flow_observation", "queue_drop", status="dropped", metadata={
+                "session": session.session_id, "reason": "session_closed", "dropped_messages": 1,
+            })
+            return False
+        queue = getattr(session, "_scheduler_observations", None)
+        if queue is None:
+            queue = deque()
+            session._scheduler_observations = queue
+        if len(queue) >= _FLOW_OBSERVATION_QUEUE_LIMIT:
+            dropped = queue.popleft()
+            dropped.cleanup_temporary_local_files()
+            self._spawn_flow_manual_finalizer(dropped, "flow_observation_dropped")
+            record_debug("flow_new", "queue_drop", metadata={
+                "session": session.session_id, "reason": "scheduler_queue_capacity",
+                "capacity": _FLOW_OBSERVATION_QUEUE_LIMIT,
+                "dropped_message_id": dropped.platform_message.message_id,
+            })
+            if not getattr(session, "_new_done", True):
+                # 与溢出入队同序执行持久化 drop, 不让阈值稍后重放已丢弃的旧批。
+                session._spawn_observer_task(
+                    session._drop_new_backlog(), name=f"flow-new-overflow-{session.session_id}")
+        queue.append(event)
+        if getattr(session, "_scheduler_observer_task", None) is None:
+            async def drain() -> None:
+                try:
+                    while queue:
+                        current = queue.popleft()
+                        manual_detail: str | None = None
+                        ticket = self.manual_wakes.tickets.get(current)
+                        spawned = False
+                        try:
+                            if ticket is not None and ticket.cancelled:
+                                manual_detail = "cancelled"
+                            else:
+                                await session.observe(current)
+                                # /new 的 observe 会将当前消息交给独立结算任务;
+                                # 等待它完成再消费后续消息, 避免回放期间插队或提前清理文件。
+                                settle_task = getattr(session, "_settle_task", None)
+                                if settle_task is not None:
+                                    await settle_task
+                            if ticket is not None and manual_detail is None:
+                                # 手动唤醒的 WF 等待转入独立结算任务, 串行观察立即继续;
+                                # 临时文件的清理责任一并移交, 本循环不再触碰。
+                                try:
+                                    self._spawn_flow_manual_settlement(session, current)
+                                except Exception as error:
+                                    manual_detail = "flow_observation_failed"
+                                    logger.error(f"[PipelineScheduler] flow 手动结算任务创建失败: {error}")
+                                else:
+                                    spawned = True
+                        except asyncio.CancelledError:
+                            manual_detail = "cancelled"
+                            raise
+                        except Exception as error:
+                            manual_detail = "flow_observation_failed" if ticket is not None else None
+                            logger.error(f"[PipelineScheduler] flow 消息观察失败: {error}")
+                        finally:
+                            if not spawned:
+                                if ticket is not None:
+                                    await self._finish_manual_request(current, manual_detail)
+                                current.cleanup_temporary_local_files()
+                finally:
+                    # 关闭会话时取消任务, 尚未观察的事件也必须释放临时文件。
+                    while queue:
+                        dropped = queue.popleft()
+                        await self._finish_manual_request(dropped, "flow_observation_dropped")
+                        dropped.cleanup_temporary_local_files()
+                    session._scheduler_observer_task = None
+
+            coro = drain()
+            try:
+                task = session._spawn_observer_task(coro, name=f"flow-scheduler-{session.session_id}")
+                if task is None:
+                    while queue:
+                        dropped = queue.popleft()
+                        if dropped is not event:
+                            self._spawn_flow_manual_finalizer(dropped, "flow_observation_dropped")
+                        dropped.cleanup_temporary_local_files()
+                    return False
+                session._scheduler_observer_task = task
+
+                def cleanup_unstarted(done: asyncio.Task[Any]) -> None:
+                    # 协程首次运行前被 close 取消时, drain 的 finally 不会执行。
+                    if session._scheduler_observer_task is done:
+                        while queue:
+                            dropped = queue.popleft()
+                            self._spawn_flow_manual_finalizer(dropped, "flow_observation_dropped")
+                            dropped.cleanup_temporary_local_files()
+                        session._scheduler_observer_task = None
+
+                task.add_done_callback(cleanup_unstarted)
+            except BaseException:
+                coro.close()
+                queue.pop()
+                raise
+        return True
+
+    def _adopt_flow_session(self, session: Any) -> None:
+        """把调度器的 error_feedback 开关同步给流程会话"""
+        session.error_feedback = bool(self.error_feedback)
 
     async def _queued_source_current(self, event: MessageEvent, manager: SessionManager) -> bool:
         """

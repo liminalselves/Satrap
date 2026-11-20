@@ -41,7 +41,7 @@ from satrap.core.config.group_action_origin import (
     current_group_request_occupancy, current_model_action_authorization,
 )
 from satrap.core.config.group_events import GroupEventBuffer
-from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.core.type.plugin.compatibility import PluginEnvironment
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
@@ -56,7 +56,7 @@ from satrap.edictum.registry import (
     create_default_edictum_type_registry,
 )
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
+from satrap.edictum.plugin.apply import EdictumPluginApplySnapshot
 from satrap.core.utils.application_progress import progress_phase
 from satrap.core.pipeline.attachments import asr_resolver_from_manager
 from satrap.core.platform.notices import PlatformEventHub, set_current_hub
@@ -73,7 +73,8 @@ from satrap.core.platform import (
 from satrap.core.utils.paths import set_media_allowed_roots, set_media_storage_root
 from satrap.core.utils.validation import positive_timeout
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
-from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_bool, safe_getattr_str
+
 
 if TYPE_CHECKING:
     from satrap.core.telemetry.capture import TelemetryWriter
@@ -87,22 +88,35 @@ from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
 
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.plugin_authorization import permission_id_list, permission_id_list as _lines, evaluate_plugin_permissions, PluginPermissionDenied
-from satrap.edictum.plugin_config import PluginConfigManager, validate_config_values
-from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin.config import PluginConfigManager, validate_config_values
+from satrap.edictum.plugin.spec import parse_plugin_specs
 from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS, GroupConfigConflict
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.config.group_session import session_values, group_binding_chain, resolve_group_session
 from satrap.core.config.group_events import EVENT_KINDS, event_values
 from satrap.core.config.group_policy import policy_values, resolve_group_policy
 from satrap.core.config.wake_overrides import GROUP_KEYS
-from satrap.edictum.plugin_settings import validate_plugin_settings, resolve_runtime_specs
-from satrap.core.type import (
-    AdministratorRuntimeStatus, DiagnosticStatusBody, GroupAccountsResult, GroupActionPage,
-    GroupActionRecord, GroupActionTypesResult, GroupBindingOptionsResult, GroupMembersPage,
-    GroupSyncState, GroupSyncTicket, ManualWakeStatusResult, PlatformStoreRecovery,
-    ReloadConfigResult, RequestDiagnosticDetail, RequestDiagnosticsPage, UserCall,
+from satrap.edictum.plugin.settings import validate_plugin_settings, resolve_runtime_specs
+from satrap.core.type.control import (
+    AdministratorRuntimeStatus,
+    DiagnosticStatusBody,
+    GroupAccountsResult,
+    GroupActionPage,
+    GroupActionRecord,
+    GroupActionTypesResult,
+    GroupBindingOptionsResult,
+    GroupMembersPage,
+    GroupSyncState,
+    GroupSyncTicket,
+    ManualWakeStatusResult,
+    PlatformStoreRecovery,
+    ReloadConfigResult,
+    RequestDiagnosticDetail,
+    RequestDiagnosticsPage,
     WakeSubmitResult,
 )
+from satrap.core.type.model import UserCall
+
 from satrap.core.call_context import CallOrigin
 from satrap.core.config.group_actions import action_fingerprint
 from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
@@ -656,7 +670,7 @@ class BackendManager:
         account = await asyncio.to_thread(store.read_account, self_id)
         if account is None:
             raise LookupError("账号群配置不存在")
-        from satrap.core.platform.onebot.group_action_types import action_metadata
+        from satrap.core.platform.onebot.group_actions import action_metadata
 
         counts = await asyncio.to_thread(store.approval_inheritance_counts, self_id)
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
@@ -1328,7 +1342,8 @@ class BackendManager:
     async def group_action_types(self, adapter_id: str, self_id: str, group_id: str) -> GroupActionTypesResult:
         """返回当前群的动作参数结构、风险和有效审批模式"""
         from satrap.core.config.group_approval import effective_approval
-        from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS, action_metadata
+        from satrap.core.type.group_actions import ACTION_FIELDS
+        from satrap.core.platform.onebot.group_actions import action_metadata
 
         store = await asyncio.to_thread(self._group_directory_store, adapter_id)
         account, group, record = await asyncio.gather(
@@ -1882,7 +1897,7 @@ class BackendManager:
         action_type: str, params: dict[str, object], *, actor_kind: str,
     ) -> GroupActionRecord:
         """校验目标和参数, 按策略持久登记审批或原子占用后执行"""
-        from satrap.core.platform.onebot.group_action_types import normalize_action_params
+        from satrap.core.platform.onebot.group_actions import normalize_action_params
 
         normalized, secret_flag = normalize_action_params(action_type, params, self_id)
         authorization = current_model_action_authorization() if actor_kind == "model" else None
@@ -1947,7 +1962,7 @@ class BackendManager:
             self._group_action_flags[action_id] = secret_flag
         if requires_approval:
             from satrap.core.telemetry.capture import record_approval
-            from satrap.core.telemetry.contracts import MetricScope
+            from satrap.core.type.telemetry import MetricScope
 
             record_approval("invitation" if action_type == "handle_group_request" and normalized.get("sub_type") == "invite" else "group",
                             action_id, "pending", MetricScope(platform_id=adapter_id, self_id=self_id, conversation_kind="group", target_id=group_id))
@@ -1975,7 +1990,7 @@ class BackendManager:
             store.decide, self_id, group_id, action_id, approve=approve, policy_revision=version,
         )
         from satrap.core.telemetry.capture import record_approval
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         record_approval("invitation" if current["action_type"] == "handle_group_request" and current["params"].get("sub_type") == "invite" else "group",
                         action_id, "approved" if approve else "rejected",
@@ -3265,6 +3280,7 @@ class BackendManager:
         self._edictum_cfg = EdictumConfigManager(
             self._edictum_types,
             storage_path=self.config.edictum_config_path,
+            models=self._model_cfg,
         )
         logger.info("[BackendManager] EdictumConfigManager 就绪")
 

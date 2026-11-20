@@ -28,7 +28,7 @@ from satrap.core.approval.policy import (
     RiskLevel,
 )
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
-from satrap.edictum.plugin_resources import PluginResources
+from satrap.edictum.plugin.resources import PluginResources
 from satrap.core.utils.config_text import comma_names
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.framework.Base import (
@@ -37,7 +37,8 @@ from satrap.core.framework.Base import (
 )
 from satrap.core.utils.paths import get_project_root
 from .async_interaction import AsyncAskUserTool, AsyncShellTool, AsyncSubAgentTool
-from satrap.core.type import safe_getattr_callable
+from satrap.core.utils.attributes import safe_getattr_callable
+
 from .sync_interaction import AskUserTool, ShellTool, SubAgentTool
 from satrap.edictum import AsyncSimpleSession, SimpleSession, PluginHost
 from .async_write import AsyncWriteFileTool, AsyncEditFileTool, AsyncSearchReplaceTool

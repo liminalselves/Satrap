@@ -10,7 +10,10 @@ from satrap.core.utils.file_snapshot import file_fingerprint
 
 import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from satrap.core.config.model_snapshot import ModelConfigReader
 from copy import deepcopy
 import json
 import os
@@ -18,8 +21,9 @@ import traceback
 import math
 import time
 
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin.catalog import PluginCatalog
+from satrap.edictum.plugin.config import PluginConfigManager
+from satrap.edictum.plugin.spec import parse_plugin_specs
 from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
 from satrap.edictum.settings import normalize_session_settings
 from satrap.core.utils.snapshot_cache import SnapshotCache
@@ -42,6 +46,7 @@ class EdictumConfigManager:
         *,
         auto_create: bool = True,
         plugin_catalog: PluginCatalog | None = None,
+        models: ModelConfigReader | None = None,
     ) -> None:
         """
         初始化 Edictum 冷配置管理器
@@ -51,10 +56,12 @@ class EdictumConfigManager:
         - storage_path: 配置文件路径
         - auto_create: 是否自动创建父目录和空配置文件
         - plugin_catalog: 可选的已加载目录快照, 用于单次请求内一致读取
+        - models: 保存时校验 WF 模型引用和上下文窗口的只读来源; 磁盘 reload 不检查其当前状态
         """
         self.type_registry = type_registry
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
         self.plugin_catalog = plugin_catalog or PluginCatalog()
+        self.models = models
         self._configs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         if auto_create:
@@ -96,6 +103,54 @@ class EdictumConfigManager:
             raise ValueError("Edictum 配置名称不能包含路径分隔符")
         return name
 
+    def _normalize_flow_params(
+        self,
+        params: dict[str, Any],
+        catalog: PluginCatalog | None,
+        *,
+        check_execution: bool = True,
+    ) -> dict[str, Any]:
+        """
+        校验流程会话的 params.flow: 解析定义并做静态检查, 有错误即拒绝
+
+        参数:
+        - params: 原始 params
+        - catalog: 插件目录, 用于检查节点插件是否存在/停用
+        - check_execution: 是否把当前宿主执行总闸纳入检查; 读取持久化配置时关闭
+
+        返回:
+        - dict[str, Any]: 校验通过的 params
+        """
+        raw_flow = params.get("flow")
+        if raw_flow is None:
+            raise ValueError("flow 类型必须提供 params.flow")
+        from satrap.edictum.flow.definition import migrate_flow_definition, parse_flow_definition
+        from satrap.edictum.flow.registry import FlowNodeRegistry
+        from satrap.edictum.flow.validate import validate
+
+        registry = FlowNodeRegistry()
+        catalog_obj = catalog or self.plugin_catalog
+        plugin_catalog = {entry.name: entry for entry in catalog_obj.scan()}
+        for entry in plugin_catalog.values():
+            if entry.flow_nodes:
+                registry.register_plugin_nodes(entry.name, list(entry.flow_nodes))
+        definition, _, errors = migrate_flow_definition(parse_flow_definition(raw_flow), registry)
+        if errors:
+            raise ValueError(f"流程定义迁移失败: {'; '.join(str(e) for e in errors)}")
+        execution_enabled: dict[str, bool] | None = None
+        if check_execution:
+            plugin_config = PluginConfigManager()
+            execution_enabled = {name: plugin_config.host_state(name)["execution_enabled"] for name in plugin_catalog}
+        issues = validate(
+            definition, registry, plugin_catalog=plugin_catalog,
+            plugin_execution_enabled=execution_enabled,
+            models=self.models if check_execution else None,
+        )
+        if any(i.level == "error" for i in issues):
+            raise ValueError(
+                "流程静态检查未通过: " + "; ".join(f"{i.code} @{i.node or '-'}" for i in issues if i.level == "error"))
+        return dict(params)
+
     def _normalize_plugins(self, value: object, catalog: PluginCatalog | None = None) -> list[dict[str, Any]]:
         """
         校验插件配置列表并复制为 JSON 安全结构
@@ -116,13 +171,20 @@ class EdictumConfigManager:
             )
         ]
 
-    def _normalize_entry(self, entry: object, catalog: PluginCatalog | None = None) -> dict[str, Any]:
+    def _normalize_entry(
+        self,
+        entry: object,
+        catalog: PluginCatalog | None = None,
+        *,
+        check_execution: bool = True,
+    ) -> dict[str, Any]:
         """
         校验并规范化单个配置条目
 
         参数:
         - entry: 原始配置对象
         - catalog: 本轮读取固定的插件目录, 默认读取最新目录
+        - check_execution: 是否拒绝引用当前已停用插件的 flow; 持久化读取时关闭
 
         返回:
         - dict[str, Any]: 规范化配置条目
@@ -137,6 +199,10 @@ class EdictumConfigManager:
             raise ValueError("params 必须是对象")
         if type_name in {"simple", "async_simple"}:
             params = normalize_session_settings(params)
+        elif type_name == "flow":
+            # 流程会话不做 simple 的参数归一化, 也不注入默认插件;
+            # 保存时的合法性由 _normalize_entry 之后的流程静态检查保证
+            params = self._normalize_flow_params(params, catalog, check_execution=check_execution)
         model_name = str(raw.get("model_name", "")).strip()
         updated = raw.get("_updated_at")
         if updated is not None and (not isinstance(updated, (int, float)) or isinstance(updated, bool) or not math.isfinite(updated) or updated < 0):
@@ -204,7 +270,7 @@ class EdictumConfigManager:
                     loaded: dict[str, dict[str, Any]] = {}
                     for raw_name, raw_entry in cast(dict[str, object], payload).items():
                         name = self._normalize_name(raw_name)
-                        loaded[name] = self._normalize_entry(raw_entry, catalog)
+                        loaded[name] = self._normalize_entry(raw_entry, catalog, check_execution=False)
                     return loaded
 
                 if cached:

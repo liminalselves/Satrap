@@ -202,7 +202,7 @@ class ApplicationOperations:
         - operation: 已更新的最终任务状态
         """
         from satrap.core.telemetry.capture import current_writer, record_activity
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         writer = current_writer()
         if writer is None:

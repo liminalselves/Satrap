@@ -13,7 +13,8 @@ from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout
 from satrap.cli.client import DaemonClient
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested
 from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table, render_data
-from satrap.core.type import safe_getattr, safe_getattr_str, safe_getattr_list
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str, safe_getattr_list
+
 
 from satrap.core.config.session_class_service import SessionClassConfigService
 

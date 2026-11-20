@@ -3,6 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 import asyncio
 import inspect
 import sqlite3
@@ -11,11 +15,13 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.type.session_provider import SESSION_CLASS_PROVIDER
 from satrap.core.config.platform_policy import validate_event_limits
 from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
-from satrap.core.type import Group, PlatformError, PlatformStatus, PlatformMessage, safe_getattr, safe_getattr_str
+from satrap.core.type.platform import Group, PlatformError, PlatformStatus, PlatformMessage
+from satrap.core.utils.attributes import safe_getattr, safe_getattr_str
+
 
 from satrap.core.log import logger
 
@@ -34,20 +40,40 @@ if TYPE_CHECKING:
     from satrap.core.config.administrator_groups import AdministratorService
     from satrap.core.config.group_actions import GroupActionRecord
     from satrap.core.group_chat.reminder_host import ReminderHost
-    from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
+    from satrap.core.type.group_chat import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
     from satrap.core.platform.scheduled import ScheduledTarget, ScheduledRecorder
     from satrap.core.platform.receipt import SendReceipt
     from satrap.core.file_access.artifacts import FileArtifact
 
 
 EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
+# 兼容现有适配器的同步确认转换入口, 将写入任务绑定到当前发送动作。
+_confirmed_writes: ContextVar[tuple[object, list[asyncio.Task[bool]]] | None] = ContextVar(
+    "platform_confirmed_writes", default=None
+)
+# 错误反馈不是对话内容: 置位期间确认发送不写消息档案, 避免下一轮被当成机器人发言喂回模型
+_archive_suppressed: ContextVar[bool] = ContextVar("platform_archive_suppressed", default=False)
+
+
+@contextmanager
+def error_feedback_send() -> Iterator[None]:
+    """
+    标记块内的发送为错误反馈, 平台确认后不写入消息档案
+
+    不经过 send_message(purpose=...) 的发送路径 (如后台定时通道) 用它显式标记
+    """
+    token = _archive_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _archive_suppressed.reset(token)
 # 统一事件回调签名:
 # - 输入: PlatformEvent
 # - 输出: 可等待对象或 None (均可)
 
 from satrap.core.config.group_session import decode_group_route
 from satrap.core.platform.message_archive import archive_snapshot
-from satrap.core.group_chat.types import GroupChatError, CAPABILITIES
+from satrap.core.type.group_chat import GroupChatError, CAPABILITIES
 from satrap.core.platform.receipt import SendReceipt
 
 
@@ -117,6 +143,35 @@ class PlatformAdapter(ABC):
     conversation_catalog_fields: dict[str, str] = {}
     conversation_kinds: dict[str, str] = {"private": "私聊", "group": "群聊"}
     supports_scheduled_group_send: bool = False
+    supports_scheduled_private_send: bool = False
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # 已有适配器的确认转换函数是同步的; 在其异步发送边界等待收集到的写入。
+        for name in ("send_message", "_send_message", "_send_chunk", "_send_forward"):
+            method = cls.__dict__.get(name)
+            if method is None or not inspect.iscoroutinefunction(method):
+                continue
+
+            @wraps(method)
+            async def await_confirmed_writes(self: PlatformAdapter, *args: Any,
+                                             __method: Any = method, **kwargs: Any) -> Any:
+                writes: list[asyncio.Task[bool]] = []
+                token = _confirmed_writes.set((self, writes))
+                suppress = (_archive_suppressed.set(True)
+                            if kwargs.get("purpose") == "error_feedback" else None)
+                try:
+                    return await __method(self, *args, **kwargs)
+                finally:
+                    try:
+                        if writes:
+                            await asyncio.shield(asyncio.gather(*writes))
+                    finally:
+                        if suppress is not None:
+                            _archive_suppressed.reset(suppress)
+                        _confirmed_writes.reset(token)
+
+            setattr(cls, name, await_confirmed_writes)
 
     @staticmethod
     def normalize_user_identifier(value: str) -> str:
@@ -351,11 +406,11 @@ class PlatformAdapter(ABC):
         - scope: 适配器为自身私聊回显等情况核验的实际对话身份
 
         返回:
-        - 新消息成功入档时返回 True, 未装配存储或失败时返回 False
+        - 新消息成功入档时返回 True, 未装配存储、重复或失败时返回 False
         """
         store = self.message_archive
         from satrap.core.telemetry.capture import current_writer, record_message
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         writer = current_writer()
         if store is None and writer is None:
@@ -365,10 +420,14 @@ class PlatformAdapter(ABC):
             identity = scope or self.message_archive_scope(message)
             if identity.self_id != message.self_id or identity.adapter_id != self.config.id:
                 raise ValueError("消息档案身份与原始消息不一致")
+            if direction == "outbound":
+                snapshot = archive_snapshot(message, direction=direction)
+                label = message.group.group_name or "" if message.group else ""
+                return await self._record_confirmed_message(identity, snapshot, label=label)
             if writer is not None:
                 record_message(MetricScope(platform_id=identity.adapter_id, self_id=identity.self_id, conversation_kind=identity.conversation_kind,
                                             target_id=identity.chat_id), str(message.message_id),
-                               received_at=message.received_at, outbound=direction == "outbound")
+                               received_at=message.received_at, outbound=False)
             if store is None:
                 return False
             snapshot = archive_snapshot(message, direction=direction)
@@ -378,22 +437,36 @@ class PlatformAdapter(ABC):
             logger.error(f"[消息档案] 采集失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
             return False
 
-    def queue_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage) -> bool:
+    def queue_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage, *, label: str = "") -> bool:
         """
-        将已确认的实际发送快照交给有界写入任务, 不改变发送回执
+        兼容同步发送确认转换入口, 由当前异步发送边界等待实际写入
 
         参数:
         - scope: 提交平台动作时冻结的账号和目标身份
         - snapshot: 平台确认消息 ID 后生成的实际内容, 不含待发送草稿
+        - label: 采集时可用的对话名称, 默认为空
 
         返回:
-        - 已排入写入任务时返回 True, 未配置档案或拒绝采集时返回 False
+        - 已交给当前发送边界时返回 True, 无发送边界时返回 False
         """
+        context = _confirmed_writes.get()
+        if context is None or context[0] is not self:
+            logger.error(f"[消息档案] 出站采集缺少发送边界, 平台={self.config.id}")
+            return False
+        # create_task 复制当前上下文, 错误反馈标记随任务带入
+        task = asyncio.create_task(self._record_confirmed_message(scope, snapshot, label=label))
+        context[1].append(task)
+        return True
+
+    async def _record_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage,
+                                        *, label: str = "") -> bool:
+        """等待已确认的实际消息入档, 再异步通知流程观察者; 错误反馈只计数不入档。"""
         store = self.message_archive
         from satrap.core.telemetry.capture import current_writer, record_message
-        from satrap.core.telemetry.contracts import MetricScope
+        from satrap.core.type.telemetry import MetricScope
 
         writer = current_writer()
+        suppressed = _archive_suppressed.get()
         if store is None and writer is None:
             return False
         try:
@@ -404,39 +477,39 @@ class PlatformAdapter(ABC):
             if writer is not None:
                 record_message(MetricScope(platform_id=scope.adapter_id, self_id=scope.self_id, conversation_kind=scope.conversation_kind,
                                             target_id=scope.chat_id), snapshot.message_id, received_at=snapshot.received_at, outbound=True)
-            if store is None:
+            if store is None or suppressed:
                 return False
-            if len(self._archive_tasks) >= self._archive_capacity:
-                raise ValueError("已确认发送的档案写入队列已满")
-            task = asyncio.create_task(self._write_confirmed_message(store, scope, snapshot))
-            self._archive_tasks.add(task)
-            task.add_done_callback(self._archive_tasks.discard)
-            return True
-        except Exception as exc:
-            logger.error(f"[消息档案] 出站采集未入队, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
-            return False
-
-    async def _write_confirmed_message(self, store: PlatformMessageStore, scope: MessageScope,
-                                       snapshot: ArchiveMessage) -> None:
-        """
-        在发送任务之外写入确认消息, 保留提交时的存储和身份
-
-        参数:
-        - store: 入队时所属平台的档案存储
-        - scope: 已冻结的真实发送范围
-        - snapshot: 已确认消息快照
-        """
-        try:
-            await asyncio.to_thread(store.record, scope, snapshot)
+            recorded = await asyncio.to_thread(store.record, scope, snapshot, label=label)
+            observers = tuple(getattr(self, "_flow_observers", ()))
+            if recorded and observers:
+                if len(self._archive_tasks) >= self._archive_capacity:
+                    logger.warning(f"[消息档案] 出站观察队列已满, 平台={scope.adapter_id}, 消息={snapshot.message_id}")
+                else:
+                    task = asyncio.create_task(self._notify_confirmed_message(observers, scope, snapshot))
+                    self._archive_tasks.add(task)
+                    task.add_done_callback(self._archive_tasks.discard)
+            return recorded
         except asyncio.CancelledError:
             logger.warning(f"[消息档案] 出站写入等待被取消, 平台={scope.adapter_id}, 消息={snapshot.message_id}")
             raise
         except Exception as exc:
             logger.error(f"[消息档案] 出站写入失败, 平台={scope.adapter_id}, 原因={type(exc).__name__}: {exc}")
+            return False
+
+    async def _notify_confirmed_message(self, observers: tuple[Any, ...], scope: MessageScope,
+                                        snapshot: ArchiveMessage) -> None:
+        """仅对成功新增的消息异步执行流程观察回调。"""
+        for observe in observers:
+            try:
+                result = observe(scope, snapshot)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                logger.warning(f"[消息档案] 出站观察回调失败: {exc}")
 
     async def drain_message_archive(self, timeout: float = 5.0) -> None:
         """
-        停止时有限等待已确认消息写入, 超时任务仍自行完成或记录失败
+        停止时有限等待已确认消息的观察回调, 超时任务仍自行完成
 
         参数:
         - timeout: 最多等待的秒数
@@ -1173,7 +1246,7 @@ class PlatformAdapter(ABC):
             changed = True
         if changed:
             from satrap.core.telemetry.capture import bind_scope, current_writer, record_activity
-            from satrap.core.telemetry.contracts import MetricScope
+            from satrap.core.type.telemetry import MetricScope
 
             with bind_scope(service="backend"):
                 writer = current_writer()

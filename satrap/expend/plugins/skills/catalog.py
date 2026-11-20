@@ -10,7 +10,7 @@ from typing import TypedDict, cast
 
 from satrap.expend.plugins.skills.store import MAX_MARKDOWN_BYTES
 from satrap.core.utils.skills.utils import _parse_front_matter
-from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin.catalog import PluginCatalog
 
 from satrap.core.log import logger
 
