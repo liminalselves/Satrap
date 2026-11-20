@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { AlertCircle, AlertTriangle, ArrowRight, CheckCircle2, CloudOff, Info, Puzzle, Spline, Trash2, Wrench } from 'lucide-react';
+import { AlertCircle, AlertTriangle, ArrowRight, CheckCircle2, CloudOff, Info, Puzzle, Route, Spline, Trash2, Wrench } from 'lucide-react';
 import type { EdictumAvailablePlugin, EdictumPluginConfigField, FlowIssue, FlowPortType } from '@/api/types';
 import { Badge, Button, Input, Tabs } from '@/components/kit';
 import { PluginConfigFields } from '@/components/common/PluginConfigFields';
@@ -10,6 +10,8 @@ import {
   type EdgeReading, type FlowDefaults, type FlowEdge, type FlowNode, type NodeData, type PluginDefaults, type TypeIndex,
 } from './flowModel';
 import { nodeIcon, nodeTint, PORT_STYLE } from './portStyle';
+import { traceable, traceActivation } from './trace';
+import { TraceList, type TraceFocus } from './TracePanel';
 
 /** 检查状态: idle 未检查, checking 请求中, ready 有结果, unavailable 检查服务不可用 */
 export type ValidateState = 'idle' | 'checking' | 'ready' | 'unavailable';
@@ -65,8 +67,40 @@ export function groupIssues(issues: FlowIssue[]): Array<{ category: string; item
   }));
 }
 
-function FlowOverview({ issues, state, analysis, nodes, onFocus, onSelect }: {
-  issues: FlowIssue[]; state: ValidateState; analysis: FlowAnalysis; nodes: FlowNode[];
+/** 概览里每个平台回复节点一行: 链路数和来源, 点击开始追踪 */
+function ReplyChains({ nodes, edges, types, focus, onTrace }: {
+  nodes: FlowNode[]; edges: FlowEdge[]; types: TypeIndex; focus: TraceFocus | null; onTrace: (focus: TraceFocus | null) => void;
+}) {
+  const outputs = nodes.filter((node) => types.get(node.data.type)?.role === 'sink');
+  if (!outputs.length) return null;
+  return (
+    <div className="space-y-1.5" aria-label="回复链路">
+      <h3 className="text-[13px] font-semibold text-fg">回复链路</h3>
+      {outputs.map((node) => {
+        const trace = traceActivation(node.id, nodes, edges, types);
+        const live = trace.paths.filter((path) => path.root !== null);
+        const roots = [...new Set(live.map((path) => path.root === 'wake' ? '唤醒' : path.root === 'threshold' ? '阈值' : types.get(path.root!)?.label ?? path.root))];
+        const decided = live.filter((path) => path.modelDecides).length;
+        const on = focus?.target === node.id;
+        return (
+          <button key={node.id} type="button" onClick={() => onTrace(on ? null : { target: node.id, path: null })} aria-pressed={on}
+            className={cn('flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-[12px] hover:bg-glass-hover', on ? 'border-[rgb(var(--rgb-accent)/0.6)]' : 'border-line')}>
+            <Route className="h-3.5 w-3.5 flex-none text-accent" />
+            <span className="font-medium text-fg">{node.data.title}</span>
+            <span className="min-w-0 flex-1 truncate text-fg-3">
+              {live.length ? `${live.length} 条 · ${roots.join(' / ')}${decided ? ` · ${decided} 条由模型决定` : ''}` : <span className="text-orange">没有能触发的链路</span>}
+            </span>
+          </button>
+        );
+      })}
+      <p className="text-xs text-fg-3">点击后画布只高亮能让它发出回复的链路; 选中任意 WF 或触发节点也可以追踪。</p>
+    </div>
+  );
+}
+
+function FlowOverview({ issues, state, analysis, nodes, edges, types, traceFocus, onTrace, onFocus, onSelect }: {
+  issues: FlowIssue[]; state: ValidateState; analysis: FlowAnalysis; nodes: FlowNode[]; edges: FlowEdge[]; types: TypeIndex;
+  traceFocus: TraceFocus | null; onTrace: (focus: TraceFocus | null) => void;
   onFocus: (issue: FlowIssue) => void; onSelect: (id: string) => void;
 }) {
   const [filter, setFilter] = useState<'all' | 'error' | 'warning'>('all');
@@ -79,6 +113,7 @@ function FlowOverview({ issues, state, analysis, nodes, onFocus, onSelect }: {
         <h3 className="text-[15px] font-semibold text-fg">流程概览</h3>
         <p className="mt-0.5 text-[13px] text-fg-3">只有 WF 会调用 LLM。触发磁贴和逻辑门接在 WF 左侧, 决定它什么时候运行。</p>
       </div>
+      <ReplyChains nodes={nodes} edges={edges} types={types} focus={traceFocus} onTrace={onTrace} />
       <div className="space-y-1.5">
         {[...analysis.workflows.entries()].map(([id, wf]) => (
           <button key={id} type="button" onClick={() => onSelect(id)} className="w-full rounded-lg border border-line px-2.5 py-1.5 text-left text-[12px] hover:bg-glass-hover">
@@ -221,6 +256,10 @@ export interface InspectorProps {
   focusField: string | null;
   /** 全部节点 */
   nodes: FlowNode[];
+  /** 全部边, 用于激活链路追踪 */
+  edges: FlowEdge[];
+  /** 正在追踪的激活链路; null 表示没有在追踪 */
+  traceFocus: TraceFocus | null;
   /** 节点类型表 */
   types: TypeIndex;
   /** 端口类型显示名 */
@@ -250,6 +289,7 @@ export interface InspectorProps {
   onSelect: (id: string) => void;
   onFocusIssue: (issue: FlowIssue) => void;
   onPromote: (type: string, key: string, value: unknown) => void;
+  onTrace: (focus: TraceFocus | null) => void;
 }
 
 export function Inspector(props: InspectorProps) {
@@ -269,7 +309,10 @@ export function Inspector(props: InspectorProps) {
     return <EdgeInspector edge={edge} type={props.edgeType} portLabel={props.portLabel} reading={props.reading} nodes={nodes} types={types} issues={issues}
       focus={props.focusLabel} onLabel={props.onEdgeLabel} onDelete={props.onEdgeDelete} onSelect={props.onSelect} />;
   }
-  if (!node) return <FlowOverview issues={issues} state={props.validateState} analysis={analysis} nodes={nodes} onFocus={props.onFocusIssue} onSelect={props.onSelect} />;
+  if (!node) {
+    return <FlowOverview issues={issues} state={props.validateState} analysis={analysis} nodes={nodes} edges={props.edges} types={types}
+      traceFocus={props.traceFocus} onTrace={props.onTrace} onFocus={props.onFocusIssue} onSelect={props.onSelect} />;
+  }
 
   const def = types.get(node.data.type);
   const own = issues.filter((issue) => issue.node === node.id);
@@ -335,6 +378,20 @@ export function Inspector(props: InspectorProps) {
           <div className="text-fg-3">左侧"条件"全部为真才触发; 需要"或""非"时先经过逻辑门</div>
         </div>
       )}
+
+      {traceable(node.id, nodes, props.edges, types) && (() => {
+        const trace = traceActivation(node.id, nodes, props.edges, types);
+        const on = props.traceFocus?.target === node.id;
+        return (
+          <Section title="激活链路" right={
+            <Button size="sm" variant={on ? 'tinted' : 'ghost'} icon={<Route className="h-3.5 w-3.5" />} aria-pressed={on}
+              onClick={() => props.onTrace(on ? null : { target: node.id, path: null })}>{on ? '退出追踪' : '在画布上追踪'}</Button>
+          }>
+            <TraceList trace={trace} focus={props.traceFocus} nodes={nodes} types={types} onTrace={props.onTrace} onSelect={props.onSelect} />
+            <p className="text-xs text-fg-3">从这里往前倒推, 每条链路都能让它运行{def.role === 'sink' ? '并发出回复' : ''}。点节点名去编辑, 点链路头只高亮这一条。</p>
+          </Section>
+        );
+      })()}
 
       {def.role !== 'note' && (
         <Section title="端口">

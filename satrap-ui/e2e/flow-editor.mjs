@@ -336,6 +336,56 @@ async function flow_import_json(runtime) {
   console.log('PASS: 拖入配置文件与文件选择可导入并撤销, 错误 JSON 不动画布, 粘贴替换后保存写入导入的流程');
 }
 
+async function flow_activation_trace(runtime) {
+  /** 激活链路追踪: 从回复节点倒推唤醒和阈值经交接两条链路, 画布只高亮链路, 可单选一条, 点步骤去编辑, Esc 退出 */
+  const flow = {
+    ...FLOWS.agent_rp,
+    nodes: [...FLOWS.agent_rp.nodes, { id: 'nudge', type: 'tool', version: 1, title: '让 RP 开口', config: { tool_name: 'nudge_rp' } }],
+    edges: [...FLOWS.agent_rp.edges, { from: 'agent.tool', to: 'nudge.caller' }, { from: 'nudge.event', to: 'rp.trigger' }],
+    layout: { ...FLOWS.agent_rp.layout, nudge: { x: 500, y: 430 } },
+  };
+  const { page, origin, requests, errors } = await open(runtime, { sessions: { rp: flowConfig(flow) } });
+  await page.goto(`${origin}/agents/rp/flow`);
+  await page.locator('[data-flow-node="nudge"]').waitFor();
+  const node = (id) => page.locator(`[data-flow-node="${id}"]`);
+  const hasClass = async (id, name) => (await node(id).getAttribute('class')).split(/\s+/).includes(name);
+
+  const chains = page.getByLabel('回复链路');
+  await chains.getByText('2 条 · 唤醒 / 阈值 · 1 条由模型决定').waitFor();
+  await chains.getByRole('button', { name: /最后回复/ }).click();
+  const banner = page.getByRole('status', { name: '激活链路追踪' });
+  await banner.getByRole('button', { name: '全部 2' }).waitFor();
+  assert.ok(await hasClass('reply', 'flow-trace-target'));
+  for (const id of ['wake', 'rp', 'th', 'agent', 'nudge']) assert.ok(await hasClass(id, 'flow-trace-on'), `${id} 在链路上`);
+  for (const id of ['snapshot', 'rp_input', 'bucket', 'source']) assert.ok(await hasClass(id, 'flow-trace-dim'), `${id} 不在链路上`);
+  assert.ok((await page.locator('[data-id="nudge.event->rp.trigger"]').getAttribute('class')).includes('flow-edge-trace-on'));
+  assert.ok((await page.locator('[data-id="agent.text->snapshot.write"]').getAttribute('class')).includes('flow-edge-trace-dim'));
+  await shot(page, 'flow-trace-all');
+
+  // 只看第 2 条 (阈值 -> Agent -> 交接 -> RP): 唤醒淡出
+  await banner.getByRole('button', { name: '2', exact: true }).click();
+  assert.ok(await hasClass('wake', 'flow-trace-dim'));
+  assert.ok(await hasClass('nudge', 'flow-trace-on'));
+
+  // 选中 RP 节点: 检查器列出它的激活链路, 追踪保持; 点链路里的步骤去编辑交接工具
+  await node('rp').click();
+  const list = page.getByLabel('激活链路', { exact: true });
+  await list.locator('[data-trace-path="1"]').getByText('模型决定').waitFor();
+  await shot(page, 'flow-trace-inspector');
+  await list.locator('[data-trace-path="1"]').getByRole('button', { name: '让 RP 开口' }).click();
+  await page.getByLabel('节点名称').waitFor();
+  assert.equal(await page.getByLabel('节点名称').inputValue(), '让 RP 开口');
+  assert.ok(await hasClass('reply', 'flow-trace-target'), '切换选中不退出追踪');
+
+  // Esc 退出追踪, 画布恢复
+  await page.locator('body').press('Escape');
+  await banner.waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.flow-trace-dim, .flow-trace-on, .flow-trace-target').count(), 0);
+  assert.equal(requests.filter((item) => item.method === 'PATCH' || item.method === 'POST' && item.path.includes('/sessions')).length, 0, '追踪不修改流程');
+  assert.deepEqual(errors, []);
+  console.log('PASS: 回复节点倒推出唤醒与阈值经交接两条链路, 画布高亮链路并可单选, 点步骤去编辑, Esc 退出');
+}
+
 async function flow_save_conflict(runtime) {
   /** 409 冲突: 弹窗提示, 覆盖时用最新修订重新提交 */
   const { page, origin, requests, errors, state } = await open(runtime, { sessions: { rp: flowConfig(FLOWS.agent_rp) } });
@@ -430,6 +480,7 @@ export const scenarios = [
   ['flow-validate-unavailable', flow_validate_unavailable],
   ['flow-connect-reject', flow_connect_reject],
   ['flow-import-json', flow_import_json],
+  ['flow-activation-trace', flow_activation_trace],
   ['flow-save-conflict', flow_save_conflict],
   ['flow-plugin-defaults', flow_plugin_defaults],
   ['flow-runtime-status', flow_runtime_status],

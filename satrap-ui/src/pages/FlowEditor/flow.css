@@ -101,5 +101,12 @@
 .flow-note-neutral { --note: var(--rgb-neutral); }
 .flow-note.flow-node-selected { box-shadow: 0 0 0 2px rgb(var(--rgb-accent) / 0.8); }
 
+/* 激活链路追踪: 链路外的节点和边淡出, 目标节点加强调环 */
+.flow-trace-dim { opacity: 0.22; transition: opacity 200ms; }
+.flow-trace-on { transition: opacity 200ms; }
+.flow-trace-target { box-shadow: 0 0 0 2px rgb(var(--rgb-accent) / 0.9), 0 10px 32px -8px rgb(var(--rgb-accent) / 0.6) !important; }
+.flow-edge-trace-dim { opacity: 0.12; }
+.flow-edge-trace-on .react-flow__edge-path { stroke-width: 2.6 !important; filter: drop-shadow(0 0 3px rgb(var(--rgb-accent) / 0.7)); }
+
 /* 从问题面板定位到的字段短暂高亮 */
 .flow-field-focus { border-radius: 10px; box-shadow: 0 0 0 2px rgb(var(--rgb-red) / 0.6); transition: box-shadow 300ms; }

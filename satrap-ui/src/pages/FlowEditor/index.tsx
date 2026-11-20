@@ -37,6 +37,8 @@ import { Inspector } from './Inspector';
 import { DRAG_MIME, Palette } from './Palette';
 import { nodeTint, PORT_STYLE } from './portStyle';
 import { pruneUnavailable, TEMPLATES } from './templates';
+import { pathHighlight, traceable, traceActivation } from './trace';
+import { TraceBanner, type TraceFocus } from './TracePanel';
 import { FlowUiContext, type FlowUi } from './uiState';
 import { useFlowValidation } from './useFlowValidation';
 
@@ -82,7 +84,7 @@ interface Loaded {
 const isTyping = (target: EventTarget | null) => target instanceof HTMLElement
   && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
 
-function decorateEdge(edge: FlowEdge, type: FlowPortType, signal: boolean, reading: EdgeReading | null, broken: boolean): FlowEdge {
+function decorateEdge(edge: FlowEdge, type: FlowPortType, signal: boolean, reading: EdgeReading | null, broken: boolean, traced?: boolean): FlowEdge {
   const style = PORT_STYLE[type];
   const color = `rgb(${style.rgb})`;
   const note = edge.data?.label;
@@ -91,7 +93,8 @@ function decorateEdge(edge: FlowEdge, type: FlowPortType, signal: boolean, readi
     type: signal ? 'default' : 'smoothstep',
     animated: type === 'event',
     label: [reading?.text, note && `“${note}”`].filter(Boolean).join('  ') || undefined,
-    className: cn(note && 'flow-edge-has-note', broken && 'flow-edge-issue'),
+    className: cn(note && 'flow-edge-has-note', broken && 'flow-edge-issue',
+      traced === true && 'flow-edge-trace-on', traced === false && 'flow-edge-trace-dim'),
     style: { stroke: color, strokeOpacity: signal ? 0.95 : 0.8, strokeWidth: signal ? 1.6 : 1.8, strokeDasharray: style.dash },
     markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
     labelBgPadding: [6, 3],
@@ -173,10 +176,19 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
   const readings = useMemo(() => new Map(edges.map((edge) => [edge.id, edgeReading(edge, nodes, edges, types, defaults, pluginDefaults, KIND_VALUES[kinds])])), [edges, nodes, types, defaults, pluginDefaults, kinds]);
   const edgeTypes = useMemo(() => new Map(edges.map((edge) => [edge.id, outputType(edge.source, edge.sourceHandle ?? '', nodes, edges, types)])), [edges, nodes, types]);
   const brokenEdges = useMemo(() => new Set(issues.filter((issue) => issue.edge && issue.level === 'error').map((issue) => issue.edge!)), [issues]);
+  // 激活链路追踪: 目标被删除或不再可追踪时自动退出
+  const [traceFocus, setTraceFocus] = useState<TraceFocus | null>(null);
+  const traceTarget = traceFocus && traceable(traceFocus.target, nodes, edges, types) ? traceFocus.target : null;
+  const trace = useMemo(() => (traceTarget ? traceActivation(traceTarget, nodes, edges, types) : null), [traceTarget, nodes, edges, types]);
+  const highlight = useMemo(() => {
+    if (!trace) return null;
+    const path = traceFocus?.path != null ? trace.paths[traceFocus.path] : undefined;
+    return path ? pathHighlight(path) : { nodes: trace.nodes, edges: trace.edges };
+  }, [trace, traceFocus?.path]);
   const shownEdges = useMemo(() => edges.map((edge) => {
     const type = edgeTypes.get(edge.id) ?? 'messages';
-    return decorateEdge(edge, type, signalType(type), readings.get(edge.id) ?? null, brokenEdges.has(edge.id));
-  }), [edges, edgeTypes, readings, brokenEdges, signalType]);
+    return decorateEdge(edge, type, signalType(type), readings.get(edge.id) ?? null, brokenEdges.has(edge.id), highlight ? highlight.edges.has(edge.id) : undefined);
+  }), [edges, edgeTypes, readings, brokenEdges, signalType, highlight]);
   const counts = useMemo(() => {
     const map = new Map<string, number>();
     for (const node of nodes) map.set(node.data.type, (map.get(node.data.type) ?? 0) + 1);
@@ -360,6 +372,23 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
     setNodes((current) => current.map((node) => ({ ...node, selected: node.id === id })));
     void fitView({ nodes: [{ id }], duration: 400, maxZoom: 1.1, padding: 0.8 });
   }, [fitView, setNodes]);
+  /** 开始或切换追踪; 新目标时把整条链路收进视野 */
+  const startTrace = useCallback((next: TraceFocus | null) => {
+    setTraceFocus(next);
+    if (!next || next.target === traceFocus?.target) return;
+    const found = traceActivation(next.target, nodes, edges, types);
+    if (found.nodes.size) void fitView({ nodes: [...found.nodes].map((id) => ({ id })), duration: 400, maxZoom: 1.1, padding: 0.15 });
+  }, [edges, fitView, nodes, traceFocus?.target, types]);
+  useEffect(() => {
+    if (!traceFocus) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || isTyping(event.target) || document.querySelector('[role="dialog"]')) return;
+      setTraceFocus(null);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [traceFocus]);
+
   const focusIssue = useCallback((issue: FlowIssue) => {
     if (issue.node) { focusNode(issue.node, issue.field ?? null); return; }
     const edge = issue.edge ? edges.find((item) => item.id === issue.edge) : undefined;
@@ -478,8 +507,8 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
 
   const ui = useMemo<FlowUi>(() => ({
     issues, running: new Set(), types, portTypes: meta.port_types, defaults, pluginDefaults, analysis, nodes, edges, connecting,
-    kinds: KIND_VALUES[kinds],
-  }), [analysis, connecting, defaults, edges, issues, kinds, meta.port_types, nodes, pluginDefaults, types]);
+    kinds: KIND_VALUES[kinds], traced: trace && highlight ? { target: trace.target, nodes: highlight.nodes } : null,
+  }), [analysis, connecting, defaults, edges, highlight, issues, kinds, meta.port_types, nodes, pluginDefaults, trace, types]);
 
   const onMoveEnd = useCallback((_: unknown, viewport: Viewport) => setFlowViewport(name, viewport), [name, setFlowViewport]);
 
@@ -584,6 +613,10 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
                 <p className="rounded-full border border-line bg-[var(--glass-bg-strong)] px-4 py-1.5 text-[13px] font-medium text-fg shadow-[var(--shadow-1)]">松开以导入流程 JSON, 将替换当前画布 (可撤销)</p>
               </div>
             )}
+            {trace && traceFocus && !connecting && (
+              <TraceBanner trace={trace} focus={traceFocus} title={nodes.find((node) => node.id === trace.target)?.data.title ?? trace.target}
+                onTrace={startTrace} onSelect={(id) => focusNode(id)} />
+            )}
             {connecting && (
               <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-full border border-line bg-[var(--glass-bg-strong)] px-3 py-1 text-[12px] text-fg-2 shadow-[var(--shadow-1)]">
                 正在连接 <span style={{ color: `rgb(${PORT_STYLE[connecting].rgb})` }}>{portLabel(connecting)}</span>, 只有接受该类型的端口可以放下
@@ -598,7 +631,8 @@ function Editor({ name, creating, loaded, reload }: { name: string; creating: bo
             )}
             <Inspector
               edge={edgeSel} edgeType={edgeSel ? edgeTypes.get(edgeSel.id) ?? null : null} reading={edgeSel ? readings.get(edgeSel.id) ?? null : null} focusLabel={editLabel}
-              node={selectedNode} focusField={focusField} nodes={nodes} types={types} portLabel={portLabel}
+              node={selectedNode} focusField={focusField} nodes={nodes} edges={edges} types={types} portLabel={portLabel}
+              traceFocus={traceTarget ? traceFocus : null} onTrace={startTrace}
               issues={issues} validateState={validateState} defaults={defaults} pluginDefaults={pluginDefaults} analysis={analysis}
               plugins={plugins} models={meta.models} kinds={KIND_VALUES[kinds]}
               onEdgeLabel={setEdgeLabel} onEdgeDelete={deleteEdge} onPatch={patchNode} onConfig={setConfig} onReset={resetConfig}

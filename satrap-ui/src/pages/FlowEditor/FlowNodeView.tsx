@@ -86,13 +86,14 @@ function Badges({ id }: { id: string }) {
 }
 
 export const FlowNodeView = memo(function FlowNodeView({ id, data, selected }: NodeProps<FlowNode>) {
-  const { issues, running, types, defaults, pluginDefaults, analysis, nodes, kinds } = useFlowUi();
+  const { issues, running, types, defaults, pluginDefaults, analysis, nodes, kinds, traced } = useFlowUi();
   const def = types.get(data.type);
   const hasError = issues.some((issue) => issue.node === id && issue.level === 'error');
+  const traceClass = traced && (traced.target === id ? 'flow-trace-target' : traced.nodes.has(id) ? 'flow-trace-on' : 'flow-trace-dim');
 
   if (!def) {
     return (
-      <div className="flow-node surface tint-red w-[220px] rounded-[14px] !p-3" data-flow-node={id}>
+      <div className={cn('flow-node surface tint-red w-[220px] rounded-[14px] !p-3', traceClass)} data-flow-node={id}>
         <div className="flex items-center gap-2 text-[13px] font-semibold text-red"><HelpCircle className="h-4 w-4" />{data.title}</div>
         <div className="mt-1 text-[12px] text-fg-3">未知节点类型 {data.type}, 插件可能已卸载</div>
       </div>
@@ -102,11 +103,11 @@ export const FlowNodeView = memo(function FlowNodeView({ id, data, selected }: N
   const values = resolveConfig(data, types, defaults, pluginDefaults).values;
   const Icon = nodeIcon(def);
   const isRunning = running.has(id);
-  const common = cn('flow-node', selected && 'flow-node-selected', isRunning && 'flow-node-running', hasError && 'flow-node-error');
+  const common = cn('flow-node', selected && 'flow-node-selected', isRunning && 'flow-node-running', hasError && 'flow-node-error', traceClass);
 
   if (def.role === 'note') {
     return (
-      <div className={cn('flow-note', `flow-note-${String(values.color ?? 'orange')}`, selected && 'flow-node-selected')} data-flow-node={id}>
+      <div className={cn('flow-note', `flow-note-${String(values.color ?? 'orange')}`, selected && 'flow-node-selected', traced && 'flow-trace-dim')} data-flow-node={id}>
         <div className="mb-1 text-[12px] font-semibold">{data.title}</div>
         <div className="whitespace-pre-wrap text-[12px] leading-5 text-fg-2">{String(values.text ?? '') || <span className="text-fg-4">在右侧编辑内容</span>}</div>
       </div>

@@ -27,11 +27,13 @@ export interface FlowUi {
   connecting: FlowPortType | null;
   /** 顶部选择的对话类型; 唤醒和消息入口的说明随之变化 */
   kinds: ConversationKinds;
+  /** 激活链路追踪中要高亮的节点和追踪目标; null 表示没有在追踪 */
+  traced: { target: string; nodes: Set<string> } | null;
 }
 
 export const FlowUiContext = createContext<FlowUi>({
   issues: [], running: new Set(), types: new Map(), portTypes: {}, defaults: {}, pluginDefaults: {},
-  analysis: { workflows: new Map(), drives: new Map() }, nodes: [], edges: [], connecting: null, kinds: ['group'],
+  analysis: { workflows: new Map(), drives: new Map() }, nodes: [], edges: [], connecting: null, kinds: ['group'], traced: null,
 });
 
 export const useFlowUi = () => useContext(FlowUiContext);
